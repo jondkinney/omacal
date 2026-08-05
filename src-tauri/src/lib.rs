@@ -1,6 +1,8 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 
+mod calendars;
 mod commands;
+mod errors;
 mod fixtures;
 mod status;
 mod sync_loop;
@@ -208,7 +210,7 @@ async fn sign_in_impl(pool: &SqlitePool, demo: bool) -> Result<String, String> {
         Ok(email)
     }
 
-    inner(pool).await.map_err(|e| e.to_string())
+    inner(pool).await.map_err(|e| errors::user_facing(&e))
 }
 
 fn now_ms() -> i64 {
@@ -357,7 +359,7 @@ async fn sync_now(state: tauri::State<'_, AppState>) -> Result<u64, String> {
     // caller with no way to see it.
     demo_sync_guard(state.demo)?;
 
-    let n = sync_all(&state).await.map_err(|e| e.to_string())?;
+    let n = sync_all(&state).await.map_err(|e| errors::user_facing(&e))?;
     status::record_sync(&state.pool, now_ms()).await.map_err(|e| e.to_string())?;
     Ok(n)
 }
@@ -403,7 +405,10 @@ pub fn run() {
             get_week,
             get_status,
             sign_in,
-            sync_now
+            sync_now,
+            calendars::get_calendars,
+            calendars::set_calendar_selected,
+            calendars::set_calendar_sync
         ])
         .run(tauri::generate_context!())
         .expect("error while running omacal");
