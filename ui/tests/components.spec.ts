@@ -77,20 +77,45 @@ test.describe('EventBlock hover occludes what it covers', () => {
   };
 
   for (const state of ['accepted', 'needsAction', 'tentative', 'declined']) {
-    test(`${state} becomes fully opaque on hover`, async ({ page }) => {
+    // Blocks overlap constantly, and every state must occlude the one behind it
+    // — at rest, not only under the cursor. A translucent block lets the covered
+    // event's title read through it and its rounded corners poke past, which is
+    // what "ugly corners" turned out to be.
+    test(`${state} is opaque at rest and on hover`, async ({ page }) => {
       await page.goto(show('EventBlock', `rsvp-${state}-15`));
       const ev = page.locator('.ev');
 
-      await ev.hover();
-      const bg = await ev.evaluate((el) => getComputedStyle(el).backgroundColor);
-      expect(alpha(bg), `hovered ${state} background must be opaque, got ${bg}`).toBe(1);
+      const read = async () => ({
+        bg: await ev.evaluate((el) => getComputedStyle(el).backgroundColor),
+        op: await ev.evaluate((el) => parseFloat(getComputedStyle(el).opacity)),
+      });
 
-      // Element opacity would let the block underneath through regardless of
-      // background colour — declined rests at .4 and must lift on hover.
-      const op = await ev.evaluate((el) => parseFloat(getComputedStyle(el).opacity));
-      expect(op, `hovered ${state} element opacity must be 1`).toBe(1);
+      const rest = await read();
+      expect(alpha(rest.bg), `resting ${state} background must be opaque, got ${rest.bg}`).toBe(1);
+      // Element opacity makes a block see-through regardless of its background,
+      // so fading must be done with colours instead.
+      expect(rest.op, `resting ${state} element opacity must be 1`).toBe(1);
+
+      await ev.hover();
+      const hov = await read();
+      expect(alpha(hov.bg), `hovered ${state} background must be opaque, got ${hov.bg}`).toBe(1);
+      expect(hov.op, `hovered ${state} element opacity must be 1`).toBe(1);
     });
   }
+
+  // Element opacity used to do the fading. Colour has to carry it now, or
+  // removing the transparency would quietly turn "declined" into "accepted".
+  test('a declined block still reads as declined', async ({ page }) => {
+    await page.goto(show('EventBlock', 'rsvp-declined-15'));
+    await expect(page.locator('.ev b')).toHaveCSS('text-decoration-line', 'line-through');
+    const declined = await page.locator('.ev').evaluate((el) => getComputedStyle(el).color);
+
+    await page.goto(show('EventBlock', 'rsvp-accepted-15'));
+    const accepted = await page.locator('.ev').evaluate((el) => getComputedStyle(el).color);
+
+    expect(declined, 'declined must not render the same text colour as accepted')
+      .not.toBe(accepted);
+  });
 });
 
 test.describe('AllDayBand', () => {

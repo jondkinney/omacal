@@ -41,7 +41,12 @@
     position: absolute; border: 0; text-align: left; cursor: pointer;
     border-radius: 6px; padding: 2px 6px; overflow: hidden;
     border-left: 2px solid var(--cal);
-    background: color-mix(in srgb, var(--cal) 7%, transparent);
+    /* Composited over --bg, not `transparent`. Blocks overlap constantly, and a
+       translucent fill lets the one behind read through — its title, and its
+       rounded corners poking past this one's. Against the column background the
+       result is indistinguishable from a 7% wash, because the column background
+       IS --bg. */
+    background: color-mix(in srgb, var(--cal) 7%, var(--bg));
     color: color-mix(in srgb, var(--cal) 65%, var(--text));
     font: inherit;
   }
@@ -59,12 +64,18 @@
   .rs { position: absolute; top: 1px; right: 4px; font-size: 9px;
         font-style: normal; font-weight: 700; opacity: .8; }
 
-  /* State is carried by the fill, so it survives at 15 minutes tall. */
-  .ev.needsAction { background: transparent; border: 1px dashed currentColor;
+  /* State is carried by the fill, so it survives at 15 minutes tall. Every
+     state stays opaque: "unfilled" means the colour of the grid, not a hole
+     through to whatever block is underneath. */
+  .ev.needsAction { background-color: var(--bg); border: 1px dashed currentColor;
                     border-left: 2px solid var(--cal); }
   .ev.tentative { background-image: repeating-linear-gradient(135deg,
                   rgba(128,128,128,.16) 0 3px, transparent 3px 7px); }
-  .ev.declined { background: transparent; opacity: .4; }
+  /* Faded via its own colours rather than element opacity: `opacity` would make
+     the block see-through no matter what its background is. */
+  .ev.declined { background-color: var(--bg);
+                 color: color-mix(in srgb, var(--cal) 22%, var(--muted));
+                 border-left-color: color-mix(in srgb, var(--cal) 45%, var(--bg)); }
   .ev.declined b { text-decoration: line-through; }
 
   /* An expanded block must OCCLUDE the ones it covers. The resting fills are
