@@ -33,4 +33,20 @@ test.describe('locationLabel', () => {
     // what you act on when you are walking somewhere.
     expect(locationLabel('Room 4A, https://meet.google.com/abc')).toBe('Room 4A');
   });
+
+  // A link sandwiched between two place fragments used to leave the comma
+  // from each side behind — "Board room, , 3rd floor" — because the old
+  // strip logic only trimmed separators at the very start and end of the
+  // string, not around the gap the removed URL left in the middle.
+  test('a url between two place fragments joins them without a doubled separator', () => {
+    expect(locationLabel('Board room, https://x.com/y, 3rd floor')).toBe('Board room, 3rd floor');
+  });
+
+  test('a url between semicolon-separated fragments normalises the separator', () => {
+    expect(locationLabel('Room 2; https://meet.google.com/abc; level 3')).toBe('Room 2, level 3');
+  });
+
+  test('a url touching its neighbours with no whitespace still separates cleanly', () => {
+    expect(locationLabel('A,https://x.com/y,B')).toBe('A, B');
+  });
 });

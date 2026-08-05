@@ -25,14 +25,18 @@ export function locationLabel(raw: string | null): string {
   const match = text.match(URL_RE);
   if (!match) return text;
 
-  // A place written alongside the link is the useful half. Strip the URL and
-  // any label that was only introducing it.
-  const withoutUrl = text
-    .replace(URL_RE, '')
-    .replace(/[\s,;–—-]*$/, '')
-    .replace(/^[\s,;–—-]*/, '')
-    .replace(/[:\s]*$/, '')
-    .trim();
+  // A place written alongside the link is the useful half. Cut the string at
+  // the URL rather than deleting it in place, and trim separators off each
+  // half independently — a link sandwiched between two place fragments
+  // ("Board room, <url>, 3rd floor") otherwise leaves the comma from both
+  // sides behind ("Board room, , 3rd floor"). Colon is included here too, so
+  // a trailing label ("Zoom:") loses it in the same pass.
+  const idx = match.index ?? text.indexOf(match[0]);
+  const stripSeparators = (s: string) =>
+    s.replace(/^[\s,;:–—-]+/, '').replace(/[\s,;:–—-]+$/, '').trim();
+  const left = stripSeparators(text.slice(0, idx));
+  const right = stripSeparators(text.slice(idx + match[0].length));
+  const withoutUrl = left && right ? `${left}, ${right}` : left || right;
 
   let host = '';
   try {
