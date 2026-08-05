@@ -4,14 +4,18 @@ export type UiEvent = {
   id: number; title: string; location: string | null;
   start_ms: number; end_ms: number; color: string;
   response: 'accepted' | 'needsAction' | 'tentative' | 'declined';
-  guests: number; is_all_day: boolean;
+  is_all_day: boolean;
 };
 export type Placed = { idx: number; column: number; columns: number; top: number; height: number };
 export type Lane = {
   idx: number; lane: number; start_col: number; end_col: number;
   cont_left: boolean; cont_right: boolean;
 };
-export type DayColumn = { start_ms: number; events: UiEvent[]; placed: Placed[] };
+/** `end_ms` is midnight on the next day, so a 23- or 25-hour DST day reports
+ *  its true span rather than a nominal 24 hours. */
+export type DayColumn = {
+  start_ms: number; end_ms: number; events: UiEvent[]; placed: Placed[];
+};
 export type WeekPayload = {
   days: DayColumn[]; all_day: Lane[]; all_day_events: UiEvent[]; overflow: number[];
 };

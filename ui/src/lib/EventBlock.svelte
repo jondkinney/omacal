@@ -12,10 +12,10 @@
   const hhmm = (ms: number) =>
     new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
 
-  // Location first: it is the thing you act on when you are walking somewhere.
-  const meta = $derived(
-    [event.location, event.guests > 0 ? `${event.guests}` : null].filter(Boolean).join(' · ')
-  );
+  // Location is the thing you act on when you are walking somewhere. A guest
+  // count belongs here too, but attendees are not stored yet, and a hardcoded
+  // zero read as "no guests" — a claim we cannot make.
+  const meta = $derived(event.location ?? '');
 
   const width = $derived(100 / placed.columns);
   const left = $derived(placed.column * width);

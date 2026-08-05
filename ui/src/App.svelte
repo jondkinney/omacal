@@ -21,7 +21,9 @@
   {#if error}
     <p class="error">{error}</p>
   {:else if week}
-    <WeekGrid {week} {weekStartMs} />
+    <!-- The grid takes its day boundaries from the payload, which computed them
+         in the display zone; a DST week has no fixed 24-hour stride. -->
+    <WeekGrid {week} />
   {/if}
 </main>
 

@@ -4,23 +4,36 @@
   import EventBlock from './EventBlock.svelte';
   import AllDayBand from './AllDayBand.svelte';
 
-  let { week, weekStartMs }: { week: WeekPayload; weekStartMs: number } = $props();
+  let { week }: { week: WeekPayload } = $props();
 
-  const DAY = 86_400_000;
   const HOURS = [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22];
   const NAMES = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
 
   const todayStart = (() => { const d = new Date(); d.setHours(0,0,0,0); return d.getTime(); })();
 
-  // Current-time line as a fraction of the day, recomputed each minute.
-  let nowFrac = $state(0);
+  // Where wall-clock hour `h` falls in a column, as a fraction of that column's
+  // *true* span. Both halves matter on a DST day: the span is 23 or 25 hours,
+  // and the elapsed time to 09:00 is not 9 hours if the clocks moved overnight.
+  // Reading the hour back off a Date gets both right, in the same zone the
+  // events were laid out in. Rust computes the geometry against these same
+  // boundaries, so blocks and rules cannot drift apart.
+  const hourFrac = (day: { start_ms: number; end_ms: number }, h: number) => {
+    const d = new Date(day.start_ms);
+    d.setHours(h, 0, 0, 0);
+    return (d.getTime() - day.start_ms) / (day.end_ms - day.start_ms);
+  };
+
+  // The gutter labels are shared by all seven columns, so they use the first
+  // ordinary-length day; a DST day's own rules still come from its own span.
+  const gutterDay = $derived(
+    week.days.find((d) => d.end_ms - d.start_ms === 86_400_000) ?? week.days[0]
+  );
+
+  // Current-time line, recomputed each minute. Held as an instant and divided by
+  // the column it lands in, rather than assuming a 1440-minute day.
+  let nowMs = $state(Date.now());
   $effect(() => {
-    const tick = () => {
-      const n = new Date();
-      nowFrac = (n.getHours() * 60 + n.getMinutes()) / 1440;
-    };
-    tick();
-    const id = setInterval(tick, 60_000);
+    const id = setInterval(() => { nowMs = Date.now(); }, 60_000);
     return () => clearInterval(id);
   });
 </script>
@@ -28,7 +41,7 @@
 <div class="grid">
   <div class="gutter head"></div>
   {#each NAMES as name, i}
-    {@const dayStart = weekStartMs + i * DAY}
+    {@const dayStart = week.days[i].start_ms}
     <div class="head" class:today={dayStart === todayStart}>
       <span>{name}</span>
       <b>{new Date(dayStart).getDate()}</b>
@@ -41,15 +54,15 @@
 <div class="grid body">
   <div class="gutter">
     {#each HOURS as h}
-      <span style="top:{(h / 24) * 100}%">{String(h).padStart(2, '0')}</span>
+      <span style="top:{hourFrac(gutterDay, h) * 100}%">{String(h).padStart(2, '0')}</span>
     {/each}
   </div>
 
-  {#each week.days as day, i}
+  {#each week.days as day}
     {@const isToday = day.start_ms === todayStart}
     <div class="col" class:today={isToday}>
       {#each HOURS as h}
-        <div class="rule" style="top:{(h / 24) * 100}%"></div>
+        <div class="rule" style="top:{hourFrac(day, h) * 100}%"></div>
       {/each}
 
       {#each day.placed as p}
@@ -57,7 +70,10 @@
       {/each}
 
       {#if isToday}
-        <div class="now" style="top:{nowFrac * 100}%"></div>
+        <div
+          class="now"
+          style="top:{((nowMs - day.start_ms) / (day.end_ms - day.start_ms)) * 100}%"
+        ></div>
       {/if}
     </div>
   {/each}
