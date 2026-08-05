@@ -81,6 +81,11 @@ async fn get_week(
 
 const KEYRING_SERVICE: &str = "omacal";
 
+/// Google's Calendar API root. A constant so the one place that overrides it —
+/// a test pointing `sync_accounts` at a local mock — is the only place a
+/// different value can come from.
+const GOOGLE_CALENDAR_API: &str = "https://www.googleapis.com/calendar/v3";
+
 #[derive(serde::Deserialize)]
 struct Config {
     client_id: String,
@@ -154,10 +159,8 @@ async fn sign_in_impl(pool: &SqlitePool, demo: bool) -> Result<String, String> {
         )
         .await?;
 
-        let client = omacal_google::CalendarClient::new(
-            "https://www.googleapis.com/calendar/v3",
-            &tokens.access_token,
-        );
+        let client =
+            omacal_google::CalendarClient::new(GOOGLE_CALENDAR_API, &tokens.access_token);
         let calendars = client.list_calendars().await?;
 
         // The primary calendar's id is the account's email address, so we get
@@ -306,12 +309,18 @@ async fn access_token_for(state: &AppState, cfg: &Config, email: &str) -> anyhow
 /// `sync_enabled`, deliberately — not `selected`. Hiding a calendar in the UI
 /// must not stop it syncing, or re-showing it would reveal a gap until the
 /// next full sync.
+///
+/// `ORDER BY id` for the same reason `sync_all` orders its accounts: without
+/// it, which calendar is fetched first is whatever the query planner's chosen
+/// index happens to yield, and that decided whose failure was visible.
 pub(crate) async fn calendars_to_sync(
     pool: &SqlitePool,
     account_id: i64,
 ) -> anyhow::Result<Vec<(i64, String)>> {
     let cals = sqlx::query_as(
-        "SELECT id, google_id FROM calendars WHERE account_id = ?1 AND sync_enabled = 1",
+        "SELECT id, google_id FROM calendars
+         WHERE account_id = ?1 AND sync_enabled = 1
+         ORDER BY id",
     )
     .bind(account_id)
     .fetch_all(pool)
@@ -319,33 +328,109 @@ pub(crate) async fn calendars_to_sync(
     Ok(cals)
 }
 
+/// Syncs every calendar of every account, isolating failures.
+///
+/// The token source is injected so this is reachable from a test: the real one
+/// reads the Keychain and talks to Google, neither of which belongs in a test,
+/// and the property worth proving is precisely what happens when it fails.
+///
+/// Nothing here uses `?`. Before multi-account, "this account failed" and "the
+/// sync failed" were the same sentence and a `?` was the honest spelling of
+/// both. They are different sentences now: one account with revoked consent
+/// answers `invalid_grant` on every refresh forever, and a shared calendar
+/// unshared behind our back answers 403 or 404 forever — neither is a reason to
+/// stop syncing anything else.
+///
+/// Returns the rows written and a label per failed account or calendar. The
+/// labels are for the log; the caller turns their *count* into the user-facing
+/// failure, because an email address has no business being handed to a
+/// user-facing string.
+async fn sync_accounts<F, Fut>(
+    pool: &SqlitePool,
+    accounts: &[(i64, String)],
+    api_base: &str,
+    window_start_ms: i64,
+    window_end_ms: i64,
+    token_for: F,
+) -> (u64, Vec<String>)
+where
+    F: Fn(String) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<String>>,
+{
+    let mut total = 0u64;
+    let mut failed: Vec<String> = Vec::new();
+
+    for (account_id, email) in accounts {
+        // `%e`, never the token: `Tokens` has a hand-written redacting `Debug`
+        // and no credential is interpolated anywhere on this path.
+        let access_token = match token_for(email.clone()).await {
+            Ok(t) => t,
+            Err(e) => {
+                tracing::warn!(account = %email, %e, "no usable access token; skipping this account");
+                failed.push(email.clone());
+                continue;
+            }
+        };
+
+        let client = omacal_google::CalendarClient::new(api_base, &access_token);
+
+        let cals = match calendars_to_sync(pool, *account_id).await {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(account = %email, %e, "could not list calendars; skipping this account");
+                failed.push(email.clone());
+                continue;
+            }
+        };
+
+        for (cal_id, google_id) in cals {
+            match omacal_sync::sync_calendar(
+                pool, &client, cal_id, &google_id, window_start_ms, window_end_ms,
+            )
+            .await
+            {
+                Ok(out) => total += (out.upserted + out.deleted) as u64,
+                Err(e) => {
+                    tracing::warn!(account = %email, calendar = %google_id, %e, "calendar sync failed");
+                    failed.push(format!("{email} / {google_id}"));
+                }
+            }
+        }
+    }
+
+    (total, failed)
+}
+
 pub(crate) async fn sync_all(state: &AppState) -> anyhow::Result<u64> {
     let pool = &state.pool;
     let cfg = load_config()?;
+    // `ORDER BY id`, so which account goes first is a decision rather than
+    // whatever rowid order happens to be — it used to decide whose failure
+    // stopped the rest.
     let accounts: Vec<(i64, String)> =
-        sqlx::query_as("SELECT id, email FROM accounts").fetch_all(pool).await?;
+        sqlx::query_as("SELECT id, email FROM accounts ORDER BY id").fetch_all(pool).await?;
 
     const DAY: i64 = 24 * 3_600_000;
     let now = now_ms();
     let (window_start, window_end) = (now - 180 * DAY, now + 365 * DAY);
-    let mut total = 0u64;
 
-    for (account_id, email) in accounts {
-        let access_token = access_token_for(state, &cfg, &email).await?;
-        let client = omacal_google::CalendarClient::new(
-            "https://www.googleapis.com/calendar/v3",
-            &access_token,
-        );
+    let cfg = &cfg;
+    let (total, failed) = sync_accounts(
+        pool,
+        &accounts,
+        GOOGLE_CALENDAR_API,
+        window_start,
+        window_end,
+        move |email| async move { access_token_for(state, cfg, &email).await },
+    )
+    .await;
 
-        let cals = calendars_to_sync(pool, account_id).await?;
-
-        for (cal_id, google_id) in cals {
-            let out = omacal_sync::sync_calendar(
-                pool, &client, cal_id, &google_id, window_start, window_end,
-            )
-            .await?;
-            total += (out.upserted + out.deleted) as u64;
-        }
+    if !failed.is_empty() {
+        // A count, not the labels. This string is what `errors::user_facing`
+        // sees, and it withholds anything it does not recognise anyway — the
+        // detail is already in the log, at the same level the rest of this file
+        // uses.
+        anyhow::bail!("{} of this sync's targets failed; see the log", failed.len());
     }
     Ok(total)
 }
@@ -417,6 +502,8 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     /// `sync_now` and `sign_in` both call this before doing anything else, so
     /// proving the guard itself never performs I/O — it is a pure function of
@@ -565,4 +652,141 @@ mod tests {
         assert_eq!(cals.len(), 1);
         assert_eq!(cals[0].1, "cal-1", "must not bleed in the other account's calendar");
     }
+
+    fn one_event_body() -> serde_json::Value {
+        serde_json::json!({
+            "items": [{
+                "id": "e1", "status": "confirmed", "summary": "Standup",
+                "start": {"dateTime": "2026-08-03T09:00:00Z"},
+                "end":   {"dateTime": "2026-08-03T09:30:00Z"}
+            }],
+            "nextSyncToken": "tok-1"
+        })
+    }
+
+    async fn accounts_in_order(pool: &SqlitePool) -> Vec<(i64, String)> {
+        sqlx::query_as("SELECT id, email FROM accounts ORDER BY id")
+            .fetch_all(pool)
+            .await
+            .unwrap()
+    }
+
+    /// Revoke the first account's access and every *other* account stopped
+    /// syncing too: `access_token_for` returned `invalid_grant`, the `?` took
+    /// all of `sync_all` with it, and `accounts` had no `ORDER BY`, so in rowid
+    /// order the account that blocked everyone was the first one ever added.
+    #[tokio::test]
+    async fn an_account_that_cannot_get_a_token_does_not_stop_the_others() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(one_event_body()))
+            .mount(&server)
+            .await;
+
+        let pool = omacal_store::connect_memory().await.unwrap();
+        let revoked = seed_account(&pool, "sub-revoked", "revoked@x").await;
+        let healthy = seed_account(&pool, "sub-healthy", "healthy@x").await;
+        seed_calendar(&pool, revoked, "cal-revoked", 1, 1).await;
+        seed_calendar(&pool, healthy, "cal-healthy", 1, 1).await;
+
+        let accounts = accounts_in_order(&pool).await;
+        assert_eq!(accounts[0].1, "revoked@x", "the broken account must go first");
+
+        let (total, failed) = sync_accounts(
+            &pool, &accounts, &server.uri(), 0, 9_999_999_999_999,
+            |email| async move {
+                if email == "revoked@x" {
+                    anyhow::bail!("invalid_grant: token has been expired or revoked");
+                }
+                Ok("at-healthy".to_string())
+            },
+        )
+        .await;
+
+        assert_eq!(failed, vec!["revoked@x".to_string()]);
+        assert_eq!(total, 1, "the healthy account still synced");
+
+        let synced: Vec<String> = sqlx::query_scalar(
+            "SELECT c.google_id FROM events e JOIN calendars c ON c.id = e.calendar_id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(synced, vec!["cal-healthy".to_string()],
+                   "the healthy account's calendar must have been fetched and stored");
+    }
+
+    /// The same isolation one level down. A shared calendar unshared behind our
+    /// back answers 403 forever, and it stays `sync_enabled = 1`, so it retries
+    /// and re-fails on every tick — it must not take the account's other
+    /// calendars with it.
+    #[tokio::test]
+    async fn one_calendar_returning_403_does_not_stop_the_others() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/calendars/cal-unshared/events"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/calendars/cal-ok/events"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(one_event_body()))
+            .mount(&server)
+            .await;
+
+        let pool = omacal_store::connect_memory().await.unwrap();
+        let account = seed_account(&pool, "sub", "me@x").await;
+        seed_calendar(&pool, account, "cal-unshared", 1, 1).await;
+        seed_calendar(&pool, account, "cal-ok", 1, 1).await;
+
+        // Seeded first, and `calendars_to_sync` orders by id, so the failing
+        // calendar is genuinely fetched before the healthy one. Without that
+        // the healthy one might be fetched first and the assertions below
+        // would hold even if the 403 aborted everything after it.
+        assert_eq!(calendars_to_sync(&pool, account).await.unwrap()[0].1, "cal-unshared");
+
+        let accounts = accounts_in_order(&pool).await;
+        let (total, failed) = sync_accounts(
+            &pool, &accounts, &server.uri(), 0, 9_999_999_999_999,
+            |_| async { Ok("at".to_string()) },
+        )
+        .await;
+
+        assert_eq!(failed, vec!["me@x / cal-unshared".to_string()]);
+        assert_eq!(total, 1, "the account's other calendar still synced");
+
+        let synced: Vec<String> = sqlx::query_scalar(
+            "SELECT c.google_id FROM events e JOIN calendars c ON c.id = e.calendar_id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(synced, vec!["cal-ok".to_string()]);
+    }
+
+    /// A sync where nothing went wrong must still say so, or the isolation
+    /// above would be indistinguishable from swallowing every failure.
+    #[tokio::test]
+    async fn a_sync_with_no_failures_reports_none() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(one_event_body()))
+            .mount(&server)
+            .await;
+
+        let pool = omacal_store::connect_memory().await.unwrap();
+        let account = seed_account(&pool, "sub", "me@x").await;
+        seed_calendar(&pool, account, "cal-1", 1, 1).await;
+
+        let accounts = accounts_in_order(&pool).await;
+        let (total, failed) = sync_accounts(
+            &pool, &accounts, &server.uri(), 0, 9_999_999_999_999,
+            |_| async { Ok("at".to_string()) },
+        )
+        .await;
+
+        assert!(failed.is_empty(), "a clean sync reported a failure: {failed:?}");
+        assert_eq!(total, 1);
+    }
+
 }
