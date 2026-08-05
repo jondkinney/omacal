@@ -730,8 +730,9 @@ cargo add --package omacal-core rrule chrono thiserror
 mod tests {
     use super::*;
 
-    /// 2026-08-03 09:00:00 Europe/Sofia == 06:00:00Z (EEST, UTC+3).
-    const MON_0900_SOFIA: i64 = 1_785_909_600_000;
+    /// Monday 2026-08-03 09:00:00 Europe/Sofia == 06:00:00Z (EEST, UTC+3).
+    /// Verify with: `python3 -c "import datetime as d; print(int(d.datetime(2026,8,3,6,tzinfo=d.timezone.utc).timestamp()*1000))"`
+    const MON_0900_SOFIA: i64 = 1_785_736_800_000;
     const HOUR: i64 = 3_600_000;
     const DAY: i64 = 24 * HOUR;
 
@@ -819,8 +820,8 @@ mod tests {
     /// which means its UTC instant shifts by an hour across the boundary.
     #[test]
     fn a_local_time_series_survives_a_dst_transition() {
-        // 2026-09-28 09:00 Sofia (EEST, +3) == 06:00Z
-        let sep28 = 1_790_571_600_000;
+        // Monday 2026-09-28 09:00 Sofia (EEST, +3) == 06:00Z
+        let sep28 = 1_790_575_200_000;
         let s = Series {
             dtstart_ms: sep28, dtstart_tz: "Europe/Sofia",
             duration_ms: HOUR, is_all_day: false,
@@ -3083,7 +3084,7 @@ mod tests {
 
     const DAY: i64 = 24 * 3_600_000;
     /// Monday 2026-08-03 00:00:00 UTC
-    const MON: i64 = 1_785_888_000_000;
+    const MON: i64 = 1_785_715_200_000;
 
     #[test]
     fn a_timed_event_lands_in_its_own_day_column() {
