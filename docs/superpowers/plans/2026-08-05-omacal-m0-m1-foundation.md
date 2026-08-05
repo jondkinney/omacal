@@ -3723,7 +3723,7 @@ git commit -m "feat(app): week assembly, sign-in, and sync commands"
 
 **Files:**
 - Create: `ui/src/lib/theme.ts`, `ui/src/lib/api.ts`, `ui/src/lib/WeekGrid.svelte`
-- Modify: `ui/src/App.svelte`, `ui/src/app.css`
+- Modify: `ui/src/App.svelte` (all styling lives in component `<style>` blocks; there is no separate stylesheet)
 
 **Interfaces:**
 - Consumes: `get_palette`, `get_week` Tauri commands
