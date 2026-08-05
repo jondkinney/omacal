@@ -11,6 +11,11 @@ pub const DEFAULT_INTERVAL_MS: i64 = 5 * 60 * 1_000;
 /// Floor on the poll interval. Google's quota is finite and a desktop app has
 /// no business polling faster than this.
 pub const MIN_INTERVAL_MS: i64 = 60 * 1_000;
+/// The floor `request_now` applies. Focusing the window is an explicit "give
+/// me fresh data" signal, so it gets a far shorter interval than the ticker —
+/// but an interval all the same: twenty alt-tabs used to mean twenty token
+/// refreshes and twenty per-calendar syncs against Google's quota.
+pub const FOCUS_MIN_INTERVAL_MS: i64 = 30 * 1_000;
 const SETTING_KEY: &str = "sync_interval_ms";
 /// How often the ticker wakes to *consider* syncing. Short enough that a
 /// wake-from-sleep is noticed promptly, cheap because `due` is pure.
@@ -55,6 +60,51 @@ pub fn should_sync(demo: bool, last_sync_ms: Option<i64>, now_ms: i64, interval_
     may_sync(demo) && due(last_sync_ms, now_ms, interval_ms)
 }
 
+/// Whether a window-focus event should sync. Same rule as the ticker, against
+/// [`FOCUS_MIN_INTERVAL_MS`] instead of the configured interval — named so
+/// that the constant `request_now` actually applies is the one under test.
+pub fn focus_should_sync(demo: bool, last_sync_ms: Option<i64>, now_ms: i64) -> bool {
+    should_sync(demo, last_sync_ms, now_ms, FOCUS_MIN_INTERVAL_MS)
+}
+
+/// What the UI is told when a sync fails.
+///
+/// Fixed text, deliberately: the underlying error is not safe to forward. A
+/// malformed `config.toml` makes `load_config` return a `toml` parse error
+/// that quotes the offending line back verbatim — and that line may be
+/// `client_secret = "…"`. `ApiError::Transport` likewise carries a reqwest
+/// error that can include a request URL with a sync token in it. Neither
+/// belongs in a payload that crosses into the webview, so the detail stays in
+/// the local log and the user gets a sentence they can act on.
+pub const SYNC_FAILED_MESSAGE: &str =
+    "Sync failed — omacal could not reach Google. It will keep trying.";
+
+/// The `sync-failed` payload. Takes the error so that the omission is visible
+/// at the call site and deliberate here, rather than looking like an oversight.
+fn sync_failed_payload(_e: &anyhow::Error) -> serde_json::Value {
+    serde_json::json!({ "message": SYNC_FAILED_MESSAGE })
+}
+
+/// Runs one sync and reports the outcome to the UI. Shared by the ticker and
+/// the focus path so both record the timestamp and, crucially, both *say* when
+/// a sync fails — silence on this path is what let the header read "Synced 4
+/// min ago" all night with the network down.
+async fn sync_and_report(app: &AppHandle, pool: &SqlitePool) {
+    match crate::sync_all(pool).await {
+        Ok(n) => {
+            if let Err(e) = crate::status::record_sync(pool, crate::now_ms()).await {
+                tracing::warn!(%e, "sync succeeded but recording it failed");
+            }
+            let _ = app.emit("sync-finished", serde_json::json!({ "upserted": n }));
+        }
+        // No token yet, offline, revoked consent — all normal. Retry next tick.
+        Err(e) => {
+            tracing::warn!(%e, "background sync failed");
+            let _ = app.emit("sync-failed", sync_failed_payload(&e));
+        }
+    }
+}
+
 /// Starts the background ticker. Never panics the app: a failed sync is logged
 /// and retried on the next tick.
 pub fn spawn(app: AppHandle) {
@@ -62,8 +112,10 @@ pub fn spawn(app: AppHandle) {
         let mut ticker = tokio::time::interval(TICK);
         loop {
             ticker.tick().await;
-            let state = app.state::<crate::AppState>();
-            let pool = state.pool.clone();
+            let (pool, demo) = {
+                let state = app.state::<crate::AppState>();
+                (state.pool.clone(), state.demo)
+            };
 
             let now = crate::now_ms();
             let last = crate::status::read_status(&pool, false)
@@ -71,37 +123,40 @@ pub fn spawn(app: AppHandle) {
                 .ok()
                 .and_then(|s| s.last_sync_ms);
 
-            if !should_sync(state.demo, last, now, interval_ms(&pool).await) {
+            if !should_sync(demo, last, now, interval_ms(&pool).await) {
                 continue;
             }
 
-            match crate::sync_all(&pool).await {
-                Ok(n) => {
-                    if let Err(e) = crate::status::record_sync(&pool, crate::now_ms()).await {
-                        tracing::warn!(%e, "sync succeeded but recording it failed");
-                    }
-                    let _ = app.emit("sync-finished", serde_json::json!({ "upserted": n }));
-                }
-                // No token yet, offline, revoked consent — all normal. Retry next tick.
-                Err(e) => tracing::warn!(%e, "background sync failed"),
-            }
+            sync_and_report(&app, &pool).await;
         }
     });
 }
 
 /// Nudges the ticker to reconsider immediately — used on window focus.
+///
+/// Goes through the same due-check as the ticker, on a much shorter interval:
+/// a focus is a request for fresh data, but it is not a licence to sync once
+/// per alt-tab.
 pub fn request_now(app: &AppHandle) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let state = app.state::<crate::AppState>();
-        if !may_sync(state.demo) {
+        let (pool, demo) = {
+            let state = app.state::<crate::AppState>();
+            (state.pool.clone(), state.demo)
+        };
+        if !may_sync(demo) {
             return;
         }
-        let pool = state.pool.clone();
-        if let Ok(n) = crate::sync_all(&pool).await {
-            let _ = crate::status::record_sync(&pool, crate::now_ms()).await;
-            let _ = app.emit("sync-finished", serde_json::json!({ "upserted": n }));
+
+        let last = crate::status::read_status(&pool, false)
+            .await
+            .ok()
+            .and_then(|s| s.last_sync_ms);
+        if !focus_should_sync(demo, last, crate::now_ms()) {
+            return;
         }
+
+        sync_and_report(&app, &pool).await;
     });
 }
 
@@ -168,12 +223,62 @@ mod tests {
         );
     }
 
-    /// `request_now` has no interval concept — it routes its demo check
-    /// through this alone, so this is that path's coverage.
     #[test]
     fn may_sync_is_false_in_demo_mode_and_true_otherwise() {
         assert!(!may_sync(true));
         assert!(may_sync(false));
+    }
+
+    /// Alt-tabbing back into the window a few seconds after a sync must not
+    /// spend another round of Google's quota on data that cannot have changed.
+    #[test]
+    fn a_focus_immediately_after_a_sync_does_not_sync_again() {
+        assert!(!focus_should_sync(false, Some(NOW - 1_000), NOW));
+        assert!(!focus_should_sync(false, Some(NOW - (FOCUS_MIN_INTERVAL_MS - 1)), NOW));
+    }
+
+    /// But focus is still the "give me fresh data" gesture, so the wait is
+    /// seconds rather than the ticker's minutes.
+    #[test]
+    fn a_focus_after_the_focus_interval_syncs() {
+        assert!(focus_should_sync(false, Some(NOW - FOCUS_MIN_INTERVAL_MS), NOW));
+        assert!(focus_should_sync(false, Some(NOW - 10 * 60_000), NOW));
+        // A store that has never synced syncs on the first focus.
+        assert!(focus_should_sync(false, None, NOW));
+    }
+
+    /// A focus one minute after a sync would be refused by the ticker's
+    /// interval and allowed by the focus one — that difference is the point.
+    #[test]
+    fn the_focus_floor_is_shorter_than_the_tick_interval() {
+        const { assert!(FOCUS_MIN_INTERVAL_MS < DEFAULT_INTERVAL_MS) };
+        let a_minute_ago = Some(NOW - 60_000);
+        assert!(focus_should_sync(false, a_minute_ago, NOW));
+        assert!(!should_sync(false, a_minute_ago, NOW, DEFAULT_INTERVAL_MS));
+    }
+
+    /// Demo mode is refused on the focus path too, however overdue.
+    #[test]
+    fn a_focus_in_demo_mode_never_syncs() {
+        assert!(!focus_should_sync(true, None, NOW));
+        assert!(!focus_should_sync(true, Some(NOW - 8 * 3_600_000), NOW));
+    }
+
+    /// The failure the user sees must be a sentence they can act on, and must
+    /// not carry the underlying error: a `toml` parse failure in `config.toml`
+    /// quotes the offending line, which may be the client secret.
+    #[test]
+    fn the_sync_failed_payload_carries_no_error_detail() {
+        let secret = "GOCSPX-pretend-client-secret";
+        let e = anyhow::anyhow!(
+            "TOML parse error at line 2\n  |\n2 | client_secret = \"{secret}\"\n  | ^"
+        );
+        let printed = sync_failed_payload(&e).to_string();
+
+        assert!(!printed.contains(secret), "the error leaked into the UI payload: {printed}");
+        assert!(!printed.contains("TOML"), "the raw error leaked into the UI payload: {printed}");
+        assert!(printed.contains("Sync failed"));
+        assert_eq!(sync_failed_payload(&e), sync_failed_payload(&anyhow::anyhow!("anything else")));
     }
 
     #[tokio::test]
