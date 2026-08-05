@@ -1,6 +1,7 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 
 mod commands;
+mod fixtures;
 mod theme;
 
 use sqlx::SqlitePool;
@@ -226,10 +227,22 @@ pub fn run() {
             use tauri::Manager;
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
-            let url = format!("sqlite://{}", dir.join("omacal.db").display());
+
+            // Demo mode writes to its own database file, never the real one, so
+            // a user exploring the demo can never end up with synthetic events
+            // mixed into their actual calendar store.
+            let db_name = if fixtures::demo_mode() { "omacal-demo.db" } else { "omacal.db" };
+            let url = format!("sqlite://{}", dir.join(db_name).display());
 
             // Block once at startup: nothing can render before migrations run.
             let pool = tauri::async_runtime::block_on(omacal_store::connect(&url))?;
+
+            if fixtures::demo_mode() {
+                let now = now_ms();
+                let seeded = tauri::async_runtime::block_on(fixtures::seed_demo(&pool, now))?;
+                tracing::warn!(seeded, db = db_name, "DEMO MODE — synthetic data, not your calendar");
+            }
+
             app.manage(AppState { pool });
             Ok(())
         })
