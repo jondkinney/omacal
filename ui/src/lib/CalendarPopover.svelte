@@ -1,18 +1,35 @@
 <!-- ui/src/lib/CalendarPopover.svelte -->
 <script lang="ts">
+  import { tick } from 'svelte';
   import { byAccount, setCalendarSelected, setCalendarSync, type Calendar } from './calendars';
 
   let { calendars, onchange }: { calendars: Calendar[]; onchange: () => void } = $props();
 
   let open = $state(false);
-  let busy = $state<number | null>(null);
+  // The ids with a write in flight. A `Set` rather than a single id: with one
+  // id, toggling calendar B while calendar A's call was still pending made
+  // `busy` point at B and silently re-enabled A's row — a real double-submit,
+  // caught by mutation-testing a delayed response. Reassigned wholesale on
+  // every change (via `markBusy`) because `$state` does not make a plain
+  // `Set`'s own mutations (`.add`/`.delete`) reactive — only the variable
+  // binding itself.
+  let busy = $state<Set<number>>(new Set());
   /** Last thing that happened: a removal's event count, or a failed toggle's
-   *  error. Cleared whenever the panel opens or another action starts, so it
-   *  never reports on an action that isn't the most recent one. */
+   *  error — always prefixed with which calendar it's about. Two rows can be
+   *  in flight at once (see `busy` above), so an unattributed note is
+   *  ambiguous about which one just settled; naming the calendar makes it
+   *  unambiguous even when read mid-race. Cleared whenever the panel opens or
+   *  another action starts. */
   let message = $state<{ text: string; kind: 'info' | 'error' } | null>(null);
 
   const shown = $derived(calendars.filter((c) => c.sync_enabled && c.selected).length);
   const groups = $derived(byAccount(calendars));
+
+  function markBusy(id: number, on: boolean) {
+    const next = new Set(busy);
+    if (on) next.add(id); else next.delete(id);
+    busy = next;
+  }
 
   function toggle(e: MouseEvent) {
     open = !open;
@@ -30,20 +47,22 @@
     open = false;
   }
 
-  // Attached to the trigger and the panel — the only two places focus can be
-  // while this is open — rather than `document`: no global listener to leak
-  // if the component unmounts while open, same reasoning as the scrim being
-  // a sibling instead of a document click handler below. Both elements
-  // already carry a real interactive role, so neither needs one added just
-  // to host this handler.
+  // A window-level listener, not one hung on the trigger/panel: focus does
+  // not stay put while this is open. Tab once from the trigger and it lands
+  // on `.scrim`, a *sibling* of `.panel` that neither of those two elements'
+  // keydown would ever hear from. Worse, disabling a focused row's checkbox
+  // mid-toggle (see `busy` above) drops focus to <body> — nothing short of
+  // `document`/`window` hears Escape from there. `<svelte:window>` is the
+  // answer to the leak this was originally written to avoid: Svelte removes
+  // it on unmount itself, so there's nothing left dangling.
   function onKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape') close();
+    if (open && e.key === 'Escape') close();
   }
 
   async function toggleShown(c: Calendar, e: Event) {
     const input = e.currentTarget as HTMLInputElement;
     message = null;
-    busy = c.id;
+    markBusy(c.id, true);
     try {
       await setCalendarSelected(c.id, !c.selected);
       onchange();
@@ -54,34 +73,49 @@
       // rather than trust that reassigning `calendars` will touch a DOM
       // property whose value looks, to the framework, like it never moved.
       input.checked = c.selected;
-      message = { text: String(err), kind: 'error' };
+      message = { text: `${c.summary} · ${String(err)}`, kind: 'error' };
       onchange(); // still reload — anything else in the list may be stale too
     } finally {
-      busy = null;
+      markBusy(c.id, false);
+      // Re-enabling a checkbox that was disabled while it held focus does not
+      // give it focus back — the browser already moved it to <body> the
+      // moment `disabled` was set. Reclaim it once the attribute is actually
+      // gone from the DOM (`tick()`), or a keyboard user is left stranded on
+      // <body> with no visible indication of where they are.
+      await tick();
+      input.focus();
     }
   }
 
-  async function toggleSync(c: Calendar) {
+  async function toggleSync(c: Calendar, e: Event) {
+    const btn = e.currentTarget as HTMLButtonElement;
     message = null;
-    busy = c.id;
+    markBusy(c.id, true);
     try {
       const wasOn = c.sync_enabled;
       const removed = await setCalendarSync(c.id, !wasOn);
       if (wasOn) {
-        message = { text: `Removed · ${removed} event${removed === 1 ? '' : 's'} deleted`, kind: 'info' };
+        message = {
+          text: `${c.summary} · ${removed} event${removed === 1 ? '' : 's'} deleted`,
+          kind: 'info',
+        };
       }
       onchange();
     } catch (err) {
-      message = { text: String(err), kind: 'error' };
+      message = { text: `${c.summary} · ${String(err)}`, kind: 'error' };
       onchange();
     } finally {
-      busy = null;
+      markBusy(c.id, false);
+      await tick();
+      btn.focus();
     }
   }
 </script>
 
+<svelte:window onkeydown={onKeydown} />
+
 <div class="wrap">
-  <button class="trigger" onclick={toggle} onkeydown={onKeydown} aria-expanded={open}>
+  <button class="trigger" onclick={toggle} aria-expanded={open}>
     Calendars <span class="count">{shown}</span>
   </button>
 
@@ -90,12 +124,7 @@
          no global state to leak if the component unmounts while open. -->
     <button class="scrim" aria-label="Close" onclick={close}></button>
 
-    <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-    <!-- `role="group"` is what this actually is — a labelled cluster of
-         checkboxes and buttons, not a dialog — but it still has to close
-         on Escape like one, which is the one keyboard interaction a group
-         role doesn't imply. -->
-    <div class="panel" role="group" aria-label="Calendars" onkeydown={onKeydown}>
+    <div class="panel" role="group" aria-label="Calendars">
       {#each groups as [email, cals]}
         <div class="acct">{email}</div>
         {#each cals as c (c.id)}
@@ -104,7 +133,7 @@
               <input
                 type="checkbox"
                 checked={c.selected}
-                disabled={!c.sync_enabled || busy === c.id}
+                disabled={!c.sync_enabled || busy.has(c.id)}
                 onchange={(e) => toggleShown(c, e)}
               />
               <span class="dot" aria-hidden="true" style="background:{c.color_hex ?? 'var(--accent)'}"></span>
@@ -112,11 +141,11 @@
             </label>
             <button
               class="sync"
-              disabled={busy === c.id}
+              disabled={busy.has(c.id)}
               title={c.sync_enabled
                 ? 'Stop syncing and delete this calendar’s local events'
                 : 'Sync this calendar again'}
-              onclick={() => toggleSync(c)}
+              onclick={(e) => toggleSync(c, e)}
             >{c.sync_enabled ? 'Remove' : 'Add'}</button>
           </div>
         {/each}

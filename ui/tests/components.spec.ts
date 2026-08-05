@@ -233,6 +233,37 @@ test.describe('CalendarPopover', () => {
     await expect(page.locator('.panel')).toHaveCount(0);
   });
 
+  // Fix round 1, finding 1a: Tab once from the trigger and focus lands on
+  // `.scrim` — a sibling of `.panel`, not a descendant of either element the
+  // old per-element keydown handlers were attached to. Only a window-level
+  // listener hears Escape from there.
+  test('Escape closes it when focus is on the scrim', async ({ page }) => {
+    await page.goto(show('two-accounts'));
+    await page.getByRole('button', { name: /Calendars/ }).click();
+    await page.locator('.scrim').focus();
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.panel')).toHaveCount(0);
+  });
+
+  // Fix round 1, finding 1b: disabling a focused checkbox mid-toggle drops
+  // focus to <body> (browser default, both engines) — nowhere a listener on
+  // the trigger or the panel could ever hear from. Holds the call open so the
+  // checkbox is still disabled, hence still stuck on <body>, when Escape
+  // is pressed.
+  test('Escape closes it once a toggle has moved focus to <body>', async ({ page }) => {
+    await page.goto(show('single'));
+    await page.evaluate(() => window.__harness.holdNextCalendarCall('set_calendar_selected'));
+    await page.getByRole('button', { name: /Calendars/ }).click();
+
+    const box = page.locator('input[type=checkbox]');
+    await box.focus();
+    await box.click(); // parked — the checkbox disables and focus falls to <body>
+    await expect(box).toBeDisabled();
+
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.panel')).toHaveCount(0);
+  });
+
   // Resolution 4: the browser flips a checkbox's `checked` property on click,
   // before any handler runs. If `set_calendar_selected` then fails, the box
   // is left showing a state the store never actually reached until the
@@ -248,18 +279,46 @@ test.describe('CalendarPopover', () => {
     await expect(box).toBeChecked(); // fixture calendar starts selected
     await box.click();
 
-    await expect(page.locator('.note.err')).toHaveText('database is locked');
+    // Fix round 1, finding 3: attributed to the calendar it's about — "Work"
+    // is the `single` fixture's one calendar — so a note can't be misread as
+    // belonging to some other row that settled around the same time.
+    await expect(page.locator('.note.err')).toHaveText('Work · database is locked');
     // The click already flipped it once; a naive implementation stops here.
     await expect(box).toBeChecked();
   });
 
+  // Fix round 1, finding 2: `busy` used to be a single id, so toggling a
+  // second row while the first was still in flight pointed `busy` at the
+  // second id and silently re-enabled the first — a real double-submit.
+  // Holds the first row's call open and toggles the second immediately after,
+  // so the two are genuinely concurrent rather than sequential.
+  test('a row stays disabled until its own call resolves, even if another row toggles meanwhile', async ({ page }) => {
+    await page.goto(show('mixed'));
+    await page.evaluate(() => window.__harness.holdNextCalendarCall('set_calendar_selected'));
+    await page.getByRole('button', { name: /Calendars/ }).click();
+
+    // `mixed` has 3 calendars, one of them `sync_enabled: false` (`.row.off`,
+    // permanently disabled); the other two are the rows this test toggles.
+    const rows = page.locator('.row:not(.off) input[type=checkbox]');
+    await rows.nth(0).click(); // consumes the hold — parked
+    await rows.nth(1).click(); // no hold armed for it — resolves right away
+
+    await expect(rows.nth(0)).toBeDisabled();
+    await expect(rows.nth(1)).toBeEnabled();
+
+    await page.evaluate(() => window.__harness.releaseCalendarCall('set_calendar_selected', undefined));
+    await expect(rows.nth(0)).toBeEnabled();
+  });
+
   // Resolution 1: `setCalendarSync` resolves with the number of events the
   // removal deleted specifically so the UI can report it — throwing that
-  // count away would make the removal look like it did nothing.
-  test('removing a calendar reports how many events were deleted', async ({ page }) => {
+  // count away would make the removal look like it did nothing. Fix round 1,
+  // finding 3: also names the calendar, for the same reason as the failed-
+  // toggle note above.
+  test('removing a calendar reports how many events were deleted, naming the calendar', async ({ page }) => {
     await page.goto(show('single'));
     await page.getByRole('button', { name: /Calendars/ }).click();
     await page.getByRole('button', { name: 'Remove' }).click();
-    await expect(page.locator('.note')).toHaveText(`Removed · ${CALENDAR_SYNC_REMOVED} events deleted`);
+    await expect(page.locator('.note')).toHaveText(`Work · ${CALENDAR_SYNC_REMOVED} events deleted`);
   });
 });

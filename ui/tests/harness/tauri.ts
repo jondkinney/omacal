@@ -49,6 +49,12 @@ export type Harness = {
   /** Make the next call to `set_calendar_selected` or `set_calendar_sync` reject —
    *  what a CalendarPopover spec uses to drive the failed-toggle path. */
   failNextCalendarCall(cmd: 'set_calendar_selected' | 'set_calendar_sync', message: string): void;
+  /** Park the *next* call to this calendar command instead of answering it —
+   *  what a CalendarPopover spec uses to prove a second row's toggle doesn't
+   *  free up a first row whose own call is still pending. */
+  holdNextCalendarCall(cmd: 'set_calendar_selected' | 'set_calendar_sync'): void;
+  /** Answer the parked call for this command, then let its `.then` chain run. */
+  releaseCalendarCall(cmd: 'set_calendar_selected' | 'set_calendar_sync', value: unknown): Promise<void>;
   /** Every command the app has invoked, in order. */
   calls: { cmd: string; args: unknown }[];
 };
@@ -61,9 +67,13 @@ const callbacks = new Map<number, (e: unknown) => void>();
 const hold = new Set<number>();
 const parked = new Map<number, Deferred>();
 
+type CalendarDeferred = { resolve: (v: unknown) => void; reject: (e: unknown) => void };
+
 let nextId = 1;
 let failWeekOnce: string | null = null;
 let failCalendarOnce: { cmd: string; message: string } | null = null;
+let holdCalendarOnce: string | null = null;
+const parkedCalendar = new Map<string, CalendarDeferred>();
 
 /**
  * Resolves once something has subscribed to `event`; throws if none does.
@@ -103,14 +113,31 @@ const harness: Harness = {
   failNextCalendarCall(cmd, message) {
     failCalendarOnce = { cmd, message };
   },
+  holdNextCalendarCall(cmd) {
+    holdCalendarOnce = cmd;
+  },
+  async releaseCalendarCall(cmd, value) {
+    parkedCalendar.get(cmd)?.resolve(value);
+    parkedCalendar.delete(cmd);
+    // Same reasoning as `release` above: let the resolution's `.then` chain —
+    // `onchange()`, `markBusy(id, false)`, the focus restore — actually run
+    // before the spec asserts on it.
+    await new Promise((r) => setTimeout(r, 50));
+  },
 };
 
-/** Resolves normally unless a spec armed a failure for this exact command. */
+/** Resolves normally unless a spec armed a failure or a hold for this exact command. */
 function calendarResult<T>(cmd: string, ok: T): Promise<T> {
   if (failCalendarOnce?.cmd === cmd) {
     const { message } = failCalendarOnce;
     failCalendarOnce = null;
     return Promise.reject(message);
+  }
+  if (holdCalendarOnce === cmd) {
+    holdCalendarOnce = null;
+    return new Promise<T>((resolve, reject) => {
+      parkedCalendar.set(cmd, { resolve, reject } as CalendarDeferred);
+    });
   }
   return Promise.resolve(ok);
 }
