@@ -36,6 +36,29 @@
     const id = setInterval(() => { nowMs = Date.now(); }, 60_000);
     return () => clearInterval(id);
   });
+
+  // Opening at midnight puts the working day off-screen. Scroll once on mount so
+  // the current time sits about a third down — near enough to read what is next
+  // without losing what just happened. Weeks without today open at 08:00.
+  //
+  // Deliberately once, not on every week change: navigating away and back should
+  // keep where you were looking, which is what every desktop calendar does.
+  let bodyEl: HTMLDivElement | undefined = $state();
+  let hasScrolled = false;
+
+  $effect(() => {
+    if (!bodyEl || hasScrolled || week.days.length === 0) return;
+    const el = bodyEl;
+    const today = week.days.find((d) => d.start_ms === todayStart);
+    const frac = today
+      ? (Date.now() - today.start_ms) / (today.end_ms - today.start_ms)
+      : hourFrac(gutterDay, 8);
+    hasScrolled = true;
+    // After layout: scrollHeight is meaningless until the columns have height.
+    requestAnimationFrame(() => {
+      el.scrollTop = Math.max(0, frac * el.scrollHeight - el.clientHeight / 3);
+    });
+  });
 </script>
 
 <div class="grid">
@@ -51,7 +74,7 @@
 
 <AllDayBand lanes={week.all_day} events={week.all_day_events} overflow={week.overflow} />
 
-<div class="grid body">
+<div class="grid body" bind:this={bodyEl} data-testid="week-body">
   <div class="gutter">
     {#each HOURS as h}
       <span style="top:{hourFrac(gutterDay, h) * 100}%">{String(h).padStart(2, '0')}</span>

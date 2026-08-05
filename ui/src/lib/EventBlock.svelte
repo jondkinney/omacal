@@ -48,7 +48,7 @@
   /* Hover lifts the block to full width so a squeezed 3-way pile stays
      readable without changing the layout rules (spec §7.1). */
   .ev:hover { left: 3px !important; width: calc(100% - 6px) !important; z-index: 20;
-              box-shadow: 0 2px 10px rgba(0, 0, 0, .35); }
+              box-shadow: 0 4px 14px rgba(0, 0, 0, .5); }
 
   .ev b { display: block; font-size: 10px; font-weight: 600; line-height: 1.3;
           letter-spacing: -.01em; white-space: nowrap; overflow: hidden;
@@ -66,4 +66,16 @@
                   rgba(128,128,128,.16) 0 3px, transparent 3px 7px); }
   .ev.declined { background: transparent; opacity: .4; }
   .ev.declined b { text-decoration: line-through; }
+
+  /* An expanded block must OCCLUDE the ones it covers. The resting fills are
+     deliberately near-transparent — 7% for accepted, fully transparent for
+     needsAction and declined — so widening alone leaves two labels rendered on
+     top of each other. Compositing over --bg instead of `transparent` makes the
+     hovered block opaque without changing its colour identity.
+     These come last so they win over the per-state rules above at equal
+     specificity; `declined` additionally needs its .4 opacity lifted, since
+     element opacity would let the block underneath show through regardless of
+     background. */
+  .ev:hover { background-color: color-mix(in srgb, var(--cal) 16%, var(--bg)); }
+  .ev.declined:hover { opacity: 1; }
 </style>

@@ -56,6 +56,43 @@ test.describe('EventBlock RSVP states at 15 minutes', () => {
   });
 });
 
+// A hovered block widens over its neighbours. The resting fills are near-
+// transparent by design, so if hover does not also make the block opaque, the
+// covered block's title reads straight through it — two labels on top of each
+// other, which is worse than the squeeze hover exists to relieve.
+test.describe('EventBlock hover occludes what it covers', () => {
+  // Chromium reports color-mix() results as `color(srgb r g b / a)` and plain
+  // colours as `rgb(...)`/`rgba(...)`. Anything else THROWS rather than
+  // defaulting to opaque: a parser that assumes the good case on an
+  // unrecognised format silently passes the exact test it exists to fail.
+  const alpha = (css: string): number => {
+    const fn = css.match(/^color\([^/)]*(?:\/\s*([0-9.]+))?\)$/);
+    if (fn) return fn[1] === undefined ? 1 : parseFloat(fn[1]);
+    const rgb = css.match(/^rgba?\(([^)]+)\)$/);
+    if (rgb) {
+      const parts = rgb[1].split(/[,\s/]+/).filter(Boolean).map(parseFloat);
+      return parts.length < 4 ? 1 : parts[3];
+    }
+    throw new Error(`unrecognised colour format, cannot assess opacity: ${css}`);
+  };
+
+  for (const state of ['accepted', 'needsAction', 'tentative', 'declined']) {
+    test(`${state} becomes fully opaque on hover`, async ({ page }) => {
+      await page.goto(show('EventBlock', `rsvp-${state}-15`));
+      const ev = page.locator('.ev');
+
+      await ev.hover();
+      const bg = await ev.evaluate((el) => getComputedStyle(el).backgroundColor);
+      expect(alpha(bg), `hovered ${state} background must be opaque, got ${bg}`).toBe(1);
+
+      // Element opacity would let the block underneath through regardless of
+      // background colour — declined rests at .4 and must lift on hover.
+      const op = await ev.evaluate((el) => parseFloat(getComputedStyle(el).opacity));
+      expect(op, `hovered ${state} element opacity must be 1`).toBe(1);
+    });
+  }
+});
+
 test.describe('AllDayBand', () => {
   test('spans the right columns and flags a continuation', async ({ page }) => {
     await page.goto(show('AllDayBand', 'populated'));
