@@ -3790,7 +3790,50 @@ export const getWeek = (weekStartMs: number) =>
   invoke<WeekPayload>('get_week', { weekStartMs });
 ```
 
-- [ ] **Step 3: Build the grid**
+- [ ] **Step 3: Create placeholder children so the grid compiles**
+
+`WeekGrid` imports `EventBlock` and `AllDayBand`, which Tasks 13 and 14 build. Without them the app will not compile, so create minimal stubs now and let those tasks replace the contents wholesale. Keep the props identical to what Tasks 13/14 declare, so only the bodies change.
+
+```svelte
+<!-- ui/src/lib/EventBlock.svelte — PLACEHOLDER, replaced in Task 13 -->
+<script lang="ts">
+  import type { UiEvent, Placed } from './api';
+  let { event, placed }: { event: UiEvent; placed: Placed } = $props();
+</script>
+
+<div
+  class="ev"
+  style="top:{placed.top * 100}%; height:{placed.height * 100}%;
+         left:calc({(placed.column * 100) / placed.columns}% + 3px);
+         width:calc({100 / placed.columns}% - 6px);"
+>{event.title}</div>
+
+<style>
+  .ev { position: absolute; border-radius: 6px; padding: 2px 6px; font-size: 10px;
+        overflow: hidden; border-left: 2px solid var(--accent);
+        background: color-mix(in srgb, var(--accent) 7%, transparent); }
+</style>
+```
+
+```svelte
+<!-- ui/src/lib/AllDayBand.svelte — PLACEHOLDER, replaced in Task 14 -->
+<script lang="ts">
+  import type { Lane, UiEvent } from './api';
+  let { lanes, events, overflow }:
+    { lanes: Lane[]; events: UiEvent[]; overflow: number[] } = $props();
+</script>
+
+{#if lanes.length}
+  <div class="band">{lanes.length} all-day · {events.length} events · {overflow.length} hidden</div>
+{/if}
+
+<style>
+  .band { font-size: 9.5px; color: var(--muted); padding: 3px 0 6px 44px;
+          border-bottom: 1px solid var(--hairline); }
+</style>
+```
+
+- [ ] **Step 4: Build the grid**
 
 ```svelte
 <!-- ui/src/lib/WeekGrid.svelte -->
@@ -3886,7 +3929,7 @@ export const getWeek = (weekStartMs: number) =>
 </style>
 ```
 
-- [ ] **Step 4: Wire into the app**
+- [ ] **Step 5: Wire into the app**
 
 ```svelte
 <!-- ui/src/App.svelte -->
@@ -3924,12 +3967,12 @@ export const getWeek = (weekStartMs: number) =>
 </style>
 ```
 
-- [ ] **Step 5: Verify visually**
+- [ ] **Step 6: Verify visually**
 
 Run: `cargo tauri dev`
 Expected: a themed empty week grid with day headers, two-hourly rules, a tinted today column, and a red now-line at the correct height.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add ui src-tauri
