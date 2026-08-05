@@ -96,7 +96,17 @@ async fn post_token(endpoint: &str, form: &[(&str, &str)]) -> anyhow::Result<Tok
     let body: TokenResponse = resp.json().await.context("token response was not JSON")?;
 
     if let Some(err) = body.error {
-        bail!("{}: {}", err, body.error_description.unwrap_or_default());
+        // Our own text leads, deliberately. Both halves that follow are written
+        // by the token endpoint, and `src-tauri/src/errors.rs` decides whether
+        // to show an error verbatim by matching its *start* against a list of
+        // strings this app emits. Let the endpoint's `error` field lead and it
+        // can reproduce any of those strings exactly and have its
+        // `error_description` rendered in the app header.
+        bail!(
+            "the token endpoint rejected the request: {}: {}",
+            err,
+            body.error_description.unwrap_or_default()
+        );
     }
 
     let access_token = body.access_token.context("token response had no access_token")?;
@@ -361,6 +371,39 @@ mod tests {
         let err = refresh(&format!("{}/token", server.uri()), "cid", "secret", "rt-old")
             .await.unwrap_err();
         assert!(err.to_string().contains("invalid_grant"));
+    }
+
+    /// The token endpoint writes both `error` and `error_description`, and
+    /// `src-tauri/src/errors.rs` decides whether to show an error verbatim by
+    /// matching the *start* of the string against messages this app emits. Let
+    /// the endpoint's text lead and it can name any of them and have its
+    /// description rendered in the app header.
+    ///
+    /// The impersonated string below is a copy of one of those messages; the
+    /// allowlist itself is guarded on its own side of the crate boundary.
+    #[tokio::test]
+    async fn a_token_endpoint_error_never_leads_the_message() {
+        const IMPERSONATED: &str = "state mismatch — possible CSRF, sign-in aborted";
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "error": IMPERSONATED,
+                "error_description": "endpoint-controlled text"
+            })))
+            .mount(&server)
+            .await;
+
+        let err = refresh(&format!("{}/token", server.uri()), "cid", "secret", "rt")
+            .await.unwrap_err().to_string();
+
+        assert!(!err.starts_with(IMPERSONATED),
+                "external text leads the message, so a prefix allowlist will pass it through: {err}");
+        assert!(err.starts_with("the token endpoint rejected the request"),
+                "the message must lead with our own text: {err}");
+        // The endpoint's detail is still carried — it belongs in the log.
+        assert!(err.contains("endpoint-controlled text"), "{err}");
     }
 
     #[test]

@@ -98,6 +98,40 @@ mod tests {
         assert!(!shown.is_empty());
     }
 
+    /// The match is a *prefix* match, and only a prefix match.
+    ///
+    /// Every other test here uses a string containing no safe prefix anywhere,
+    /// so none of them can tell `starts_with` from `contains` — swapping the two
+    /// left the whole suite green. That distinction is the entire safety
+    /// property: what leads a message is text this app wrote, whereas what
+    /// appears further in can be anything an error we wrapped chose to say. An
+    /// error is safe because of who wrote its opening words, not because those
+    /// words appear somewhere in it.
+    #[test]
+    fn a_safe_prefix_appearing_mid_string_is_still_withheld() {
+        for safe in SAFE_PREFIXES {
+            let err = anyhow::anyhow!(
+                "the token endpoint rejected the request: {safe}: ya29.a0AfB_pretend_token"
+            );
+            let shown = user_facing(&err);
+            assert_eq!(
+                shown, OPAQUE,
+                "a safe prefix buried mid-string got the whole message shown: {shown}"
+            );
+            assert!(!shown.contains("ya29"), "token leaked behind a mid-string safe prefix: {shown}");
+        }
+    }
+
+    /// The pair to the test above: the same strings, leading, must still pass —
+    /// or the allowlist could be made vacuously safe by matching nothing.
+    #[test]
+    fn every_safe_prefix_still_passes_when_it_leads() {
+        for safe in SAFE_PREFIXES {
+            let err = anyhow::anyhow!("{safe}");
+            assert_eq!(user_facing(&err), *safe, "a safe message was withheld");
+        }
+    }
+
     #[test]
     fn an_unrecognised_error_is_withheld_even_without_a_known_marker() {
         // A bare 40-char token with no scheme, no `Bearer`, no `ya29.` — none of

@@ -49,4 +49,15 @@ test.describe('locationLabel', () => {
   test('a url touching its neighbours with no whitespace still separates cleanly', () => {
     expect(locationLabel('A,https://x.com/y,B')).toBe('A, B');
   });
+
+  // A recorded decision, not an oversight. `URL_RE` has no `g` flag, so only
+  // the first URL is ever removed and a second one survives verbatim. Stripping
+  // every URL would need a rule for which provider wins when two disagree, and
+  // Google does not write two links into one `location` field — so the
+  // behaviour stays as it is, and this test is what says so out loud. Change
+  // the behaviour and this test is where the decision gets revisited.
+  test('only the first url is removed — a second one survives verbatim', () => {
+    expect(locationLabel('https://meet.google.com/abc https://us02web.zoom.us/j/1'))
+      .toBe('https://us02web.zoom.us/j/1');
+  });
 });

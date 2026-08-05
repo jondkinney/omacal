@@ -191,29 +191,47 @@ async fn sign_in_impl(pool: &SqlitePool, demo: bool) -> Result<String, String> {
         .await?;
 
         for c in &calendars {
-            sqlx::query(
-                "INSERT INTO calendars
-                     (account_id, google_id, summary, color_hex, timezone, access_role, is_primary)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7)
-                 ON CONFLICT (account_id, google_id) DO UPDATE SET
-                     summary = excluded.summary, color_hex = excluded.color_hex,
-                     timezone = excluded.timezone, access_role = excluded.access_role",
-            )
-            .bind(account_id)
-            .bind(&c.id)
-            .bind(&c.summary)
-            .bind(&c.background_color)
-            .bind(c.time_zone.as_deref().unwrap_or("UTC"))
-            .bind(&c.access_role)
-            .bind(c.primary as i64)
-            .execute(pool)
-            .await?;
+            upsert_calendar(pool, account_id, c).await?;
         }
 
         Ok(email)
     }
 
     inner(pool).await.map_err(|e| errors::user_facing(&e))
+}
+
+/// Records one calendar Google listed for an account.
+///
+/// The `ON CONFLICT` clause updates Google's own fields and *deliberately*
+/// omits `selected` and `sync_enabled`. Those two belong to the user, not to
+/// Google, and this statement runs on every sign-in — including the re-sign-in
+/// that "Add account" plus `prompt=select_account` makes one click away. Adding
+/// them here would silently undo every removal and every hide the moment the
+/// user re-picked an account they had already connected, and nothing else in
+/// the codebase would notice.
+async fn upsert_calendar(
+    pool: &SqlitePool,
+    account_id: i64,
+    c: &omacal_google::model::Calendar,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "INSERT INTO calendars
+             (account_id, google_id, summary, color_hex, timezone, access_role, is_primary)
+         VALUES (?1,?2,?3,?4,?5,?6,?7)
+         ON CONFLICT (account_id, google_id) DO UPDATE SET
+             summary = excluded.summary, color_hex = excluded.color_hex,
+             timezone = excluded.timezone, access_role = excluded.access_role",
+    )
+    .bind(account_id)
+    .bind(&c.id)
+    .bind(&c.summary)
+    .bind(&c.background_color)
+    .bind(c.time_zone.as_deref().unwrap_or("UTC"))
+    .bind(&c.access_role)
+    .bind(c.primary as i64)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 fn now_ms() -> i64 {
@@ -789,4 +807,61 @@ mod tests {
         assert_eq!(total, 1);
     }
 
+    fn google_calendar(id: &str) -> omacal_google::model::Calendar {
+        omacal_google::model::Calendar {
+            id: id.to_string(),
+            summary: "Work".into(),
+            background_color: Some("#5b8def".into()),
+            time_zone: Some("Europe/Sofia".into()),
+            access_role: "owner".into(),
+            primary: true,
+        }
+    }
+
+    /// What makes a removal survive the next sign-in: the calendar upsert's
+    /// `ON CONFLICT` updates Google's fields and leaves `selected` and
+    /// `sync_enabled` alone. "Add account" is a permanent button and
+    /// `prompt=select_account` puts re-picking an already-connected account one
+    /// click away, so this path is ordinary, not an edge case — and adding the
+    /// two columns to that clause reverts every removal and hide with nothing
+    /// else in the codebase noticing.
+    #[tokio::test]
+    async fn re_signing_in_preserves_removals_and_hides() {
+        let pool = omacal_store::connect_memory().await.unwrap();
+        let account_id = seed_account(&pool, "sub", "me@x").await;
+
+        upsert_calendar(&pool, account_id, &google_calendar("removed")).await.unwrap();
+        upsert_calendar(&pool, account_id, &google_calendar("hidden")).await.unwrap();
+
+        sqlx::query("UPDATE calendars SET sync_enabled = 0 WHERE google_id = 'removed'")
+            .execute(&pool).await.unwrap();
+        sqlx::query("UPDATE calendars SET selected = 0 WHERE google_id = 'hidden'")
+            .execute(&pool).await.unwrap();
+
+        // The user picks the same account again. Google lists the same
+        // calendars, with a renamed one to prove the statement still updates
+        // what it is supposed to update.
+        let mut renamed = google_calendar("removed");
+        renamed.summary = "Work (renamed)".into();
+        upsert_calendar(&pool, account_id, &renamed).await.unwrap();
+        upsert_calendar(&pool, account_id, &google_calendar("hidden")).await.unwrap();
+
+        let rows: Vec<(String, String, i64, i64)> = sqlx::query_as(
+            "SELECT google_id, summary, selected, sync_enabled FROM calendars ORDER BY google_id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(rows.len(), 2, "re-signing in must not duplicate calendars");
+
+        let hidden = rows.iter().find(|r| r.0 == "hidden").unwrap();
+        assert_eq!(hidden.2, 0, "re-signing in un-hid a hidden calendar");
+        assert_eq!(hidden.3, 1);
+
+        let removed = rows.iter().find(|r| r.0 == "removed").unwrap();
+        assert_eq!(removed.3, 0, "re-signing in re-added a removed calendar");
+        assert_eq!(removed.1, "Work (renamed)",
+                   "Google's own fields must still be refreshed");
+    }
 }
