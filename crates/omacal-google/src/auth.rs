@@ -142,12 +142,33 @@ pub async fn refresh(
 }
 
 use std::io::{BufRead, BufReader, Write};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
+use std::time::{Duration, Instant};
 
 pub struct Redirect {
     pub code: String,
     pub state: String,
 }
+
+/// How long the loopback listener waits for the browser before giving up.
+///
+/// Long enough for a human to read a consent screen, pick an account and type
+/// a password; short enough that abandoning the flow is not permanent. An
+/// explicit *deny* comes back as `?error=` and returns immediately — this
+/// deadline is for the user who simply closes the tab, in which case nothing
+/// ever reaches us and only the clock can end the wait.
+pub const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(180);
+
+/// A connection that opens but never sends a request line would hang the read
+/// just as `accept` used to hang. Port scanners do this by accident.
+const READ_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// How often the accept loop wakes to check the deadline. Idle cost only.
+const POLL: Duration = Duration::from_millis(50);
+
+/// What the user sees when the deadline passes. Plain language, and it names
+/// the action to take — this is the string that reaches the header.
+pub const TIMED_OUT: &str = "Sign-in timed out — no response from the browser. Try again.";
 
 /// Binds an ephemeral loopback port for the OAuth redirect.
 ///
@@ -159,13 +180,48 @@ pub fn bind_loopback() -> anyhow::Result<(TcpListener, String)> {
     Ok((listener, format!("http://127.0.0.1:{port}")))
 }
 
+/// Accepts one connection, or gives up once `deadline` has elapsed.
+///
+/// The deadline lives on the listener rather than on the caller's future
+/// deliberately. Wrapping the blocking call in `tokio::time::timeout` would
+/// free the UI but abandon the thread inside `accept()`, which would then sit
+/// blocked for the life of the process; polling a non-blocking listener means
+/// the thread actually ends.
+fn accept_before(listener: &TcpListener, deadline: Duration) -> anyhow::Result<TcpStream> {
+    listener.set_nonblocking(true)?;
+    let start = Instant::now();
+    loop {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                // Back to blocking for the request line and the reply, with a
+                // read timeout so a silent client cannot reintroduce the hang.
+                stream.set_nonblocking(false)?;
+                stream.set_read_timeout(Some(READ_TIMEOUT))?;
+                stream.set_write_timeout(Some(READ_TIMEOUT))?;
+                return Ok(stream);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                let elapsed = start.elapsed();
+                if elapsed >= deadline {
+                    bail!("{TIMED_OUT}");
+                }
+                std::thread::sleep(POLL.min(deadline - elapsed));
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+}
+
 /// Blocks until the browser hits the redirect URI, then returns the code.
+/// Gives up after `deadline` — a user who opens the consent screen and then
+/// closes the tab sends nothing at all, and without this the sign-in future
+/// never resolves and the UI's `busy` flag never clears.
 ///
 /// Blocking is deliberate: call it from `spawn_blocking`. Writing an async
 /// HTTP server for a single one-shot request would be more machinery than the
 /// problem deserves.
-pub fn wait_for_redirect(listener: TcpListener) -> anyhow::Result<Redirect> {
-    let (mut stream, _) = listener.accept()?;
+pub fn wait_for_redirect(listener: TcpListener, deadline: Duration) -> anyhow::Result<Redirect> {
+    let mut stream = accept_before(&listener, deadline)?;
     let mut line = String::new();
     BufReader::new(stream.try_clone()?).read_line(&mut line)?;
 
@@ -314,12 +370,17 @@ mod tests {
         assert!(format!("{t:?}").contains("refresh_token: None"));
     }
 
+    /// Generous enough that a loaded machine cannot make the happy-path tests
+    /// flaky, while still proving the deadline plumbing is wired up.
+    const TEST_DEADLINE: Duration = Duration::from_secs(30);
+
     #[tokio::test]
     async fn the_loopback_listener_captures_code_and_state() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
 
-        let handle = tokio::task::spawn_blocking(move || wait_for_redirect(listener));
+        let handle =
+            tokio::task::spawn_blocking(move || wait_for_redirect(listener, TEST_DEADLINE));
 
         // Simulate the browser hitting the redirect URI.
         let _ = reqwest::get(format!("http://127.0.0.1:{port}/?code=abc123&state=xyz")).await;
@@ -333,8 +394,59 @@ mod tests {
     async fn the_loopback_listener_reports_a_denied_consent() {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
-        let handle = tokio::task::spawn_blocking(move || wait_for_redirect(listener));
+        let handle =
+            tokio::task::spawn_blocking(move || wait_for_redirect(listener, TEST_DEADLINE));
         let _ = reqwest::get(format!("http://127.0.0.1:{port}/?error=access_denied")).await;
         assert!(handle.await.unwrap().is_err());
+    }
+
+    /// The abandoned-consent case: the user opens the tab and closes it, so
+    /// nothing ever connects. Before the deadline this call blocked forever,
+    /// `sign_in` never returned, and the UI's only button stayed disabled
+    /// until the app was restarted. A tiny deadline keeps the test fast.
+    #[tokio::test]
+    async fn a_listener_nobody_ever_hits_times_out_instead_of_blocking_forever() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let handle = tokio::task::spawn_blocking(move || {
+            wait_for_redirect(listener, Duration::from_millis(120))
+        });
+
+        // The whole point is that this returns. Bound the test so a regression
+        // fails in seconds rather than hanging the suite.
+        let out = tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("wait_for_redirect never returned — the deadline is not being honoured")
+            .unwrap();
+
+        // Matched rather than `unwrap_err`ed: `Redirect` holds an
+        // authorization code and deliberately has no `Debug`.
+        let err = match out {
+            Ok(_) => panic!("a listener nobody connected to returned a redirect"),
+            Err(e) => e.to_string(),
+        };
+        assert_eq!(err, TIMED_OUT);
+        // The user has to be able to act on it, so it must not read as a
+        // socket error escaping from the plumbing.
+        assert!(!err.to_lowercase().contains("os error"), "raw io error leaked: {err}");
+    }
+
+    /// The deadline is a ceiling, not a fixed wait: a browser that arrives
+    /// promptly must not be made to wait it out.
+    #[tokio::test]
+    async fn a_redirect_that_arrives_in_time_does_not_wait_out_the_deadline() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let started = Instant::now();
+        let handle = tokio::task::spawn_blocking(move || {
+            wait_for_redirect(listener, Duration::from_secs(30))
+        });
+        let _ = reqwest::get(format!("http://127.0.0.1:{port}/?code=c&state=s")).await;
+        assert!(handle.await.unwrap().is_ok());
+        assert!(started.elapsed() < Duration::from_secs(5), "returned only after the deadline");
+    }
+
+    #[test]
+    fn the_sign_in_deadline_is_long_enough_for_a_human_consent_flow() {
+        assert!(SIGN_IN_TIMEOUT >= Duration::from_secs(60));
     }
 }

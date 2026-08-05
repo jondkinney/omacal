@@ -90,6 +90,16 @@ fn load_refresh_token(email: &str) -> anyhow::Result<String> {
 /// exchange, keyring write, then account and calendar bootstrap.
 #[tauri::command]
 async fn sign_in(state: tauri::State<'_, AppState>) -> Result<String, String> {
+    sign_in_impl(&state.pool, state.demo).await
+}
+
+/// The body of `sign_in`, minus the Tauri `State` wrapper so it is reachable
+/// from a test. The demo gate is the first statement for the same reason it is
+/// in `sync_now`: everything below it reads the config file, the keyring and
+/// Google, and demo mode has no business touching any of the three.
+async fn sign_in_impl(pool: &SqlitePool, demo: bool) -> Result<String, String> {
+    demo_sync_guard(demo)?;
+
     async fn inner(pool: &SqlitePool) -> anyhow::Result<String> {
         let cfg = load_config()?;
         let pkce = omacal_google::auth::generate_pkce();
@@ -101,8 +111,14 @@ async fn sign_in(state: tauri::State<'_, AppState>) -> Result<String, String> {
         );
         open::that(&url)?;
 
+        // Deadline on the listener, not on this future: a `tokio::time::timeout`
+        // here would return while the blocking thread stayed parked in
+        // `accept()` for the life of the process.
         let redirect = tokio::task::spawn_blocking(move || {
-            omacal_google::auth::wait_for_redirect(listener)
+            omacal_google::auth::wait_for_redirect(
+                listener,
+                omacal_google::auth::SIGN_IN_TIMEOUT,
+            )
         })
         .await??;
 
@@ -173,7 +189,7 @@ async fn sign_in(state: tauri::State<'_, AppState>) -> Result<String, String> {
         Ok(email)
     }
 
-    inner(&state.pool).await.map_err(|e| e.to_string())
+    inner(pool).await.map_err(|e| e.to_string())
 }
 
 fn now_ms() -> i64 {
@@ -183,18 +199,21 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-/// The message `sync_now` returns in demo mode, before any config or keyring
-/// I/O runs. The demo account (`fixtures::seed_demo`) is a real `accounts`
-/// row but was never through OAuth, so without this gate `load_config` or
-/// `load_refresh_token` would fail and surface a raw technical string —
-/// `"No matching credential found"` — as the very first thing a new user
-/// sees, since Sync now is the only button on screen in demo mode.
-const DEMO_SYNC_MESSAGE: &str = "Demo mode — this is synthetic data, so there is nothing to sync.";
+/// The message every Google-reaching command returns in demo mode, before any
+/// config or keyring I/O runs. The demo account (`fixtures::seed_demo`) is a
+/// real `accounts` row but was never through OAuth, so without this gate
+/// `load_config` or `load_refresh_token` would fail and surface a raw
+/// technical string — `"No matching credential found"` — as the very first
+/// thing a new user sees.
+///
+/// Worded for both actions it guards: Sync now, and Connect Google Calendar.
+const DEMO_SYNC_MESSAGE: &str =
+    "Demo mode — this is synthetic data, so there is nothing to connect or sync.";
 
 /// `Err` when `demo` is true, `Ok` otherwise. A plain function of the flag —
 /// no config or keyring I/O anywhere near it — so callers that check it first
-/// (as `sync_now` does below, and as Task 4's background loop must) cannot
-/// reach that I/O in demo mode.
+/// (`sync_now`, `sign_in`, and the background loop) cannot reach that I/O in
+/// demo mode.
 fn demo_sync_guard(demo: bool) -> Result<(), String> {
     if demo {
         Err(DEMO_SYNC_MESSAGE.to_string())
@@ -312,14 +331,44 @@ pub fn run() {
 mod tests {
     use super::*;
 
-    /// `sync_now` calls this before doing anything else, so proving the guard
-    /// itself never performs I/O — it is a pure function of the flag — proves
-    /// the command cannot reach `load_config` or the keyring in demo mode.
+    /// `sync_now` and `sign_in` both call this before doing anything else, so
+    /// proving the guard itself never performs I/O — it is a pure function of
+    /// the flag — proves neither command can reach `load_config` or the
+    /// keyring in demo mode.
     #[test]
     fn the_demo_gate_blocks_sync_with_a_friendly_message_and_lets_real_accounts_through() {
         assert_eq!(demo_sync_guard(true), Err(DEMO_SYNC_MESSAGE.to_string()));
         assert!(!DEMO_SYNC_MESSAGE.to_lowercase().contains("credential"),
             "the demo-mode message must read as intentional, not as a leaked technical error");
         assert_eq!(demo_sync_guard(false), Ok(()));
+    }
+
+    /// The message is shown for whichever button the user pressed, so it has
+    /// to make sense for the sign-in path too — not just for syncing.
+    #[test]
+    fn the_demo_message_reads_correctly_for_sign_in_as_well_as_sync() {
+        let m = DEMO_SYNC_MESSAGE.to_lowercase();
+        assert!(m.contains("connect"), "must cover the Connect button: {DEMO_SYNC_MESSAGE}");
+        assert!(m.contains("sync"), "must still cover Sync now: {DEMO_SYNC_MESSAGE}");
+    }
+
+    /// The behavioural half of X1: `sign_in` in demo mode returns the demo
+    /// message and leaves the database untouched. Everything after the guard —
+    /// `load_config`, `open::that`, the token exchange, the keyring write, the
+    /// `accounts` insert — is unreachable, so this is safe to run anywhere: it
+    /// opens no browser and makes no request.
+    #[tokio::test]
+    async fn sign_in_refuses_in_demo_mode_without_touching_config_keyring_or_google() {
+        let pool = omacal_store::connect_memory().await.unwrap();
+
+        assert_eq!(sign_in_impl(&pool, true).await, Err(DEMO_SYNC_MESSAGE.to_string()));
+
+        // Had it run past the guard it would have inserted an account row (or
+        // failed with a config/keyring error instead of the demo message).
+        let accounts: i64 = sqlx::query_scalar("SELECT count(*) FROM accounts")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(accounts, 0, "demo sign-in wrote to the database");
     }
 }
