@@ -2316,7 +2316,8 @@ cargo new --lib crates/omacal-sync
 cargo add --package omacal-sync --path crates/omacal-core
 cargo add --package omacal-sync --path crates/omacal-store
 cargo add --package omacal-sync --path crates/omacal-google
-cargo add --package omacal-sync anyhow jiff sqlx --features sqlx/runtime-tokio,sqlx/sqlite
+cargo add --package omacal-sync anyhow jiff tracing sqlx --features sqlx/runtime-tokio,sqlx/sqlite
+cargo add --package omacal-sync --dev serde_json
 cargo add --package omacal-sync --dev wiremock tokio --features tokio/rt-multi-thread,tokio/macros
 ```
 
@@ -2346,7 +2347,8 @@ mod tests {
     fn a_timed_event_converts_to_utc_millis() {
         let ev = timed("2026-08-03T09:00:00+03:00", "2026-08-03T09:30:00+03:00");
         let s = to_stored(&ev, 1, "Europe/Sofia").unwrap();
-        assert_eq!(s.start_utc, 1_785_909_600_000);
+        // 2026-08-03T09:00:00+03:00 == 2026-08-03T06:00:00Z
+        assert_eq!(s.start_utc, 1_785_736_800_000);
         assert_eq!(s.end_utc - s.start_utc, 30 * 60_000);
         assert_eq!(s.start_tz, "Europe/Sofia");
         assert!(!s.is_all_day);
