@@ -2,7 +2,9 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
 use std::str::FromStr;
 
+pub mod calendars;
 pub mod events;
+pub use calendars::{list_calendars, set_selected, set_sync_enabled, CalendarRow};
 pub use events::{delete_event, events_in_window, upsert_event, StoredEvent};
 
 /// Opens (creating if needed) the database at `url` and runs migrations.
