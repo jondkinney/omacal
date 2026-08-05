@@ -401,8 +401,13 @@ mod tests {
         assert_eq!(syncing, 1, "hiding must not disable syncing");
     }
 
+    // Note: this only checks the DEFAULT applied to a newly-inserted row, not
+    // the migration's backfill `UPDATE` — `connect_memory` always starts from
+    // an empty database, so there is no pre-existing row for that `UPDATE` to
+    // act on. The backfill itself is verified against a copy of the real
+    // production database (see task-1-report.md), not by a unit test here.
     #[tokio::test]
-    async fn the_migration_backfills_sync_enabled_from_selected() {
+    async fn a_new_calendar_defaults_to_synced_and_shown() {
         let pool = connect_memory().await.unwrap();
         let cal = seed(&pool).await;
         let _ = cal;

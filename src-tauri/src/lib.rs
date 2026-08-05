@@ -299,6 +299,24 @@ async fn access_token_for(state: &AppState, cfg: &Config, email: &str) -> anyhow
     Ok(access_token)
 }
 
+/// The calendars a sync should fetch for one account.
+///
+/// `sync_enabled`, deliberately — not `selected`. Hiding a calendar in the UI
+/// must not stop it syncing, or re-showing it would reveal a gap until the
+/// next full sync.
+pub(crate) async fn calendars_to_sync(
+    pool: &SqlitePool,
+    account_id: i64,
+) -> anyhow::Result<Vec<(i64, String)>> {
+    let cals = sqlx::query_as(
+        "SELECT id, google_id FROM calendars WHERE account_id = ?1 AND sync_enabled = 1",
+    )
+    .bind(account_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(cals)
+}
+
 pub(crate) async fn sync_all(state: &AppState) -> anyhow::Result<u64> {
     let pool = &state.pool;
     let cfg = load_config()?;
@@ -317,14 +335,7 @@ pub(crate) async fn sync_all(state: &AppState) -> anyhow::Result<u64> {
             &access_token,
         );
 
-        let cals: Vec<(i64, String)> = sqlx::query_as(
-            // `sync_enabled`, not `selected`: hiding a calendar in the UI must not stop it
-            // syncing, or re-showing it would reveal a gap until the next full sync.
-            "SELECT id, google_id FROM calendars WHERE account_id = ?1 AND sync_enabled = 1",
-        )
-        .bind(account_id)
-        .fetch_all(pool)
-        .await?;
+        let cals = calendars_to_sync(pool, account_id).await?;
 
         for (cal_id, google_id) in cals {
             let out = omacal_sync::sync_calendar(
@@ -473,5 +484,80 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(accounts, 0, "demo sign-in wrote to the database");
+    }
+
+    async fn seed_account(pool: &SqlitePool, sub: &str, email: &str) -> i64 {
+        sqlx::query("INSERT INTO accounts (google_sub, email, created_at) VALUES (?1, ?2, 0)")
+            .bind(sub)
+            .bind(email)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query_scalar("SELECT id FROM accounts WHERE google_sub = ?1")
+            .bind(sub)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn seed_calendar(
+        pool: &SqlitePool,
+        account_id: i64,
+        google_id: &str,
+        selected: i64,
+        sync_enabled: i64,
+    ) {
+        sqlx::query(
+            "INSERT INTO calendars (account_id, google_id, summary, timezone, access_role,
+                 selected, sync_enabled)
+             VALUES (?1, ?2, 'Cal', 'UTC', 'owner', ?3, ?4)",
+        )
+        .bind(account_id)
+        .bind(google_id)
+        .bind(selected)
+        .bind(sync_enabled)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// The safety property the whole 1c plan rests on: a calendar hidden from
+    /// the UI (`selected = 0`) must still be fetched, or re-showing it later
+    /// would reveal a gap until the next full sync.
+    #[tokio::test]
+    async fn a_hidden_calendar_is_still_fetched() {
+        let pool = omacal_store::connect_memory().await.unwrap();
+        let account_id = seed_account(&pool, "sub", "e@x").await;
+        seed_calendar(&pool, account_id, "hidden-but-synced", 0, 1).await;
+
+        let cals = calendars_to_sync(&pool, account_id).await.unwrap();
+        assert_eq!(cals.len(), 1, "a hidden calendar must still be synced");
+        assert_eq!(cals[0].1, "hidden-but-synced");
+    }
+
+    /// The other half of the split: a calendar the user removed from sync
+    /// (`sync_enabled = 0`) must not be fetched, regardless of `selected`.
+    #[tokio::test]
+    async fn a_removed_calendar_is_not_fetched() {
+        let pool = omacal_store::connect_memory().await.unwrap();
+        let account_id = seed_account(&pool, "sub", "e@x").await;
+        seed_calendar(&pool, account_id, "shown-but-not-synced", 1, 0).await;
+
+        let cals = calendars_to_sync(&pool, account_id).await.unwrap();
+        assert!(cals.is_empty(), "sync_enabled = 0 must exclude the calendar even if selected");
+    }
+
+    #[tokio::test]
+    async fn only_the_requested_account_is_returned() {
+        let pool = omacal_store::connect_memory().await.unwrap();
+        let a1 = seed_account(&pool, "sub-1", "one@x").await;
+        let a2 = seed_account(&pool, "sub-2", "two@x").await;
+        seed_calendar(&pool, a1, "cal-1", 1, 1).await;
+        seed_calendar(&pool, a2, "cal-2", 1, 1).await;
+
+        let cals = calendars_to_sync(&pool, a1).await.unwrap();
+        assert_eq!(cals.len(), 1);
+        assert_eq!(cals[0].1, "cal-1", "must not bleed in the other account's calendar");
     }
 }
