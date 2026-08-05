@@ -1,5 +1,6 @@
 <!-- ui/src/App.svelte -->
 <script lang="ts">
+  import { listen } from '@tauri-apps/api/event';
   import { applyPalette } from './lib/theme';
   import { getWeek, weekStart, type WeekPayload } from './lib/api';
   import { getStatus, signIn, syncNow, type AppStatus } from './lib/status';
@@ -25,6 +26,16 @@
     getWeek(weekStartMs)
       .then((w) => { week = w; error = null; })
       .catch((e) => { error = String(e); });
+  });
+
+  // Background syncs (Task 4's ticker, focus, wake-from-sleep) land silently;
+  // refresh the header and grid so the user sees them without clicking Sync.
+  $effect(() => {
+    const un = listen('sync-finished', async () => {
+      await refreshStatus();
+      week = await getWeek(weekStartMs);
+    });
+    return () => { un.then((f) => f()); };
   });
 
   async function handleSignIn() {

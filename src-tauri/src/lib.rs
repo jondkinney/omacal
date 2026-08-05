@@ -3,9 +3,11 @@
 mod commands;
 mod fixtures;
 mod status;
+mod sync_loop;
 mod theme;
 
 use sqlx::SqlitePool;
+use tauri::Manager;
 
 pub struct AppState {
     pub pool: SqlitePool,
@@ -201,56 +203,61 @@ fn demo_sync_guard(demo: bool) -> Result<(), String> {
 }
 
 /// Refreshes the access token and syncs every calendar of every account.
+/// Pure sync work, with no demo check and no status bookkeeping of its own —
+/// shared by the `sync_now` command and the background loop (Task 4), each of
+/// which handles the demo gate and `record_sync` itself.
+pub(crate) async fn sync_all(pool: &SqlitePool) -> anyhow::Result<u64> {
+    let cfg = load_config()?;
+    let accounts: Vec<(i64, String)> =
+        sqlx::query_as("SELECT id, email FROM accounts").fetch_all(pool).await?;
+
+    const DAY: i64 = 24 * 3_600_000;
+    let now = now_ms();
+    let (window_start, window_end) = (now - 180 * DAY, now + 365 * DAY);
+    let mut total = 0u64;
+
+    for (account_id, email) in accounts {
+        let refresh_token = load_refresh_token(&email)?;
+        let tokens = omacal_google::auth::refresh(
+            omacal_google::auth::TOKEN_ENDPOINT,
+            &cfg.client_id, &cfg.client_secret, &refresh_token,
+        )
+        .await?;
+        let client = omacal_google::CalendarClient::new(
+            "https://www.googleapis.com/calendar/v3",
+            &tokens.access_token,
+        );
+
+        let cals: Vec<(i64, String)> = sqlx::query_as(
+            "SELECT id, google_id FROM calendars WHERE account_id = ?1 AND selected = 1",
+        )
+        .bind(account_id)
+        .fetch_all(pool)
+        .await?;
+
+        for (cal_id, google_id) in cals {
+            let out = omacal_sync::sync_calendar(
+                pool, &client, cal_id, &google_id, window_start, window_end,
+            )
+            .await?;
+            total += (out.upserted + out.deleted) as u64;
+        }
+    }
+    Ok(total)
+}
+
+/// Refreshes the access token and syncs every calendar of every account.
 #[tauri::command]
 async fn sync_now(state: tauri::State<'_, AppState>) -> Result<u64, String> {
-    // Checked here, at the command boundary, rather than inside `inner` —
+    // Checked here, at the command boundary, rather than inside `sync_all` —
     // Task 4's background sync loop is a second caller that needs its own
-    // demo check, and burying this one inside `inner` would leave that
+    // demo check, and burying this one inside `sync_all` would leave that
     // caller with no way to see it.
     demo_sync_guard(state.demo)?;
 
-    async fn inner(pool: &SqlitePool) -> anyhow::Result<u64> {
-        let cfg = load_config()?;
-        let accounts: Vec<(i64, String)> =
-            sqlx::query_as("SELECT id, email FROM accounts").fetch_all(pool).await?;
-
-        const DAY: i64 = 24 * 3_600_000;
-        let now = now_ms();
-        let (window_start, window_end) = (now - 180 * DAY, now + 365 * DAY);
-        let mut total = 0u64;
-
-        for (account_id, email) in accounts {
-            let refresh_token = load_refresh_token(&email)?;
-            let tokens = omacal_google::auth::refresh(
-                omacal_google::auth::TOKEN_ENDPOINT,
-                &cfg.client_id, &cfg.client_secret, &refresh_token,
-            )
-            .await?;
-            let client = omacal_google::CalendarClient::new(
-                "https://www.googleapis.com/calendar/v3",
-                &tokens.access_token,
-            );
-
-            let cals: Vec<(i64, String)> = sqlx::query_as(
-                "SELECT id, google_id FROM calendars WHERE account_id = ?1 AND selected = 1",
-            )
-            .bind(account_id)
-            .fetch_all(pool)
-            .await?;
-
-            for (cal_id, google_id) in cals {
-                let out = omacal_sync::sync_calendar(
-                    pool, &client, cal_id, &google_id, window_start, window_end,
-                )
-                .await?;
-                total += (out.upserted + out.deleted) as u64;
-            }
-        }
-        status::record_sync(pool, now_ms()).await?;
-        Ok(total)
-    }
-
-    inner(&state.pool).await.map_err(|e| e.to_string())
+    let n = sync_all(&state.pool).await.map_err(|e| e.to_string())?;
+    status::record_sync(&state.pool, now_ms()).await.map_err(|e| e.to_string())?;
+    Ok(n)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -260,7 +267,6 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            use tauri::Manager;
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
 
@@ -281,7 +287,13 @@ pub fn run() {
             }
 
             app.manage(AppState { pool, demo });
+            sync_loop::spawn(app.handle().clone());
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::Focused(true) = event {
+                sync_loop::request_now(window.app_handle());
+            }
         })
         .invoke_handler(tauri::generate_handler![
             get_palette,
