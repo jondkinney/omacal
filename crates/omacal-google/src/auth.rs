@@ -40,11 +40,28 @@ pub fn authorize_url(client_id: &str, redirect_uri: &str, challenge: &str, state
     format!("{AUTH_ENDPOINT}?{q}")
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Tokens {
     pub access_token: String,
     pub refresh_token: Option<String>,
     pub expires_at_ms: i64,
+}
+
+/// Hand-written so that neither token can reach a log line, a `dbg!`, or an
+/// error report through `{:?}`. A refresh token in particular is a long-lived
+/// credential; a derived `Debug` puts it one careless format string away from
+/// the terminal. Only the expiry, which is not a secret, prints for real.
+impl std::fmt::Debug for Tokens {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Tokens")
+            .field("access_token", &"<redacted>")
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field("expires_at_ms", &self.expires_at_ms)
+            .finish()
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -270,6 +287,31 @@ mod tests {
         let err = refresh(&format!("{}/token", server.uri()), "cid", "secret", "rt-old")
             .await.unwrap_err();
         assert!(err.to_string().contains("invalid_grant"));
+    }
+
+    #[test]
+    fn debug_output_never_carries_a_token_value() {
+        let t = Tokens {
+            access_token: "ya29-secret-access".into(),
+            refresh_token: Some("1//secret-refresh".into()),
+            expires_at_ms: 1_785_736_800_000,
+        };
+        let printed = format!("{t:?}");
+        assert!(!printed.contains("ya29-secret-access"), "access token leaked: {printed}");
+        assert!(!printed.contains("1//secret-refresh"), "refresh token leaked: {printed}");
+        assert!(printed.contains("<redacted>"));
+        // The expiry is not a secret and stays useful in a log line.
+        assert!(printed.contains("1785736800000"), "expiry should still print: {printed}");
+    }
+
+    #[test]
+    fn debug_output_distinguishes_an_absent_refresh_token() {
+        let t = Tokens {
+            access_token: "at".into(),
+            refresh_token: None,
+            expires_at_ms: 0,
+        };
+        assert!(format!("{t:?}").contains("refresh_token: None"));
     }
 
     #[tokio::test]
