@@ -157,6 +157,38 @@ test.describe('App', () => {
     await expect(page.locator('.acct')).toHaveCount(1);
   });
 
+  // Fix round 1 (Task 7), finding 2: `open` is bound two levels deep —
+  // `App` to `Header` to `CalendarPopover` — and every existing spec signs
+  // in exactly once, so a one-way binding on either leg is invisible: the
+  // panel would still be visible right after that first sign-in even if
+  // closing it never made its way back up to `App`'s own `pickerOpen`. Only
+  // a second sign-in, after the first close, can catch `pickerOpen` stuck
+  // true and unable to reopen the (by-then-closed) child.
+  test('closing the picker then signing in again reopens it', async ({ page }) => {
+    await page.goto(app('sign-in-adds-account'));
+    await page.getByRole('button', { name: /Connect|Add account/ }).click();
+    await expect(page.locator('.panel')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.panel')).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Add account' }).click();
+    await expect(page.locator('.panel')).toBeVisible();
+  });
+
+  // Same round trip, via the click-away close path rather than Escape —
+  // both are ways `CalendarPopover` sets its own `open` to false, and the
+  // reviewer who found this confirmed both propagate up correctly.
+  test('clicking away then signing in again reopens it', async ({ page }) => {
+    await page.goto(app('sign-in-adds-account'));
+    await page.getByRole('button', { name: /Connect|Add account/ }).click();
+    await expect(page.locator('.panel')).toBeVisible();
+    await page.locator('.scrim').click();
+    await expect(page.locator('.panel')).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Add account' }).click();
+    await expect(page.locator('.panel')).toBeVisible();
+  });
+
   test('a theme-changed event repaints without a reload', async ({ page }) => {
     await page.goto(app());
     await page.evaluate(() =>

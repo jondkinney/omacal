@@ -320,6 +320,29 @@ test.describe('CalendarPopover', () => {
     await expect(box).toBeChecked();
   });
 
+  // Fix round 1 (Task 7), finding 1: the `message = null` reset moved from
+  // `toggle()` into an `$effect` keyed on `open`, so a parent-driven open
+  // clears a stale note too. Nothing exercised that effect at all — a mutant
+  // that drops the `open` read (runs the reset once, at mount, and never
+  // again) left every existing test green. `message` is component state, not
+  // DOM: it survives the panel unmounting on close, so a stale error from
+  // before Escape must not still be showing after the panel reopens.
+  test('reopening the panel clears a stale error message', async ({ page }) => {
+    await page.goto(show('single'));
+    await page.evaluate(() =>
+      window.__harness.failNextCalendarCall('set_calendar_selected', 'database is locked'),
+    );
+    await page.getByRole('button', { name: /Calendars/ }).click();
+    await page.locator('input[type=checkbox]').click();
+    await expect(page.locator('.note.err')).toHaveText('Work · database is locked');
+
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.panel')).toHaveCount(0);
+
+    await page.getByRole('button', { name: /Calendars/ }).click();
+    await expect(page.locator('.note')).toHaveCount(0);
+  });
+
   // Fix round 1, finding 2: `busy` used to be a single id, so toggling a
   // second row while the first was still in flight pointed `busy` at the
   // second id and silently re-enabled the first — a real double-submit.
