@@ -38,6 +38,12 @@
 
 <style>
   .ev {
+    /* A <button> keeps native chrome in macOS WKWebView unless appearance is
+       explicitly cleared, and that chrome does not honour border-radius — it
+       leaves a squared-off nub at a corner. Chromium and Playwright's WebKit
+       do not reproduce it, so this cannot be caught by the test suite; it is
+       visible only in the real Tauri window. */
+    appearance: none; -webkit-appearance: none;
     position: absolute; border: 0; text-align: left; cursor: pointer;
     border-radius: 6px; padding: 2px 6px; overflow: hidden;
     border-left: 2px solid var(--cal);

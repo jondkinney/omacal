@@ -10,11 +10,30 @@ mod theme_watch;
 use sqlx::SqlitePool;
 use tauri::Manager;
 
+/// Live credentials for one account, held for the process lifetime.
+///
+/// Deliberately has no `Debug`: a derived one would print both secrets, and a
+/// leaked refresh token never expires.
+pub struct CachedTokens {
+    refresh_token: String,
+    access_token: String,
+    /// When the access token stops being usable, already carrying its safety margin.
+    expires_at_ms: i64,
+}
+
 pub struct AppState {
     pub pool: SqlitePool,
     /// True when running on synthetic demo data; surfaced to the UI via
     /// `get_status` so it can show the `DEMO DATA` badge.
     pub demo: bool,
+    /// Keyed by account email.
+    ///
+    /// Without this, every sync re-read the Keychain and re-exchanged a refresh
+    /// token that was still valid for the best part of an hour. macOS prompts
+    /// for Keychain access per binary, and an unsigned `cargo tauri dev` build
+    /// changes hash on every rebuild — so "Always Allow" never stuck and the
+    /// prompt returned every few minutes. One read per launch instead.
+    pub tokens: tokio::sync::Mutex<std::collections::HashMap<String, CachedTokens>>,
 }
 
 #[tauri::command]
@@ -226,7 +245,62 @@ fn demo_sync_guard(demo: bool) -> Result<(), String> {
 /// Pure sync work, with no demo check and no status bookkeeping of its own —
 /// shared by the `sync_now` command and the background loop (Task 4), each of
 /// which handles the demo gate and `record_sync` itself.
-pub(crate) async fn sync_all(pool: &SqlitePool) -> anyhow::Result<u64> {
+/// Returns a usable access token for `email`, reading the Keychain and
+/// refreshing only when the cached one is absent or expired.
+///
+/// This is the whole reason the cache exists: the Keychain read is what raises
+/// the macOS access prompt, and doing it on every sync made the app unusable.
+/// Whether a cached entry can be used as-is.
+///
+/// Pulled out so the decision is testable: an untested condition guarding a
+/// Keychain read is what produced the prompt-every-few-minutes behaviour.
+fn cached_is_usable(entry: Option<&CachedTokens>, now_ms: i64) -> bool {
+    entry.is_some_and(|t| t.expires_at_ms > now_ms)
+}
+
+async fn access_token_for(state: &AppState, cfg: &Config, email: &str) -> anyhow::Result<String> {
+    {
+        let cache = state.tokens.lock().await;
+        if cached_is_usable(cache.get(email), now_ms()) {
+            return Ok(cache[email].access_token.clone());
+        }
+    } // lock dropped before the network call
+
+    // Prefer a refresh token we already hold; only touch the Keychain if we
+    // have none for this account yet.
+    let refresh_token = {
+        let cache = state.tokens.lock().await;
+        cache.get(email).map(|t| t.refresh_token.clone())
+    };
+    let refresh_token = match refresh_token {
+        Some(rt) => rt,
+        None => load_refresh_token(email)?,
+    };
+
+    let fresh = omacal_google::auth::refresh(
+        omacal_google::auth::TOKEN_ENDPOINT,
+        &cfg.client_id,
+        &cfg.client_secret,
+        &refresh_token,
+    )
+    .await?;
+
+    let access_token = fresh.access_token.clone();
+    let mut cache = state.tokens.lock().await;
+    cache.insert(
+        email.to_string(),
+        CachedTokens {
+            // Google omits refresh_token on refresh; keep the one we used.
+            refresh_token: fresh.refresh_token.unwrap_or(refresh_token),
+            access_token: fresh.access_token,
+            expires_at_ms: fresh.expires_at_ms,
+        },
+    );
+    Ok(access_token)
+}
+
+pub(crate) async fn sync_all(state: &AppState) -> anyhow::Result<u64> {
+    let pool = &state.pool;
     let cfg = load_config()?;
     let accounts: Vec<(i64, String)> =
         sqlx::query_as("SELECT id, email FROM accounts").fetch_all(pool).await?;
@@ -237,15 +311,10 @@ pub(crate) async fn sync_all(pool: &SqlitePool) -> anyhow::Result<u64> {
     let mut total = 0u64;
 
     for (account_id, email) in accounts {
-        let refresh_token = load_refresh_token(&email)?;
-        let tokens = omacal_google::auth::refresh(
-            omacal_google::auth::TOKEN_ENDPOINT,
-            &cfg.client_id, &cfg.client_secret, &refresh_token,
-        )
-        .await?;
+        let access_token = access_token_for(state, &cfg, &email).await?;
         let client = omacal_google::CalendarClient::new(
             "https://www.googleapis.com/calendar/v3",
-            &tokens.access_token,
+            &access_token,
         );
 
         let cals: Vec<(i64, String)> = sqlx::query_as(
@@ -275,7 +344,7 @@ async fn sync_now(state: tauri::State<'_, AppState>) -> Result<u64, String> {
     // caller with no way to see it.
     demo_sync_guard(state.demo)?;
 
-    let n = sync_all(&state.pool).await.map_err(|e| e.to_string())?;
+    let n = sync_all(&state).await.map_err(|e| e.to_string())?;
     status::record_sync(&state.pool, now_ms()).await.map_err(|e| e.to_string())?;
     Ok(n)
 }
@@ -306,7 +375,7 @@ pub fn run() {
                 tracing::warn!(seeded, db = db_name, "DEMO MODE — synthetic data, not your calendar");
             }
 
-            app.manage(AppState { pool, demo });
+            app.manage(AppState { pool, demo, tokens: Default::default() });
             sync_loop::spawn(app.handle().clone());
             theme_watch::spawn(app.handle().clone());
             Ok(())
@@ -341,6 +410,38 @@ mod tests {
         assert!(!DEMO_SYNC_MESSAGE.to_lowercase().contains("credential"),
             "the demo-mode message must read as intentional, not as a leaked technical error");
         assert_eq!(demo_sync_guard(false), Ok(()));
+    }
+
+    fn cached(expires_at_ms: i64) -> CachedTokens {
+        CachedTokens {
+            refresh_token: "rt".into(),
+            access_token: "at".into(),
+            expires_at_ms,
+        }
+    }
+
+    const NOW: i64 = 1_785_715_200_000;
+
+    #[test]
+    fn an_absent_entry_is_never_usable() {
+        assert!(!cached_is_usable(None, NOW));
+    }
+
+    #[test]
+    fn a_live_entry_is_usable_so_the_keychain_is_not_read() {
+        assert!(cached_is_usable(Some(&cached(NOW + 60_000)), NOW));
+    }
+
+    #[test]
+    fn an_expired_entry_is_not_usable() {
+        assert!(!cached_is_usable(Some(&cached(NOW - 1)), NOW));
+    }
+
+    #[test]
+    fn an_entry_expiring_exactly_now_is_not_usable() {
+        // Strictly greater: a token expiring this millisecond is not worth a
+        // request that will fail.
+        assert!(!cached_is_usable(Some(&cached(NOW)), NOW));
     }
 
     /// The message is shown for whichever button the user pressed, so it has

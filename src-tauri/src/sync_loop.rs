@@ -89,10 +89,11 @@ fn sync_failed_payload(_e: &anyhow::Error) -> serde_json::Value {
 /// the focus path so both record the timestamp and, crucially, both *say* when
 /// a sync fails — silence on this path is what let the header read "Synced 4
 /// min ago" all night with the network down.
-async fn sync_and_report(app: &AppHandle, pool: &SqlitePool) {
-    match crate::sync_all(pool).await {
+async fn sync_and_report(app: &AppHandle) {
+    let state = app.state::<crate::AppState>();
+    match crate::sync_all(&state).await {
         Ok(n) => {
-            if let Err(e) = crate::status::record_sync(pool, crate::now_ms()).await {
+            if let Err(e) = crate::status::record_sync(&state.pool, crate::now_ms()).await {
                 tracing::warn!(%e, "sync succeeded but recording it failed");
             }
             let _ = app.emit("sync-finished", serde_json::json!({ "upserted": n }));
@@ -127,7 +128,7 @@ pub fn spawn(app: AppHandle) {
                 continue;
             }
 
-            sync_and_report(&app, &pool).await;
+            sync_and_report(&app).await;
         }
     });
 }
@@ -156,7 +157,7 @@ pub fn request_now(app: &AppHandle) {
             return;
         }
 
-        sync_and_report(&app, &pool).await;
+        sync_and_report(&app).await;
     });
 }
 
