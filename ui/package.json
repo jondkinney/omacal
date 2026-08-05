@@ -7,9 +7,11 @@
     "dev": "vite dev",
     "build": "vite build",
     "preview": "vite preview",
-    "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json --noEmit",
+    "check": "svelte-check --tsconfig ./tsconfig.app.json && tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.test.json",
     "check:watch": "svelte-check --tsconfig ./tsconfig.app.json --watch",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "test:ui": "playwright test",
+    "test:ui:update": "playwright test --update-snapshots"
   },
   "license": "MIT",
   "dependencies": {
@@ -17,6 +19,7 @@
     "@tauri-apps/plugin-opener": "^2"
   },
   "devDependencies": {
+    "@playwright/test": "^1.62.1",
     "@sveltejs/vite-plugin-svelte": "^5.0.0",
     "@tauri-apps/cli": "^2",
     "@types/node": "^22.10.0",

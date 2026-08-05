@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.app.json",
+  "compilerOptions": {
+    "composite": true,
+    "emitDeclarationOnly": true,
+    "outDir": "./node_modules/.tmp/tsconfig.test",
+    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.test.tsbuildinfo",
+    "types": ["node"]
+  },
+  // Test files import types from src/lib/*.ts (not .d.ts files), so those
+  // sources must be part of *this* project's file list too. A TS project
+  // reference to tsconfig.app.json would need `tsc -b` (build mode) to
+  // produce its .d.ts outputs first; the check script runs plain `tsc -p`,
+  // so the cross-project import would fail to resolve (TS6305).
+  "include": ["tests/**/*.ts", "src/**/*.ts", "src/**/*.d.ts"]
+}
