@@ -382,4 +382,34 @@ mod tests {
         let out = events_in_window(&pool, 0, 5000).await.unwrap();
         assert!(out[0].color_hex.is_none());
     }
+
+    #[tokio::test]
+    async fn hiding_a_calendar_does_not_stop_it_syncing() {
+        let pool = connect_memory().await.unwrap();
+        let cal = seed(&pool).await;
+        upsert_event(&pool, &ev(cal, "a", 1000, 2000)).await.unwrap();
+
+        // Hidden, but still synced: the whole point of the split.
+        sqlx::query("UPDATE calendars SET selected = 0").execute(&pool).await.unwrap();
+
+        assert!(events_in_window(&pool, 0, 5000).await.unwrap().is_empty(),
+                "a hidden calendar must not render");
+
+        let syncing: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM calendars WHERE sync_enabled = 1")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(syncing, 1, "hiding must not disable syncing");
+    }
+
+    #[tokio::test]
+    async fn the_migration_backfills_sync_enabled_from_selected() {
+        let pool = connect_memory().await.unwrap();
+        let cal = seed(&pool).await;
+        let _ = cal;
+        let (selected, sync_enabled): (i64, i64) = sqlx::query_as(
+            "SELECT selected, sync_enabled FROM calendars LIMIT 1")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(selected, 1);
+        assert_eq!(sync_enabled, 1, "a fresh calendar syncs by default");
+    }
 }

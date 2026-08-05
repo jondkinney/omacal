@@ -318,7 +318,9 @@ pub(crate) async fn sync_all(state: &AppState) -> anyhow::Result<u64> {
         );
 
         let cals: Vec<(i64, String)> = sqlx::query_as(
-            "SELECT id, google_id FROM calendars WHERE account_id = ?1 AND selected = 1",
+            // `sync_enabled`, not `selected`: hiding a calendar in the UI must not stop it
+            // syncing, or re-showing it would reveal a gap until the next full sync.
+            "SELECT id, google_id FROM calendars WHERE account_id = ?1 AND sync_enabled = 1",
         )
         .bind(account_id)
         .fetch_all(pool)
