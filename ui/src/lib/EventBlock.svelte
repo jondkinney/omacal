@@ -51,7 +51,10 @@
        border-radius exactly and cannot influence corner geometry, so the cause
        is removed rather than worked around. */
     border: 0;
-    box-shadow: inset 2px 0 0 0 var(--cal);
+    /* States recolour --spine rather than redeclaring box-shadow, so the hover
+       lift below is never lost by a later, more specific rule. */
+    --spine: var(--cal);
+    box-shadow: inset 2px 0 0 0 var(--spine);
     background-clip: padding-box;
     /* Composited over --bg, not `transparent`. Blocks overlap constantly, and a
        translucent fill lets the one behind read through — its title, and its
@@ -65,7 +68,7 @@
   /* Hover lifts the block to full width so a squeezed 3-way pile stays
      readable without changing the layout rules (spec §7.1). */
   .ev:hover { left: 3px !important; width: calc(100% - 6px) !important; z-index: 20;
-              box-shadow: inset 2px 0 0 0 var(--cal), 0 4px 14px rgba(0, 0, 0, .5); }
+              box-shadow: inset 2px 0 0 0 var(--spine), 0 4px 14px rgba(0, 0, 0, .5); }
 
   .ev b { display: block; font-size: 10px; font-weight: 600; line-height: 1.3;
           letter-spacing: -.01em; white-space: nowrap; overflow: hidden;
@@ -79,16 +82,26 @@
   /* State is carried by the fill, so it survives at 15 minutes tall. Every
      state stays opaque: "unfilled" means the colour of the grid, not a hole
      through to whatever block is underneath. */
-  .ev.needsAction { background-color: var(--bg);
-                    /* Uniform on all four sides, so corner curves stay symmetric. */
-                    border: 1px dashed currentColor; }
+  /* Unanswered: hollow, with a dashed outline. The dashes are drawn from the
+     calendar colour rather than `currentColor` — currentColor here is the text
+     colour, the brightest thing on the block, which made the ring shout louder
+     than the event it belongs to. Uniform on all four sides so corner curves
+     stay symmetric. */
+  .ev.needsAction {
+    background-color: var(--bg);
+    border: 1px dashed color-mix(in srgb, var(--cal) 55%, var(--bg));
+    /* The dashed ring already carries the state; a full-strength spine beside
+       it reads as two competing left edges. */
+    --spine: color-mix(in srgb, var(--cal) 70%, var(--bg));
+  }
+  .ev.needsAction .rs { opacity: .55; font-weight: 600; }
   .ev.tentative { background-image: repeating-linear-gradient(135deg,
                   rgba(128,128,128,.16) 0 3px, transparent 3px 7px); }
   /* Faded via its own colours rather than element opacity: `opacity` would make
      the block see-through no matter what its background is. */
   .ev.declined { background-color: var(--bg);
                  color: color-mix(in srgb, var(--cal) 22%, var(--muted));
-                 box-shadow: inset 2px 0 0 0 color-mix(in srgb, var(--cal) 45%, var(--bg)); }
+                 --spine: color-mix(in srgb, var(--cal) 45%, var(--bg)); }
   .ev.declined b { text-decoration: line-through; }
 
   /* Deepens the fill on hover so an expanded block reads as lifted above the
