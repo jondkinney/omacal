@@ -1,8 +1,13 @@
 use omacal_core::{expand, lay_out_day, pack_lanes, Interval, Lane, Placed, Segment, Series};
 use omacal_store::StoredEvent;
 use serde::Serialize;
+use std::collections::HashSet;
 
 const DAY_MS: i64 = 24 * 3_600_000;
+/// Used when a calendar carries no colour of its own — Google omits
+/// `backgroundColor` on some calendars, and a missing colour must not be a
+/// missing event.
+const DEFAULT_EVENT_COLOR: &str = "#5b8def";
 /// Expansion guard for one week of any single series. Sized for the realistic
 /// worst case — a 30-minute block recurring through every working hour is ~336
 /// occurrences a week — so that `Expansion::truncated` stays false in practice.
@@ -18,13 +23,16 @@ pub struct UiEvent {
     pub color: String,
     /// `accepted` | `needsAction` | `tentative` | `declined`
     pub response: String,
-    pub guests: u32,
     pub is_all_day: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DayColumn {
     pub start_ms: i64,
+    /// Midnight on the *next* day, in the display zone. Carried explicitly so
+    /// the UI can draw against the column's true span: a DST day is 23 or 25
+    /// hours long, and `start_ms + 24h` puts every hour rule an hour out.
+    pub end_ms: i64,
     pub events: Vec<UiEvent>,
     pub placed: Vec<Placed>,
 }
@@ -44,11 +52,31 @@ fn to_ui(src: &StoredEvent, start_ms: i64, end_ms: i64) -> UiEvent {
         location: src.location.clone(),
         start_ms,
         end_ms,
-        color: "#5b8def".into(), // replaced by the calendar's colour in Task 13
+        color: src
+            .color_hex
+            .clone()
+            .unwrap_or_else(|| DEFAULT_EVENT_COLOR.into()),
         response: src.self_response.clone().unwrap_or_else(|| "accepted".into()),
-        guests: 0,
         is_all_day: src.is_all_day,
     }
+}
+
+/// The occurrences that an exception has taken over from its master.
+///
+/// An exception is stored as a standalone row carrying the id of the series it
+/// overrides and the instant the overridden occurrence started at. Both a moved
+/// instance and a deleted one produce such a row, and in both cases the master
+/// must stop expanding into that slot — otherwise a moved instance renders
+/// twice (once at its new time, once as a ghost at the old one) and a deleted
+/// one never disappears at all.
+fn suppressed_slots(events: &[StoredEvent]) -> HashSet<(i64, &str, i64)> {
+    events
+        .iter()
+        .filter_map(|e| {
+            let master = e.recurring_event_id.as_deref()?;
+            Some((e.calendar_id, master, e.original_start_utc?))
+        })
+        .collect()
 }
 
 /// Expands one stored row into the concrete occurrences overlapping the window.
@@ -131,6 +159,19 @@ fn column_for(bounds: &[i64], ms: i64) -> Option<usize> {
     Some(bounds.partition_point(|&b| b <= ms) - 1)
 }
 
+/// The column a timed occurrence should be drawn in, or `None` if it does not
+/// touch the week at all.
+///
+/// Normally that is the column containing its start. An event that began before
+/// the week and runs into it — Sunday 23:00 to Monday 01:00, on the Monday the
+/// week begins — has no such column, and dropping it made the event vanish
+/// entirely. It is clamped into column 0 instead, where `lay_out_day` clips the
+/// geometry to the column's own bounds.
+fn timed_column(bounds: &[i64], iv: &Interval) -> Option<usize> {
+    column_for(bounds, iv.start_ms)
+        .or_else(|| (iv.start_ms < bounds[0] && iv.end_ms > bounds[0]).then_some(0))
+}
+
 /// Column index that may fall outside `0..=6`, for all-day spans that begin
 /// before or end after this week. Only the sign matters to `pack_lanes`, which
 /// turns it into a continuation flag, so approximating the days beyond the
@@ -158,8 +199,21 @@ pub fn assemble_week(events: &[StoredEvent], week_start_ms: i64, tz: &str) -> We
     let mut all_day_events: Vec<UiEvent> = Vec::new();
     let mut segments: Vec<Segment> = Vec::new();
 
+    let suppressed = suppressed_slots(events);
+
     for src in events {
+        // A cancelled exception exists only to record that an occurrence was
+        // deleted. It has already been counted into `suppressed`; it draws
+        // nothing itself.
+        if src.status == "cancelled" {
+            continue;
+        }
         for iv in occurrences(src, bounds[0], week_end_ms) {
+            // Only a master can match: the keys are master ids, and an
+            // exception never carries its own id as its master.
+            if suppressed.contains(&(src.calendar_id, src.google_id.as_str(), iv.start_ms)) {
+                continue;
+            }
             if src.is_all_day {
                 let start_col = signed_column(&bounds, iv.start_ms);
                 // Google's all-day end is exclusive, so the last covered day is
@@ -167,7 +221,7 @@ pub fn assemble_week(events: &[StoredEvent], week_start_ms: i64, tz: &str) -> We
                 let end_col = signed_column(&bounds, iv.end_ms - 1);
                 segments.push(Segment { idx: all_day_events.len(), start_col, end_col });
                 all_day_events.push(to_ui(src, iv.start_ms, iv.end_ms));
-            } else if let Some(col) = column_for(&bounds, iv.start_ms) {
+            } else if let Some(col) = timed_column(&bounds, &iv) {
                 day_events[col].push(to_ui(src, iv.start_ms, iv.end_ms));
             }
         }
@@ -185,7 +239,7 @@ pub fn assemble_week(events: &[StoredEvent], week_start_ms: i64, tz: &str) -> We
             // The window is the day's *true* length, so a 25-hour day is not
             // compressed into 24 hours' worth of geometry.
             let placed = lay_out_day(&intervals, bounds[d], bounds[d + 1]);
-            DayColumn { start_ms: bounds[d], events: evs, placed }
+            DayColumn { start_ms: bounds[d], end_ms: bounds[d + 1], events: evs, placed }
         })
         .collect();
 
@@ -201,9 +255,19 @@ mod tests {
             id: 0, calendar_id: 1, google_id: gid.into(), summary: Some(gid.into()),
             location: None, start_utc: start, end_utc: end,
             start_tz: "UTC".into(), end_tz: "UTC".into(),
-            is_all_day: all_day, recurrence: None, status: "confirmed".into(),
+            is_all_day: all_day, recurrence: None,
+            recurring_event_id: None, original_start_utc: None,
+            status: "confirmed".into(),
             self_response: Some("accepted".into()), conference_uri: None,
+            color_hex: None,
         }
+    }
+
+    /// A daily 09:00–09:30 series starting on the week's Monday.
+    fn daily_master() -> omacal_store::StoredEvent {
+        let mut m = ev("standup", MON + 9 * 3_600_000, MON + 9 * 3_600_000 + 1_800_000, false);
+        m.recurrence = Some("RRULE:FREQ=DAILY".into());
+        m
     }
 
     const DAY: i64 = 24 * 3_600_000;
@@ -319,5 +383,131 @@ mod tests {
         let bounds = day_boundaries(MON, "Mars/Olympus_Mons");
         assert_eq!(bounds.len(), 8);
         assert_eq!(bounds[7] - bounds[0], 7 * DAY);
+    }
+
+    /// A moved instance: the master must stop expanding into the slot the
+    /// instance came from. Without suppression Tuesday shows two events — the
+    /// real one at 14:00 and a ghost at 09:00.
+    #[test]
+    fn a_moved_instance_replaces_its_original_occurrence() {
+        let mut moved = ev("standup_20260804", MON + DAY + 14 * 3_600_000,
+                           MON + DAY + 14 * 3_600_000 + 1_800_000, false);
+        moved.recurring_event_id = Some("standup".into());
+        moved.original_start_utc = Some(MON + DAY + 9 * 3_600_000);
+
+        let w = assemble_week(&[daily_master(), moved], MON, "UTC");
+
+        assert_eq!(w.days[1].events.len(), 1, "Tuesday must show one event, not two");
+        assert_eq!(w.days[1].events[0].start_ms, MON + DAY + 14 * 3_600_000);
+        // Every other day keeps its ordinary occurrence.
+        let total: usize = w.days.iter().map(|d| d.events.len()).sum();
+        assert_eq!(total, 7);
+    }
+
+    /// A deleted instance: Google sends a cancelled exception. It is stored,
+    /// renders nothing itself, and silences the master for that one day.
+    #[test]
+    fn a_cancelled_instance_empties_its_day_and_no_other() {
+        let mut cancelled = ev("standup_20260805", MON + 2 * DAY + 9 * 3_600_000,
+                               MON + 2 * DAY + 9 * 3_600_000, false);
+        cancelled.status = "cancelled".into();
+        cancelled.recurring_event_id = Some("standup".into());
+        cancelled.original_start_utc = Some(MON + 2 * DAY + 9 * 3_600_000);
+
+        let w = assemble_week(&[daily_master(), cancelled], MON, "UTC");
+
+        assert!(w.days[2].events.is_empty(), "the deleted occurrence must be gone");
+        assert_eq!(w.days[1].events.len(), 1, "the day before is unaffected");
+        assert_eq!(w.days[3].events.len(), 1, "the day after is unaffected");
+        let total: usize = w.days.iter().map(|d| d.events.len()).sum();
+        assert_eq!(total, 6);
+    }
+
+    /// An instance dragged clean out of the week still has to silence the slot
+    /// it left behind, so the store returns it and nothing renders on that day.
+    #[test]
+    fn an_instance_moved_out_of_the_week_leaves_no_ghost() {
+        let mut moved = ev("standup_20260806", MON + 40 * DAY, MON + 40 * DAY + 1_800_000, false);
+        moved.recurring_event_id = Some("standup".into());
+        moved.original_start_utc = Some(MON + 3 * DAY + 9 * 3_600_000);
+
+        let w = assemble_week(&[daily_master(), moved], MON, "UTC");
+        assert!(w.days[3].events.is_empty());
+        let total: usize = w.days.iter().map(|d| d.events.len()).sum();
+        assert_eq!(total, 6);
+    }
+
+    /// An exception only silences its own master, and only on its own calendar.
+    #[test]
+    fn an_exception_does_not_silence_an_unrelated_series() {
+        let mut other = ev("other_ex", MON + DAY + 14 * 3_600_000,
+                           MON + DAY + 15 * 3_600_000, false);
+        other.recurring_event_id = Some("some-other-series".into());
+        other.original_start_utc = Some(MON + DAY + 9 * 3_600_000);
+
+        let w = assemble_week(&[daily_master(), other], MON, "UTC");
+        // Tuesday keeps its standup *and* gains the unrelated exception.
+        assert_eq!(w.days[1].events.len(), 2);
+    }
+
+    /// A meeting that runs Sunday 23:00 into Monday 01:00 overlaps the week but
+    /// starts before it. Dropping it made it vanish; it belongs in column 0,
+    /// clipped to the column.
+    #[test]
+    fn a_timed_event_starting_before_the_week_is_clamped_into_the_first_column() {
+        let evs = vec![ev("night", MON - 3_600_000, MON + 3_600_000, false)];
+        let w = assemble_week(&evs, MON, "UTC");
+        assert_eq!(w.days[0].events.len(), 1);
+        let p = w.days[0].placed[0];
+        assert!((p.top - 0.0).abs() < 1e-6, "top {} should clamp to the column start", p.top);
+        assert!(p.height > 0.0);
+    }
+
+    /// The same shape at the other edge: it starts inside the week and runs out
+    /// of it. The geometry must stay inside the last column.
+    #[test]
+    fn a_timed_event_running_past_the_week_stays_in_the_last_column() {
+        let start = MON + 6 * DAY + 23 * 3_600_000;
+        let evs = vec![ev("night", start, start + 2 * 3_600_000, false)];
+        let w = assemble_week(&evs, MON, "UTC");
+        assert_eq!(w.days[6].events.len(), 1);
+        let p = w.days[6].placed[0];
+        assert!(p.top + p.height <= 1.0001, "block overflows the column");
+    }
+
+    /// An event that ends before the week begins still has no column.
+    #[test]
+    fn an_event_entirely_before_the_week_is_still_dropped() {
+        let evs = vec![ev("old", MON - 5 * 3_600_000, MON - 4 * 3_600_000, false)];
+        let w = assemble_week(&evs, MON, "UTC");
+        assert!(w.days.iter().all(|d| d.events.is_empty()));
+    }
+
+    #[test]
+    fn an_event_carries_its_calendars_colour() {
+        let mut e = ev("a", MON + 9 * 3_600_000, MON + 10 * 3_600_000, false);
+        e.color_hex = Some("#b58900".into());
+        let w = assemble_week(&[e], MON, "UTC");
+        assert_eq!(w.days[0].events[0].color, "#b58900");
+    }
+
+    #[test]
+    fn a_calendar_without_a_colour_falls_back_to_the_default() {
+        let evs = vec![ev("a", MON + 9 * 3_600_000, MON + 10 * 3_600_000, false)];
+        let w = assemble_week(&evs, MON, "UTC");
+        assert_eq!(w.days[0].events[0].color, DEFAULT_EVENT_COLOR);
+    }
+
+    /// The UI draws hour rules and the now-line against `end_ms - start_ms`, so
+    /// a long day has to report its true length rather than a nominal 24 hours.
+    #[test]
+    fn each_column_reports_its_true_span() {
+        let w = assemble_week(&[], dst_week_start(), "Europe/Sofia");
+        let spans: Vec<i64> = w.days.iter().map(|d| d.end_ms - d.start_ms).collect();
+        assert!(spans.contains(&(25 * 3_600_000)), "expected a 25-hour day, got {spans:?}");
+        // Each column ends exactly where the next begins; no gaps, no overlaps.
+        for pair in w.days.windows(2) {
+            assert_eq!(pair[0].end_ms, pair[1].start_ms);
+        }
     }
 }

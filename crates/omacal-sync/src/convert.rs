@@ -61,6 +61,14 @@ pub fn to_stored(ev: &Event, calendar_id: i64, cal_tz: &str) -> Option<StoredEve
             .unwrap_or_else(|| cal_tz.to_string()),
         is_all_day,
         recurrence: ev.recurrence.as_ref().map(|r| r.join("\n")),
+        recurring_event_id: ev.recurring_event_id.clone(),
+        // Resolved through the same helper as start/end, so an all-day
+        // exception's original slot lands on the same instant the master's
+        // expansion produces for that day rather than on UTC midnight.
+        original_start_utc: ev
+            .original_start_time
+            .as_ref()
+            .and_then(|d| resolve(d, cal_tz)),
         status: ev.status.clone(),
         self_response: ev
             .attendees
@@ -68,6 +76,61 @@ pub fn to_stored(ev: &Event, calendar_id: i64, cal_tz: &str) -> Option<StoredEve
             .find(|a| a.is_self)
             .map(|a| a.response_status.clone()),
         conference_uri: ev.hangout_link.clone(),
+        // Joined in from `calendars` on read; nothing to write here.
+        color_hex: None,
+    })
+}
+
+/// Builds the row for a cancelled *exception* — a tombstone that carries a
+/// `recurringEventId`.
+///
+/// Deleting one occurrence of a series is delivered as a cancelled event, and
+/// deleting the local row for it is exactly wrong: there is no local row (the
+/// occurrence only ever existed as an expansion of the master), and the master
+/// goes on producing it. The deletion has to be *stored* so the renderer can
+/// suppress that slot.
+///
+/// Returns `None` when the wire event is not an exception, or when it carries no
+/// resolvable `originalStartTime` — without that instant there is no occurrence
+/// to point at, and the caller should fall back to deleting by id.
+pub fn to_cancelled_exception(ev: &Event, calendar_id: i64, cal_tz: &str) -> Option<StoredEvent> {
+    let recurring_event_id = ev.recurring_event_id.clone()?;
+    let original = ev.original_start_time.as_ref()?;
+    let original_start_utc = resolve(original, cal_tz)?;
+
+    // A tombstone carries little more than its id, so the real times are
+    // usually absent; the vacated slot is the only instant we can rely on.
+    let start_utc = resolve(&ev.start, cal_tz).unwrap_or(original_start_utc);
+    let end_utc = resolve(&ev.end, cal_tz).unwrap_or(start_utc);
+
+    Some(StoredEvent {
+        id: 0,
+        calendar_id,
+        google_id: ev.id.clone(),
+        summary: ev.summary.clone(),
+        location: None,
+        start_utc,
+        end_utc,
+        start_tz: ev
+            .start
+            .time_zone
+            .clone()
+            .or_else(|| original.time_zone.clone())
+            .unwrap_or_else(|| cal_tz.to_string()),
+        end_tz: ev
+            .end
+            .time_zone
+            .clone()
+            .or_else(|| ev.start.time_zone.clone())
+            .unwrap_or_else(|| cal_tz.to_string()),
+        is_all_day: ev.start.date.is_some() || original.date.is_some(),
+        recurrence: None,
+        recurring_event_id: Some(recurring_event_id),
+        original_start_utc: Some(original_start_utc),
+        status: ev.status.clone(),
+        self_response: None,
+        conference_uri: None,
+        color_hex: None,
     })
 }
 
@@ -167,5 +230,94 @@ mod tests {
     fn an_unparseable_start_is_skipped_rather_than_panicking() {
         let ev = timed("not-a-date", "also-not-a-date");
         assert!(to_stored(&ev, 1, "Europe/Sofia").is_none());
+    }
+
+    #[test]
+    fn an_exception_keeps_its_master_id_and_original_slot() {
+        let mut ev = timed("2026-08-03T14:00:00+03:00", "2026-08-03T14:30:00+03:00");
+        ev.id = "master_20260803T060000Z".into();
+        ev.recurring_event_id = Some("master".into());
+        ev.original_start_time = Some(EventDateTime {
+            date_time: Some("2026-08-03T09:00:00+03:00".into()), date: None,
+            time_zone: Some("Europe/Sofia".into()),
+        });
+        let s = to_stored(&ev, 1, "Europe/Sofia").unwrap();
+        assert_eq!(s.recurring_event_id.as_deref(), Some("master"));
+        // The slot it vacated, not the slot it moved to.
+        assert_eq!(s.original_start_utc, Some(1_785_736_800_000));
+        assert_eq!(s.start_utc, 1_785_754_800_000);
+    }
+
+    /// An all-day `originalStartTime` is a bare date; read in UTC it would land
+    /// on the wrong instant for any zone east or west of Greenwich.
+    #[test]
+    fn an_all_day_original_start_resolves_in_the_calendar_zone() {
+        let mut ev = timed("", "");
+        ev.start = EventDateTime { date: Some("2026-08-09".into()), ..Default::default() };
+        ev.end = EventDateTime { date: Some("2026-08-10".into()), ..Default::default() };
+        ev.recurring_event_id = Some("master".into());
+        ev.original_start_time =
+            Some(EventDateTime { date: Some("2026-08-08".into()), ..Default::default() });
+        let s = to_stored(&ev, 1, "Europe/Sofia").unwrap();
+        let midnight_sofia = jiff::civil::date(2026, 8, 8)
+            .at(0, 0, 0, 0).in_tz("Europe/Sofia").unwrap()
+            .timestamp().as_millisecond();
+        assert_eq!(s.original_start_utc, Some(midnight_sofia));
+    }
+
+    #[test]
+    fn an_ordinary_event_has_no_recurrence_link() {
+        let ev = timed("2026-08-03T09:00:00+03:00", "2026-08-03T09:30:00+03:00");
+        let s = to_stored(&ev, 1, "Europe/Sofia").unwrap();
+        assert!(s.recurring_event_id.is_none());
+        assert!(s.original_start_utc.is_none());
+    }
+
+    /// The shape Google actually sends when one occurrence is deleted: a
+    /// cancelled row with a `recurringEventId`, an `originalStartTime`, and no
+    /// start or end of its own.
+    #[test]
+    fn a_cancelled_exception_becomes_a_storable_row() {
+        let mut ev = timed("", "");
+        ev.id = "master_20260804T060000Z".into();
+        ev.status = "cancelled".into();
+        ev.summary = None;
+        ev.start = EventDateTime::default();
+        ev.end = EventDateTime::default();
+        ev.recurring_event_id = Some("master".into());
+        ev.original_start_time = Some(EventDateTime {
+            date_time: Some("2026-08-04T09:00:00+03:00".into()), date: None,
+            time_zone: Some("Europe/Sofia".into()),
+        });
+
+        let s = to_cancelled_exception(&ev, 1, "Europe/Sofia").unwrap();
+        assert_eq!(s.status, "cancelled");
+        assert_eq!(s.recurring_event_id.as_deref(), Some("master"));
+        assert_eq!(s.original_start_utc, Some(1_785_823_200_000));
+        // No times of its own: both fall back to the vacated slot.
+        assert_eq!(s.start_utc, 1_785_823_200_000);
+        assert_eq!(s.end_utc, 1_785_823_200_000);
+    }
+
+    #[test]
+    fn a_tombstone_without_a_master_is_not_an_exception() {
+        let mut ev = timed("", "");
+        ev.status = "cancelled".into();
+        ev.start = EventDateTime::default();
+        ev.end = EventDateTime::default();
+        assert!(to_cancelled_exception(&ev, 1, "Europe/Sofia").is_none());
+    }
+
+    /// Without a resolvable original slot there is no occurrence to point at,
+    /// so the caller has to fall back to deleting by id.
+    #[test]
+    fn an_exception_without_an_original_start_is_not_storable() {
+        let mut ev = timed("", "");
+        ev.status = "cancelled".into();
+        ev.start = EventDateTime::default();
+        ev.end = EventDateTime::default();
+        ev.recurring_event_id = Some("master".into());
+        ev.original_start_time = None;
+        assert!(to_cancelled_exception(&ev, 1, "Europe/Sofia").is_none());
     }
 }
