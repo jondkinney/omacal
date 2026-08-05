@@ -17,11 +17,24 @@ fn to_rfc3339(ms: i64) -> String {
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
 }
 
+/// One pending write, held in memory until the whole calendar has been fetched.
+///
+/// Nothing reaches the database until [`apply`] has re-checked `sync_enabled`
+/// in the transaction that performs the writes.
+enum Change {
+    Upsert(Box<omacal_store::StoredEvent>),
+    Delete(String),
+}
+
 /// Syncs one calendar, following pagination and recovering from a stale token.
 ///
 /// Uses the stored `sync_token` when present. On `410 GONE` the token is
 /// discarded and a full windowed sync runs instead — expected behaviour, not an
 /// error (spec §5).
+///
+/// Fetching and writing are separate phases on purpose: see [`apply`] for why
+/// the write must re-read `sync_enabled` rather than trust the value that
+/// selected this calendar for syncing in the first place.
 pub async fn sync_calendar(
     pool: &SqlitePool,
     client: &CalendarClient,
@@ -43,37 +56,20 @@ pub async fn sync_calendar(
             .await?
             .flatten();
 
-    let mut outcome = SyncOutcome::default();
     let mut token = stored_token;
+    let mut did_full_resync = false;
 
     loop {
-        match drain(pool, client, calendar_id, google_id, &cal_tz,
-                    token.clone(), window_start_ms, window_end_ms, &mut outcome).await
+        match drain(client, calendar_id, google_id, &cal_tz,
+                    token.clone(), window_start_ms, window_end_ms).await
         {
-            Ok(next) => {
-                // COALESCE, not a plain assignment: a page can legitimately end
-                // without a `nextSyncToken`, and overwriting a good token with
-                // NULL would silently downgrade every later sync to a full
-                // window fetch.
-                sqlx::query(
-                    "INSERT INTO sync_state (calendar_id, sync_token, window_start, window_end)
-                     VALUES (?1, ?2, ?3, ?4)
-                     ON CONFLICT (calendar_id) DO UPDATE SET
-                         sync_token = COALESCE(excluded.sync_token, sync_state.sync_token),
-                         window_start = excluded.window_start,
-                         window_end = excluded.window_end",
-                )
-                .bind(calendar_id)
-                .bind(&next)
-                .bind(window_start_ms)
-                .bind(window_end_ms)
-                .execute(pool)
-                .await?;
-                return Ok(outcome);
+            Ok((next, changes)) => {
+                return apply(pool, calendar_id, changes, next.as_deref(),
+                             window_start_ms, window_end_ms, did_full_resync).await;
             }
             Err(ApiError::SyncTokenInvalid) if token.is_some() => {
                 tracing::warn!(calendar_id, "sync token rejected, falling back to full resync");
-                outcome = SyncOutcome { did_full_resync: true, ..Default::default() };
+                did_full_resync = true;
                 token = None;
                 continue;
             }
@@ -82,10 +78,97 @@ pub async fn sync_calendar(
     }
 }
 
-/// Walks every page for one attempt, returning the final `nextSyncToken`.
+/// Writes one calendar's fetched changes — but only if it is *still* enabled
+/// for sync when the write happens.
+///
+/// `sync_all` reads the enabled set once and then spends the length of a
+/// network round trip per calendar, so "Remove" can commit at any point during
+/// a sync it did not start. That removal deletes the calendar's events and
+/// drops its cursor deliberately; a sync still in flight would put both back,
+/// leaving the worst possible state — `sync_enabled = 0` so it never refreshes
+/// again, `selected = 1` so it is still drawn.
+///
+/// The re-check and the writes therefore share one transaction, opened with
+/// `BEGIN IMMEDIATE` so the write lock is taken *before* the read. A plain
+/// `SELECT` followed by an unrelated write would only narrow the window, and a
+/// deferred transaction would let a removal commit between the two.
+///
+/// `sync_enabled`, not `selected`: hiding a calendar must never stop it
+/// syncing, so a hidden calendar's events are written here exactly as a shown
+/// one's are.
+#[allow(clippy::too_many_arguments)]
+async fn apply(
+    pool: &SqlitePool,
+    calendar_id: i64,
+    changes: Vec<Change>,
+    next_token: Option<&str>,
+    window_start_ms: i64,
+    window_end_ms: i64,
+    did_full_resync: bool,
+) -> anyhow::Result<SyncOutcome> {
+    let mut tx = pool.begin_with("BEGIN IMMEDIATE").await?;
+
+    let enabled: Option<i64> =
+        sqlx::query_scalar("SELECT sync_enabled FROM calendars WHERE id = ?1")
+            .bind(calendar_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+
+    if enabled != Some(1) {
+        // Removed (or deleted outright) while this sync was in flight. Abandon
+        // every write, cursor included: the removal's state is the one the user
+        // asked for, and re-creating the cursor here would make the next
+        // re-enable fetch an incremental diff against events that are gone.
+        tx.rollback().await?;
+        tracing::info!(
+            calendar_id,
+            "calendar left sync while it was being fetched; discarding this sync's writes"
+        );
+        return Ok(SyncOutcome::default());
+    }
+
+    let mut outcome = SyncOutcome { did_full_resync, ..Default::default() };
+
+    for change in changes {
+        match change {
+            Change::Upsert(row) => {
+                omacal_store::upsert_event(&mut *tx, &row).await?;
+                outcome.upserted += 1;
+            }
+            Change::Delete(google_id) => {
+                omacal_store::delete_event(&mut *tx, calendar_id, &google_id).await?;
+                outcome.deleted += 1;
+            }
+        }
+    }
+
+    // COALESCE, not a plain assignment: a page can legitimately end without a
+    // `nextSyncToken`, and overwriting a good token with NULL would silently
+    // downgrade every later sync to a full window fetch.
+    sqlx::query(
+        "INSERT INTO sync_state (calendar_id, sync_token, window_start, window_end)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT (calendar_id) DO UPDATE SET
+             sync_token = COALESCE(excluded.sync_token, sync_state.sync_token),
+             window_start = excluded.window_start,
+             window_end = excluded.window_end",
+    )
+    .bind(calendar_id)
+    .bind(next_token)
+    .bind(window_start_ms)
+    .bind(window_end_ms)
+    .execute(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+    Ok(outcome)
+}
+
+/// Walks every page for one attempt, returning the final `nextSyncToken` and
+/// the writes the pages imply. Touches the database not at all — the decision
+/// about whether those writes may land belongs to [`apply`].
 #[allow(clippy::too_many_arguments)]
 async fn drain(
-    pool: &SqlitePool,
     client: &CalendarClient,
     calendar_id: i64,
     google_id: &str,
@@ -93,9 +176,9 @@ async fn drain(
     sync_token: Option<String>,
     window_start_ms: i64,
     window_end_ms: i64,
-    outcome: &mut SyncOutcome,
-) -> Result<Option<String>, ApiError> {
+) -> Result<(Option<String>, Vec<Change>), ApiError> {
     let mut page_token: Option<String> = None;
+    let mut changes: Vec<Change> = Vec::new();
 
     loop {
         let req = EventsRequest {
@@ -113,16 +196,12 @@ async fn drain(
                 // expansion of its master. Store it, so the renderer knows to
                 // leave that slot empty. Everything else really is a deletion.
                 if let Some(row) = to_cancelled_exception(ev, calendar_id, cal_tz) {
-                    if omacal_store::upsert_event(pool, &row).await.is_ok() {
-                        outcome.upserted += 1;
-                    }
-                } else if omacal_store::delete_event(pool, calendar_id, &ev.id).await.is_ok() {
-                    outcome.deleted += 1;
+                    changes.push(Change::Upsert(Box::new(row)));
+                } else {
+                    changes.push(Change::Delete(ev.id.clone()));
                 }
             } else if let Some(stored) = to_stored(ev, calendar_id, cal_tz) {
-                if omacal_store::upsert_event(pool, &stored).await.is_ok() {
-                    outcome.upserted += 1;
-                }
+                changes.push(Change::Upsert(Box::new(stored)));
             } else {
                 tracing::warn!(event_id = %ev.id, "skipping unparseable event");
             }
@@ -130,7 +209,7 @@ async fn drain(
 
         match page.next_page_token {
             Some(t) => page_token = Some(t),
-            None => return Ok(page.next_sync_token),
+            None => return Ok((page.next_sync_token, changes)),
         }
     }
 }
@@ -423,5 +502,89 @@ mod tests {
             "SELECT sync_token FROM sync_state WHERE calendar_id = 1")
             .fetch_one(&pool).await.unwrap();
         assert_eq!(tok.as_deref(), Some("tok-good"), "a good token was overwritten with NULL");
+    }
+
+    /// The interleaving that used to resurrect a removed calendar.
+    ///
+    /// `sync_all` picks its calendars once and then spends a network round trip
+    /// per calendar, so the whole fetch is a window in which "Remove" can
+    /// commit. It deletes the events and drops the cursor; the sync then landed
+    /// on top and put both back — leaving `sync_enabled = 0` (so it never
+    /// refreshed again) with `selected = 1` (so it was still drawn), which only
+    /// a manual Add-then-Remove could clear.
+    ///
+    /// Driven for real rather than asserted about: the response is delayed, the
+    /// removal commits partway through it, and the sync is allowed to finish.
+    #[tokio::test]
+    async fn a_calendar_removed_while_it_is_being_fetched_is_not_resurrected() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/calendars/primary/events"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(one_event_body("tok-after-removal"))
+                    .set_delay(std::time::Duration::from_millis(400)),
+            )
+            .mount(&server).await;
+
+        let pool = seeded_pool().await;
+        // Pre-existing state, so the assertions below distinguish "the sync
+        // wrote nothing" from "there was never anything to write".
+        omacal_store::upsert_event(&pool, &stored("e0", 1000, 2000)).await.unwrap();
+        sqlx::query(
+            "INSERT INTO sync_state (calendar_id, sync_token, window_start, window_end)
+             VALUES (1, 'tok-before', 0, 0)")
+            .execute(&pool).await.unwrap();
+
+        let client = CalendarClient::new(server.uri(), "at-1");
+        let syncing = sync_calendar(&pool, &client, 1, "primary", 0, 9_999_999_999_999);
+        let removing = async {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            omacal_store::set_sync_enabled(&pool, 1, false).await.unwrap()
+        };
+        let (out, removed) = tokio::join!(syncing, removing);
+
+        assert_eq!(removed, 1, "the removal itself must delete the event it found");
+
+        // The two halves of the resurrection, asserted before anything else:
+        // events back, and the cursor back.
+        let events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE calendar_id = 1")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(events, 0, "the in-flight sync re-inserted events the removal deleted");
+
+        let cursor: Option<Option<String>> = sqlx::query_scalar(
+            "SELECT sync_token FROM sync_state WHERE calendar_id = 1")
+            .fetch_optional(&pool).await.unwrap();
+        assert!(cursor.is_none(),
+                "the in-flight sync re-created the cursor the removal dropped: {cursor:?}");
+
+        let enabled: i64 = sqlx::query_scalar("SELECT sync_enabled FROM calendars WHERE id = 1")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(enabled, 0, "the removal must stand");
+
+        assert_eq!(out.unwrap(), SyncOutcome::default(),
+                   "a sync overtaken by a removal must report having done nothing");
+    }
+
+    /// The other side of the gate, and the reason it reads `sync_enabled` and
+    /// not `selected`: a hidden calendar is still fetched, and its events must
+    /// still be written, or re-showing it would reveal a gap.
+    #[tokio::test]
+    async fn a_hidden_calendar_still_has_its_events_written() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/calendars/primary/events"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(one_event_body("tok-1")))
+            .mount(&server).await;
+
+        let pool = seeded_pool().await;
+        sqlx::query("UPDATE calendars SET selected = 0 WHERE id = 1")
+            .execute(&pool).await.unwrap();
+
+        let client = CalendarClient::new(server.uri(), "at-1");
+        let out = sync_calendar(&pool, &client, 1, "primary", 0, 9_999_999_999_999).await.unwrap();
+
+        assert_eq!(out.upserted, 1, "hiding a calendar must not stop its events being stored");
+        let events: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM events WHERE calendar_id = 1")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(events, 1);
     }
 }

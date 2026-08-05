@@ -68,7 +68,14 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
-pub async fn upsert_event(pool: &SqlitePool, ev: &StoredEvent) -> anyhow::Result<i64> {
+/// Generic over the executor rather than taking `&SqlitePool`, so the sync path
+/// can run this inside the same transaction as its `sync_enabled` re-check. A
+/// `&SqlitePool` still satisfies the bound, so every other call site is
+/// unchanged.
+pub async fn upsert_event<'e, E>(exec: E, ev: &StoredEvent) -> anyhow::Result<i64>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
     // 16 columns, 16 placeholders, 16 binds, all in the same order. Keep them
     // that way: a mismatch here writes a value into the wrong column silently.
     let id: i64 = sqlx::query(
@@ -103,21 +110,25 @@ pub async fn upsert_event(pool: &SqlitePool, ev: &StoredEvent) -> anyhow::Result
     .bind(&ev.self_response)       // ?14 self_response
     .bind(&ev.conference_uri)      // ?15 conference_uri
     .bind(now_ms())                // ?16 updated_at
-    .fetch_one(pool)
+    .fetch_one(exec)
     .await?
     .get("id");
     Ok(id)
 }
 
-pub async fn delete_event(
-    pool: &SqlitePool,
+/// Generic over the executor for the same reason as [`upsert_event`].
+pub async fn delete_event<'e, E>(
+    exec: E,
     calendar_id: i64,
     google_id: &str,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<()>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
     sqlx::query("DELETE FROM events WHERE calendar_id = ?1 AND google_id = ?2")
         .bind(calendar_id)
         .bind(google_id)
-        .execute(pool)
+        .execute(exec)
         .await?;
     Ok(())
 }
