@@ -42,10 +42,14 @@
           border-bottom: 1px solid var(--hairline); padding: 3px 0 6px; margin-bottom: 2px; }
   .label { font-size: 8.5px; color: var(--muted); opacity: .8; text-align: right;
            padding-right: 7px; letter-spacing: .05em; align-self: center; }
-  .rows { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+  /* No gap: a gap here is subtracted from every column, so the band's columns
+     drift out of step with the grid below it — by Sunday the chips sit a chip's
+     width off their days. The separation lives inside the chip instead. */
+  .rows { display: grid; grid-template-columns: repeat(7, 1fr); }
 
   .chip { font-size: 9.5px; border-radius: 4px; padding: 2px 7px; white-space: nowrap;
           overflow: hidden; text-overflow: ellipsis;
+          margin: 0 2px 2px 0;
           border-left: 2px solid var(--cal);
           background: color-mix(in srgb, var(--cal) 16%, transparent);
           color: color-mix(in srgb, var(--cal) 60%, var(--text)); }
