@@ -57,10 +57,14 @@
       {#if !status?.demo}
         <!-- Demo mode's seeded account never went through OAuth, so a sync
              would only fail; offering the button at all would be a control
-             that exists solely to produce an error. -->
+             that exists solely to produce an error. Same reasoning covers
+             Add account: sign_in refuses server-side in demo mode
+             (demo_sync_guard) regardless of whether an account is already
+             connected. -->
         <button onclick={onSync} disabled={busy}>Sync now</button>
+        <button onclick={onSignIn} disabled={busy}>Add account</button>
       {/if}
-    {:else}
+    {:else if !status?.demo}
       <button class="primary" onclick={onSignIn} disabled={busy}>
         {busy ? 'Connecting…' : 'Connect Google Calendar'}
       </button>

@@ -97,7 +97,17 @@
 
   async function handleSignIn() {
     busy = true; error = null;
-    try { await signIn(); await refreshStatus(); await handleSync(); }
+    try {
+      await signIn();
+      await refreshStatus();
+      // A second account's calendars exist in the store the moment sign_in
+      // returns, but nothing else here fetches them: handleSync refreshes
+      // status and the week's events, not the calendar list. Without this,
+      // the newly connected account is invisible in the popover until the
+      // app is relaunched.
+      await refreshCalendars();
+      await handleSync();
+    }
     catch (e) { error = String(e); }
     finally { busy = false; }
   }

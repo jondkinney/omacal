@@ -163,8 +163,6 @@ test.describe('Header', () => {
   test('the DEMO DATA badge appears when demo is true', async ({ page }) => {
     await page.goto(show('Header', 'demo'));
     await expect(page.locator('.demo')).toHaveText('DEMO DATA');
-    // Demo mode alone does not imply a connected account.
-    await expect(page.getByRole('button', { name: 'Connect Google Calendar' })).toBeVisible();
   });
 
   test('a connected demo account shows the badge but never offers Sync now', async ({ page }) => {
@@ -191,6 +189,23 @@ test.describe('Header', () => {
     await page.goto(show('Header', 'busy-connected'));
     await expect(page.locator('.synced')).toHaveText('Syncing…');
     await expect(page.getByRole('button', { name: 'Sync now' })).toBeDisabled();
+  });
+
+  test('a connected account can add another', async ({ page }) => {
+    await page.goto(show('Header', 'connected'));
+    await expect(page.getByRole('button', { name: 'Add account' })).toBeVisible();
+  });
+
+  test('a disconnected user is asked to connect, not to add', async ({ page }) => {
+    await page.goto(show('Header', 'disconnected'));
+    await expect(page.getByRole('button', { name: /Connect Google Calendar/ })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Add account' })).toHaveCount(0);
+  });
+
+  test('demo mode offers neither', async ({ page }) => {
+    await page.goto(show('Header', 'demo'));
+    await expect(page.getByRole('button', { name: 'Add account' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /Connect/ })).toHaveCount(0);
   });
 });
 

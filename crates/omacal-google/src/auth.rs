@@ -22,9 +22,21 @@ pub fn generate_pkce() -> Pkce {
     Pkce { verifier, challenge }
 }
 
-/// `access_type=offline` plus `prompt=consent` is what makes Google issue a
-/// refresh token. Without both, re-authorising an already-consented account
-/// silently returns an access token only.
+/// `prompt` carries two space-delimited values (OIDC allows a list here, and
+/// `form_urlencoded` encodes the space as the browser expects), and both must
+/// stay:
+///
+/// - `consent`, together with `access_type=offline` below, is what makes
+///   Google issue a refresh token. Without it, re-authorising an
+///   already-consented account silently returns an access token only, and
+///   background sync breaks the moment that access token expires.
+/// - `select_account` forces Google's account chooser to appear. Without it,
+///   a browser signed into exactly one Google account — the common case —
+///   walks straight through consent for the account already connected: "Add
+///   account" looks like it works and adds nothing.
+///
+/// Neither value can do the other's job, so resist "simplifying" this back
+/// down to one.
 pub fn authorize_url(client_id: &str, redirect_uri: &str, challenge: &str, state: &str) -> String {
     let q = url::form_urlencoded::Serializer::new(String::new())
         .append_pair("client_id", client_id)
@@ -35,7 +47,7 @@ pub fn authorize_url(client_id: &str, redirect_uri: &str, challenge: &str, state
         .append_pair("code_challenge_method", "S256")
         .append_pair("state", state)
         .append_pair("access_type", "offline")
-        .append_pair("prompt", "consent")
+        .append_pair("prompt", "consent select_account")
         .finish();
     format!("{AUTH_ENDPOINT}?{q}")
 }
@@ -285,6 +297,12 @@ mod tests {
         // Both are required to receive a refresh token at all.
         assert!(url.contains("access_type=offline"));
         assert!(url.contains("prompt=consent"));
+        // ...and select_account, or "Add account" is a no-op whenever exactly
+        // one Google account is signed into the browser: prompt=consent alone
+        // reauthorises the account already connected instead of offering a
+        // chooser. `prompt=consent` above is a prefix match and stays true
+        // either way, so this needs its own assertion.
+        assert!(url.contains("select_account"), "prompt must also request the account chooser: {url}");
         assert!(url.contains("calendar"));
     }
 

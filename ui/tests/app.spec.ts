@@ -126,6 +126,27 @@ test.describe('App', () => {
     await expect(page.locator('.err')).toHaveCount(0);
   });
 
+  // Task 6: the calendar popover is Header's own concern, but the reload
+  // that feeds it is App's. Without it, a second account's calendars stay
+  // invisible until the app is relaunched — a second account you cannot see
+  // is the same as no second account.
+  test('signing in reloads the calendar list', async ({ page }) => {
+    await page.goto(app());
+    const calendarCalls = () =>
+      page.evaluate(() =>
+        window.__harness.calls.filter((c) => c.cmd === 'get_calendars').length,
+      );
+    // Wait for the mount effect's own `get_calendars` to land before taking
+    // the baseline — otherwise that call can race the click below and land
+    // during the "after" window instead, inflating the count for the wrong
+    // reason and passing even if sign-in never reloads anything.
+    await expect.poll(calendarCalls).toBeGreaterThan(0);
+    const before = await calendarCalls();
+
+    await page.getByRole('button', { name: 'Add account' }).click();
+    await expect.poll(calendarCalls).toBeGreaterThan(before);
+  });
+
   test('a theme-changed event repaints without a reload', async ({ page }) => {
     await page.goto(app());
     await page.evaluate(() =>
