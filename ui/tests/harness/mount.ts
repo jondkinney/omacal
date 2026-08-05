@@ -4,6 +4,7 @@ import EventBlock from '../../src/lib/EventBlock.svelte';
 import AllDayBand from '../../src/lib/AllDayBand.svelte';
 import Header from '../../src/lib/Header.svelte';
 import { FIXTURES } from '../fixtures';
+import { installTauriStub } from './tauri';
 
 // Palette normally arrives from the Rust get_palette command; the harness
 // applies the same fallback_dark values so snapshots are deterministic.
@@ -27,15 +28,25 @@ const fixture = params.get('f') ?? 'default';
 const COMPONENTS: Record<string, any> = { WeekGrid, EventBlock, AllDayBand, Header };
 const target = document.getElementById('app')!;
 
-const props = FIXTURES[name]?.[fixture];
-if (!props) {
-  target.textContent = `no fixture ${name}/${fixture}`;
+if (name === 'App') {
+  // App is the whole application, not a leaf: it takes no props, and every
+  // input it has arrives over the Tauri IPC. So the stub goes in first, and
+  // the component is imported only afterwards — nothing may call `invoke`
+  // before `window.__TAURI_INTERNALS__` exists.
+  installTauriStub(fixture);
+  const { default: App } = await import('../../src/App.svelte');
+  mount(App, { target });
 } else {
-  // EventBlock is absolutely positioned; give it a sized relative parent.
-  if (name === 'EventBlock') {
-    target.style.position = 'relative';
-    target.style.height = '480px';
-    target.style.width = '220px';
+  const props = FIXTURES[name]?.[fixture];
+  if (!props) {
+    target.textContent = `no fixture ${name}/${fixture}`;
+  } else {
+    // EventBlock is absolutely positioned; give it a sized relative parent.
+    if (name === 'EventBlock') {
+      target.style.position = 'relative';
+      target.style.height = '480px';
+      target.style.width = '220px';
+    }
+    mount(COMPONENTS[name], { target, props });
   }
-  mount(COMPONENTS[name], { target, props });
 }

@@ -17,6 +17,16 @@ export const MON = 1_704_067_200_000;
 /** The instant the Header spec freezes `Date.now()` to. */
 export const FIXED_NOW = MON + H;
 
+// The App specs need two *adjacent* weeks that fall in different months, so a
+// stale repaint is visible in the header title as well as in the grid. The
+// week of Monday 2024-01-29 is followed by the week of Monday 2024-02-05.
+/** Monday 2024-01-29 00:00:00 UTC — the week `App.svelte` opens on. */
+export const APP_MON = Date.UTC(2024, 0, 29);
+/** Midday of that Monday: what the App specs freeze `Date.now()` to. */
+export const APP_NOW = APP_MON + 12 * H;
+/** Five minutes before `APP_NOW`, so the header reads "Synced 5 min ago". */
+export const APP_FIVE_MIN_AGO = APP_NOW - 5 * 60_000;
+
 const ev = (o: Partial<UiEvent> & { title: string; start_ms: number; end_ms: number }): UiEvent => ({
   id: Math.floor(o.start_ms / 1000),
   location: null,
@@ -68,6 +78,32 @@ const populatedWeek = (): WeekPayload => {
   ];
   return w;
 };
+
+/** The week a payload belongs to, as an ISO date — `2024-01-29`. */
+export const weekLabel = (weekStartMs: number) =>
+  new Date(weekStartMs).toISOString().slice(0, 10);
+
+/**
+ * A week whose single event is named after the week it came from.
+ *
+ * The point is identification, not looks: when two `get_week` responses are in
+ * flight for different weeks, the grid has to say out loud which one painted
+ * it, or a stale repaint is indistinguishable from a correct one.
+ */
+export const labelledWeek = (weekStartMs: number): WeekPayload => ({
+  days: Array.from({ length: 7 }, (_, i) => ({
+    start_ms: weekStartMs + i * 24 * H,
+    end_ms: weekStartMs + (i + 1) * 24 * H,
+    events: i === 0
+      ? [ev({ title: weekLabel(weekStartMs),
+              start_ms: weekStartMs + 11 * H, end_ms: weekStartMs + 12 * H })]
+      : [],
+    placed: i === 0 ? [placed(11 / 24, 1 / 24)] : [],
+  })),
+  all_day: [],
+  all_day_events: [],
+  overflow: [],
+});
 
 const block = (title: string, mins: number, response: UiEvent['response'],
                location: string | null = 'Room 4A') => ({
