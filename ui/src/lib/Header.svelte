@@ -18,6 +18,18 @@
     new Date(weekStartMs).toLocaleDateString(undefined, { month: 'long', year: 'numeric' })
   );
   const connected = $derived((status?.accounts.length ?? 0) > 0);
+
+  // "Synced 4 min ago" is a function of the clock, so it has to be told the
+  // clock moved. Without this it only ever recomputes when `status` changes —
+  // that is, when a sync succeeds — so it froze at its last value exactly when
+  // sync had stopped working and its staleness was the thing worth seeing.
+  // Same shape as WeekGrid's current-time line.
+  let now = $state(Date.now());
+  $effect(() => {
+    const id = setInterval(() => { now = Date.now(); }, 30_000);
+    return () => clearInterval(id);
+  });
+  const synced = $derived(relativeTime(status?.last_sync_ms ?? null, now));
 </script>
 
 <header>
@@ -34,11 +46,8 @@
     {#if status?.demo}
       <span class="demo">DEMO DATA</span>
     {/if}
-    {#if error}
-      <span class="err" title={error}>{error}</span>
-    {/if}
     {#if connected}
-      <span class="synced">{busy ? 'Syncing…' : `Synced ${relativeTime(status!.last_sync_ms)}`}</span>
+      <span class="synced">{busy ? 'Syncing…' : `Synced ${synced}`}</span>
       {#if !status?.demo}
         <!-- Demo mode's seeded account never went through OAuth, so a sync
              would only fail; offering the button at all would be a control
@@ -53,6 +62,15 @@
   </div>
 </header>
 
+<!-- Below the header rather than inside it, and free to wrap. The likeliest
+     first-run failure is the missing config file, whose actionable half —
+     "Create it with client_id and client_secret" — is the part that used to
+     fall off the end of a 320px ellipsised line and live only in a title
+     attribute nobody hovers. -->
+{#if error}
+  <p class="err">{error}</p>
+{/if}
+
 <style>
   header { display: flex; align-items: center; justify-content: space-between;
            gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
@@ -66,9 +84,11 @@
   .nav button { width: 22px; padding: 3px 0; font-size: 13px; }
   .today { border: 1px solid color-mix(in srgb, var(--text) 12%, transparent); background: none; }
   .primary { background: var(--accent); color: var(--bg); font-weight: 600; }
-  .synced, .err, .demo { font-size: 10.5px; }
+  .synced, .demo { font-size: 10.5px; }
   .synced { color: var(--muted); }
-  .err { color: #e2564a; max-width: 320px; overflow: hidden; text-overflow: ellipsis;
-         white-space: nowrap; }
   .demo { color: #e2a03f; letter-spacing: .06em; font-weight: 600; }
+  .err { color: #e2564a; font-size: 11.5px; line-height: 1.45; margin: 0 0 12px;
+         padding: 7px 10px; border-radius: 6px;
+         background: color-mix(in srgb, #e2564a 9%, transparent);
+         overflow-wrap: anywhere; }
 </style>

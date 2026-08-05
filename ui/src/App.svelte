@@ -30,10 +30,34 @@
   }
   $effect(() => { refreshStatus(); });
 
+  // Every `week` assignment goes through `loadWeek`, and every `loadWeek` call
+  // is stamped. Three callers can have a `get_week` in flight at once — the
+  // navigation effect, `handleSync`, and the `sync-finished` listener — and
+  // they do not resolve in the order they were issued. A background reload for
+  // last week that lands after the user has clicked › would otherwise repaint
+  // last week's grid under this week's header, which is `$derived` from
+  // `weekStartMs` and so has already moved on. Only the newest request wins.
+  let weekReq = 0;
+
+  async function loadWeek(target: number) {
+    const req = ++weekReq;
+    try {
+      const w = await getWeek(target);
+      if (req !== weekReq) return; // superseded while we were awaiting
+      week = w;
+      error = null;
+    } catch (e) {
+      if (req !== weekReq) return;
+      error = String(e);
+    }
+  }
+
   $effect(() => {
-    getWeek(weekStartMs)
-      .then((w) => { week = w; error = null; })
-      .catch((e) => { error = String(e); });
+    // Reading it here, synchronously, is what makes this effect depend on it.
+    const target = weekStartMs;
+    // A new week is a new attempt: a stale failure must not outlive the click.
+    error = null;
+    loadWeek(target);
   });
 
   // Background syncs (Task 4's ticker, focus, wake-from-sleep) land silently;
@@ -41,7 +65,17 @@
   $effect(() => {
     const un = listen('sync-finished', async () => {
       await refreshStatus();
-      week = await getWeek(weekStartMs);
+      await loadWeek(weekStartMs);
+    });
+    return () => { un.then((f) => f()); };
+  });
+
+  // The other half of that story: a sync that *fails* has to say so. Nothing
+  // else on screen can — the "Synced N ago" label is computed from the last
+  // successful sync, so it cannot report its own staleness.
+  $effect(() => {
+    const un = listen<{ message?: string }>('sync-failed', (e) => {
+      error = e.payload?.message ?? 'Sync failed.';
     });
     return () => { un.then((f) => f()); };
   });
@@ -58,7 +92,7 @@
     try {
       await syncNow();
       await refreshStatus();
-      week = await getWeek(weekStartMs);
+      await loadWeek(weekStartMs);
     } catch (e) { error = String(e); }
     finally { busy = false; }
   }
