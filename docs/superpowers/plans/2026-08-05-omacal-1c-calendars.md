@@ -1079,99 +1079,112 @@ git commit -m "feat(ui): add a second Google account from the header"
 
 ---
 
-### Task 7: First-run calendar picker
+### Task 7: Offer the calendar picker after every sign-in
 
-Sign-in currently imports everything and shows it. A real account brought in four calendars including subscribed holidays; the first thing you see should not be a wall of events you did not ask for.
+Sign-in currently imports everything and shows it. A real account brought in four calendars including subscribed holidays; the first thing you see should not be a wall of events you did not ask for. That is just as true of a work account added to a personal one — arguably more so, since that is where shared and room calendars live.
+
+So the picker opens after **every** successful sign-in, not only the first. This replaces the earlier `is_first_account` design: distinguishing the first account from later ones added a Rust helper, a command return-type change, and a UI branch, all to *suppress* the prompt exactly when the flood is largest. Opening it every time is both the simpler code and the better behaviour. The user chose this explicitly over first-run-only and over defaulting non-primary calendars to off.
+
+Calendars still arrive `sync_enabled = 1, selected = 1`. Nothing is hidden from you by default; the picker just puts the choice in front of you while the import is fresh.
 
 **Files:**
-- Modify: `src-tauri/src/lib.rs`, `ui/src/App.svelte`, `ui/src/lib/CalendarPopover.svelte`
+- Modify: `ui/src/App.svelte`, `ui/src/lib/CalendarPopover.svelte`, `ui/tests/components.spec.ts`, `ui/tests/fixtures.ts`
 
 **Interfaces:**
-- Consumes: `set_sync_enabled`
-- Produces: newly imported non-primary calendars arrive with `sync_enabled = 1, selected = 1` as today, but the app opens the popover once after a first sign-in so the choice is in front of you.
+- Consumes: the existing `sign_in` command, unchanged. No new backend surface — this task is UI only.
+- Produces: `CalendarPopover` gains a bindable `open` prop so a parent can open it.
 
-- [ ] **Step 1: Write the failing test**
-
-```rust
-// src-tauri/src/lib.rs — tests module
-
-#[tokio::test]
-async fn a_first_sign_in_is_distinguishable_from_a_later_one() {
-    let pool = omacal_store::connect_memory().await.unwrap();
-    assert!(is_first_account(&pool).await.unwrap(),
-            "no accounts yet — the picker should be offered");
-
-    sqlx::query("INSERT INTO accounts (google_sub, email, created_at) VALUES ('s','a@x',0)")
-        .execute(&pool).await.unwrap();
-
-    assert!(!is_first_account(&pool).await.unwrap(),
-            "adding a second account must not reopen the picker");
-}
-```
-
-- [ ] **Step 2: Run to verify failure**
-
-Run: `cargo test -p omacal a_first_sign_in`
-Expected: FAIL — `cannot find function is_first_account`.
-
-- [ ] **Step 3: Implement**
-
-```rust
-// src-tauri/src/lib.rs
-
-/// Whether the store has no accounts yet.
-///
-/// Called before `sign_in` does its work, so the UI can open the calendar
-/// picker exactly once — on the first connection, when every calendar on the
-/// account has just arrived unasked.
-pub(crate) async fn is_first_account(pool: &SqlitePool) -> anyhow::Result<bool> {
-    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM accounts")
-        .fetch_one(pool)
-        .await?;
-    Ok(n == 0)
-}
-```
-
-Have `sign_in` capture this **before** inserting the account, and return it to the UI. Change the command's success type from `String` to a small struct so the flag rides along:
-
-```rust
-#[derive(serde::Serialize)]
-pub struct SignInResult {
-    pub email: String,
-    /// True when this was the first account, so the UI can offer the picker.
-    pub first: bool,
-}
-```
-
-Update `ui/src/lib/status.ts`'s `signIn` to `invoke<{ email: string; first: boolean }>('sign_in')`.
-
-- [ ] **Step 4: Open the popover once**
-
-`CalendarPopover` gains an `open` bindable prop so the parent can open it. `App.svelte`'s `handleSignIn` sets it after a first sign-in completes and the calendar list has loaded.
-
-- [ ] **Step 5: Write the spec**
+- [ ] **Step 1: Write the failing spec**
 
 ```ts
-test('the picker can be opened from outside', async ({ page }) => {
-  await page.goto(show('CalendarPopover', 'open-on-mount'));
+// ui/tests/components.spec.ts — in the CalendarPopover describe block
+
+test('a parent can open the picker', async ({ page }) => {
+  await page.goto(show('open-on-mount'));
   await expect(page.locator('.panel')).toBeVisible();
+});
+
+test('it still starts closed by default', async ({ page }) => {
+  await page.goto(show('two-accounts'));
+  await expect(page.locator('.panel')).toHaveCount(0);
 });
 ```
 
-Add an `open-on-mount` fixture that passes `open: true`.
+Add an `open-on-mount` fixture that passes `open: true` alongside the existing calendar list.
+
+- [ ] **Step 2: Run to verify failure**
+
+Run: `npm --prefix ui run test:ui -- --project=chromium -g "parent can open"`
+Expected: FAIL — the panel is not visible, because `open` is component-local state today.
+
+- [ ] **Step 3: Make `open` bindable**
+
+In `CalendarPopover.svelte`, promote `open` from plain `$state` to a bindable prop with a default, so the component still owns it when nobody binds:
+
+```svelte
+let {
+  calendars,
+  onchange,
+  open = $bindable(false),
+}: {
+  calendars: Calendar[];
+  onchange: () => void;
+  open?: boolean;
+} = $props();
+```
+
+Everything already assigning `open` — `toggle()`, `close()`, the scrim, the Escape handler — keeps working unchanged; `$bindable` writes propagate to the parent when bound and stay local when not.
+
+The `message = null` reset currently lives in `toggle()`. Move it into an `$effect` keyed on `open` so a parent-driven open clears a stale note too:
+
+```svelte
+$effect(() => {
+  if (open) message = null;
+});
+```
+
+- [ ] **Step 4: Open it after a sign-in**
+
+In `App.svelte`, `handleSignIn` already refreshes status, syncs, and (as of Task 6) reloads the calendar list. After that reload resolves, open the picker:
+
+```svelte
+let pickerOpen = $state(false);
+// …inside handleSignIn, after the calendar list has loaded:
+pickerOpen = true;
+```
+
+Bind it through the header: `<CalendarPopover {calendars} onchange={…} bind:open={pickerOpen} />`.
+
+Order matters — open it only *after* the calendars have loaded, or the panel appears empty for a beat and then fills.
+
+- [ ] **Step 5: Verify the sign-in path**
+
+Add a spec driving the real path rather than only the prop:
+
+```ts
+test('signing in opens the picker with the new calendars in it', async ({ page }) => {
+  await page.goto('/tests/harness/index.html?c=App&f=sign-in-adds-account');
+  await page.getByRole('button', { name: /Connect|Add account/ }).click();
+  await expect(page.locator('.panel')).toBeVisible();
+  await expect(page.locator('.acct')).toHaveCount(1);
+});
+```
+
+The fixture stubs `sign_in` to resolve and `get_calendars` to return the new account's calendars.
 
 - [ ] **Step 6: Verify**
 
-Run: `cargo test --workspace`, `npm --prefix ui run test:ui`, `npm --prefix ui run check`, `cargo clippy --workspace --all-targets -- -D warnings`.
+Run: `npm --prefix ui run test:ui`, `npm --prefix ui run check`, `cargo test --workspace`, `cargo clippy --workspace --all-targets -- -D warnings`.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add src-tauri ui
-git commit -m "feat: offer the calendar picker after a first sign-in"
+git add ui
+git commit -m "feat(ui): offer the calendar picker after every sign-in"
 ```
 
 ---
+
 
 ## Definition of Done
 
@@ -1179,6 +1192,7 @@ git commit -m "feat: offer the calendar picker after a first sign-in"
 - [ ] Removing a calendar deletes its local events, survives the next sync, and can be undone
 - [ ] The popover groups by account and shows per-calendar colours
 - [ ] A second Google account can be connected from the header, and both sync
+- [ ] The calendar picker opens after every sign-in — first account or fifth — so a newly imported set of calendars is never silently switched on behind your back
 - [ ] Event blocks show `Zoom` / `Google Meet` / a host, never a truncated URL
 - [ ] A malformed `config.toml` cannot render the client secret in the UI
 - [ ] `cargo test --workspace` ≥ 175, `npm --prefix ui run test:ui` ≥ 80, clippy and `check` clean
