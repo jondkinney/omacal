@@ -4,6 +4,7 @@
   import { applyPalette, setPalette, type Palette } from './lib/theme';
   import { getWeek, weekStart, type WeekPayload } from './lib/api';
   import { getStatus, signIn, syncNow, type AppStatus } from './lib/status';
+  import { getCalendars, type Calendar } from './lib/calendars';
   import WeekGrid from './lib/WeekGrid.svelte';
   import Header from './lib/Header.svelte';
 
@@ -12,6 +13,7 @@
   let weekStartMs = $state(weekStart(new Date()));
   let week = $state<WeekPayload | null>(null);
   let status = $state<AppStatus | null>(null);
+  let calendars = $state<Calendar[]>([]);
   let busy = $state(false);
   let error = $state<string | null>(null);
 
@@ -28,7 +30,20 @@
   async function refreshStatus() {
     try { status = await getStatus(); } catch (e) { error = String(e); }
   }
-  $effect(() => { refreshStatus(); });
+
+  async function refreshCalendars() {
+    try { calendars = await getCalendars(); } catch (e) { error = String(e); }
+  }
+
+  // Calendars ride along with status on startup: both describe what's
+  // connected, and neither is meaningful before an account exists.
+  $effect(() => { refreshStatus(); refreshCalendars(); });
+
+  // The popover's own reload trigger — a show/hide takes effect the moment
+  // the grid re-fetches, since `get_week` filters on `selected` server-side.
+  async function handleCalendarChange() {
+    await Promise.all([refreshCalendars(), loadWeek(weekStartMs)]);
+  }
 
   // Every `week` assignment goes through `loadWeek`, and every `loadWeek` call
   // is stamped. Three callers can have a `get_week` in flight at once — the
@@ -100,12 +115,13 @@
 
 <main>
   <Header
-    {status} {weekStartMs} {busy} {error}
+    {status} {weekStartMs} {busy} {error} {calendars}
     onPrev={() => (weekStartMs -= WEEK)}
     onNext={() => (weekStartMs += WEEK)}
     onToday={() => (weekStartMs = weekStart(new Date()))}
     onSignIn={handleSignIn}
     onSync={handleSync}
+    oncalendarchange={handleCalendarChange}
   />
   {#if week}
     <WeekGrid {week} />

@@ -11,6 +11,7 @@
 
 import type { WeekPayload } from '../../src/lib/api';
 import type { AppStatus } from '../../src/lib/status';
+import type { Calendar } from '../../src/lib/calendars';
 import { labelledWeek, weekLabel, APP_FIVE_MIN_AGO } from '../fixtures';
 
 /** What the real `get_palette` returns; the same fallback_dark values. */
@@ -45,9 +46,15 @@ export type Harness = {
   release(weekStartMs: number): Promise<void>;
   /** Make the next `get_week` reject, whoever asks for it. */
   failNextWeek(message: string): void;
+  /** Make the next call to `set_calendar_selected` or `set_calendar_sync` reject —
+   *  what a CalendarPopover spec uses to drive the failed-toggle path. */
+  failNextCalendarCall(cmd: 'set_calendar_selected' | 'set_calendar_sync', message: string): void;
   /** Every command the app has invoked, in order. */
   calls: { cmd: string; args: unknown }[];
 };
+
+/** What `set_calendar_sync(id, false)` reports removing, absent a forced failure. */
+export const CALENDAR_SYNC_REMOVED = 143;
 
 const listeners = new Map<string, Set<(e: unknown) => void>>();
 const callbacks = new Map<number, (e: unknown) => void>();
@@ -56,6 +63,7 @@ const parked = new Map<number, Deferred>();
 
 let nextId = 1;
 let failWeekOnce: string | null = null;
+let failCalendarOnce: { cmd: string; message: string } | null = null;
 
 /**
  * Resolves once something has subscribed to `event`; throws if none does.
@@ -92,7 +100,20 @@ const harness: Harness = {
   failNextWeek(message) {
     failWeekOnce = message;
   },
+  failNextCalendarCall(cmd, message) {
+    failCalendarOnce = { cmd, message };
+  },
 };
+
+/** Resolves normally unless a spec armed a failure for this exact command. */
+function calendarResult<T>(cmd: string, ok: T): Promise<T> {
+  if (failCalendarOnce?.cmd === cmd) {
+    const { message } = failCalendarOnce;
+    failCalendarOnce = null;
+    return Promise.reject(message);
+  }
+  return Promise.resolve(ok);
+}
 
 /**
  * Command responses for a named scenario. `default` is a connected account on
@@ -149,6 +170,17 @@ export function installTauriStub(scenario: string): Harness {
         return status;
       case 'get_week':
         return getWeek(args.weekStartMs);
+      // App's own effect fetches calendars alongside status on mount. None of
+      // the App specs exercise the popover, and Header only renders it once
+      // `calendars.length > 0`, so an empty list keeps every existing
+      // assertion undisturbed. CalendarPopover specs never take this path —
+      // they mount the component directly with fixture props instead.
+      case 'get_calendars':
+        return [] as Calendar[];
+      case 'set_calendar_selected':
+        return calendarResult(cmd, undefined);
+      case 'set_calendar_sync':
+        return calendarResult(cmd, CALENDAR_SYNC_REMOVED);
       case 'sync_now':
         return 0;
       case 'sign_in':

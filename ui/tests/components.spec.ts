@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { FIXED_NOW } from './fixtures';
+import { CALENDAR_SYNC_REMOVED } from './harness/tauri';
 
 const show = (c: string, f: string) => `/tests/harness/index.html?c=${c}&f=${f}`;
 
@@ -190,5 +191,75 @@ test.describe('Header', () => {
     await page.goto(show('Header', 'busy-connected'));
     await expect(page.locator('.synced')).toHaveText('Syncing…');
     await expect(page.getByRole('button', { name: 'Sync now' })).toBeDisabled();
+  });
+});
+
+test.describe('CalendarPopover', () => {
+  const show = (f: string) => `/tests/harness/index.html?c=CalendarPopover&f=${f}`;
+
+  test('opens and groups by account', async ({ page }) => {
+    await page.goto(show('two-accounts'));
+    await page.getByRole('button', { name: /Calendars/ }).click();
+    await expect(page.locator('.acct')).toHaveCount(2);
+  });
+
+  test('counts only calendars that are both synced and shown', async ({ page }) => {
+    await page.goto(show('mixed'));
+    // 3 calendars: one hidden, one removed, one visible.
+    await expect(page.locator('.trigger .count')).toHaveText('1');
+  });
+
+  test('a removed calendar cannot be ticked', async ({ page }) => {
+    await page.goto(show('mixed'));
+    await page.getByRole('button', { name: /Calendars/ }).click();
+    const off = page.locator('.row.off').first();
+    await expect(off.locator('input[type=checkbox]')).toBeDisabled();
+    await expect(off.locator('.sync')).toHaveText('Add');
+  });
+
+  test('clicking away closes it', async ({ page }) => {
+    await page.goto(show('two-accounts'));
+    await page.getByRole('button', { name: /Calendars/ }).click();
+    await expect(page.locator('.panel')).toBeVisible();
+    await page.locator('.scrim').click();
+    await expect(page.locator('.panel')).toHaveCount(0);
+  });
+
+  test('Escape closes it', async ({ page }) => {
+    await page.goto(show('two-accounts'));
+    await page.getByRole('button', { name: /Calendars/ }).click();
+    await expect(page.locator('.panel')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.panel')).toHaveCount(0);
+  });
+
+  // Resolution 4: the browser flips a checkbox's `checked` property on click,
+  // before any handler runs. If `set_calendar_selected` then fails, the box
+  // is left showing a state the store never actually reached until the
+  // component explicitly snaps it back.
+  test('a failed toggle snaps the checkbox back and reports the error', async ({ page }) => {
+    await page.goto(show('single'));
+    await page.evaluate(() =>
+      window.__harness.failNextCalendarCall('set_calendar_selected', 'database is locked'),
+    );
+    await page.getByRole('button', { name: /Calendars/ }).click();
+
+    const box = page.locator('input[type=checkbox]');
+    await expect(box).toBeChecked(); // fixture calendar starts selected
+    await box.click();
+
+    await expect(page.locator('.note.err')).toHaveText('database is locked');
+    // The click already flipped it once; a naive implementation stops here.
+    await expect(box).toBeChecked();
+  });
+
+  // Resolution 1: `setCalendarSync` resolves with the number of events the
+  // removal deleted specifically so the UI can report it — throwing that
+  // count away would make the removal look like it did nothing.
+  test('removing a calendar reports how many events were deleted', async ({ page }) => {
+    await page.goto(show('single'));
+    await page.getByRole('button', { name: /Calendars/ }).click();
+    await page.getByRole('button', { name: 'Remove' }).click();
+    await expect(page.locator('.note')).toHaveText(`Removed · ${CALENDAR_SYNC_REMOVED} events deleted`);
   });
 });

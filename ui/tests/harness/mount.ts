@@ -3,6 +3,7 @@ import WeekGrid from '../../src/lib/WeekGrid.svelte';
 import EventBlock from '../../src/lib/EventBlock.svelte';
 import AllDayBand from '../../src/lib/AllDayBand.svelte';
 import Header from '../../src/lib/Header.svelte';
+import CalendarPopover from '../../src/lib/CalendarPopover.svelte';
 import { FIXTURES } from '../fixtures';
 import { installTauriStub } from './tauri';
 
@@ -25,7 +26,7 @@ const params = new URLSearchParams(location.search);
 const name = params.get('c') ?? 'WeekGrid';
 const fixture = params.get('f') ?? 'default';
 
-const COMPONENTS: Record<string, any> = { WeekGrid, EventBlock, AllDayBand, Header };
+const COMPONENTS: Record<string, any> = { WeekGrid, EventBlock, AllDayBand, Header, CalendarPopover };
 const target = document.getElementById('app')!;
 
 if (name === 'App') {
@@ -47,6 +48,12 @@ if (name === 'App') {
       target.style.height = '480px';
       target.style.width = '220px';
     }
+    // Unlike its neighbours here, CalendarPopover calls `invoke` itself —
+    // ticking a box or clicking Add/Remove goes straight to the three
+    // calendar commands. It still takes its `calendars` from a fixture
+    // prop rather than `get_calendars`, so the scenario name only matters
+    // for the write commands the stub answers.
+    if (name === 'CalendarPopover') installTauriStub(fixture);
     mount(COMPONENTS[name], { target, props });
   }
 }

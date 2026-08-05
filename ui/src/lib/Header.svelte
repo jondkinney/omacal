@@ -1,17 +1,20 @@
 <!-- ui/src/lib/Header.svelte -->
 <script lang="ts">
   import { relativeTime, type AppStatus } from './status';
+  import type { Calendar } from './calendars';
+  import CalendarPopover from './CalendarPopover.svelte';
 
   let {
-    status, weekStartMs, busy, error,
-    onPrev, onNext, onToday, onSignIn, onSync,
+    status, weekStartMs, busy, error, calendars,
+    onPrev, onNext, onToday, onSignIn, onSync, oncalendarchange,
   }: {
     status: AppStatus | null;
     weekStartMs: number;
     busy: boolean;
     error: string | null;
+    calendars: Calendar[];
     onPrev: () => void; onNext: () => void; onToday: () => void;
-    onSignIn: () => void; onSync: () => void;
+    onSignIn: () => void; onSync: () => void; oncalendarchange: () => void;
   } = $props();
 
   const title = $derived(
@@ -45,6 +48,9 @@
   <div class="right">
     {#if status?.demo}
       <span class="demo">DEMO DATA</span>
+    {/if}
+    {#if calendars.length > 0}
+      <CalendarPopover {calendars} onchange={oncalendarchange} />
     {/if}
     {#if connected}
       <span class="synced">{busy ? 'Syncing…' : `Synced ${synced}`}</span>

@@ -1,5 +1,6 @@
 import type { UiEvent, Placed, WeekPayload } from '../src/lib/api';
 import type { AppStatus } from '../src/lib/status';
+import type { Calendar } from '../src/lib/calendars';
 
 const H = 3_600_000;
 // Fixed well in the past (not just "a Monday", but a Monday that will never
@@ -116,13 +117,25 @@ const block = (title: string, mins: number, response: UiEvent['response'],
 // component without a real App.svelte behind them.
 const noop = () => {};
 
+// `calendars: []` matches every existing Header fixture below: none of them
+// exercise the popover, and an empty list is exactly what keeps it from
+// rendering at all — the same DOM these fixtures produced before Task 5.
 const header = (status: AppStatus, busy = false) => ({
-  status, weekStartMs: MON, busy, error: null as string | null,
-  onPrev: noop, onNext: noop, onToday: noop, onSignIn: noop, onSync: noop,
+  status, weekStartMs: MON, busy, error: null as string | null, calendars: [] as Calendar[],
+  onPrev: noop, onNext: noop, onToday: noop, onSignIn: noop, onSync: noop, oncalendarchange: noop,
 });
 
 /** Exactly five minutes before `FIXED_NOW`, so a frozen clock always reads "5 min ago". */
 const FIVE_MIN_AGO = FIXED_NOW - 5 * 60_000;
+
+const cal = (o: Partial<Calendar> & { id: number; account_email: string; summary: string }): Calendar => ({
+  account_id: 1,
+  color_hex: '#5b8def',
+  selected: true,
+  sync_enabled: true,
+  is_primary: false,
+  ...o,
+});
 
 export const FIXTURES: Record<string, Record<string, any>> = {
   WeekGrid: {
@@ -164,5 +177,32 @@ export const FIXTURES: Record<string, Record<string, any>> = {
     'connected-demo': header({ accounts: ['demo@omacal.local'], last_sync_ms: FIVE_MIN_AGO, demo: true }),
     'busy-disconnected': header({ accounts: [], last_sync_ms: null, demo: false }, true),
     'busy-connected': header({ accounts: ['me@x.com'], last_sync_ms: FIVE_MIN_AGO, demo: false }, true),
+  },
+  CalendarPopover: {
+    'two-accounts': {
+      calendars: [
+        cal({ id: 1, account_id: 1, account_email: 'me@x.com', summary: 'Personal', is_primary: true }),
+        cal({ id: 2, account_id: 2, account_email: 'work@x.com', summary: 'Team' }),
+      ],
+      onchange: noop,
+    },
+    // One hidden (synced but unticked), one removed (sync stopped — `selected`
+    // is left alone per the backend contract, so it can still be true), one
+    // ordinary visible calendar.
+    mixed: {
+      calendars: [
+        cal({ id: 1, account_email: 'me@x.com', summary: 'Hidden project', selected: false }),
+        cal({ id: 2, account_email: 'me@x.com', summary: 'Old team', sync_enabled: false }),
+        cal({ id: 3, account_email: 'me@x.com', summary: 'Main', is_primary: true }),
+      ],
+      onchange: noop,
+    },
+    // A single synced, visible calendar — the toggle specs only need one row.
+    single: {
+      calendars: [
+        cal({ id: 1, account_email: 'me@x.com', summary: 'Work', is_primary: true }),
+      ],
+      onchange: noop,
+    },
   },
 };
