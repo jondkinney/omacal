@@ -2,6 +2,9 @@ use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 use sqlx::SqlitePool;
 use std::str::FromStr;
 
+pub mod events;
+pub use events::{delete_event, events_in_window, upsert_event, StoredEvent};
+
 /// Opens (creating if needed) the database at `url` and runs migrations.
 pub async fn connect(url: &str) -> anyhow::Result<SqlitePool> {
     let opts = SqliteConnectOptions::from_str(url)?
