@@ -39,14 +39,20 @@
 <style>
   .ev {
     /* A <button> keeps native chrome in macOS WKWebView unless appearance is
-       explicitly cleared, and that chrome does not honour border-radius — it
-       leaves a squared-off nub at a corner. Chromium and Playwright's WebKit
-       do not reproduce it, so this cannot be caught by the test suite; it is
-       visible only in the real Tauri window. */
+       cleared. Not the cause of the corner artifact below — clearing it alone
+       did not fix that — but correct regardless for a fully custom control. */
     appearance: none; -webkit-appearance: none;
-    position: absolute; border: 0; text-align: left; cursor: pointer;
-    border-radius: 6px; padding: 2px 6px; overflow: hidden;
-    border-left: 2px solid var(--cal);
+    position: absolute; text-align: left; cursor: pointer;
+    border-radius: 6px; padding: 2px 8px; overflow: hidden;
+    /* NO border. The colour spine is an inset shadow instead.
+       A border on one side only makes WebKit derive each corner's curve from
+       the two border widths meeting there, and in macOS WKWebView the corners
+       away from that border rendered square. An inset shadow follows
+       border-radius exactly and cannot influence corner geometry, so the cause
+       is removed rather than worked around. */
+    border: 0;
+    box-shadow: inset 2px 0 0 0 var(--cal);
+    background-clip: padding-box;
     /* Composited over --bg, not `transparent`. Blocks overlap constantly, and a
        translucent fill lets the one behind read through — its title, and its
        rounded corners poking past this one's. Against the column background the
@@ -59,7 +65,7 @@
   /* Hover lifts the block to full width so a squeezed 3-way pile stays
      readable without changing the layout rules (spec §7.1). */
   .ev:hover { left: 3px !important; width: calc(100% - 6px) !important; z-index: 20;
-              box-shadow: 0 4px 14px rgba(0, 0, 0, .5); }
+              box-shadow: inset 2px 0 0 0 var(--cal), 0 4px 14px rgba(0, 0, 0, .5); }
 
   .ev b { display: block; font-size: 10px; font-weight: 600; line-height: 1.3;
           letter-spacing: -.01em; white-space: nowrap; overflow: hidden;
@@ -73,26 +79,21 @@
   /* State is carried by the fill, so it survives at 15 minutes tall. Every
      state stays opaque: "unfilled" means the colour of the grid, not a hole
      through to whatever block is underneath. */
-  .ev.needsAction { background-color: var(--bg); border: 1px dashed currentColor;
-                    border-left: 2px solid var(--cal); }
+  .ev.needsAction { background-color: var(--bg);
+                    /* Uniform on all four sides, so corner curves stay symmetric. */
+                    border: 1px dashed currentColor; }
   .ev.tentative { background-image: repeating-linear-gradient(135deg,
                   rgba(128,128,128,.16) 0 3px, transparent 3px 7px); }
   /* Faded via its own colours rather than element opacity: `opacity` would make
      the block see-through no matter what its background is. */
   .ev.declined { background-color: var(--bg);
                  color: color-mix(in srgb, var(--cal) 22%, var(--muted));
-                 border-left-color: color-mix(in srgb, var(--cal) 45%, var(--bg)); }
+                 box-shadow: inset 2px 0 0 0 color-mix(in srgb, var(--cal) 45%, var(--bg)); }
   .ev.declined b { text-decoration: line-through; }
 
-  /* An expanded block must OCCLUDE the ones it covers. The resting fills are
-     deliberately near-transparent — 7% for accepted, fully transparent for
-     needsAction and declined — so widening alone leaves two labels rendered on
-     top of each other. Compositing over --bg instead of `transparent` makes the
-     hovered block opaque without changing its colour identity.
-     These come last so they win over the per-state rules above at equal
-     specificity; `declined` additionally needs its .4 opacity lifted, since
-     element opacity would let the block underneath show through regardless of
-     background. */
+  /* Deepens the fill on hover so an expanded block reads as lifted above the
+     ones it covers. Every state is already opaque at rest, so this is emphasis
+     rather than the occlusion fix itself. Last in the file so it wins over the
+     per-state background rules above at equal specificity. */
   .ev:hover { background-color: color-mix(in srgb, var(--cal) 16%, var(--bg)); }
-  .ev.declined:hover { opacity: 1; }
 </style>
