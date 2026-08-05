@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { UiEvent, Placed } from './api';
+  import { locationLabel } from './location';
 
   let { event, placed }: { event: UiEvent; placed: Placed } = $props();
 
@@ -15,7 +16,7 @@
   // Location is the thing you act on when you are walking somewhere. A guest
   // count belongs here too, but attendees are not stored yet, and a hardcoded
   // zero read as "no guests" — a claim we cannot make.
-  const meta = $derived(event.location ?? '');
+  const meta = $derived(locationLabel(event.location));
 
   const width = $derived(100 / placed.columns);
   const left = $derived(placed.column * width);
