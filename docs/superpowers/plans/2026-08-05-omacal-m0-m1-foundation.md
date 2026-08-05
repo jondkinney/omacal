@@ -712,8 +712,9 @@ The only place `chrono` is allowed. We hand `rrule` an RFC 5545 string and read 
       pub is_all_day: bool,
       pub recurrence: &'a [String],  // raw RRULE/EXDATE/RDATE lines from Google
   }
+  pub struct Expansion { pub intervals: Vec<Interval>, pub truncated: bool }
   pub fn expand(series: &Series, from_ms: i64, to_ms: i64, limit: u16)
-      -> Result<Vec<Interval>, RecurError>
+      -> Result<Expansion, RecurError>
   ```
 
 - [ ] **Step 1: Add dependencies**
@@ -3213,8 +3214,10 @@ use omacal_store::StoredEvent;
 use serde::Serialize;
 
 const DAY_MS: i64 = 24 * 3_600_000;
-/// Expansion guard for one week of any single series.
-const EXPAND_LIMIT: u16 = 64;
+/// Expansion guard for one week of any single series. Sized for the realistic
+/// worst case — a 30-minute block recurring through every working hour is ~336
+/// occurrences a week — so that `Expansion::truncated` stays false in practice.
+const EXPAND_LIMIT: u16 = 512;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct UiEvent {
@@ -3273,7 +3276,24 @@ fn occurrences(src: &StoredEvent, from_ms: i64, to_ms: i64) -> Vec<Interval> {
         is_all_day: src.is_all_day,
         recurrence: &lines,
     };
-    expand(&series, from_ms, to_ms, EXPAND_LIMIT).unwrap_or_default()
+    match expand(&series, from_ms, to_ms, EXPAND_LIMIT) {
+        Ok(e) => {
+            if e.truncated {
+                // Surfaced rather than swallowed: a series this dense means the
+                // window is showing an incomplete picture.
+                tracing::warn!(
+                    google_id = %src.google_id,
+                    limit = EXPAND_LIMIT,
+                    "recurrence expansion truncated"
+                );
+            }
+            e.intervals
+        }
+        Err(err) => {
+            tracing::warn!(google_id = %src.google_id, %err, "recurrence expansion failed");
+            Vec::new()
+        }
+    }
 }
 
 /// The eight instants bounding the week's seven days, computed **in `tz`**.
