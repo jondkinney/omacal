@@ -264,15 +264,6 @@ fn demo_sync_guard(demo: bool) -> Result<(), String> {
     }
 }
 
-/// Refreshes the access token and syncs every calendar of every account.
-/// Pure sync work, with no demo check and no status bookkeeping of its own —
-/// shared by the `sync_now` command and the background loop (Task 4), each of
-/// which handles the demo gate and `record_sync` itself.
-/// Returns a usable access token for `email`, reading the Keychain and
-/// refreshing only when the cached one is absent or expired.
-///
-/// This is the whole reason the cache exists: the Keychain read is what raises
-/// the macOS access prompt, and doing it on every sync made the app unusable.
 /// Whether a cached entry can be used as-is.
 ///
 /// Pulled out so the decision is testable: an untested condition guarding a
@@ -281,6 +272,11 @@ fn cached_is_usable(entry: Option<&CachedTokens>, now_ms: i64) -> bool {
     entry.is_some_and(|t| t.expires_at_ms > now_ms)
 }
 
+/// Returns a usable access token for `email`, reading the Keychain and
+/// refreshing only when the cached one is absent or expired.
+///
+/// This is the whole reason the cache exists: the Keychain read is what raises
+/// the macOS access prompt, and doing it on every sync made the app unusable.
 async fn access_token_for(state: &AppState, cfg: &Config, email: &str) -> anyhow::Result<String> {
     {
         let cache = state.tokens.lock().await;
@@ -419,6 +415,35 @@ where
     (total, failed)
 }
 
+/// Turns what a sync managed to do into what it reports.
+///
+/// The whole point of isolating failures is that they still get *reported*.
+/// Drop this decision and a sync in which every account failed returns `Ok`:
+/// `record_sync` runs, the header reads "Synced just now", and no `sync-failed`
+/// event ever fires. That is strictly worse than the `?` this replaced — the
+/// `?` at least stopped loudly, whereas silent isolation fails forever without
+/// telling anyone.
+///
+/// A count, never the labels. This string is what `errors::user_facing` sees,
+/// and the labels are account email addresses; the detail is already in the
+/// log, at the level the rest of this file uses. Partial success is still
+/// failure: rows written by the accounts that worked do not make the account
+/// that did not any less stale.
+///
+/// A separate function so the decision can be asserted directly — `sync_all`
+/// itself is not reachable from a test, because it reads the real config file.
+fn sync_result(total: u64, failed: &[String]) -> anyhow::Result<u64> {
+    if !failed.is_empty() {
+        anyhow::bail!("{} of this sync's targets failed; see the log", failed.len());
+    }
+    Ok(total)
+}
+
+/// Refreshes the access token and syncs every calendar of every account.
+///
+/// Pure sync work, with no demo check and no status bookkeeping of its own —
+/// shared by the `sync_now` command and the background loop (Task 4), each of
+/// which handles the demo gate and `record_sync` itself.
 pub(crate) async fn sync_all(state: &AppState) -> anyhow::Result<u64> {
     let pool = &state.pool;
     let cfg = load_config()?;
@@ -443,14 +468,7 @@ pub(crate) async fn sync_all(state: &AppState) -> anyhow::Result<u64> {
     )
     .await;
 
-    if !failed.is_empty() {
-        // A count, not the labels. This string is what `errors::user_facing`
-        // sees, and it withholds anything it does not recognise anyway — the
-        // detail is already in the log, at the same level the rest of this file
-        // uses.
-        anyhow::bail!("{} of this sync's targets failed; see the log", failed.len());
-    }
-    Ok(total)
+    sync_result(total, &failed)
 }
 
 /// Refreshes the access token and syncs every calendar of every account.
@@ -805,6 +823,55 @@ mod tests {
 
         assert!(failed.is_empty(), "a clean sync reported a failure: {failed:?}");
         assert_eq!(total, 1);
+    }
+
+    #[test]
+    fn a_clean_sync_reports_what_it_wrote() {
+        assert_eq!(sync_result(7, &[]).unwrap(), 7);
+        assert_eq!(sync_result(0, &[]).unwrap(), 0, "nothing to do is not a failure");
+    }
+
+    /// The one `if` that makes isolation reportable rather than silent.
+    ///
+    /// Without it, a sync in which *every* account failed returns `Ok`:
+    /// `record_sync` runs, the header reads "Synced just now", and no
+    /// `sync-failed` event ever fires. That is the failure mode isolating the
+    /// errors exists to avoid creating — the `?` it replaced at least stopped
+    /// loudly.
+    #[test]
+    fn a_sync_where_everything_failed_is_an_error() {
+        assert!(sync_result(0, &["revoked@x".to_string()]).is_err());
+    }
+
+    /// The half that a "did we write anything?" check would get wrong. Rows
+    /// were written, and it is still a failure: the account that could not sync
+    /// is stale, and nothing about the accounts that did sync makes it less so.
+    #[test]
+    fn a_partial_sync_is_still_reported_as_a_failure() {
+        assert!(sync_result(42, &["revoked@x".to_string()]).is_err());
+    }
+
+    /// The failure crosses `errors::user_facing` on its way to the app header,
+    /// and the labels it is built from are account email addresses.
+    #[test]
+    fn the_reported_failure_carries_a_count_and_no_account() {
+        let e = sync_result(0, &[
+            "someone@example.com".to_string(),
+            "someone@example.com / a-calendar".to_string(),
+        ])
+        .unwrap_err();
+        let text = e.to_string();
+
+        assert!(!text.contains("someone@example.com"),
+                "an account email reached a user-facing string: {text}");
+        assert!(!text.contains("a-calendar"), "a calendar id reached a user-facing string: {text}");
+        assert!(text.contains('2'), "the count is the whole payload: {text}");
+
+        // And it is not accidentally on the allowlist, so even this much is
+        // withheld from the header.
+        let shown = crate::errors::user_facing(&e);
+        assert_ne!(shown, text, "the failure must not be shown verbatim");
+        assert!(!shown.contains("someone@example.com"), "{shown}");
     }
 
     fn google_calendar(id: &str) -> omacal_google::model::Calendar {

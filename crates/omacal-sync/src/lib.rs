@@ -160,6 +160,19 @@ async fn apply(
     .execute(&mut *tx)
     .await?;
 
+    // The cursor write above must stay *before* this line, inside this
+    // transaction, alongside the gate and the event writes. Move it after the
+    // commit and a removal landing in the gap writes a cursor onto a calendar
+    // whose events have just been deleted — an orphan that survives, because
+    // the gate that would have caught it has already passed. The next re-enable
+    // then asks Google for an incremental diff against events that are no
+    // longer there, and the calendar comes back empty until the token goes
+    // stale on its own.
+    //
+    // Not covered by a test: the harm needs two connections contending inside a
+    // sub-millisecond window, and every sync test here runs on
+    // `connect_memory`, whose `max_connections(1)` pool serialises everything
+    // so that two connections can never contend at all.
     tx.commit().await?;
     Ok(outcome)
 }
