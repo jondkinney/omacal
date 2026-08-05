@@ -5,9 +5,10 @@ export type Palette = {
   muted: string; accent: string; is_dark: boolean;
 };
 
-/** Pushes the resolved palette onto :root so all styling flows from CSS vars. */
-export async function applyPalette(): Promise<Palette> {
-  const p = await invoke<Palette>('get_palette');
+/** Pushes a resolved palette onto :root so all styling flows from CSS vars.
+ *  The one place that knows the variable names — both the startup fetch
+ *  (`applyPalette`) and the live `theme-changed` listener go through this. */
+export function setPalette(p: Palette): void {
   const r = document.documentElement.style;
   r.setProperty('--bg', p.bg);
   r.setProperty('--surface', p.surface);
@@ -17,5 +18,11 @@ export async function applyPalette(): Promise<Palette> {
   r.setProperty('--hairline', p.is_dark ? 'rgba(255,255,255,.055)' : 'rgba(0,0,0,.07)');
   r.setProperty('--hour-rule', p.is_dark ? 'rgba(255,255,255,.035)' : 'rgba(0,0,0,.05)');
   r.setProperty('--today-tint', p.is_dark ? 'rgba(255,255,255,.028)' : 'rgba(0,0,0,.025)');
+}
+
+/** Fetches the resolved palette and applies it. Used once at startup. */
+export async function applyPalette(): Promise<Palette> {
+  const p = await invoke<Palette>('get_palette');
+  setPalette(p);
   return p;
 }

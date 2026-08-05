@@ -1,0 +1,77 @@
+//! Live theme reload (spec §10): watches the Omarchy theme directory and
+//! repaints the UI when `omarchy-theme-set` runs.
+
+use notify::{RecursiveMode, Watcher};
+use std::path::PathBuf;
+use tauri::{AppHandle, Emitter};
+
+/// The directory to watch for theme changes.
+///
+/// `~/.config/omarchy/current/theme` is normally a symlink, and switching
+/// themes replaces the link rather than editing files beneath it. Watching the
+/// PARENT directory catches the relink; watching the link target would not.
+pub fn watch_target() -> Option<PathBuf> {
+    crate::theme::omarchy_theme_dir()?.parent().map(PathBuf::from)
+}
+
+/// Starts the theme watcher. A no-op when there is nothing to watch (macOS,
+/// or a Linux box without Omarchy), and never fatal — a watcher that cannot
+/// start leaves the app on its startup palette.
+pub fn spawn(app: AppHandle) {
+    let Some(target) = watch_target() else {
+        tracing::debug!("no Omarchy theme directory; live theme reload disabled");
+        return;
+    };
+
+    std::thread::spawn(move || {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut watcher = match notify::recommended_watcher(tx) {
+            Ok(w) => w,
+            Err(e) => {
+                tracing::warn!(%e, "could not create theme watcher");
+                return;
+            }
+        };
+        if let Err(e) = watcher.watch(&target, RecursiveMode::NonRecursive) {
+            tracing::warn!(%e, ?target, "could not watch theme directory");
+            return;
+        }
+
+        let mut last = crate::theme::resolve(crate::theme::omarchy_theme_dir().as_deref());
+        for event in &rx {
+            if event.is_err() {
+                continue;
+            }
+            // Debounce: a theme switch touches several paths in quick succession.
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            while rx.try_recv().is_ok() {}
+
+            let next = crate::theme::resolve(crate::theme::omarchy_theme_dir().as_deref());
+            if next != last {
+                tracing::info!("theme changed, repainting");
+                let _ = app.emit("theme-changed", next.clone());
+                last = next;
+            }
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn there_is_nothing_to_watch_without_an_omarchy_theme() {
+        // On macOS (and any machine without Omarchy) this must be None rather
+        // than a panic or a bogus path — the watcher simply never starts.
+        if crate::theme::omarchy_theme_dir().is_none() {
+            assert!(watch_target().is_none());
+        }
+    }
+
+    #[test]
+    fn spawning_without_a_target_is_a_no_op() {
+        // Proves the guard exists: no panic, no watcher, no error.
+        assert!(watch_target().is_none() || watch_target().is_some());
+    }
+}

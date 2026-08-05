@@ -1,7 +1,7 @@
 <!-- ui/src/App.svelte -->
 <script lang="ts">
   import { listen } from '@tauri-apps/api/event';
-  import { applyPalette } from './lib/theme';
+  import { applyPalette, setPalette, type Palette } from './lib/theme';
   import { getWeek, weekStart, type WeekPayload } from './lib/api';
   import { getStatus, signIn, syncNow, type AppStatus } from './lib/status';
   import WeekGrid from './lib/WeekGrid.svelte';
@@ -16,6 +16,14 @@
   let error = $state<string | null>(null);
 
   $effect(() => { applyPalette(); });
+
+  // Live theme reload (spec §10): repaint when the Rust watcher notices
+  // `omarchy-theme-set` replaced the theme symlink. A no-op off Linux, since
+  // the watcher itself never emits there.
+  $effect(() => {
+    const un = listen<Palette>('theme-changed', (e) => setPalette(e.payload));
+    return () => { un.then((f) => f()); };
+  });
 
   async function refreshStatus() {
     try { status = await getStatus(); } catch (e) { error = String(e); }

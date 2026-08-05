@@ -5,6 +5,7 @@ mod fixtures;
 mod status;
 mod sync_loop;
 mod theme;
+mod theme_watch;
 
 use sqlx::SqlitePool;
 use tauri::Manager;
@@ -288,6 +289,7 @@ pub fn run() {
 
             app.manage(AppState { pool, demo });
             sync_loop::spawn(app.handle().clone());
+            theme_watch::spawn(app.handle().clone());
             Ok(())
         })
         .on_window_event(|window, event| {
