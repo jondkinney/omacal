@@ -104,6 +104,18 @@ test.describe('Header', () => {
     await expect(page.getByRole('button', { name: 'Connect Google Calendar' })).toBeVisible();
   });
 
+  test('a connected demo account shows the badge but never offers Sync now', async ({ page }) => {
+    // The real demo account is a seeded `accounts` row (connected), but was
+    // never through OAuth — sync_now refuses it server-side, so the button
+    // must not appear at all rather than invite a click that only errors.
+    await page.clock.setFixedTime(FIXED_NOW);
+    await page.goto(show('Header', 'connected-demo'));
+    await expect(page.locator('.demo')).toHaveText('DEMO DATA');
+    await expect(page.locator('.synced')).toHaveText('Synced 5 min ago');
+    await expect(page.getByRole('button', { name: 'Sync now' })).toHaveCount(0);
+    await expect(page.locator('header')).toHaveScreenshot('header-connected-demo.png');
+  });
+
   test('busy disables the connect button while signing in', async ({ page }) => {
     await page.goto(show('Header', 'busy-disconnected'));
     const btn = page.getByRole('button', { name: 'Connecting…' });

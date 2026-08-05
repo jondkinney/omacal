@@ -39,7 +39,12 @@
     {/if}
     {#if connected}
       <span class="synced">{busy ? 'Syncing…' : `Synced ${relativeTime(status!.last_sync_ms)}`}</span>
-      <button onclick={onSync} disabled={busy}>Sync now</button>
+      {#if !status?.demo}
+        <!-- Demo mode's seeded account never went through OAuth, so a sync
+             would only fail; offering the button at all would be a control
+             that exists solely to produce an error. -->
+        <button onclick={onSync} disabled={busy}>Sync now</button>
+      {/if}
     {:else}
       <button class="primary" onclick={onSignIn} disabled={busy}>
         {busy ? 'Connecting…' : 'Connect Google Calendar'}

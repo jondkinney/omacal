@@ -180,9 +180,35 @@ fn now_ms() -> i64 {
         .unwrap_or(0)
 }
 
+/// The message `sync_now` returns in demo mode, before any config or keyring
+/// I/O runs. The demo account (`fixtures::seed_demo`) is a real `accounts`
+/// row but was never through OAuth, so without this gate `load_config` or
+/// `load_refresh_token` would fail and surface a raw technical string —
+/// `"No matching credential found"` — as the very first thing a new user
+/// sees, since Sync now is the only button on screen in demo mode.
+const DEMO_SYNC_MESSAGE: &str = "Demo mode — this is synthetic data, so there is nothing to sync.";
+
+/// `Err` when `demo` is true, `Ok` otherwise. A plain function of the flag —
+/// no config or keyring I/O anywhere near it — so callers that check it first
+/// (as `sync_now` does below, and as Task 4's background loop must) cannot
+/// reach that I/O in demo mode.
+fn demo_sync_guard(demo: bool) -> Result<(), String> {
+    if demo {
+        Err(DEMO_SYNC_MESSAGE.to_string())
+    } else {
+        Ok(())
+    }
+}
+
 /// Refreshes the access token and syncs every calendar of every account.
 #[tauri::command]
 async fn sync_now(state: tauri::State<'_, AppState>) -> Result<u64, String> {
+    // Checked here, at the command boundary, rather than inside `inner` —
+    // Task 4's background sync loop is a second caller that needs its own
+    // demo check, and burying this one inside `inner` would leave that
+    // caller with no way to see it.
+    demo_sync_guard(state.demo)?;
+
     async fn inner(pool: &SqlitePool) -> anyhow::Result<u64> {
         let cfg = load_config()?;
         let accounts: Vec<(i64, String)> =
@@ -266,4 +292,20 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running omacal");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `sync_now` calls this before doing anything else, so proving the guard
+    /// itself never performs I/O — it is a pure function of the flag — proves
+    /// the command cannot reach `load_config` or the keyring in demo mode.
+    #[test]
+    fn the_demo_gate_blocks_sync_with_a_friendly_message_and_lets_real_accounts_through() {
+        assert_eq!(demo_sync_guard(true), Err(DEMO_SYNC_MESSAGE.to_string()));
+        assert!(!DEMO_SYNC_MESSAGE.to_lowercase().contains("credential"),
+            "the demo-mode message must read as intentional, not as a leaked technical error");
+        assert_eq!(demo_sync_guard(false), Ok(()));
+    }
 }
