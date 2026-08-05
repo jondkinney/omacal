@@ -2280,7 +2280,7 @@ pub use client::{ApiError, CalendarClient, EventsPage, EventsRequest};
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `cargo test -p omacal-google`
-Expected: 12 passed.
+Expected: 14 passed (8 existing auth tests + 6 new client tests).
 
 - [ ] **Step 6: Commit**
 
