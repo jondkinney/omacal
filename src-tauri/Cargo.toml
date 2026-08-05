@@ -24,4 +24,15 @@ serde.workspace = true
 serde_json.workspace = true
 toml = "1"
 tracing.workspace = true
+omacal-core = { version = "0.1.0", path = "../crates/omacal-core" }
+omacal-store = { version = "0.1.0", path = "../crates/omacal-store" }
+omacal-google = { version = "0.1.0", path = "../crates/omacal-google" }
+omacal-sync = { version = "0.1.0", path = "../crates/omacal-sync" }
+jiff = "0.2.35"
+keyring = "4.1.6"
+open = "5.4.0"
+tracing-subscriber = "0.3.23"
+sqlx = { version = "0.8.6", features = ["runtime-tokio", "sqlite"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
+anyhow.workspace = true
 
