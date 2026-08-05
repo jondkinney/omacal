@@ -127,7 +127,7 @@ async fn drain(
 mod tests {
     use super::*;
     use omacal_google::CalendarClient;
-    use wiremock::matchers::{method, path, query_param};
+    use wiremock::matchers::{method, path, query_param, query_param_is_missing};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     async fn seeded_pool() -> sqlx::SqlitePool {
@@ -226,5 +226,92 @@ mod tests {
             "SELECT sync_token FROM sync_state WHERE calendar_id = 1")
             .fetch_one(&pool).await.unwrap();
         assert_eq!(tok.as_deref(), Some("tok-fresh"));
+    }
+
+    /// Page 1: an event plus `nextPageToken`, no `nextSyncToken` (Google never
+    /// sends a sync token until the last page). Page 2, matched on that
+    /// `pageToken`: a different event, no `nextPageToken`, and the real
+    /// `nextSyncToken`.
+    fn page_one_body(next_page_token: &str, decoy_sync_token: Option<&str>) -> serde_json::Value {
+        let mut body = serde_json::json!({
+            "items": [{
+                "id": "e1", "status": "confirmed", "summary": "Standup",
+                "start": {"dateTime": "2026-08-03T09:00:00+03:00", "timeZone": "Europe/Sofia"},
+                "end":   {"dateTime": "2026-08-03T09:30:00+03:00", "timeZone": "Europe/Sofia"}
+            }],
+            "nextPageToken": next_page_token
+        });
+        if let Some(t) = decoy_sync_token {
+            body["nextSyncToken"] = serde_json::json!(t);
+        }
+        body
+    }
+
+    fn page_two_body(sync_token: &str) -> serde_json::Value {
+        serde_json::json!({
+            "items": [{
+                "id": "e2", "status": "confirmed", "summary": "Retro",
+                "start": {"dateTime": "2026-08-04T09:00:00+03:00", "timeZone": "Europe/Sofia"},
+                "end":   {"dateTime": "2026-08-04T09:30:00+03:00", "timeZone": "Europe/Sofia"}
+            }],
+            "nextSyncToken": sync_token
+        })
+    }
+
+    #[tokio::test]
+    async fn a_multi_page_sync_consumes_every_page() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/calendars/primary/events"))
+            .and(query_param_is_missing("pageToken"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(page_one_body("page-2-token", None)))
+            .mount(&server).await;
+        Mock::given(method("GET")).and(path("/calendars/primary/events"))
+            .and(query_param("pageToken", "page-2-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(page_two_body("tok-final")))
+            .mount(&server).await;
+
+        let pool = seeded_pool().await;
+        let client = CalendarClient::new(server.uri(), "at-1");
+        let out = sync_calendar(&pool, &client, 1, "primary", 0, 9_999_999_999_999).await.unwrap();
+
+        assert_eq!(out.upserted, 2);
+        let stored = omacal_store::events_in_window(&pool, 0, 9_999_999_999_999).await.unwrap();
+        assert_eq!(stored.len(), 2);
+        let ids: Vec<&str> = stored.iter().map(|e| e.google_id.as_str()).collect();
+        assert!(ids.contains(&"e1"));
+        assert!(ids.contains(&"e2"));
+
+        let tok: Option<String> = sqlx::query_scalar(
+            "SELECT sync_token FROM sync_state WHERE calendar_id = 1")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(tok.as_deref(), Some("tok-final"));
+    }
+
+    /// A sharper regression guard than the test above: page 1 also carries a
+    /// `nextSyncToken`, as it would if a caller ever changed `drain` to return
+    /// on the first token it sees rather than looping until pagination ends.
+    /// Only the token from the *last* page may ever be stored.
+    #[tokio::test]
+    async fn the_sync_token_comes_from_the_final_page_only() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/calendars/primary/events"))
+            .and(query_param_is_missing("pageToken"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                page_one_body("page-2-token", Some("WRONG-do-not-store"))))
+            .mount(&server).await;
+        Mock::given(method("GET")).and(path("/calendars/primary/events"))
+            .and(query_param("pageToken", "page-2-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(page_two_body("tok-final")))
+            .mount(&server).await;
+
+        let pool = seeded_pool().await;
+        let client = CalendarClient::new(server.uri(), "at-1");
+        sync_calendar(&pool, &client, 1, "primary", 0, 9_999_999_999_999).await.unwrap();
+
+        let tok: Option<String> = sqlx::query_scalar(
+            "SELECT sync_token FROM sync_state WHERE calendar_id = 1")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(tok.as_deref(), Some("tok-final"));
+        assert_ne!(tok.as_deref(), Some("WRONG-do-not-store"));
     }
 }
