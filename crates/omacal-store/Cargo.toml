@@ -1,0 +1,10 @@
+[package]
+name = "omacal-store"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+sqlx = { version = "0.8.6", features = ["runtime-tokio", "sqlite", "migrate"] }
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
