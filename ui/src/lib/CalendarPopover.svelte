@@ -3,9 +3,16 @@
   import { tick } from 'svelte';
   import { byAccount, setCalendarSelected, setCalendarSync, type Calendar } from './calendars';
 
-  let { calendars, onchange }: { calendars: Calendar[]; onchange: () => void } = $props();
+  let {
+    calendars,
+    onchange,
+    open = $bindable(false),
+  }: {
+    calendars: Calendar[];
+    onchange: () => void;
+    open?: boolean;
+  } = $props();
 
-  let open = $state(false);
   // The ids with a write in flight. A `Set` rather than a single id: with one
   // id, toggling calendar B while calendar A's call was still pending made
   // `busy` point at B and silently re-enabled A's row — a real double-submit,
@@ -22,6 +29,13 @@
    *  another action starts. */
   let message = $state<{ text: string; kind: 'info' | 'error' } | null>(null);
 
+  // A parent-driven open (Task 7: after every sign-in) clears a stale note
+  // exactly as a click-driven one did — moved out of `toggle()` so both paths
+  // to `open` becoming true go through one place.
+  $effect(() => {
+    if (open) message = null;
+  });
+
   const shown = $derived(calendars.filter((c) => c.sync_enabled && c.selected).length);
   const groups = $derived(byAccount(calendars));
 
@@ -34,7 +48,6 @@
   function toggle(e: MouseEvent) {
     open = !open;
     if (open) {
-      message = null;
       // WebKit, unlike Chromium, does not focus a <button> on click — only on
       // Tab. Without an explicit focus() here, Escape has nothing local to
       // bubble from until the user tabs somewhere, and the popover would open

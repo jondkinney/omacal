@@ -147,6 +147,16 @@ test.describe('App', () => {
     await expect.poll(calendarCalls).toBeGreaterThan(before);
   });
 
+  // Task 7: the picker opens after every sign-in — first account or fifth —
+  // so a freshly imported set of calendars, all switched on by default, is
+  // never left syncing behind the user's back without them having seen it.
+  test('signing in opens the picker with the new calendars in it', async ({ page }) => {
+    await page.goto(app('sign-in-adds-account'));
+    await page.getByRole('button', { name: /Connect|Add account/ }).click();
+    await expect(page.locator('.panel')).toBeVisible();
+    await expect(page.locator('.acct')).toHaveCount(1);
+  });
+
   test('a theme-changed event repaints without a reload', async ({ page }) => {
     await page.goto(app());
     await page.evaluate(() =>

@@ -191,6 +191,12 @@ test.describe('Header', () => {
     await expect(page.getByRole('button', { name: 'Sync now' })).toBeDisabled();
   });
 
+  test('busy disables the add account button while syncing', async ({ page }) => {
+    await page.clock.setFixedTime(FIXED_NOW);
+    await page.goto(show('Header', 'busy-connected'));
+    await expect(page.getByRole('button', { name: 'Add account' })).toBeDisabled();
+  });
+
   test('a connected account can add another', async ({ page }) => {
     await page.goto(show('Header', 'connected'));
     await expect(page.getByRole('button', { name: 'Add account' })).toBeVisible();
@@ -216,6 +222,18 @@ test.describe('CalendarPopover', () => {
     await page.goto(show('two-accounts'));
     await page.getByRole('button', { name: /Calendars/ }).click();
     await expect(page.locator('.acct')).toHaveCount(2);
+  });
+
+  // Task 7: a parent (`App`, right after sign-in) can drive the panel open
+  // through the bindable `open` prop, without going through the trigger.
+  test('a parent can open the picker', async ({ page }) => {
+    await page.goto(show('open-on-mount'));
+    await expect(page.locator('.panel')).toBeVisible();
+  });
+
+  test('it still starts closed by default', async ({ page }) => {
+    await page.goto(show('two-accounts'));
+    await expect(page.locator('.panel')).toHaveCount(0);
   });
 
   test('counts only calendars that are both synced and shown', async ({ page }) => {

@@ -16,6 +16,10 @@
   let calendars = $state<Calendar[]>([]);
   let busy = $state(false);
   let error = $state<string | null>(null);
+  // Opened right after every sign-in (Task 7) — see `handleSignIn` — so a
+  // freshly imported set of calendars, all switched on by default, is never
+  // left silently syncing without the user having seen the list.
+  let pickerOpen = $state(false);
 
   $effect(() => { applyPalette(); });
 
@@ -106,6 +110,11 @@
       // the newly connected account is invisible in the popover until the
       // app is relaunched.
       await refreshCalendars();
+      // Open the picker now — calendars are loaded and durable (sign_in wrote
+      // them to SQLite before it resolved), even though events are still
+      // syncing. Every account imports switched on by default, holidays and
+      // room calendars included; this is where the user first gets a say.
+      pickerOpen = true;
       await handleSync();
     }
     catch (e) { error = String(e); }
@@ -132,6 +141,7 @@
     onSignIn={handleSignIn}
     onSync={handleSync}
     oncalendarchange={handleCalendarChange}
+    bind:open={pickerOpen}
   />
   {#if week}
     <WeekGrid {week} />

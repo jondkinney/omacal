@@ -7,6 +7,7 @@
   let {
     status, weekStartMs, busy, error, calendars,
     onPrev, onNext, onToday, onSignIn, onSync, oncalendarchange,
+    open = $bindable(false),
   }: {
     status: AppStatus | null;
     weekStartMs: number;
@@ -15,6 +16,9 @@
     calendars: Calendar[];
     onPrev: () => void; onNext: () => void; onToday: () => void;
     onSignIn: () => void; onSync: () => void; oncalendarchange: () => void;
+    /** Bound through to `CalendarPopover` — lets `App` open the picker
+     *  straight after a sign-in, from outside the popover's own trigger. */
+    open?: boolean;
   } = $props();
 
   const title = $derived(
@@ -50,7 +54,7 @@
       <span class="demo">DEMO DATA</span>
     {/if}
     {#if calendars.length > 0}
-      <CalendarPopover {calendars} onchange={oncalendarchange} />
+      <CalendarPopover {calendars} onchange={oncalendarchange} bind:open />
     {/if}
     {#if connected}
       <span class="synced">{busy ? 'Syncing…' : `Synced ${synced}`}</span>

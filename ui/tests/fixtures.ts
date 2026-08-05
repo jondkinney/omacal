@@ -186,6 +186,16 @@ export const FIXTURES: Record<string, Record<string, any>> = {
       ],
       onchange: noop,
     },
+    // Task 7: proves a parent can drive the panel open via the bindable
+    // `open` prop, without ever clicking the trigger itself.
+    'open-on-mount': {
+      calendars: [
+        cal({ id: 1, account_id: 1, account_email: 'me@x.com', summary: 'Personal', is_primary: true }),
+        cal({ id: 2, account_id: 2, account_email: 'work@x.com', summary: 'Team' }),
+      ],
+      onchange: noop,
+      open: true,
+    },
     // One hidden (synced but unticked), one removed (sync stopped — `selected`
     // is left alone per the backend contract, so it can still be true), one
     // ordinary visible calendar.

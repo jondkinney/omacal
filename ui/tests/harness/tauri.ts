@@ -150,11 +150,25 @@ function statusFor(scenario: string): AppStatus {
   switch (scenario) {
     case 'no-config':
     case 'disconnected':
+    // Starts with nobody connected, so `handleSignIn` runs the
+    // "Connect Google Calendar" path rather than "Add account" — Task 7's
+    // picker opens after either.
+    case 'sign-in-adds-account':
       return { accounts: [], last_sync_ms: null, demo: false };
     default:
       return { accounts: ['me@x.com'], last_sync_ms: APP_FIVE_MIN_AGO, demo: false };
   }
 }
+
+/** What `get_calendars` returns for the `sign-in-adds-account` scenario, once
+ *  `sign_in` has actually been called — one freshly imported account, all of
+ *  it switched on by default, exactly as a real `sign_in` leaves it. */
+const SIGNED_IN_CALENDARS: Calendar[] = [
+  { id: 1, account_id: 1, account_email: 'new@x.com', summary: 'Personal',
+    color_hex: '#5b8def', selected: true, sync_enabled: true, is_primary: true },
+  { id: 2, account_id: 1, account_email: 'new@x.com', summary: 'Holidays',
+    color_hex: '#e2a03f', selected: true, sync_enabled: true, is_primary: false },
+];
 
 function getWeek(weekStartMs: number): Promise<WeekPayload> {
   if (failWeekOnce !== null) {
@@ -173,7 +187,11 @@ function getWeek(weekStartMs: number): Promise<WeekPayload> {
 
 /** Installs the stub. Call before mounting anything that talks to Tauri. */
 export function installTauriStub(scenario: string): Harness {
-  const status = statusFor(scenario);
+  // Reassigned by `sign_in` for the `sign-in-adds-account` scenario: a real
+  // `sign_in` leaves the account durably connected, so the next `get_status`
+  // must reflect it too, not just `get_calendars`.
+  let status = statusFor(scenario);
+  let signedIn = false;
 
   const invoke = async (cmd: string, args: Record<string, any> = {}): Promise<unknown> => {
     harness.calls.push({ cmd, args });
@@ -203,7 +221,9 @@ export function installTauriStub(scenario: string): Harness {
       // assertion undisturbed. CalendarPopover specs never take this path —
       // they mount the component directly with fixture props instead.
       case 'get_calendars':
-        return [] as Calendar[];
+        return scenario === 'sign-in-adds-account' && signedIn
+          ? SIGNED_IN_CALENDARS
+          : ([] as Calendar[]);
       case 'set_calendar_selected':
         return calendarResult(cmd, undefined);
       case 'set_calendar_sync':
@@ -214,6 +234,11 @@ export function installTauriStub(scenario: string): Harness {
         // Tauri rejects a `Result<_, String>` with the bare string, so the
         // app sees exactly the sentence Rust produced.
         if (scenario === 'no-config') return Promise.reject(NO_CONFIG_ERROR);
+        if (scenario === 'sign-in-adds-account') {
+          signedIn = true;
+          status = { accounts: ['new@x.com'], last_sync_ms: null, demo: false };
+          return 'new@x.com';
+        }
         return 'me@x.com';
       default:
         throw new Error(`unstubbed command: ${cmd}`);
