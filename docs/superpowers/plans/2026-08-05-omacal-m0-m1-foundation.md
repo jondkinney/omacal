@@ -22,7 +22,7 @@
 - **The app must start even if the theme cannot be parsed** — fall back to the built-in dark palette and log a warning (spec §10).
 - **OAuth scope is exactly** `https://www.googleapis.com/auth/calendar`.
 - **No live network calls in tests.** `omacal-google` is tested against `wiremock`.
-- Crate names: `omacal-core`, `omacal-store`, `omacal-google`, `omacal-sync`. (`omacal-notify` arrives in Plan 3.)
+- Crate names: `omacal-core`, `omacal-store`, `omacal-google`, `omacal-sync`, and the Tauri shell in `src-tauri` is package **`omacal`** with lib target `omacal_lib`. (`omacal-notify` arrives in Plan 3.) Rename the generated `src-tauri` package in Task 1 — every later task depends on it.
 - Development happens on macOS; Task 15 is the Omarchy verification checkpoint.
 
 ---
@@ -120,7 +120,20 @@ serde_json = "1"
 tracing   = "0.1"
 ```
 
-Add `[package] edition.workspace = true` to `src-tauri/Cargo.toml`.
+In `src-tauri/Cargo.toml`, set the package name to **`omacal`** and adopt the workspace edition. Every later task refers to this crate as `omacal` (`cargo add --package omacal`, `cargo test -p omacal`), so the generated name must be changed:
+
+```toml
+[package]
+name = "omacal"
+version = "0.1.0"
+edition.workspace = true
+
+[lib]
+name = "omacal_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+```
+
+Update `src-tauri/src/main.rs` to call `omacal_lib::run()` to match.
 
 - [ ] **Step 4: Create the core crate**
 
@@ -2866,7 +2879,7 @@ blue = "#1e66f5"
 
 - [ ] **Step 3: Run tests to verify they fail**
 
-Run: `cargo test -p omacal theme` (or whatever `src-tauri`'s package name is)
+Run: `cargo test -p omacal theme`
 Expected: FAIL — `cannot find function parse_alacritty`.
 
 - [ ] **Step 4: Implement**
