@@ -2,27 +2,59 @@
 <script lang="ts">
   import { applyPalette } from './lib/theme';
   import { getWeek, weekStart, type WeekPayload } from './lib/api';
+  import { getStatus, signIn, syncNow, type AppStatus } from './lib/status';
   import WeekGrid from './lib/WeekGrid.svelte';
+  import Header from './lib/Header.svelte';
+
+  const WEEK = 7 * 24 * 3_600_000;
 
   let weekStartMs = $state(weekStart(new Date()));
   let week = $state<WeekPayload | null>(null);
+  let status = $state<AppStatus | null>(null);
+  let busy = $state(false);
   let error = $state<string | null>(null);
 
   $effect(() => { applyPalette(); });
+
+  async function refreshStatus() {
+    try { status = await getStatus(); } catch (e) { error = String(e); }
+  }
+  $effect(() => { refreshStatus(); });
 
   $effect(() => {
     getWeek(weekStartMs)
       .then((w) => { week = w; error = null; })
       .catch((e) => { error = String(e); });
   });
+
+  async function handleSignIn() {
+    busy = true; error = null;
+    try { await signIn(); await refreshStatus(); await handleSync(); }
+    catch (e) { error = String(e); }
+    finally { busy = false; }
+  }
+
+  async function handleSync() {
+    busy = true; error = null;
+    try {
+      await syncNow();
+      await refreshStatus();
+      week = await getWeek(weekStartMs);
+    } catch (e) { error = String(e); }
+    finally { busy = false; }
+  }
 </script>
 
 <main>
-  {#if error}
-    <p class="error">{error}</p>
-  {:else if week}
-    <!-- The grid takes its day boundaries from the payload, which computed them
-         in the display zone; a DST week has no fixed 24-hour stride. -->
+  <Header
+    {status} {weekStartMs} {busy} {error}
+    onPrev={() => (weekStartMs -= WEEK)}
+    onNext={() => (weekStartMs += WEEK)}
+    onToday={() => (weekStartMs = weekStart(new Date()))}
+    onSignIn={handleSignIn}
+    onSync={handleSync}
+  />
+  {#if week}
     <WeekGrid {week} />
   {/if}
 </main>
@@ -31,5 +63,4 @@
   :global(body) { background: var(--bg); color: var(--text); margin: 0;
                   font-family: -apple-system, 'SF Pro Text', Inter, system-ui, sans-serif; }
   main { padding: 14px 16px; }
-  .error { color: #e2564a; font-size: 13px; }
 </style>

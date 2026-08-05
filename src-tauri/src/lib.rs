@@ -2,12 +2,21 @@
 
 mod commands;
 mod fixtures;
+mod status;
 mod theme;
 
 use sqlx::SqlitePool;
 
 pub struct AppState {
     pub pool: SqlitePool,
+    /// True when running on synthetic demo data; surfaced to the UI via
+    /// `get_status` so it can show the `DEMO DATA` badge.
+    pub demo: bool,
+}
+
+#[tauri::command]
+async fn get_status(state: tauri::State<'_, AppState>) -> Result<status::AppStatus, String> {
+    status::read_status(&state.pool, state.demo).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -211,6 +220,7 @@ async fn sync_now(state: tauri::State<'_, AppState>) -> Result<u64, String> {
                 total += (out.upserted + out.deleted) as u64;
             }
         }
+        status::record_sync(pool, now_ms()).await?;
         Ok(total)
     }
 
@@ -231,24 +241,26 @@ pub fn run() {
             // Demo mode writes to its own database file, never the real one, so
             // a user exploring the demo can never end up with synthetic events
             // mixed into their actual calendar store.
-            let db_name = if fixtures::demo_mode() { "omacal-demo.db" } else { "omacal.db" };
+            let demo = fixtures::demo_mode();
+            let db_name = if demo { "omacal-demo.db" } else { "omacal.db" };
             let url = format!("sqlite://{}", dir.join(db_name).display());
 
             // Block once at startup: nothing can render before migrations run.
             let pool = tauri::async_runtime::block_on(omacal_store::connect(&url))?;
 
-            if fixtures::demo_mode() {
+            if demo {
                 let now = now_ms();
                 let seeded = tauri::async_runtime::block_on(fixtures::seed_demo(&pool, now))?;
                 tracing::warn!(seeded, db = db_name, "DEMO MODE — synthetic data, not your calendar");
             }
 
-            app.manage(AppState { pool });
+            app.manage(AppState { pool, demo });
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             get_palette,
             get_week,
+            get_status,
             sign_in,
             sync_now
         ])

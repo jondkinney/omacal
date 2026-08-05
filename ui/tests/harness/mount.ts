@@ -2,6 +2,7 @@ import { mount } from 'svelte';
 import WeekGrid from '../../src/lib/WeekGrid.svelte';
 import EventBlock from '../../src/lib/EventBlock.svelte';
 import AllDayBand from '../../src/lib/AllDayBand.svelte';
+import Header from '../../src/lib/Header.svelte';
 import { FIXTURES } from '../fixtures';
 
 // Palette normally arrives from the Rust get_palette command; the harness
@@ -23,7 +24,7 @@ const params = new URLSearchParams(location.search);
 const name = params.get('c') ?? 'WeekGrid';
 const fixture = params.get('f') ?? 'default';
 
-const COMPONENTS: Record<string, any> = { WeekGrid, EventBlock, AllDayBand };
+const COMPONENTS: Record<string, any> = { WeekGrid, EventBlock, AllDayBand, Header };
 const target = document.getElementById('app')!;
 
 const props = FIXTURES[name]?.[fixture];

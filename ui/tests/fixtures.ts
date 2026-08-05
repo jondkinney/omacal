@@ -1,4 +1,5 @@
 import type { UiEvent, Placed, Lane, WeekPayload } from '../src/lib/api';
+import type { AppStatus } from '../src/lib/status';
 
 const H = 3_600_000;
 // Fixed well in the past (not just "a Monday", but a Monday that will never
@@ -8,6 +9,13 @@ const H = 3_600_000;
 // with a real run date and make every screenshot in this file flaky forever.
 /** Monday 2024-01-01 00:00:00 UTC. */
 export const MON = 1_704_067_200_000;
+
+// `Header`'s "Synced …" text calls `relativeTime` with the real wall clock, so
+// a fixture timestamp alone is not enough to keep it inert — the spec must
+// also freeze the page clock (via `page.clock.setFixedTime`) to this instant
+// before navigating. One hour into the fixed Monday, well clear of MON itself.
+/** The instant the Header spec freezes `Date.now()` to. */
+export const FIXED_NOW = MON + H;
 
 const ev = (o: Partial<UiEvent> & { title: string; start_ms: number; end_ms: number }): UiEvent => ({
   id: Math.floor(o.start_ms / 1000),
@@ -68,6 +76,18 @@ const block = (title: string, mins: number, response: UiEvent['response'],
   placed: placed(0.2, mins / (24 * 60)),
 });
 
+// Header's action props are callbacks, never events, so no-ops satisfy the
+// component without a real App.svelte behind them.
+const noop = () => {};
+
+const header = (status: AppStatus, busy = false) => ({
+  status, weekStartMs: MON, busy, error: null as string | null,
+  onPrev: noop, onNext: noop, onToday: noop, onSignIn: noop, onSync: noop,
+});
+
+/** Exactly five minutes before `FIXED_NOW`, so a frozen clock always reads "5 min ago". */
+const FIVE_MIN_AGO = FIXED_NOW - 5 * 60_000;
+
 export const FIXTURES: Record<string, Record<string, any>> = {
   WeekGrid: {
     empty: { week: emptyWeek() },
@@ -97,5 +117,12 @@ export const FIXTURES: Record<string, Record<string, any>> = {
       overflow: [2, 3],
     },
     empty: { lanes: [], events: [], overflow: [] },
+  },
+  Header: {
+    disconnected: header({ accounts: [], last_sync_ms: null, demo: false }),
+    connected: header({ accounts: ['me@x.com'], last_sync_ms: FIVE_MIN_AGO, demo: false }),
+    demo: header({ accounts: [], last_sync_ms: null, demo: true }),
+    'busy-disconnected': header({ accounts: [], last_sync_ms: null, demo: false }, true),
+    'busy-connected': header({ accounts: ['me@x.com'], last_sync_ms: FIVE_MIN_AGO, demo: false }, true),
   },
 };
