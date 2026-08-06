@@ -251,6 +251,33 @@ mod tests {
         1
     }
 
+    /// Two accounts, one calendar each, with the calendar ids and account ids
+    /// deliberately crossed so no calendar's `id` equals its own
+    /// `account_id`. `seed`'s single account/calendar fixture makes that
+    /// coincidence unavoidable — both ids come out `1` — which means a join
+    /// on the wrong column can still return the right row by accident. Kept
+    /// general enough to seed other cross-account tests, not just this one.
+    ///
+    /// Returns `(cal_on_account_b, cal_on_account_a)`: the first calendar
+    /// inserted (id 1) belongs to the *second* account, and vice versa.
+    async fn seed_two_accounts(pool: &SqlitePool) -> (i64, i64) {
+        sqlx::query("INSERT INTO accounts (google_sub, email, created_at) VALUES ('a','a@x',0)")
+            .execute(pool).await.unwrap();
+        sqlx::query("INSERT INTO accounts (google_sub, email, created_at) VALUES ('b','b@x',0)")
+            .execute(pool).await.unwrap();
+        // Calendar id 1 belongs to account 2, calendar id 2 belongs to
+        // account 1 — crossed on purpose.
+        sqlx::query(
+            "INSERT INTO calendars (account_id, google_id, summary, timezone, access_role)
+             VALUES (2, 'cal-on-b', 'On B', 'UTC', 'reader')",
+        ).execute(pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO calendars (account_id, google_id, summary, timezone, access_role)
+             VALUES (1, 'cal-on-a', 'On A', 'UTC', 'owner')",
+        ).execute(pool).await.unwrap();
+        (1, 2)
+    }
+
     fn ev(cal: i64, gid: &str, start: i64, end: i64) -> StoredEvent {
         StoredEvent {
             id: 0, calendar_id: cal, google_id: gid.into(),
@@ -673,5 +700,25 @@ mod tests {
     async fn event_by_id_returns_none_for_an_unknown_id() {
         let pool = connect_memory().await.unwrap();
         assert!(event_by_id(&pool, 999).await.unwrap().is_none());
+    }
+
+    /// Guards the join column itself, not just the value it happens to
+    /// produce. With `seed`'s single account/calendar, `c.id` and
+    /// `c.account_id` are both 1, so joining on the wrong column returns the
+    /// right row by coincidence. `seed_two_accounts` crosses the ids so the
+    /// two joins disagree: the event lives on the calendar owned by account
+    /// 1, whose *own* `access_role` is `"owner"`, while the calendar that
+    /// happens to share its `account_id` with the event's `calendar_id` is a
+    /// different row entirely, with `access_role` `"reader"`.
+    #[tokio::test]
+    async fn event_by_id_returns_the_events_own_calendar_not_one_sharing_its_id() {
+        let pool = connect_memory().await.unwrap();
+        let (_cal_on_b, cal_on_a) = seed_two_accounts(&pool).await;
+        let id = upsert_event(&pool, &ev(cal_on_a, "a", 1000, 2000)).await.unwrap();
+
+        let (got, access_role) = event_by_id(&pool, id).await.unwrap().expect("event exists");
+        assert_eq!(got.calendar_id, cal_on_a);
+        assert_eq!(access_role, "owner",
+            "must be cal_on_a's own role, not a calendar that merely shares an id with it");
     }
 }

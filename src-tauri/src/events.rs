@@ -28,6 +28,16 @@ pub(crate) fn can_respond(access_role: &str, attendees: &[omacal_store::Attendee
     matches!(access_role, "owner" | "writer") && attendees.iter().any(|a| a.is_self)
 }
 
+/// Whether an event belongs to a recurring series: either the series master
+/// itself (`recurrence` set) or a materialised exception overriding one
+/// occurrence of a series (`recurring_event_id` set, with no `recurrence` of
+/// its own). A later task shows the "This one / All of them" edit choice
+/// from this field, so misreporting either arm either hides that choice on a
+/// repeating meeting or offers it on a one-off.
+pub(crate) fn is_recurring(recurrence: &Option<String>, recurring_event_id: &Option<String>) -> bool {
+    recurrence.is_some() || recurring_event_id.is_some()
+}
+
 #[tauri::command]
 pub async fn event_detail(
     state: tauri::State<'_, AppState>,
@@ -39,7 +49,7 @@ pub async fn event_detail(
         .ok_or_else(|| crate::errors::user_facing(&anyhow::anyhow!("event {id} not found")))?;
 
     let can_respond = can_respond(&access_role, &event.attendees);
-    let is_recurring = event.recurrence.is_some() || event.recurring_event_id.is_some();
+    let is_recurring = is_recurring(&event.recurrence, &event.recurring_event_id);
 
     Ok(EventDetail {
         id: event.id,
@@ -102,5 +112,23 @@ mod tests {
         }];
         assert!(!can_respond("owner", &others));
         assert!(!can_respond("owner", &[]));
+    }
+
+    #[test]
+    fn a_series_master_is_recurring() {
+        assert!(is_recurring(&Some("RRULE:FREQ=DAILY".into()), &None));
+    }
+
+    /// A materialised exception carries no `recurrence` of its own — that
+    /// field belongs to the master it overrides — so `is_recurring` has to
+    /// catch this arm through `recurring_event_id` alone.
+    #[test]
+    fn a_materialised_exception_is_recurring() {
+        assert!(is_recurring(&None, &Some("master-google-id".into())));
+    }
+
+    #[test]
+    fn a_one_off_event_is_not_recurring() {
+        assert!(!is_recurring(&None, &None));
     }
 }
