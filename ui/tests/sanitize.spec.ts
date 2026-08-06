@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { descriptionSegments } from '../src/lib/sanitize';
+import { descriptionSegments, stripTags, MAX_DESCRIPTION_LENGTH } from '../src/lib/sanitize';
 
 const text = (raw: string | null) =>
   descriptionSegments(raw).map((s) => s.value).join('');
@@ -75,5 +75,39 @@ test.describe('descriptionSegments', () => {
   test('a data: url is never a link', () => {
     const out = descriptionSegments('data:text/html,<script>alert(1)</script>');
     expect(out.every((s) => s.kind === 'text')).toBe(true);
+  });
+
+  // Fix round 1: TAG_RE (`/<[^>]*>/g`) was O(n^2) on a run of unmatched
+  // `<` — a single-invite calendar description with no closing `>` could
+  // freeze the webview for tens of seconds. Two independent fixes, two
+  // independent tests below: a hard length cap (deterministic, the primary
+  // guard), and a linear-time tag strip (proven directly, since the cap
+  // would otherwise mask a quadratic regression at 32KB by making it fast
+  // enough to slip under any reasonable timeout).
+
+  test('an oversized description is capped, not processed unbounded', () => {
+    const big = 'a'.repeat(MAX_DESCRIPTION_LENGTH + 20_000);
+    const out = descriptionSegments(big);
+    const joined = out.map((s) => s.value).join('');
+    expect(joined.length).toBeLessThanOrEqual(MAX_DESCRIPTION_LENGTH);
+    expect(joined.length).toBeGreaterThan(0);
+  });
+
+  test('a run of 200,000 unmatched "<" strips in linear time, not quadratic', () => {
+    // Tests stripTags directly rather than through descriptionSegments:
+    // the length cap above truncates any input before it reaches the
+    // stripper, so at the capped size even the old O(n^2) regex finishes
+    // in well under a second — the cap alone can't prove this scan is
+    // linear, only this can.
+    const input = '<'.repeat(200_000);
+    const start = Date.now();
+    const out = stripTags(input);
+    // Generous and finite, not a millisecond budget: the old regex measured
+    // ~14.5s at this size, so this bound stays robust on slow CI while still
+    // catching a return to quadratic behavior.
+    expect(Date.now() - start).toBeLessThan(5000);
+    // No '>' anywhere in the input, so nothing is a tag — the whole run is
+    // kept as literal text, same as the old (slow) implementation produced.
+    expect(out).toBe(input);
   });
 });

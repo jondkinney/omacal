@@ -11,14 +11,59 @@ export type Segment = { kind: 'text' | 'link'; value: string };
 // newlines while they are still real markup.
 const BREAK_RE = /<br\s*\/?>|<\/p>|<\/div>/gi;
 
-// Step 2: everything else that looks like a tag is removed outright. This
-// runs on the raw markup, before any entity decoding — see decodeEntities
-// below for why the order matters.
-const TAG_RE = /<[^>]*>/g;
-
 // Step 4: the only place a URL becomes an href, so the only place a scheme
 // check belongs. http/https only — a javascript: or data: URL never matches.
 const URL_RE = /https?:\/\/[^\s<>"']+/gi;
+
+// A description longer than this is not something anyone reads in a
+// popover, and it bounds the input to every stage below, not just the tag
+// stripper — one fix against every present and future blowup in this
+// function, not only the one found in review (see stripTags). Truncate
+// rather than reject: the popover should still show what fits.
+export const MAX_DESCRIPTION_LENGTH = 32 * 1024;
+
+// Step 2: everything else that looks like a tag is removed outright, in a
+// single forward pass. This runs on the raw markup, before any entity
+// decoding — see decodeEntities below for why the order matters.
+//
+// This used to be `input.replace(/<[^>]*>/g, '')`. On a run of unmatched
+// `<` (e.g. an attacker-sized `'<'.repeat(200000)`), that regex's greedy
+// `[^>]*` runs to end-of-string, fails to find the required `>`, backtracks
+// a character at a time, and then the `g` flag restarts the whole attempt
+// one position later — O(n²), measured at 14.5s for 200,000 characters.
+// No regex on this path can be made obviously non-backtracking, and
+// "obviously" is what a security boundary needs, so this walks the string
+// once instead.
+//
+// Exported only so its linear-time behavior can be exercised directly by a
+// large-input test. With MAX_DESCRIPTION_LENGTH applied first in
+// descriptionSegments, an adversarial input never reaches this function at
+// its full size, so testing only through descriptionSegments couldn't tell
+// a fixed scan from a quadratic one that just happens to be fast at 32KB.
+export function stripTags(input: string): string {
+  let out = '';
+  let i = 0;
+  const n = input.length;
+  while (i < n) {
+    if (input[i] === '<') {
+      const close = input.indexOf('>', i + 1);
+      if (close === -1) {
+        // Nothing from here on can close a tag, so nothing from here on
+        // can be one either — keep the remainder as literal text (a bare
+        // `<` in real text, e.g. "value < 3", is ordinary) and stop. This
+        // is what keeps the scan linear instead of restarting a search at
+        // every subsequent `<`.
+        out += input.slice(i);
+        break;
+      }
+      i = close + 1; // drop the whole <...> run, including both brackets
+    } else {
+      out += input[i];
+      i++;
+    }
+  }
+  return out;
+}
 
 const NAMED_ENTITIES: Record<string, string> = {
   amp: '&',
@@ -59,14 +104,17 @@ function decodeEntities(input: string): string {
  * Order is deliberate and load-bearing: convert line-structuring tags to
  * newlines, strip all remaining tags, decode entities, then linkify. Each
  * step only sees output that is already safe with respect to the step
- * before it — see the comments on TAG_RE and decodeEntities.
+ * before it — see the comments on stripTags and decodeEntities.
  */
 export function descriptionSegments(raw: string | null): Segment[] {
   let text = (raw ?? '').trim();
   if (!text) return [];
+  if (text.length > MAX_DESCRIPTION_LENGTH) {
+    text = text.slice(0, MAX_DESCRIPTION_LENGTH);
+  }
 
   text = text.replace(BREAK_RE, '\n');
-  text = text.replace(TAG_RE, '');
+  text = stripTags(text);
   text = decodeEntities(text);
   text = text.replace(/\n{3,}/g, '\n\n').trim();
   if (!text) return [];
