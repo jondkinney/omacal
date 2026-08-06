@@ -82,6 +82,29 @@ const populatedWeek = (): WeekPayload => {
   return w;
 };
 
+/** A one-day payload — Day view is `assemble_days` at `n = 1`, so the fixture
+ *  shape is the same `WeekPayload` with a single column. */
+const singleDayWeek = (): WeekPayload => ({
+  days: [day(0, [], [])],
+  all_day: [],
+  all_day_events: [],
+  overflow: [],
+});
+
+/** Two overlapping meetings on a one-day grid, laid out exactly as
+ *  `populatedWeek`'s Thursday pair — half-width columns each — so the spec
+ *  can prove that half of a *day's* width still clears the 80px floor a
+ *  seventh of a week's width would not. */
+const singleDayOverlapWeek = (): WeekPayload => {
+  const w = singleDayWeek();
+  w.days[0] = day(0, [
+    ev({ title: 'Ops review', location: 'Meet', start_ms: MON + 10 * H, end_ms: MON + 11 * H }),
+    ev({ title: 'Investors', location: 'Zoom', response: 'needsAction', color: '#f472b6',
+         start_ms: MON + 10 * H, end_ms: MON + 11 * H }),
+  ], [placed(10 / 24, 1 / 24, 0, 2, 0), placed(10 / 24, 1 / 24, 1, 2, 1)]);
+  return w;
+};
+
 /** The week a payload belongs to, as an ISO date — `2024-01-29`. */
 export const weekLabel = (weekStartMs: number) =>
   new Date(weekStartMs).toISOString().slice(0, 10);
@@ -344,6 +367,8 @@ export const FIXTURES: Record<string, Record<string, any>> = {
     popover: { week: popoverWeek() },
     'popover-two-occurrences': { week: popoverTwoOccurrencesWeek() },
     'popover-all-day': { week: popoverAllDayWeek() },
+    'single-day': { week: singleDayWeek(), dayCount: 1 },
+    'single-day-overlap': { week: singleDayOverlapWeek(), dayCount: 1 },
   },
   EventBlock: {
     // The duration ladder.

@@ -22,6 +22,23 @@ test.describe('WeekGrid', () => {
     expect(a!.x + a!.width).toBeLessThanOrEqual(b!.x + 1);
     await expect(page).toHaveScreenshot('weekgrid-populated.png');
   });
+
+  test('a one-day grid renders a single column', async ({ page }) => {
+    await page.goto('/tests/harness/index.html?c=WeekGrid&f=single-day');
+    await expect(page.locator('.col')).toHaveCount(1);
+  });
+
+  test('overlapping events fan out fully in a one-day grid', async ({ page }) => {
+    // Spec §4: Day always fans out rather than stacking into columns — there is
+    // width to spare and no reason to compress.
+    await page.goto('/tests/harness/index.html?c=WeekGrid&f=single-day-overlap');
+    const blocks = page.locator('.col .ev');
+    await expect(blocks).toHaveCount(2);
+    const a = await blocks.nth(0).boundingBox();
+    const b = await blocks.nth(1).boundingBox();
+    expect(a!.x).not.toBe(b!.x);
+    expect(Math.min(a!.width, b!.width)).toBeGreaterThan(80);
+  });
 });
 
 // Fix round 1: `EventPopover`'s own specs mount it standalone against a

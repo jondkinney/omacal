@@ -30,3 +30,6 @@ export function weekStart(d: Date): number {
 
 export const getWeek = (weekStartMs: number) =>
   invoke<WeekPayload>('get_week', { weekStartMs });
+
+export const getDay = (dayStartMs: number) =>
+  invoke<WeekPayload>('get_day', { dayStartMs });

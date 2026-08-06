@@ -8,10 +8,18 @@
   import EventPopover from './EventPopover.svelte';
   import { getEventDetail, refreshEvent, type EventDetail } from './eventdetail';
 
-  let { week }: { week: WeekPayload } = $props();
+  // `dayCount` is declared for the caller's benefit (Day passes 1, Week
+  // passes 7, or omits it for the same default) — the grid itself never
+  // reads it. Every loop below runs over `week.days` and every column count
+  // comes from `week.days.length`, which can never disagree with what the
+  // payload actually carries the way a separately-tracked count could.
+  let { week, dayCount = 7 }: { week: WeekPayload; dayCount?: number } = $props();
 
   const HOURS = [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22];
-  const NAMES = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
+  const DOW = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
+  // Named from the day's own date, not its position in the week — the same
+  // rule works for a 7-column week and a 1-column day.
+  const dayName = (ms: number) => DOW[new Date(ms).getDay()];
 
   const todayStart = (() => { const d = new Date(); d.setHours(0,0,0,0); return d.getTime(); })();
 
@@ -253,13 +261,12 @@
   }
 </script>
 
-<div class="grid">
+<div class="grid" style="--cols:{week.days.length}">
   <div class="gutter head"></div>
-  {#each NAMES as name, i}
-    {@const dayStart = week.days[i].start_ms}
-    <div class="head" class:today={dayStart === todayStart}>
-      <span>{name}</span>
-      <b>{new Date(dayStart).getDate()}</b>
+  {#each week.days as d}
+    <div class="head" class:today={d.start_ms === todayStart}>
+      <span>{dayName(d.start_ms)}</span>
+      <b>{new Date(d.start_ms).getDate()}</b>
     </div>
   {/each}
 </div>
@@ -276,7 +283,7 @@
   onopen={openPopover}
 />
 
-<div class="grid body" bind:this={bodyEl} data-testid="week-body">
+<div class="grid body" style="--cols:{week.days.length}" bind:this={bodyEl} data-testid="week-body">
   <div class="gutter">
     {#each HOURS as h}
       <span style="top:{hourFrac(gutterDay, h) * 100}%">{String(h).padStart(2, '0')}</span>
@@ -285,7 +292,7 @@
 
   {#each effectiveDays as day}
     {@const isToday = day.start_ms === todayStart}
-    <div class="col" class:today={isToday}>
+    <div class="col" class:today={isToday} data-start-ms={day.start_ms}>
       {#each HOURS as h}
         <div class="rule" style="top:{hourFrac(day, h) * 100}%"></div>
       {/each}
@@ -326,7 +333,7 @@
 {/if}
 
 <style>
-  .grid { display: grid; grid-template-columns: 44px repeat(7, 1fr); }
+  .grid { display: grid; grid-template-columns: 44px repeat(var(--cols), 1fr); }
   .body { height: calc(100vh - 150px); overflow-y: auto; position: relative; }
 
   .head { text-align: center; font-size: 10px; color: var(--muted);

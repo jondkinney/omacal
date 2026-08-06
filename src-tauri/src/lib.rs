@@ -80,6 +80,25 @@ async fn get_week(
     Ok(commands::assemble_week(&events, week_start_ms, &tz))
 }
 
+#[tauri::command]
+async fn get_day(
+    state: tauri::State<'_, AppState>,
+    day_start_ms: i64,
+) -> Result<commands::WeekPayload, String> {
+    let tz = display_tz(&state.pool);
+    // Same widening as `get_week`, for the same reason: an event that begins
+    // just before the day, or a DST-lengthened day, must not be missed.
+    const DAY: i64 = 24 * 3_600_000;
+    let events = omacal_store::events_in_window(
+        &state.pool,
+        day_start_ms - DAY,
+        day_start_ms + 2 * DAY,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(commands::assemble_days(&events, day_start_ms, 1, &tz))
+}
+
 const KEYRING_SERVICE: &str = "omacal";
 
 /// Google's Calendar API root. A constant so the one place that overrides it —
@@ -525,6 +544,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_palette,
             get_week,
+            get_day,
             get_status,
             sign_in,
             sync_now,
