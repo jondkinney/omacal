@@ -251,6 +251,12 @@ fn timed_column(bounds: &[i64], iv: &Interval) -> Option<usize> {
 /// spans that begin before or end after this window. Only the sign matters to
 /// `pack_lanes`, which turns it into a continuation flag, so approximating the
 /// days beyond the window's edges with fixed 24-hour arithmetic is harmless.
+///
+/// Note that no test pins the out-of-window *magnitude*, only its sign:
+/// `pack_lanes` reads the sign and clips the value to the row, so a test would
+/// be asserting a number nothing downstream consumes. Any caller that starts
+/// reading how far outside the window a column falls — a continuation marker
+/// that counts days, say — needs its own coverage here first.
 fn signed_column(bounds: &[i64], ms: i64) -> i32 {
     let n = bounds.len() - 1;
     let end = bounds[n];
@@ -756,6 +762,84 @@ mod tests {
         let m = assemble_month(&[], 2026, 1, "Europe/Sofia");
         assert_eq!(m.rows[0].cells[0].start_ms, 1766959200000, "grid must start Mon 29 Dec 2025");
         assert!(!m.rows[0].cells[0].in_month, "29 Dec 2025 belongs to December, not January");
+    }
+
+    /// Every cell of the grid, row by row — what an assertion about the month
+    /// as a whole (how many days are in it, how long each one is) reads.
+    fn month_cells(m: &MonthPayload) -> Vec<&MonthCell> {
+        m.rows.iter().flat_map(|r| &r.cells).collect()
+    }
+
+    /// Local midnight-relative instant in Europe/Sofia, the zone every month
+    /// test here uses. Computed rather than pasted so a boundary case reads as
+    /// the date it is about.
+    fn sofia_ms(y: i16, mo: i8, d: i8, hour: i8) -> i64 {
+        jiff::civil::date(y, mo, d)
+            .at(hour, 0, 0, 0)
+            .in_tz("Europe/Sofia")
+            .unwrap()
+            .timestamp()
+            .as_millisecond()
+    }
+
+    /// December is the only month whose next month is in another year, and
+    /// `assemble_month` computes that boundary itself. Get the rollover wrong
+    /// — `(year, 1)` instead of `(year + 1, 1)` — and `next_month_start_ms`
+    /// lands *before* `month_start_ms`, so no cell satisfies `in_month` at
+    /// all and the whole of December renders dimmed as out-of-month.
+    /// `a_grid_start_can_fall_in_the_previous_year` covers a grid *start* in
+    /// the previous year; nothing else here reaches `month == 12`.
+    #[test]
+    fn december_rolls_over_into_the_next_year() {
+        // Tue 1 Dec 2026, so the grid runs Mon 30 Nov - Sun 10 Jan.
+        let m = assemble_month(&[], 2026, 12, "Europe/Sofia");
+        let cells = month_cells(&m);
+        assert_eq!(
+            cells.iter().filter(|c| c.in_month).count(),
+            31,
+            "December has 31 days, and all of them belong to it"
+        );
+        assert!(cells[31].in_month, "31 Dec 2026 is still December");
+        assert!(!cells[32].in_month, "1 Jan 2027 is not");
+    }
+
+    /// The month grid's own DST safety. October 2026 in Europe/Sofia contains
+    /// the 25 Oct fall-back, so one of its 42 cells is 25 hours long. Derive
+    /// the cells with fixed 24-hour arithmetic instead and every cell after
+    /// the transition starts at 23:00 the previous day: `in_month` reaches 32,
+    /// and a Mon 26 Oct 18:00 meeting lands in the cell the UI labels 25.
+    ///
+    /// The week has `a_dst_week_contains_a_twenty_five_hour_day`; a 42-day
+    /// grid is six times likelier to contain a transition than a 7-day one.
+    #[test]
+    fn a_dst_month_keeps_every_cell_on_its_own_local_midnight() {
+        let mon_26 = sofia_ms(2026, 10, 26, 0);
+        let meeting = sofia_ms(2026, 10, 26, 18);
+        let m = assemble_month(
+            &[timed_event(meeting, meeting + 3_600_000)],
+            2026,
+            10,
+            "Europe/Sofia",
+        );
+        let cells = month_cells(&m);
+
+        let lengths: Vec<i64> = cells.iter().map(|c| c.end_ms - c.start_ms).collect();
+        assert!(
+            lengths.contains(&(25 * 3_600_000)),
+            "Sun 25 Oct is 25 hours long, got {lengths:?}"
+        );
+        assert_eq!(
+            cells.iter().filter(|c| c.in_month).count(),
+            31,
+            "October has 31 days; a cell starting at 23:00 on the 31st would make 32"
+        );
+
+        let holding: Vec<&&MonthCell> = cells.iter().filter(|c| !c.timed.is_empty()).collect();
+        assert_eq!(holding.len(), 1, "one meeting belongs to exactly one cell");
+        assert_eq!(
+            holding[0].start_ms, mon_26,
+            "an 18:00 meeting on Mon 26 Oct belongs to Monday's cell, not to Sunday's"
+        );
     }
 
     #[test]

@@ -28,6 +28,22 @@ test.describe('WeekGrid', () => {
     await expect(page.locator('.col')).toHaveCount(1);
   });
 
+  // Whole-branch review, finding 4: `.col` counting alone never noticed that
+  // `--cols` had gone back to a hard-coded 7 — the single column still
+  // existed, it was just drawn in the first seventh of the grid (172px of
+  // 1248) with six-sevenths of the screen blank beside it. `--cols` exists to
+  // produce this geometry, so the geometry is what has to be asserted.
+  test('a one-day grid gives the day the whole width', async ({ page }) => {
+    await page.goto('/tests/harness/index.html?c=WeekGrid&f=single-day');
+    const col = page.locator('.col');
+    await expect(col).toHaveCount(1);
+    const colBox = (await col.boundingBox())!;
+    const gridBox = (await page.getByTestId('week-body').boundingBox())!;
+    // Everything but the 44px hour gutter. 0.9 sits well clear of both
+    // outcomes — ~0.965 correct, ~0.138 with the column stuck at one seventh.
+    expect(colBox.width / gridBox.width).toBeGreaterThan(0.9);
+  });
+
   test('overlapping events fan out fully in a one-day grid', async ({ page }) => {
     // Spec §4: Day always fans out rather than stacking into columns — there is
     // width to spare and no reason to compress.
