@@ -1050,8 +1050,16 @@ git commit -m "feat(ui): popover placement with flip and clamp"
   export const getEventDetail: (id: number) => Promise<EventDetail>;
   export const refreshEvent: (id: number) => Promise<EventDetail>;
   export const respondToEvent:
-    (id: number, response: string, scope: 'this' | 'all') => Promise<EventDetail>;
+    (id: number, response: string, scope: 'this' | 'all',
+     occurrenceStartMs: number) => Promise<EventDetail>;
   ```
+
+**`occurrenceStartMs` is not optional and not cosmetic.** `to_ui` gives every
+expanded occurrence of a recurring series the *master's* store row id, so `id`
+alone cannot say which occurrence was clicked. Without this argument the backend
+brackets its instance lookup with the series DTSTART and "This one" patches the
+*first* occurrence — with `sendUpdates=all`, notifying everyone that you declined
+the wrong date. Pass `event.start_ms` from the block the user actually clicked.
 
 - [ ] **Step 1: Write the failing specs**
 
