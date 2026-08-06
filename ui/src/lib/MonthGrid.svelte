@@ -27,10 +27,11 @@
   const todayStart = (() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); })();
 
   // Shared by `.bar` and `.timed`: both hand `onopen` the same
-  // `{ event, rect }` shape an `EventBlock`/`AllDayBand` chip does, and both
-  // must stop the click from reaching the cell's own day-pick handler — a
-  // day is picked by clicking the cell or its number, never by clicking an
-  // event on it.
+  // `{ event, rect }` shape an `EventBlock`/`AllDayBand` chip does. `.mcell`
+  // itself owns no click handler — only `.num` and `.more` ask for a day —
+  // so `stopPropagation` here is belt-and-braces rather than load-bearing,
+  // but it costs nothing and documents that an event click is never a
+  // day-pick.
   function openEvent(event: UiEvent, e: MouseEvent) {
     e.stopPropagation();
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -39,13 +40,6 @@
 
   function pickDay(startMs: number) {
     ondaypick(startMs);
-  }
-
-  function onCellKeydown(e: KeyboardEvent, startMs: number) {
-    if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault();
-      pickDay(startMs);
-    }
   }
 </script>
 
@@ -84,16 +78,10 @@
 
       <div class="cells">
         {#each row.cells as cell}
-          <div
-            class="mcell"
-            class:out={!cell.in_month}
-            class:today={cell.start_ms === todayStart}
-            role="button"
-            tabindex="0"
-            onclick={() => pickDay(cell.start_ms)}
-            onkeydown={(e) => onCellKeydown(e, cell.start_ms)}
-          >
-            <span class="num">{new Date(cell.start_ms).getDate()}</span>
+          <div class="mcell" class:out={!cell.in_month} class:today={cell.start_ms === todayStart}>
+            <button class="num" onclick={() => pickDay(cell.start_ms)}>
+              {new Date(cell.start_ms).getDate()}
+            </button>
             {#each cell.timed.slice(0, MAX_LINES) as ev}
               <button
                 class="timed"
@@ -103,7 +91,9 @@
               ><i class="dot" style="background:{ev.color}"></i>{ev.title}</button>
             {/each}
             {#if cell.timed.length > MAX_LINES}
-              <button class="more">+{cell.timed.length - MAX_LINES} more</button>
+              <button class="more" onclick={() => pickDay(cell.start_ms)}>
+                +{cell.timed.length - MAX_LINES} more
+              </button>
             {/if}
           </div>
         {/each}
@@ -137,14 +127,16 @@
   .cells { flex: 1; display: grid; grid-template-columns: repeat(7, 1fr); min-height: 0; }
 
   .mcell { display: flex; flex-direction: column; gap: 1px; padding: 3px 4px;
-           border-left: 1px solid var(--hairline); cursor: pointer; min-width: 0;
+           border-left: 1px solid var(--hairline); min-width: 0;
            overflow: hidden; }
   .mcell:first-child { border-left: 0; }
   .mcell.today { background: var(--today-tint); border-radius: 6px; }
   .mcell.out .num { color: var(--muted); opacity: .6; }
   .mcell.out .timed { opacity: .55; }
 
-  .num { font-size: 11px; color: var(--text); font-variant-numeric: tabular-nums; }
+  .num { appearance: none; -webkit-appearance: none; font: inherit; cursor: pointer;
+         border: 0; background: transparent; padding: 0; margin: 0; align-self: flex-start;
+         font-size: 11px; color: var(--text); font-variant-numeric: tabular-nums; }
   .mcell.today .num { color: var(--accent); font-weight: 600; }
 
   .timed { appearance: none; -webkit-appearance: none; font: inherit;

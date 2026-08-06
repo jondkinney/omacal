@@ -428,6 +428,32 @@ const augustMonth = (): MonthPayload => {
  *  (`commands.rs`), not recomputed as this file's own UTC midnight for it. */
 const BUSY_DAY_START_MS = 1_786_341_600_000;
 
+/** Two co-existing bars in the same row, deliberately with `idx` and `lane`
+ *  diverging for both entries. `pack_lanes` sorts bars longest-first: Berlin
+ *  trip (added second, `idx: 1`) is the longer, overlapping span, so it
+ *  claims lane 0 ahead of the shorter Team offsite (added first, `idx: 0`),
+ *  which is pushed to lane 1. Every other `MonthGrid` fixture puts at most
+ *  one bar per row, where `idx === lane` always holds and a
+ *  `bar_events[lane.idx]` / `bar_events[lane.lane]` mix-up would render the
+ *  right title by coincidence — this is the only fixture built to catch it. */
+const twoBarsMonth = (): MonthPayload => {
+  const m = emptyMonth(2026, 8, AUG_GRID_START, AUG_MONTH_START, SEP_MONTH_START);
+  const teamOffsite = ev({
+    title: 'Team offsite', is_all_day: true,
+    start_ms: Date.UTC(2026, 7, 4), end_ms: Date.UTC(2026, 7, 6),
+  });
+  const berlinTrip = ev({
+    title: 'Berlin trip', is_all_day: true,
+    start_ms: Date.UTC(2026, 7, 3), end_ms: Date.UTC(2026, 7, 7),
+  });
+  m.rows[1].bar_events = [teamOffsite, berlinTrip];
+  m.rows[1].bars = [
+    { idx: 1, lane: 0, start_col: 0, end_col: 3, cont_left: false, cont_right: false },
+    { idx: 0, lane: 1, start_col: 1, end_col: 2, cont_left: false, cont_right: false },
+  ];
+  return m;
+};
+
 /** One day with four timed events — one more than `MonthGrid`'s `MAX_LINES`
  *  — so `+1 more` appears and can be clicked. */
 const busyDayMonth = (): MonthPayload => {
@@ -456,6 +482,7 @@ export const FIXTURES: Record<string, Record<string, any>> = {
   MonthGrid: {
     august: { month: augustMonth() },
     'busy-day': { month: busyDayMonth() },
+    'two-bars': { month: twoBarsMonth() },
   },
   EventBlock: {
     // The duration ladder.

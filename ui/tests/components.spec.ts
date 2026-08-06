@@ -800,6 +800,17 @@ test.describe('MonthGrid', () => {
     await expect(page.locator('.bar', { hasText: 'Berlin trip' })).toHaveCount(1);
   });
 
+  test('two co-existing bars in one row each keep their own title', async ({ page }) => {
+    // `august` never packs more than one bar per row, so `idx` and `lane`
+    // never diverge there — a `bar_events[lane.idx]` / `bar_events[lane.lane]`
+    // mix-up would still pass every other spec in this file.
+    await page.goto(show('two-bars'));
+    const bars = page.locator('.bar');
+    await expect(bars).toHaveCount(2);
+    await expect(bars.nth(0)).toContainText('Berlin trip');
+    await expect(bars.nth(1)).toContainText('Team offsite');
+  });
+
   test('a timed event shows a dot and a title, and no time', async ({ page }) => {
     // Spec §2: a time prefix costs about a third of a narrow cell.
     await page.goto(show('august'));
