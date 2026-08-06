@@ -83,12 +83,22 @@
   async function respond(response: 'accepted' | 'tentative' | 'declined', e: MouseEvent) {
     const btn = e.currentTarget as HTMLButtonElement;
     const previous = chosen;
+    // `detail` is a live prop, not a snapshot: WeekGrid sets its own
+    // `detail` to `null` the moment this popover closes (a scrim click,
+    // Escape, or another block opening), and that closure keeps running
+    // after the `await` below regardless. Reading `detail.attendees` again
+    // afterward would dereference null exactly when the popover has closed
+    // mid-flight — precisely the case `onresponded` below exists to still
+    // handle correctly. Capture what's needed from `detail` now, before
+    // anything async, and never touch the prop again in this function.
+    const attendeesBaseline = JSON.stringify(detail.attendees);
+    const id = detail.id;
     chosen = response;
     busy = new Set([response]);
     note = null;
     try {
-      const fresh = await respondToEvent(detail.id, response, scope, occurrenceStartMs);
-      if (JSON.stringify(fresh.attendees) !== JSON.stringify(detail.attendees)) {
+      const fresh = await respondToEvent(id, response, scope, occurrenceStartMs);
+      if (JSON.stringify(fresh.attendees) !== attendeesBaseline) {
         freshAttendees = fresh.attendees;
       }
       onresponded(response);

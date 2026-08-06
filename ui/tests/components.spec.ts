@@ -55,6 +55,27 @@ test.describe('WeekGrid popover flow', () => {
     await expect(block).toHaveClass(/declined/);
   });
 
+  test('closing the popover mid-RSVP still restyles the block once the response lands', async ({ page }) => {
+    // `detail` inside EventPopover is a live prop, not a snapshot: closing
+    // the popover (the scrim, here) while `respondToEvent` is still in
+    // flight sets WeekGrid's own `detail` to null, and `respond()`'s
+    // closure keeps running regardless — exactly the case `onresponded`'s
+    // restyle exists to still get right.
+    await page.goto(show('popover'));
+    await page.evaluate(() => window.__harness.holdNextEventCall('respond_to_event', 42));
+    const block = page.getByRole('button', { name: 'Standup' });
+    await block.click();
+    await expect(page.locator('.pop')).toBeVisible();
+    await page.getByRole('button', { name: 'No' }).click(); // parked mid-flight
+    await page.locator('.scrim').click(); // close before the response lands
+    await expect(page.locator('.pop')).toHaveCount(0);
+    await page.evaluate(
+      (detail) => window.__harness.releaseEventCall('respond_to_event', 42, detail),
+      POPOVER_DETAILS[42],
+    );
+    await expect(block).toHaveClass(/declined/);
+  });
+
   test('the popover updates in place once the after-paint refresh lands', async ({ page }) => {
     await page.goto(show('popover'));
     await page.evaluate(() => window.__harness.holdNextEventCall('refresh_event', 50));

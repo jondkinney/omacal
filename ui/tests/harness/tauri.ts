@@ -13,9 +13,7 @@ import type { WeekPayload } from '../../src/lib/api';
 import type { AppStatus } from '../../src/lib/status';
 import type { Calendar } from '../../src/lib/calendars';
 import type { EventDetail } from '../../src/lib/eventdetail';
-import {
-  labelledWeek, weekLabel, APP_FIVE_MIN_AGO, POPOVER_DETAILS, POPOVER_REFRESHED_DETAIL,
-} from '../fixtures';
+import { labelledWeek, weekLabel, APP_FIVE_MIN_AGO, POPOVER_DETAILS } from '../fixtures';
 
 /** What the real `get_palette` returns; the same fallback_dark values. */
 const PALETTE = {
@@ -58,24 +56,30 @@ export type Harness = {
   holdNextCalendarCall(cmd: 'set_calendar_selected' | 'set_calendar_sync'): void;
   /** Answer the parked call for this command, then let its `.then` chain run. */
   releaseCalendarCall(cmd: 'set_calendar_selected' | 'set_calendar_sync', value: unknown): Promise<void>;
-  /** Park the *next* `event_detail` or `refresh_event` call for this exact
-   *  event id instead of answering it — what a `WeekGrid` spec uses to
-   *  drive the supersession guard (open one block while another's detail is
-   *  still loading) and the after-paint refresh (control when it lands). */
-  holdNextEventCall(cmd: 'event_detail' | 'refresh_event', id: number): void;
+  /** Park the *next* `event_detail`, `refresh_event`, or `respond_to_event`
+   *  call for this exact event id instead of answering it — what a
+   *  `WeekGrid` spec uses to drive the supersession guard (open one block
+   *  while another's detail is still loading), the after-paint refresh
+   *  (control when it lands), and closing a popover while its own RSVP is
+   *  still in flight (control when *that* lands). */
+  holdNextEventCall(cmd: 'event_detail' | 'refresh_event' | 'respond_to_event', id: number): void;
   /** Answer the parked call for this command and id, then let its `.then`
    *  chain — including `WeekGrid`'s own `detail = fresh` — actually run. */
-  releaseEventCall(cmd: 'event_detail' | 'refresh_event', id: number, value: EventDetail): Promise<void>;
-  /** Make the next `event_detail` or `refresh_event` call for this exact id
-   *  reject — what a `WeekGrid` spec uses to drive the load-failure-closes
-   *  path (`event_detail`) without disturbing every other id's fixture. */
-  failNextEventCall(cmd: 'event_detail' | 'refresh_event', id: number, message: string): void;
+  releaseEventCall(
+    cmd: 'event_detail' | 'refresh_event' | 'respond_to_event',
+    id: number,
+    value: EventDetail,
+  ): Promise<void>;
+  /** Make the next call to this command for this exact id reject — what a
+   *  `WeekGrid` spec uses to drive the load-failure-closes path
+   *  (`event_detail`) without disturbing every other id's fixture. */
+  failNextEventCall(cmd: 'event_detail' | 'refresh_event' | 'respond_to_event', id: number, message: string): void;
   /** Reject the *parked* call for this command and id — the counterpart to
    *  `releaseEventCall`, for proving a *late failure* for a superseded
    *  click does not close a popover that opened successfully after it.
    *  `failNextEventCall` alone cannot drive that: it rejects immediately,
    *  before a second click could ever land. */
-  rejectEventCall(cmd: 'event_detail' | 'refresh_event', id: number, message: string): Promise<void>;
+  rejectEventCall(cmd: 'event_detail' | 'refresh_event' | 'respond_to_event', id: number, message: string): Promise<void>;
   /** Every command the app has invoked, in order. */
   calls: { cmd: string; args: unknown }[];
 };
@@ -106,7 +110,7 @@ let holdCalendarOnce: string | null = null;
 const parkedCalendar = new Map<string, CalendarDeferred>();
 
 type EventDeferred = { resolve: (d: EventDetail) => void; reject: (e: unknown) => void };
-type EventCmd = 'event_detail' | 'refresh_event';
+type EventCmd = 'event_detail' | 'refresh_event' | 'respond_to_event';
 
 // Keyed by `${cmd}:${id}`, not just `id`: a spec driving the after-paint
 // refresh needs to hold `refresh_event` for an id while `event_detail` for
@@ -188,9 +192,14 @@ const harness: Harness = {
   },
 };
 
-/** Resolves against `POPOVER_DETAILS`/`POPOVER_REFRESHED_DETAIL` unless a
- *  spec armed a failure or a hold for this exact command and id. */
-function eventCallResult(cmd: EventCmd, id: number): Promise<EventDetail> {
+/** Checks whether a spec armed a hold or a forced failure for `(cmd, id)`
+ *  and, if so, returns the promise to answer with. `null` means neither is
+ *  armed — the caller falls through to its own default response. Shared by
+ *  `event_detail`/`refresh_event` (via `eventCallResult` below) and
+ *  `respond_to_event` (inline in the command switch), which otherwise have
+ *  nothing else in common: their "not held" defaults come from entirely
+ *  different places. */
+function heldOrFailed(cmd: EventCmd, id: number): Promise<EventDetail> | null {
   const key = eventCallKey(cmd, id);
   if (failEventCallOnce?.key === key) {
     const { message } = failEventCallOnce;
@@ -203,11 +212,19 @@ function eventCallResult(cmd: EventCmd, id: number): Promise<EventDetail> {
       parkedEventCall.set(key, { resolve, reject });
     });
   }
-  // Both commands default to the same, unchanged `POPOVER_DETAILS` entry —
-  // the ordinary case, where nothing moved since the popover opened.
-  // `POPOVER_REFRESHED_DETAIL` (id 50) only ever reaches a spec through an
-  // explicit `releaseEventCall('refresh_event', 50, POPOVER_REFRESHED_DETAIL)`,
-  // never through this default path.
+  return null;
+}
+
+/** Resolves against `POPOVER_DETAILS` unless a spec armed a failure or a
+ *  hold for this exact command and id. Both `event_detail` and
+ *  `refresh_event` default to the same, unchanged entry — the ordinary
+ *  case, where nothing moved since the popover opened. A *different* value
+ *  (e.g. `POPOVER_REFRESHED_DETAIL`) only ever reaches a spec through an
+ *  explicit `releaseEventCall(cmd, id, thatValue)`, never through this
+ *  default path. */
+function eventCallResult(cmd: 'event_detail' | 'refresh_event', id: number): Promise<EventDetail> {
+  const held = heldOrFailed(cmd, id);
+  if (held) return held;
   const d = POPOVER_DETAILS[id];
   if (!d) throw new Error(`no ${cmd} fixture for event id ${id}`);
   return Promise.resolve(d);
@@ -321,11 +338,16 @@ export function installTauriStub(scenario: string): Harness {
         return eventCallResult('event_detail', args.id);
       case 'refresh_event':
         return eventCallResult('refresh_event', args.id);
-      case 'respond_to_event':
+      case 'respond_to_event': {
         // Exposed so a spec can assert on exactly what `EventPopover` sent —
         // in particular, that the fourth argument is the clicked block's own
         // `start_ms` and never `detail.start_ms` (the task brief's trap).
         (window as any).__lastRespondCall = args;
+        // Held/rejected the same way as event_detail/refresh_event — what a
+        // WeekGrid spec uses to prove closing the popover mid-RSVP still
+        // restyles the block once the response actually lands.
+        const held = heldOrFailed('respond_to_event', args.id);
+        if (held) return held;
         if (scenario === 'respond-fails') return Promise.reject('could not reach Google right now.');
         // Only the `writes-back` scenario simulates a real write-back (what
         // the backend actually returns for every non-recurring event, and
@@ -348,6 +370,7 @@ export function installTauriStub(scenario: string): Harness {
         // popover shows the choice optimistically rather than trust this
         // return value. Any well-shaped stand-in satisfies its type.
         return RESPOND_STUB_DETAIL;
+      }
       case 'sign_in':
         // Tauri rejects a `Result<_, String>` with the bare string, so the
         // app sees exactly the sentence Rust produced.
