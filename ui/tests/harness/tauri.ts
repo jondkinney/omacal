@@ -9,11 +9,11 @@
 // object therefore stubs commands and events together, with no module mocking
 // and no build-time aliasing — the app imports the real `@tauri-apps/api`.
 
-import type { WeekPayload } from '../../src/lib/api';
+import type { WeekPayload, MonthPayload } from '../../src/lib/api';
 import type { AppStatus } from '../../src/lib/status';
 import type { Calendar } from '../../src/lib/calendars';
 import type { EventDetail } from '../../src/lib/eventdetail';
-import { labelledWeek, weekLabel, APP_FIVE_MIN_AGO, POPOVER_DETAILS } from '../fixtures';
+import { labelledWeek, weekLabel, APP_FIVE_MIN_AGO, POPOVER_DETAILS, busyDayMonth } from '../fixtures';
 
 /** What the real `get_palette` returns; the same fallback_dark values. */
 const PALETTE = {
@@ -289,6 +289,33 @@ function getWeek(weekStartMs: number): Promise<WeekPayload> {
   return Promise.resolve(labelledWeek(weekStartMs));
 }
 
+const DAY_MS = 24 * 3_600_000;
+
+/** Day view's own `get_day` stub: a one-column `WeekPayload`, echoing back
+ *  whatever `dayStartMs` was actually asked for — same reasoning as
+ *  `getWeek`'s `labelledWeek` above, just with no events to label. No App
+ *  spec needs a populated day, only that the column it renders carries the
+ *  date that was actually requested. */
+function getDay(dayStartMs: number): WeekPayload {
+  return {
+    days: [{ start_ms: dayStartMs, end_ms: dayStartMs + DAY_MS, events: [], placed: [] }],
+    all_day: [],
+    all_day_events: [],
+    overflow: [],
+  };
+}
+
+/** Month view's own `get_month` stub. Unlike `getWeek`/`getDay`, this
+ *  deliberately ignores `year`/`month` and always returns the same fixed
+ *  grid (`MonthGrid`'s own `busy-day` fixture) — the anchor-survival spec
+ *  pins a literal cell (`1_786_341_600_000`, Mon 10 Aug) as the value a
+ *  click has to carry through to Day view, and no App spec needs the grid to
+ *  actually match the requested month (that's `assemble_month`'s own
+ *  Rust-side coverage, and `MonthGrid`'s). */
+function getMonth(): MonthPayload {
+  return busyDayMonth();
+}
+
 /** Installs the stub. Call before mounting anything that talks to Tauri. */
 export function installTauriStub(scenario: string): Harness {
   // Reassigned by `sign_in` for the `sign-in-adds-account` scenario: a real
@@ -319,6 +346,10 @@ export function installTauriStub(scenario: string): Harness {
         return status;
       case 'get_week':
         return getWeek(args.weekStartMs);
+      case 'get_day':
+        return getDay(args.dayStartMs);
+      case 'get_month':
+        return getMonth();
       // App's own effect fetches calendars alongside status on mount. None of
       // the App specs exercise the popover, and Header only renders it once
       // `calendars.length > 0`, so an empty list keeps every existing

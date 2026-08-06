@@ -189,6 +189,91 @@ test.describe('App', () => {
     await expect(page.locator('.panel')).toBeVisible();
   });
 
+  // Task 5: the switcher, the keyboard, and the shared anchor date. `.col` is
+  // WeekGrid's own day-column class (see `WeekGrid.svelte`; the brief's draft
+  // used `.daycol` as a placeholder, same correction Task 2 already made for
+  // its own two specs).
+  test('the switcher offers five views, two of them not yet built', async ({ page }) => {
+    await page.goto(app('connected'));
+    await expect(page.locator('.vswitch button')).toHaveCount(5);
+    // `exact: true`: Playwright's default (non-exact) name match is a
+    // substring test, and "Year" is a substring of "Big Year" too — without
+    // it this resolves to both buttons and throws a strict-mode violation
+    // before ever reaching the assertion. "Big Year" has no such collision
+    // the other way, so it needs no adjustment.
+    await expect(page.getByRole('button', { name: 'Year', exact: true })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Big Year' })).toBeDisabled();
+  });
+
+  test('number keys switch views', async ({ page }) => {
+    await page.goto(app('connected'));
+    // `page.keyboard.press` is a one-shot dispatch, not an auto-waiting
+    // locator action — pressed before `<svelte:window onkeydown>` has
+    // actually attached (mount.svelte.ts imports `App.svelte` via a dynamic
+    // `import()`, which can still be in flight when `goto` resolves), the
+    // keydown lands on a window with no listener yet and is gone for good;
+    // nothing about it is retried. Waiting for the switcher itself — the
+    // thing that same mount attaches — is what makes the keypress land on a
+    // window that's actually listening.
+    await expect(page.locator('.vswitch button')).toHaveCount(5);
+    await page.keyboard.press('3');
+    await expect(page.locator('.mrow')).toHaveCount(6);
+    await page.keyboard.press('1');
+    await expect(page.locator('.col')).toHaveCount(1);
+  });
+
+  test('the anchor date survives a view switch', async ({ page }) => {
+    // Spec §5: switching Month -> Day lands on the day you were looking at,
+    // not on today. This is what makes "+N more" and the day-number click
+    // work as handoffs rather than jumps.
+    await page.goto(app('connected'));
+    await expect(page.locator('.vswitch button')).toHaveCount(5); // see above
+    await page.keyboard.press('3');
+    await page.locator('.mcell .num').nth(14).click();
+    await expect(page.locator('.col')).toHaveCount(1);
+    const shown = await page.locator('.col').getAttribute('data-start-ms');
+    expect(Number(shown)).toBe(1786341600000); // the day that was clicked
+  });
+
+  test('H and L step by the current view\'s unit', async ({ page }) => {
+    await page.goto(app('connected'));
+    await expect(page.locator('.vswitch button')).toHaveCount(5); // see above
+    await page.keyboard.press('2');
+    const before = await page.locator('.col').first().getAttribute('data-start-ms');
+    await page.keyboard.press('l');
+    const after = await page.locator('.col').first().getAttribute('data-start-ms');
+    expect(Number(after) - Number(before)).toBe(7 * 24 * 3600 * 1000);
+  });
+
+  test('T returns to today', async ({ page }) => {
+    await page.goto(app('connected'));
+    const col = page.locator('.col').first();
+    // Capture where the app opened rather than inventing a global to remember
+    // it — whatever "today" is for the fixture clock, two steps forward and T
+    // must land back on exactly this value. `getAttribute` is itself an
+    // auto-waiting locator read, so it already doubles as the mount-stability
+    // wait the other specs above take explicitly.
+    const opened = await col.getAttribute('data-start-ms');
+    await page.keyboard.press('l');
+    await page.keyboard.press('l');
+    expect(await col.getAttribute('data-start-ms')).not.toBe(opened);
+    await page.keyboard.press('t');
+    expect(await col.getAttribute('data-start-ms')).toBe(opened);
+  });
+
+  // Own spec, guarding the keyboard trap (not in the brief's five): the event
+  // popover has RSVP buttons and a description, and a stray `3` while one of
+  // those buttons has focus must not switch views out from under it.
+  test('typing keys are ignored while the event popover has focus', async ({ page }) => {
+    await page.goto(app('connected'));
+    await page.locator('.ev').click();
+    await expect(page.locator('.pop')).toBeVisible();
+    await page.getByRole('button', { name: 'Yes' }).focus();
+    await page.keyboard.press('3');
+    await expect(page.locator('.mrow')).toHaveCount(0);
+    await expect(page.locator('.pop')).toBeVisible();
+  });
+
   test('a theme-changed event repaints without a reload', async ({ page }) => {
     await page.goto(app());
     await page.evaluate(() =>

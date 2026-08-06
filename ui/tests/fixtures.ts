@@ -4,6 +4,14 @@ import type { Calendar } from '../src/lib/calendars';
 import type { Attendee, EventDetail } from '../src/lib/eventdetail';
 import type { Rect } from '../src/lib/position';
 
+// `ViewSwitcher`'s own `View` union isn't imported here: it lives in a
+// `<script module>` block, which plain `tsc` (this file's own
+// `tsconfig.test.json` check, unlike `svelte-check`'s svelte-aware pass)
+// resolves through the generic `*.svelte` ambient module — default export
+// only, no named `View`. A literal union avoids a second, driftable copy of
+// the type declaration while still type-checking `header()`'s own call sites.
+type View = 'day' | 'week' | 'month' | 'year' | 'bigyear';
+
 const H = 3_600_000;
 // Fixed well in the past (not just "a Monday", but a Monday that will never
 // again be *today*) so WeekGrid's today-highlight and current-time line —
@@ -148,8 +156,14 @@ const noop = () => {};
 // `calendars: []` matches every existing Header fixture below: none of them
 // exercise the popover, and an empty list is exactly what keeps it from
 // rendering at all — the same DOM these fixtures produced before Task 5.
+//
+// `view: 'week'` matches `App`'s own default, so the switcher these fixtures
+// now render always shows Week as current; none of these specs click it, so
+// no fixture needs a different value. `onpick: noop` for the same reason
+// none of `Header`'s other action props do more than satisfy the type here.
 const header = (status: AppStatus, busy = false) => ({
   status, weekStartMs: MON, busy, error: null as string | null, calendars: [] as Calendar[],
+  view: 'week' as View, onpick: noop,
   onPrev: noop, onNext: noop, onToday: noop, onSignIn: noop, onSync: noop, oncalendarchange: noop,
 });
 
@@ -342,6 +356,20 @@ POPOVER_DETAILS[81] = detail({
   attendees: [attendee({ email: 'me@x.com', is_self: true })],
 });
 
+/** The id `labelledWeek`'s own event gets from `ev()`'s `Math.floor(start_ms
+ *  / 1000)` rule, for `APP_MON` specifically — computed here rather than
+ *  reimplementing a second id scheme, so `App`'s keyboard-ignore spec (Task
+ *  5) can open a real popover, via a real `event_detail` round trip, for the
+ *  one event `labelledWeek(APP_MON)` actually renders. */
+const APP_WEEK_EVENT_ID = Math.floor((APP_MON + 11 * H) / 1000);
+POPOVER_DETAILS[APP_WEEK_EVENT_ID] = detail({
+  id: APP_WEEK_EVENT_ID,
+  title: weekLabel(APP_MON),
+  description: 'Weekly sync agenda.',
+  start_ms: APP_MON + 11 * H,
+  end_ms: APP_MON + 12 * H,
+});
+
 const popoverAllDayWeek = (): WeekPayload => {
   const w = emptyWeek();
   w.all_day_events = [ALLDAY_OFFSITE, ALLDAY_RECURRING];
@@ -456,7 +484,13 @@ const twoBarsMonth = (): MonthPayload => {
 
 /** One day with four timed events — one more than `MonthGrid`'s `MAX_LINES`
  *  — so `+1 more` appears and can be clicked. */
-const busyDayMonth = (): MonthPayload => {
+/** Exported for `harness/tauri.ts`'s `get_month` stub (App-level specs, Task
+ *  5's switcher): reusing this fixture rather than inventing a parallel one
+ *  is what makes the anchor-survival spec's pinned literal
+ *  (`1_786_341_600_000`, `BUSY_DAY_START_MS` above) the same value on both
+ *  sides — a `MonthGrid`-level click and an `App`-level one land on the
+ *  identical cell. */
+export const busyDayMonth = (): MonthPayload => {
   const m = emptyMonth(2026, 8, AUG_GRID_START, AUG_MONTH_START, SEP_MONTH_START);
   const cell = m.rows[2].cells[0];
   cell.start_ms = BUSY_DAY_START_MS;

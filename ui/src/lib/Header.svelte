@@ -3,9 +3,10 @@
   import { relativeTime, type AppStatus } from './status';
   import type { Calendar } from './calendars';
   import CalendarPopover from './CalendarPopover.svelte';
+  import ViewSwitcher, { type View } from './ViewSwitcher.svelte';
 
   let {
-    status, weekStartMs, busy, error, calendars,
+    status, weekStartMs, busy, error, calendars, view, onpick,
     onPrev, onNext, onToday, onSignIn, onSync, oncalendarchange,
     open = $bindable(false),
   }: {
@@ -14,6 +15,11 @@
     busy: boolean;
     error: string | null;
     calendars: Calendar[];
+    /** The view the switcher shows as current — `App`'s own `view` state,
+     *  passed straight through. */
+    view: View;
+    /** Forwarded straight to `ViewSwitcher`'s `onpick`. */
+    onpick: (v: View) => void;
     onPrev: () => void; onNext: () => void; onToday: () => void;
     onSignIn: () => void; onSync: () => void; oncalendarchange: () => void;
     /** Bound through to `CalendarPopover` — lets `App` open the picker
@@ -47,6 +53,7 @@
       <button onclick={onNext} aria-label="Next week">›</button>
     </div>
     <button class="today" onclick={onToday}>Today</button>
+    <ViewSwitcher {view} {onpick} />
   </div>
 
   <div class="right">
