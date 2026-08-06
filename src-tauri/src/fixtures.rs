@@ -23,8 +23,9 @@ const EXCITEL_WEEKLY_DESCRIPTION: &str =
 /// The guest list for "Excitel weekly" — the popover's own demo fixture.
 /// One of each RSVP state the week view itself already covers
 /// (`the_fixture_exercises_every_rsvp_state`), so the guest list and the
-/// event's own colour agree, plus a `self` row so `can_respond` is true and
-/// the RSVP controls actually render.
+/// event's own colour agree, plus a `self` row so the guest list carries a
+/// "(you)" marker. The RSVP controls stay hidden regardless — `can_respond`
+/// withholds them in demo mode.
 fn excitel_weekly_guests() -> Vec<omacal_store::Attendee> {
     vec![
         omacal_store::Attendee {
@@ -291,8 +292,15 @@ mod tests {
     /// `OMACAL_SEED_DEMO=1` and no Google account, which needs at least one
     /// demo event with a description (for `descriptionSegments`) and a full
     /// guest list — one of each of the three RSVP states plus a `self` row,
-    /// since without one `can_respond` is false and the RSVP controls never
-    /// render at all.
+    /// which is what renders the "(you)" marker the guest list is built
+    /// around.
+    ///
+    /// The RSVP controls themselves stay hidden here whatever this fixture
+    /// says: `can_respond` withholds them in demo mode outright, since the
+    /// only thing pressing one could do is reach `demo_sync_guard` and be
+    /// refused. `access_role` is still asserted below because the *shape* of
+    /// the demo data should match a real writable calendar — a `reader` row
+    /// would be a different fixture, silently.
     #[tokio::test]
     async fn the_popover_fixture_has_a_description_and_a_full_guest_list() {
         let pool = omacal_store::connect_memory().await.unwrap();
@@ -305,11 +313,11 @@ mod tests {
         let (ev, access_role) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
 
         assert!(ev.description.is_some(), "nothing for descriptionSegments to render");
-        assert_eq!(access_role, "owner", "a non-writable role would hide the RSVP controls too");
+        assert_eq!(access_role, "owner", "the demo data must match a real writable calendar");
 
         assert!(
             ev.attendees.iter().any(|a| a.is_self),
-            "without a self row, can_respond is false and the RSVP controls never render"
+            "without a self row there is no \"(you)\" marker in the guest list"
         );
         for state in ["accepted", "declined", "needsAction"] {
             assert!(

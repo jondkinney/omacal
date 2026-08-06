@@ -21,12 +21,22 @@ pub struct EventDetail {
 
 /// Whether the RSVP controls are shown at all.
 ///
-/// Two independent reasons to withhold them: the calendar is not writable, or
-/// there is no attendee row of yours to change. The second matters as much as
-/// the first — an RSVP patch rewrites the whole attendee array, so without a
-/// `self` row there is nothing to edit and everything to damage.
-pub(crate) fn can_respond(access_role: &str, attendees: &[omacal_store::Attendee]) -> bool {
-    matches!(access_role, "owner" | "writer") && attendees.iter().any(|a| a.is_self)
+/// Three independent reasons to withhold them: the app is in demo mode, the
+/// calendar is not writable, or there is no attendee row of yours to change.
+/// The last matters as much as the others — an RSVP patch rewrites the whole
+/// attendee array, so without a `self` row there is nothing to edit and
+/// everything to damage.
+///
+/// Demo mode is checked here rather than only at the write, because the demo
+/// calendars are seeded `owner` with a `self` attendee — everything the other
+/// two conditions ask for — so without this the popover offers three buttons
+/// that `demo_sync_guard` can only refuse. Plan 1c settled that convention
+/// for the same situation: "Sync now" and "Connect" are *hidden* in demo
+/// mode, not left to error. The demo popover keeps its guest list, its
+/// description and its links; it just does not pretend there is something to
+/// answer.
+pub(crate) fn can_respond(demo: bool, access_role: &str, attendees: &[omacal_store::Attendee]) -> bool {
+    !demo && matches!(access_role, "owner" | "writer") && attendees.iter().any(|a| a.is_self)
 }
 
 /// Whether an event belongs to a recurring series: either the series master
@@ -44,19 +54,19 @@ pub async fn event_detail(
     state: tauri::State<'_, AppState>,
     id: i64,
 ) -> Result<EventDetail, String> {
-    event_detail_impl(&state.pool, id).await.map_err(|e| crate::errors::user_facing(&e))
+    event_detail_impl(&state.pool, state.demo, id).await.map_err(|e| crate::errors::user_facing(&e))
 }
 
 /// The body of `event_detail`, minus the Tauri `State` wrapper — also the tail
-/// end of `respond_via_client` and `refresh_event`, both of which return the
+/// end of `respond_to_event` and `refresh_event`, both of which return the
 /// freshly-written row through the same shape rather than re-deriving it
 /// themselves.
-async fn event_detail_impl(pool: &SqlitePool, id: i64) -> anyhow::Result<EventDetail> {
+async fn event_detail_impl(pool: &SqlitePool, demo: bool, id: i64) -> anyhow::Result<EventDetail> {
     let (event, access_role) = omacal_store::event_by_id(pool, id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("that event is no longer here"))?;
 
-    let can_respond = can_respond(&access_role, &event.attendees);
+    let can_respond = can_respond(demo, &access_role, &event.attendees);
     let is_recurring = is_recurring(&event.recurrence, &event.recurring_event_id);
 
     Ok(EventDetail {
@@ -281,7 +291,7 @@ async fn respond_impl(
         .await?
         .ok_or_else(|| anyhow::anyhow!("that event is no longer here"))?;
 
-    if !can_respond(&access_role, &ev.attendees) {
+    if !can_respond(state.demo, &access_role, &ev.attendees) {
         anyhow::bail!("this calendar cannot be answered from omacal");
     }
     let body_attendees = attendees_with_self_response(&ev.attendees, response)
@@ -293,7 +303,6 @@ async fn respond_impl(
 
     respond_via_client(
         &state.pool,
-        id,
         response,
         scope,
         occurrence_start_ms,
@@ -302,15 +311,20 @@ async fn respond_impl(
         body_attendees,
         &client,
     )
-    .await
+    .await?;
+
+    event_detail_impl(&state.pool, state.demo, id).await
 }
 
 /// The network exchange and local write-back half of [`respond_impl`], with
 /// the `CalendarClient` already built.
+///
+/// Returns nothing: reading the freshly-written row back is the caller's job,
+/// since only it knows whether the app is in demo mode — which
+/// [`event_detail_impl`] needs and this function has no business carrying.
 #[allow(clippy::too_many_arguments)]
 async fn respond_via_client(
     pool: &SqlitePool,
-    id: i64,
     response: &str,
     scope: &str,
     occurrence_start_ms: i64,
@@ -318,7 +332,7 @@ async fn respond_via_client(
     cal_google_id: &str,
     body_attendees: Vec<serde_json::Value>,
     client: &omacal_google::CalendarClient,
-) -> anyhow::Result<EventDetail> {
+) -> anyhow::Result<()> {
     // A row carrying `recurrence` is a series master; scope "this" must still
     // go through instance resolution for it, which is why `own_id` is offered
     // as the master when there is no `recurring_event_id`.
@@ -395,7 +409,7 @@ async fn respond_via_client(
         omacal_store::upsert_event(pool, &row).await?;
     }
 
-    event_detail_impl(pool, id).await
+    Ok(())
 }
 
 #[tauri::command]
@@ -434,7 +448,7 @@ async fn refresh_impl(state: &AppState, id: i64) -> anyhow::Result<EventDetail> 
     merge_patched(&mut row, &fresh);
     omacal_store::upsert_event(&state.pool, &row).await?;
 
-    event_detail_impl(&state.pool, id).await
+    event_detail_impl(&state.pool, state.demo, id).await
 }
 
 #[cfg(test)]
@@ -456,8 +470,8 @@ mod tests {
 
     #[test]
     fn a_writable_calendar_where_you_are_a_guest_can_respond() {
-        assert!(can_respond("owner", &[guest(true)]));
-        assert!(can_respond("writer", &[guest(true)]));
+        assert!(can_respond(false, "owner", &[guest(true)]));
+        assert!(can_respond(false, "writer", &[guest(true)]));
     }
 
     #[test]
@@ -465,8 +479,8 @@ mod tests {
         // A subscribed holiday calendar, or one shared with you read-only. The
         // buttons are hidden rather than disabled: a disabled control invites a
         // click and explains nothing.
-        assert!(!can_respond("reader", &[guest(true)]));
-        assert!(!can_respond("freeBusyReader", &[guest(true)]));
+        assert!(!can_respond(false, "reader", &[guest(true)]));
+        assert!(!can_respond(false, "freeBusyReader", &[guest(true)]));
     }
 
     #[test]
@@ -482,8 +496,19 @@ mod tests {
             comment: None,
             additional_guests: 0,
         }];
-        assert!(!can_respond("owner", &others));
-        assert!(!can_respond("owner", &[]));
+        assert!(!can_respond(false, "owner", &others));
+        assert!(!can_respond(false, "owner", &[]));
+    }
+
+    /// Demo mode looks answerable from every other angle: the demo calendars
+    /// are seeded `owner` and the demo event carries a `self` attendee, so
+    /// both other conditions pass and the popover offered three buttons that
+    /// `demo_sync_guard` could only refuse. Plan 1c settled this — "Sync now"
+    /// and "Connect" are hidden in demo mode rather than left to error.
+    #[test]
+    fn demo_mode_offers_no_rsvp_however_writable_the_calendar_looks() {
+        assert!(!can_respond(true, "owner", &[guest(true)]));
+        assert!(!can_respond(true, "writer", &[guest(true)]));
     }
 
     #[test]
@@ -756,7 +781,7 @@ mod tests {
 
         let client = omacal_google::CalendarClient::new(server.uri(), "at-1");
         let body_attendees = attendees_with_self_response(&ev.attendees, "declined").unwrap();
-        respond_via_client(&pool, id, "declined", "all", 0, ev, "primary", body_attendees, &client)
+        respond_via_client(&pool, "declined", "all", 0, ev, "primary", body_attendees, &client)
             .await
             .unwrap();
 
@@ -775,7 +800,7 @@ mod tests {
     #[tokio::test]
     async fn a_stale_etag_retries_with_the_freshly_fetched_attendees_not_the_stale_ones() {
         let ev = stored(vec![guest(true)]);
-        let (pool, id) = seeded_pool_with(&ev).await;
+        let (pool, _id) = seeded_pool_with(&ev).await;
 
         let server = wiremock::MockServer::start().await;
 
@@ -820,7 +845,7 @@ mod tests {
 
         let client = omacal_google::CalendarClient::new(server.uri(), "at-1");
         let body_attendees = attendees_with_self_response(&ev.attendees, "declined").unwrap();
-        respond_via_client(&pool, id, "declined", "all", 0, ev, "primary", body_attendees, &client)
+        respond_via_client(&pool, "declined", "all", 0, ev, "primary", body_attendees, &client)
             .await
             .unwrap();
         // `.expect(1)` on the second PATCH mock fails on drop if the retry
@@ -894,7 +919,7 @@ mod tests {
         let client = omacal_google::CalendarClient::new(server.uri(), "at-1");
         let body_attendees = attendees_with_self_response(&ev.attendees, "declined").unwrap();
         respond_via_client(
-            &pool, id, "declined", "this", occurrence_4, ev, "primary", body_attendees, &client,
+            &pool, "declined", "this", occurrence_4, ev, "primary", body_attendees, &client,
         )
         .await
         .unwrap();
@@ -909,6 +934,25 @@ mod tests {
             "the instance's etag must not be stamped onto the master's own row");
         assert_eq!(row.self_response.as_deref(), Some("needsAction"),
             "the master's local self_response must not change from one occurrence's answer");
+    }
+
+    /// `can_respond` is a predicate; this is the payload the UI actually
+    /// renders from. The non-demo arm is what stops the demo arm being
+    /// vacuous — a fixture that could not be answered either way would prove
+    /// nothing about demo mode.
+    #[tokio::test]
+    async fn the_detail_payload_reports_no_rsvp_in_demo_mode() {
+        let ev = stored(vec![guest(true)]);
+        let (pool, id) = seeded_pool_with(&ev).await; // its calendar is seeded `owner`
+
+        let live = event_detail_impl(&pool, false, id).await.unwrap();
+        assert!(live.can_respond, "the fixture must be answerable outside demo mode");
+
+        let demo = event_detail_impl(&pool, true, id).await.unwrap();
+        assert!(
+            !demo.can_respond,
+            "demo mode offered RSVP buttons that `demo_sync_guard` can only refuse"
+        );
     }
 
     /// An `AppState` a test can hold: demo mode's whole point is that nothing
@@ -970,7 +1014,7 @@ mod tests {
         let mut ev = stored(vec![guest(true)]);
         ev.google_id = "master1".into();
         ev.recurrence = Some("RRULE:FREQ=DAILY".into());
-        let (pool, id) = seeded_pool_with(&ev).await;
+        let (pool, _id) = seeded_pool_with(&ev).await;
 
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("GET"))
@@ -983,7 +1027,7 @@ mod tests {
         let body_attendees = attendees_with_self_response(&ev.attendees, "declined").unwrap();
         let start = ev.start_utc;
         let err = respond_via_client(
-            &pool, id, "declined", "this", start, ev, "primary", body_attendees, &client,
+            &pool, "declined", "this", start, ev, "primary", body_attendees, &client,
         )
         .await
         .unwrap_err();
