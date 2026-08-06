@@ -367,8 +367,8 @@ export const FIXTURES: Record<string, Record<string, any>> = {
     popover: { week: popoverWeek() },
     'popover-two-occurrences': { week: popoverTwoOccurrencesWeek() },
     'popover-all-day': { week: popoverAllDayWeek() },
-    'single-day': { week: singleDayWeek(), dayCount: 1 },
-    'single-day-overlap': { week: singleDayOverlapWeek(), dayCount: 1 },
+    'single-day': { week: singleDayWeek() },
+    'single-day-overlap': { week: singleDayOverlapWeek() },
   },
   EventBlock: {
     // The duration ladder.

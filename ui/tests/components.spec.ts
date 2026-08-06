@@ -37,6 +37,9 @@ test.describe('WeekGrid', () => {
     const a = await blocks.nth(0).boundingBox();
     const b = await blocks.nth(1).boundingBox();
     expect(a!.x).not.toBe(b!.x);
+    // 80 is not a day/week boundary — a day-wide half renders around 600px,
+    // a week-wide one around 82px. It is only a sanity floor against "fanned
+    // but squeezed to nothing"; do not tune it as if it separated the two.
     expect(Math.min(a!.width, b!.width)).toBeGreaterThan(80);
   });
 });

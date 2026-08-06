@@ -8,12 +8,7 @@
   import EventPopover from './EventPopover.svelte';
   import { getEventDetail, refreshEvent, type EventDetail } from './eventdetail';
 
-  // `dayCount` is declared for the caller's benefit (Day passes 1, Week
-  // passes 7, or omits it for the same default) — the grid itself never
-  // reads it. Every loop below runs over `week.days` and every column count
-  // comes from `week.days.length`, which can never disagree with what the
-  // payload actually carries the way a separately-tracked count could.
-  let { week, dayCount = 7 }: { week: WeekPayload; dayCount?: number } = $props();
+  let { week }: { week: WeekPayload } = $props();
 
   const HOURS = [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22];
   const DOW = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
