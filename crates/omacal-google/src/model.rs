@@ -38,6 +38,14 @@ pub struct Attendee {
     pub is_self: bool,
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Organizer {
+    #[serde(default)]
+    pub email: String,
+    pub display_name: Option<String>,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Event {
@@ -64,4 +72,6 @@ pub struct Event {
     pub attendees: Vec<Attendee>,
     #[serde(default)]
     pub sequence: i64,
+    #[serde(default)]
+    pub organizer: Organizer,
 }

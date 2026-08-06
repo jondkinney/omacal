@@ -78,13 +78,21 @@ pub fn to_stored(ev: &Event, calendar_id: i64, cal_tz: &str) -> Option<StoredEve
         conference_uri: ev.hangout_link.clone(),
         // Joined in from `calendars` on read; nothing to write here.
         color_hex: None,
-        // Wired up in a later task; kept at their defaults here so this crate
-        // keeps compiling against the new `StoredEvent` fields.
-        description: None,
-        etag: None,
-        sequence: 0,
-        organizer_email: None,
-        attendees: Vec::new(),
+        description: ev.description.clone(),
+        etag: ev.etag.clone(),
+        sequence: ev.sequence,
+        organizer_email: (!ev.organizer.email.is_empty()).then(|| ev.organizer.email.clone()),
+        attendees: ev
+            .attendees
+            .iter()
+            .map(|a| omacal_store::Attendee {
+                email: a.email.clone(),
+                display_name: a.display_name.clone(),
+                response_status: a.response_status.clone(),
+                optional: a.optional,
+                is_self: a.is_self,
+            })
+            .collect(),
     })
 }
 
@@ -138,20 +146,31 @@ pub fn to_cancelled_exception(ev: &Event, calendar_id: i64, cal_tz: &str) -> Opt
         self_response: None,
         conference_uri: None,
         color_hex: None,
-        // A tombstone carries little more than its id; there is no detail to
-        // store for a slot that only exists to be suppressed.
-        description: None,
-        etag: None,
-        sequence: 0,
-        organizer_email: None,
-        attendees: Vec::new(),
+        // A tombstone carries little more than its id, so these are usually
+        // absent — mapped the same way as `to_stored` rather than hardcoded,
+        // so nothing is silently dropped if Google ever sends more.
+        description: ev.description.clone(),
+        etag: ev.etag.clone(),
+        sequence: ev.sequence,
+        organizer_email: (!ev.organizer.email.is_empty()).then(|| ev.organizer.email.clone()),
+        attendees: ev
+            .attendees
+            .iter()
+            .map(|a| omacal_store::Attendee {
+                email: a.email.clone(),
+                display_name: a.display_name.clone(),
+                response_status: a.response_status.clone(),
+                optional: a.optional,
+                is_self: a.is_self,
+            })
+            .collect(),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use omacal_google::model::{Event, EventDateTime};
+    use omacal_google::model::{Event, EventDateTime, Organizer};
 
     fn timed(start: &str, end: &str) -> Event {
         Event {
@@ -163,6 +182,7 @@ mod tests {
                                  time_zone: Some("Europe/Sofia".into()) },
             recurrence: None, recurring_event_id: None, original_start_time: None,
             hangout_link: None, attendees: vec![], sequence: 0,
+            organizer: Organizer::default(),
         }
     }
 

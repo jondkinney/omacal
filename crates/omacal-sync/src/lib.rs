@@ -602,4 +602,47 @@ mod tests {
             .fetch_one(&pool).await.unwrap();
         assert_eq!(events, 1);
     }
+
+    /// The fields arrive on every sync already; this pins that they are stored
+    /// rather than parsed and dropped.
+    #[tokio::test]
+    async fn a_synced_event_carries_its_guest_list_and_description() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/calendars/primary/events"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [{
+                    "id": "ev1",
+                    "status": "confirmed",
+                    "etag": "\"etag-1\"",
+                    "summary": "Weekly Standup",
+                    "description": "Sprint sync.",
+                    "sequence": 3,
+                    "organizer": { "email": "ana@x.com", "displayName": "Ana" },
+                    "start": { "dateTime": "2026-08-10T09:00:00+03:00", "timeZone": "Europe/Sofia" },
+                    "end":   { "dateTime": "2026-08-10T09:30:00+03:00", "timeZone": "Europe/Sofia" },
+                    "attendees": [
+                        { "email": "ana@x.com", "displayName": "Ana", "responseStatus": "accepted" },
+                        { "email": "me@x.com", "responseStatus": "needsAction", "self": true, "optional": true }
+                    ]
+                }],
+                "nextSyncToken": "tok-1"
+            })))
+            .mount(&server).await;
+
+        let pool = seeded_pool().await;
+        let client = CalendarClient::new(server.uri(), "at-1");
+        sync_calendar(&pool, &client, 1, "primary", 1786300000000, 1786400000000)
+            .await.unwrap();
+
+        let stored = omacal_store::events_in_window(&pool, 1786300000000, 1786400000000)
+            .await.unwrap();
+        let ev = stored.iter().find(|e| e.google_id == "ev1").unwrap();
+
+        assert_eq!(ev.description.as_deref(), Some("Sprint sync."));
+        assert_eq!(ev.etag.as_deref(), Some("\"etag-1\""));
+        assert_eq!(ev.sequence, 3);
+        assert_eq!(ev.organizer_email.as_deref(), Some("ana@x.com"));
+        assert_eq!(ev.attendees.len(), 2, "guest list dropped during sync");
+        assert!(ev.attendees.iter().any(|a| a.is_self && a.optional));
+    }
 }
