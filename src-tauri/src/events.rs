@@ -350,12 +350,10 @@ async fn respond_via_client(
         .or_else(|| ev.recurrence.as_ref().map(|_| ev.google_id.as_str()));
     let target = target_event_id(scope, series, &ev.google_id);
 
-    // The resolved instance is kept, not just its id: it is the only
-    // description this code will ever hold of the resource it is about to
-    // patch. `event_instances` asks for no `fields` mask, so each item is a
-    // full event — `etag` and `attendees` included — and both are needed
-    // below. Discarding it and re-fetching would cost a third round trip for
-    // data already in hand.
+    // The resolved instance is kept, not just its id: `event_instances` asks
+    // for no `fields` mask, so each item is a full event — `etag` and
+    // `attendees` included — and the rule below needs both. Re-fetching it
+    // would spend a request on data already in hand.
     let (event_id, instance) = match &target {
         Target::Master(master_id) => (master_id.clone(), None),
         Target::Instance { master, fallback } => {
@@ -367,46 +365,57 @@ async fn respond_via_client(
         }
     };
 
-    // Both the body and the precondition have to describe *the resource being
-    // patched*, and past this point that is not necessarily the row we loaded.
+    // ---------------------------------------------------------------------
+    // The provenance rule, which the rest of this function is one expression
+    // of: THE BODY AND THE ETAG MUST BOTH COME FROM THE RESOURCE BEING
+    // PATCHED — never from the row that happened to be on screen.
     //
-    // `ev.attendees` and `ev.etag` belong to `ev.google_id`. When the lookup
-    // above resolved to a different id — scope "this" on a series master
-    // rendered directly — patching with them writes the *master's* guest list
-    // onto one occurrence and, with `sendUpdates=all`, mails the result to
-    // everyone on it. That silently reverts any answer given against that
-    // occurrence alone, which is precisely what a materialised exception
-    // records: in Google Calendar, a guest answering "this event" is itself
-    // what materialises the instance. The window in which this store has not
-    // yet seen that exception is one sync interval wide, and `suppressed_slots`
-    // renders the master until it closes — so "a colleague declined one
-    // occurrence minutes ago" is the ordinary case, not an exotic one.
+    // `ev` is that row. Its `attendees` and its `etag` describe
+    // `ev.google_id` and nothing else, and by this point `event_id` is not
+    // always `ev.google_id`. Google replaces the attendee array wholesale on
+    // patch, and every patch here goes out with `sendUpdates=all`, so sending
+    // one resource's guest list to another does not merely mis-record
+    // something: it overwrites other people's answers and then emails them
+    // about it.
     //
-    // The instance's own attendees and etag are therefore used instead: the
-    // answer is re-applied over the guest list Google just reported for that
-    // occurrence, and `If-Match` names the version that list came from, so a
-    // concurrent edit still loses the race to the 412 arm below rather than
-    // being overwritten.
+    // Three separate bugs on this branch have been that one sentence:
     //
-    // The remaining arm — a different id with no instance in hand — is the
-    // empty-lookup fallback, and it cannot reach here: `resolve_instance_id`
-    // only returns `fallback` when `master != fallback`, which is the shape
-    // where `ev` *is* the materialised exception, so `event_id ==
-    // ev.google_id` and the row's own etag is the right precondition.
+    //   * scope "this" on a series master resolves to an instance id. In
+    //     Google Calendar a guest answering "this event" is itself what
+    //     materialises that instance, and this store does not see the
+    //     resulting exception until the next sync — up to one interval, with
+    //     `suppressed_slots` rendering the master meanwhile. Patching with
+    //     the master's array in that window reverts their answer.
+    //
+    //   * scope "all" from an exception row targets the *master*, which is
+    //     again not `ev`. The exception is where a per-occurrence answer
+    //     lives, so sending its array to the master applies one occurrence's
+    //     answers to the entire series.
+    //
+    //   * the 412 arm below, which has always re-read before retrying — the
+    //     one place that got this right from the start, and the shape the two
+    //     above are now brought into line with.
+    //
+    // So: same resource, use the row. Different resource, describe *it* —
+    // from the instance already in hand, or by fetching it. The fetch is a
+    // third round trip, paid only on the branch that has no alternative; the
+    // one-off, whole-series and "this occurrence" paths are unchanged at one,
+    // one and two.
     let (body_attendees, if_match) = if event_id == ev.google_id {
         (body_attendees, ev.etag.clone())
-    } else if let Some(inst) = &instance {
-        let inst_attendees: Vec<omacal_store::Attendee> =
-            inst.attendees.iter().map(omacal_sync::from_google_attendee).collect();
-        let from_instance = attendees_with_self_response(&inst_attendees, response)
-            .ok_or_else(|| anyhow::anyhow!("you are not a guest on this event"))?;
-        (from_instance, inst.etag.clone())
     } else {
-        // Unreachable per the paragraph above, but stated rather than assumed:
-        // an unconditional patch is what "we hold no version of this resource"
-        // actually means, and a precondition naming another resource's version
-        // could only spend the single retry below on a certain rejection.
-        (body_attendees, None)
+        let target_event = match instance {
+            Some(inst) => inst,
+            None => client.get_event(cal_google_id, &event_id).await?,
+        };
+        let target_attendees: Vec<omacal_store::Attendee> =
+            target_event.attendees.iter().map(omacal_sync::from_google_attendee).collect();
+        // Not a guest on the resource being patched means there is nothing of
+        // ours to change on it. Falling back to `ev`'s array here would be
+        // the very write this rule exists to prevent, so it fails instead.
+        let from_target = attendees_with_self_response(&target_attendees, response)
+            .ok_or_else(|| anyhow::anyhow!("you are not a guest on this event"))?;
+        (from_target, target_event.etag)
     };
 
     let body = serde_json::json!({ "attendees": body_attendees });
@@ -1099,6 +1108,88 @@ mod tests {
         .await
         .unwrap_err();
         assert!(err.to_string().contains("not a guest on this event"), "{err}");
+    }
+
+    /// The provenance rule's other arm: `scope: "all"` from a *materialised
+    /// exception* row targets the series master, which is again not the row
+    /// that was loaded — and this one is not a race, it is unconditional.
+    ///
+    /// An exception is exactly where a per-occurrence answer lives. Ana
+    /// declined one occurrence, so the exception row says `declined` while
+    /// the master still says `accepted`. Answering "all of them" from that
+    /// row used to send the exception's array to the master, declining Ana
+    /// for the entire series and, with `sendUpdates=all`, telling everyone.
+    ///
+    /// This is the one branch that pays a third round trip: nothing here has
+    /// the master in hand, and there is no version of it to condition on
+    /// without asking.
+    #[tokio::test]
+    async fn answering_the_whole_series_from_an_exception_sends_the_masters_guest_list() {
+        // The exception row: Ana declined *this* occurrence.
+        let mut ev = stored(vec![
+            Attendee {
+                email: "ana@x.com".into(), display_name: None,
+                response_status: "declined".into(), optional: false, is_self: false,
+                comment: None, additional_guests: 0,
+            },
+            guest(true),
+        ]);
+        ev.google_id = "exception1".into();
+        ev.recurring_event_id = Some("master1".into());
+        ev.etag = Some("\"exception-etag\"".into());
+        let (pool, id) = seeded_pool_with(&ev).await;
+
+        let server = wiremock::MockServer::start().await;
+
+        // The series master, where Ana is still `accepted` — she declined one
+        // occurrence, not the series.
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/calendars/primary/events/master1"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "master1", "status": "confirmed", "etag": "\"master-etag\"",
+                "attendees": [
+                    {"email": "ana@x.com", "responseStatus": "accepted", "optional": false},
+                    {"email": "me@x.com", "responseStatus": "needsAction",
+                     "optional": false, "self": true}
+                ]
+            })))
+            .expect(1)
+            .mount(&server).await;
+
+        // Ana must still read `accepted`, and `If-Match` must be the master's
+        // own version. Built from `ev` instead, Ana would read `declined` and
+        // nothing here matches — the call 404s and the `unwrap()` panics.
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path("/calendars/primary/events/master1"))
+            .and(wiremock::matchers::header("if-match", "\"master-etag\""))
+            .and(wiremock::matchers::body_json(serde_json::json!({
+                "attendees": [
+                    {"email": "ana@x.com", "responseStatus": "accepted",
+                     "optional": false, "additionalGuests": 0},
+                    {"email": "me@x.com", "responseStatus": "declined",
+                     "optional": false, "additionalGuests": 0}
+                ]
+            })))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "master1", "status": "confirmed", "etag": "\"master-2\""
+            })))
+            .expect(1)
+            .mount(&server).await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "at-1");
+        let body_attendees = attendees_with_self_response(&ev.attendees, "declined").unwrap();
+        respond_via_client(
+            &pool, "declined", "all", ev.start_utc, ev, "primary", body_attendees, &client,
+        )
+        .await
+        .unwrap();
+
+        // `master1` is a different Google id than `exception1`, so the local
+        // exception row is left for the next sync rather than stamped with
+        // the master's response.
+        let (row, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
+        assert_eq!(row.etag.as_deref(), Some("\"exception-etag\""),
+            "the master's etag must not be stamped onto the exception's own row");
     }
 
     /// `can_respond` is a predicate; this is the payload the UI actually
