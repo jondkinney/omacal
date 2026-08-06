@@ -1,9 +1,9 @@
 <!-- ui/src/lib/EventPopover.svelte -->
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import { placePopover, type Rect } from './position';
   import { descriptionSegments } from './sanitize';
-  import { respondToEvent, type EventDetail } from './eventdetail';
+  import { respondToEvent, type Attendee, type EventDetail } from './eventdetail';
 
   let {
     detail,
@@ -24,8 +24,12 @@
      *  block that was clicked without waiting for the next sync — the
      *  backend deliberately leaves `detail` itself unchanged after a "this
      *  one" RSVP against a bare master (see `respond_to_event`'s own
-     *  comment), so nothing here can be read back off `detail`. */
-    onresponded?: (response: 'accepted' | 'tentative' | 'declined') => void;
+     *  comment), so nothing here can be read back off `detail`. Required,
+     *  not optional: it is the only channel the clicked block ever gets
+     *  told a response landed, and a caller that silently omits it gets a
+     *  grid that never restyles — the exact staleness this task exists to
+     *  close. */
+    onresponded: (response: 'accepted' | 'tentative' | 'declined') => void;
   } = $props();
 
   const segments = $derived(descriptionSegments(detail.description));
@@ -65,19 +69,41 @@
 
   const shown = $derived(chosen ?? detail.self_response);
 
-  async function respond(response: 'accepted' | 'tentative' | 'declined') {
+  // For every non-recurring event, and for `scope: 'all'`, the backend
+  // *does* write back and returns an `EventDetail` whose `attendees` carry
+  // the new response — only a "this one" RSVP against a bare master skips
+  // it (see `respond_to_event`'s own comment, and `onresponded` above). When
+  // it doesn't skip, adopting the fresh list is what keeps the guest list's
+  // own "you" row from reading `needsAction` while the buttons above it
+  // already say otherwise. `chosen` still drives the buttons regardless —
+  // this only ever affects the guest list.
+  let freshAttendees = $state<Attendee[] | null>(null);
+  const shownAttendees = $derived(freshAttendees ?? detail.attendees);
+
+  async function respond(response: 'accepted' | 'tentative' | 'declined', e: MouseEvent) {
+    const btn = e.currentTarget as HTMLButtonElement;
     const previous = chosen;
     chosen = response;
     busy = new Set([response]);
     note = null;
     try {
-      await respondToEvent(detail.id, response, scope, occurrenceStartMs);
-      onresponded?.(response);
+      const fresh = await respondToEvent(detail.id, response, scope, occurrenceStartMs);
+      if (JSON.stringify(fresh.attendees) !== JSON.stringify(detail.attendees)) {
+        freshAttendees = fresh.attendees;
+      }
+      onresponded(response);
     } catch (err) {
       chosen = previous;
       note = { text: String(err), kind: 'error' };
     } finally {
       busy = new Set();
+      // Disabling a focused button mid-submit (just above) drops focus to
+      // <body> the instant the attribute lands, before this handler even
+      // gets to `finally` — the same failure `CalendarPopover`'s own
+      // `toggleShown`/`toggleSync` guard against, with the same fix: reclaim
+      // it once `disabled` is actually gone from the DOM.
+      await tick();
+      btn.focus();
     }
   }
 
@@ -124,9 +150,9 @@
   {/if}
   {#if detail.organizer_email}<p class="organizer">Organized by {detail.organizer_email}</p>{/if}
 
-  {#if detail.attendees.length}
+  {#if shownAttendees.length}
     <div class="guests">
-      {#each detail.attendees as a}
+      {#each shownAttendees as a}
         <div class="guest {a.response_status}">
           {a.display_name ?? a.email}{a.is_self ? ' (you)' : ''}
         </div>
@@ -148,13 +174,13 @@
       </div>
     {/if}
     <div class="rsvp">
-      <button class:chosen={shown === 'accepted'} disabled={busy.size > 0} onclick={() => respond('accepted')}
+      <button class:chosen={shown === 'accepted'} disabled={busy.size > 0} onclick={(e) => respond('accepted', e)}
         >Yes</button
       >
-      <button class:chosen={shown === 'tentative'} disabled={busy.size > 0} onclick={() => respond('tentative')}
+      <button class:chosen={shown === 'tentative'} disabled={busy.size > 0} onclick={(e) => respond('tentative', e)}
         >Maybe</button
       >
-      <button class:chosen={shown === 'declined'} disabled={busy.size > 0} onclick={() => respond('declined')}
+      <button class:chosen={shown === 'declined'} disabled={busy.size > 0} onclick={(e) => respond('declined', e)}
         >No</button
       >
     </div>

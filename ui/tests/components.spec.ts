@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { FIXED_NOW } from './fixtures';
+import { FIXED_NOW, POPOVER_DETAILS, POPOVER_REFRESHED_DETAIL } from './fixtures';
 import { CALENDAR_SYNC_REMOVED } from './harness/tauri';
 
 const show = (c: string, f: string) => `/tests/harness/index.html?c=${c}&f=${f}`;
@@ -21,6 +21,87 @@ test.describe('WeekGrid', () => {
     expect(a && b).toBeTruthy();
     expect(a!.x + a!.width).toBeLessThanOrEqual(b!.x + 1);
     await expect(page).toHaveScreenshot('weekgrid-populated.png');
+  });
+});
+
+// Fix round 1: `EventPopover`'s own specs mount it standalone against a
+// fixture that already carries the right `occurrenceStartMs` — they can only
+// prove the popover honours its own prop, never that `WeekGrid` computed
+// that prop correctly from the clicked block in the first place. These
+// specs click a real block in a real `WeekGrid` instead, exercising
+// `openPopover` end to end: the trap itself, the supersession guard, the
+// load-failure close, the after-paint refresh, and the optimistic restyle.
+test.describe('WeekGrid popover flow', () => {
+  const show = (f: string) => `/tests/harness/index.html?c=WeekGrid&f=${f}`;
+
+  test("responding sends the clicked block's own start, not the series DTSTART", async ({ page }) => {
+    await page.goto(show('popover'));
+    await page.getByRole('button', { name: 'Standup' }).click();
+    await expect(page.locator('.pop')).toBeVisible();
+    await page.getByRole('button', { name: 'No' }).click();
+    const call = await page.evaluate(() => (window as any).__lastRespondCall);
+    // POPOVER_DETAILS[42].start_ms (the series DTSTART) vs the block's own
+    // start_ms (POPOVER_RECURRING's, the fourth occurrence) — see fixtures.ts.
+    expect(call.occurrenceStartMs).toBe(POPOVER_DETAILS[42].start_ms + 3 * 24 * 3_600_000);
+    expect(call.occurrenceStartMs).not.toBe(POPOVER_DETAILS[42].start_ms);
+  });
+
+  test('a successful response restyles the clicked block without a refetch', async ({ page }) => {
+    await page.goto(show('popover'));
+    const block = page.getByRole('button', { name: 'Standup' });
+    await expect(block).toHaveClass(/needsAction/);
+    await block.click();
+    await page.getByRole('button', { name: 'No' }).click();
+    await expect(block).toHaveClass(/declined/);
+  });
+
+  test('the popover updates in place once the after-paint refresh lands', async ({ page }) => {
+    await page.goto(show('popover'));
+    await page.evaluate(() => window.__harness.holdNextEventCall('refresh_event', 50));
+    await page.getByRole('button', { name: 'Sync' }).click();
+    await expect(page.locator('.loc')).toHaveText('Room A');
+    await page.evaluate(
+      (detail) => window.__harness.releaseEventCall('refresh_event', 50, detail),
+      POPOVER_REFRESHED_DETAIL,
+    );
+    await expect(page.locator('.loc')).toHaveText('Room B');
+  });
+
+  test('a failed load never shows an empty popover', async ({ page }) => {
+    await page.goto(show('popover'));
+    await page.evaluate(() => window.__harness.failNextEventCall('event_detail', 60, 'offline'));
+    await page.getByRole('button', { name: 'Event A' }).click();
+    await expect(page.locator('.pop')).toHaveCount(0);
+  });
+
+  test('a late failure for a superseded click does not close a popover that opened after it', async ({ page }) => {
+    // The failure counterpart to the "stale detail" spec below: block A's
+    // load is still in flight when B is opened and succeeds; A's load then
+    // fails. Without the `isSelected` guard on the catch branch, that late
+    // failure would call `closePopover()` unconditionally and tear down
+    // B's already-open, already-successful popover.
+    await page.goto(show('popover'));
+    await page.evaluate(() => window.__harness.holdNextEventCall('event_detail', 60));
+    await page.getByRole('button', { name: 'Event A' }).click(); // parked
+    await page.getByRole('button', { name: 'Event B' }).click(); // succeeds
+    await expect(page.locator('.pop h2')).toHaveText('Event B');
+    await page.evaluate(() => window.__harness.rejectEventCall('event_detail', 60, 'offline'));
+    await expect(page.locator('.pop')).toBeVisible();
+    await expect(page.locator('.pop h2')).toHaveText('Event B');
+  });
+
+  test('a stale detail arriving after a second block was opened is ignored', async ({ page }) => {
+    await page.goto(show('popover'));
+    await page.evaluate(() => window.__harness.holdNextEventCall('event_detail', 60));
+    await page.getByRole('button', { name: 'Event A' }).click(); // parked
+    await page.getByRole('button', { name: 'Event B' }).click(); // answers immediately
+    await expect(page.locator('.pop h2')).toHaveText('Event B');
+    await page.evaluate(
+      (detail) => window.__harness.releaseEventCall('event_detail', 60, detail),
+      POPOVER_DETAILS[60],
+    );
+    // Still B — the late arrival for A must not clobber what's on screen.
+    await expect(page.locator('.pop h2')).toHaveText('Event B');
   });
 });
 
@@ -429,6 +510,17 @@ test.describe('EventPopover', () => {
     const call = await page.evaluate(() => (window as any).__lastRespondCall);
     expect(call.occurrenceStartMs).toBe(1786600800000); // Thu 13 Aug, the clicked block
     expect(call.occurrenceStartMs).not.toBe(1786341600000); // Mon 10 Aug, the series start
+    // The scope radio defaults to "this" (asserted by the recurring-event
+    // spec above), and nothing here touched it — the call must say so too.
+    expect(call.scope).toBe('this');
+  });
+
+  test('choosing "All of them" sends that scope, not the default', async ({ page }) => {
+    await page.goto(show('recurring-fourth-occurrence'));
+    await page.getByRole('radio', { name: 'All of them' }).check();
+    await page.getByRole('button', { name: 'No' }).click();
+    const call = await page.evaluate(() => (window as any).__lastRespondCall);
+    expect(call.scope).toBe('all');
   });
 
   test('a successful response shows immediately, without waiting for a sync', async ({ page }) => {
@@ -438,6 +530,16 @@ test.describe('EventPopover', () => {
     await page.goto(show('recurring-fourth-occurrence'));
     await page.getByRole('button', { name: 'No' }).click();
     await expect(page.getByRole('button', { name: 'No' })).toHaveClass(/chosen/);
+  });
+
+  test('a successful non-recurring response also updates the guest list, not just the buttons', async ({ page }) => {
+    // Unlike the bare-master "this one" case above, the backend really does
+    // write back here (every non-recurring event, and `scope: 'all'`) — the
+    // guest list's own "you" row must catch up too, or the buttons would say
+    // "No" while the row right below them still reads needsAction.
+    await page.goto(show('writes-back'));
+    await page.getByRole('button', { name: 'No' }).click();
+    await expect(page.locator('.guest')).toHaveClass(/declined/);
   });
 
   test('escape closes it even when focus has fallen to the body', async ({ page }) => {

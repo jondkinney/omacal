@@ -12,7 +12,10 @@
 import type { WeekPayload } from '../../src/lib/api';
 import type { AppStatus } from '../../src/lib/status';
 import type { Calendar } from '../../src/lib/calendars';
-import { labelledWeek, weekLabel, APP_FIVE_MIN_AGO } from '../fixtures';
+import type { EventDetail } from '../../src/lib/eventdetail';
+import {
+  labelledWeek, weekLabel, APP_FIVE_MIN_AGO, POPOVER_DETAILS, POPOVER_REFRESHED_DETAIL,
+} from '../fixtures';
 
 /** What the real `get_palette` returns; the same fallback_dark values. */
 const PALETTE = {
@@ -55,6 +58,24 @@ export type Harness = {
   holdNextCalendarCall(cmd: 'set_calendar_selected' | 'set_calendar_sync'): void;
   /** Answer the parked call for this command, then let its `.then` chain run. */
   releaseCalendarCall(cmd: 'set_calendar_selected' | 'set_calendar_sync', value: unknown): Promise<void>;
+  /** Park the *next* `event_detail` or `refresh_event` call for this exact
+   *  event id instead of answering it — what a `WeekGrid` spec uses to
+   *  drive the supersession guard (open one block while another's detail is
+   *  still loading) and the after-paint refresh (control when it lands). */
+  holdNextEventCall(cmd: 'event_detail' | 'refresh_event', id: number): void;
+  /** Answer the parked call for this command and id, then let its `.then`
+   *  chain — including `WeekGrid`'s own `detail = fresh` — actually run. */
+  releaseEventCall(cmd: 'event_detail' | 'refresh_event', id: number, value: EventDetail): Promise<void>;
+  /** Make the next `event_detail` or `refresh_event` call for this exact id
+   *  reject — what a `WeekGrid` spec uses to drive the load-failure-closes
+   *  path (`event_detail`) without disturbing every other id's fixture. */
+  failNextEventCall(cmd: 'event_detail' | 'refresh_event', id: number, message: string): void;
+  /** Reject the *parked* call for this command and id — the counterpart to
+   *  `releaseEventCall`, for proving a *late failure* for a superseded
+   *  click does not close a popover that opened successfully after it.
+   *  `failNextEventCall` alone cannot drive that: it rejects immediately,
+   *  before a second click could ever land. */
+  rejectEventCall(cmd: 'event_detail' | 'refresh_event', id: number, message: string): Promise<void>;
   /** Every command the app has invoked, in order. */
   calls: { cmd: string; args: unknown }[];
 };
@@ -83,6 +104,20 @@ let failWeekOnce: string | null = null;
 let failCalendarOnce: { cmd: string; message: string } | null = null;
 let holdCalendarOnce: string | null = null;
 const parkedCalendar = new Map<string, CalendarDeferred>();
+
+type EventDeferred = { resolve: (d: EventDetail) => void; reject: (e: unknown) => void };
+type EventCmd = 'event_detail' | 'refresh_event';
+
+// Keyed by `${cmd}:${id}`, not just `id`: a spec driving the after-paint
+// refresh needs to hold `refresh_event` for an id while `event_detail` for
+// that same id answers normally, and a single `id`-only key couldn't tell
+// the two commands' holds apart.
+function eventCallKey(cmd: EventCmd, id: number): string {
+  return `${cmd}:${id}`;
+}
+const holdEventCallOnce = new Set<string>();
+const parkedEventCall = new Map<string, EventDeferred>();
+let failEventCallOnce: { key: string; message: string } | null = null;
 
 /**
  * Resolves once something has subscribed to `event`; throws if none does.
@@ -133,7 +168,50 @@ const harness: Harness = {
     // before the spec asserts on it.
     await new Promise((r) => setTimeout(r, 50));
   },
+  holdNextEventCall(cmd, id) {
+    holdEventCallOnce.add(eventCallKey(cmd, id));
+  },
+  async releaseEventCall(cmd, id, value) {
+    const key = eventCallKey(cmd, id);
+    parkedEventCall.get(key)?.resolve(value);
+    parkedEventCall.delete(key);
+    await new Promise((r) => setTimeout(r, 50));
+  },
+  failNextEventCall(cmd, id, message) {
+    failEventCallOnce = { key: eventCallKey(cmd, id), message };
+  },
+  async rejectEventCall(cmd, id, message) {
+    const key = eventCallKey(cmd, id);
+    parkedEventCall.get(key)?.reject(message);
+    parkedEventCall.delete(key);
+    await new Promise((r) => setTimeout(r, 50));
+  },
 };
+
+/** Resolves against `POPOVER_DETAILS`/`POPOVER_REFRESHED_DETAIL` unless a
+ *  spec armed a failure or a hold for this exact command and id. */
+function eventCallResult(cmd: EventCmd, id: number): Promise<EventDetail> {
+  const key = eventCallKey(cmd, id);
+  if (failEventCallOnce?.key === key) {
+    const { message } = failEventCallOnce;
+    failEventCallOnce = null;
+    return Promise.reject(message);
+  }
+  if (holdEventCallOnce.has(key)) {
+    holdEventCallOnce.delete(key);
+    return new Promise<EventDetail>((resolve, reject) => {
+      parkedEventCall.set(key, { resolve, reject });
+    });
+  }
+  // Both commands default to the same, unchanged `POPOVER_DETAILS` entry —
+  // the ordinary case, where nothing moved since the popover opened.
+  // `POPOVER_REFRESHED_DETAIL` (id 50) only ever reaches a spec through an
+  // explicit `releaseEventCall('refresh_event', 50, POPOVER_REFRESHED_DETAIL)`,
+  // never through this default path.
+  const d = POPOVER_DETAILS[id];
+  if (!d) throw new Error(`no ${cmd} fixture for event id ${id}`);
+  return Promise.resolve(d);
+}
 
 /** Resolves normally unless a spec armed a failure or a hold for this exact command. */
 function calendarResult<T>(cmd: string, ok: T): Promise<T> {
@@ -239,12 +317,31 @@ export function installTauriStub(scenario: string): Harness {
         return calendarResult(cmd, CALENDAR_SYNC_REMOVED);
       case 'sync_now':
         return 0;
+      case 'event_detail':
+        return eventCallResult('event_detail', args.id);
+      case 'refresh_event':
+        return eventCallResult('refresh_event', args.id);
       case 'respond_to_event':
         // Exposed so a spec can assert on exactly what `EventPopover` sent —
         // in particular, that the fourth argument is the clicked block's own
         // `start_ms` and never `detail.start_ms` (the task brief's trap).
         (window as any).__lastRespondCall = args;
         if (scenario === 'respond-fails') return Promise.reject('could not reach Google right now.');
+        // Only the `writes-back` scenario simulates a real write-back (what
+        // the backend actually returns for every non-recurring event, and
+        // for `scope: 'all'`) — an attendee list carrying the new response,
+        // so a spec can assert the guest list's own "you" row catches up to
+        // it. Every other scenario's stand-in is never read by EventPopover
+        // at all (see below), so its content doesn't matter.
+        if (scenario === 'writes-back') {
+          return {
+            ...RESPOND_STUB_DETAIL,
+            attendees: [
+              { email: 'me@x.com', display_name: null, response_status: args.response,
+                optional: false, is_self: true },
+            ],
+          };
+        }
         // The resolved detail is deliberately never read by EventPopover: a
         // "this one" RSVP against a bare master leaves the backend's own
         // detail unchanged (see respond_to_event's doc comment), so the

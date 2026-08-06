@@ -55,6 +55,14 @@ if (name === 'App') {
     // prop rather than `get_calendars`, so the scenario name only matters
     // for the write commands the stub answers.
     if (name === 'CalendarPopover') installTauriStub(fixture);
+    // WeekGrid takes its own `week` from a fixture prop too, same as every
+    // other leaf here, but clicking one of its blocks opens a real
+    // `EventPopover` that calls `event_detail`/`refresh_event`/
+    // `respond_to_event` itself — installed unconditionally (harmless for
+    // the specs that never click anything) rather than gated on the
+    // fixture name, since it is the *click*, not the fixture, that decides
+    // whether anything actually reaches `invoke`.
+    if (name === 'WeekGrid') installTauriStub(fixture);
     if (name === 'EventPopover') {
       // EventPopover calls `invoke` itself too (`respond_to_event`), same
       // reasoning as CalendarPopover above.

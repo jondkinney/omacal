@@ -181,10 +181,69 @@ const SERIES_DTSTART = 1_786_341_600_000;
  *  `start_ms` actually is, and the only value `respondToEvent` may see. */
 const FOURTH_OCCURRENCE = 1_786_600_800_000;
 
+// Fix round 1 — WeekGrid-level popover-flow specs. `EventPopover`'s own
+// specs mount it standalone with a fixture that already carries the right
+// `occurrenceStartMs`, so they can only prove the popover honours its own
+// prop, never that `WeekGrid` computed that prop correctly in the first
+// place — the actual trap this task exists to guard against. These four
+// events, and the `WeekGrid` `popover` fixture built from them below, exist
+// so a spec can click a real block and drive the whole `openPopover` path.
+//
+// Each non-recurring event's own `start_ms` is otherwise inert to `WeekGrid`
+// (a block's on-screen position comes from its `Placed` entry, not from the
+// timestamps of the event it belongs to) — only the recurring one's matters,
+// since it *is* the value under test.
+const POPOVER_RECURRING: UiEvent = ev({
+  id: 42, title: 'Standup', start_ms: FOURTH_OCCURRENCE, end_ms: FOURTH_OCCURRENCE + 30 * 60_000,
+  response: 'needsAction',
+});
+const POPOVER_REFRESH_TARGET: UiEvent =
+  ev({ id: 50, title: 'Sync', start_ms: MON + 9 * H, end_ms: MON + 9 * H + 30 * 60_000 });
+const POPOVER_SUPERSESSION_A: UiEvent =
+  ev({ id: 60, title: 'Event A', start_ms: MON + 10 * H, end_ms: MON + 10 * H + 30 * 60_000 });
+const POPOVER_SUPERSESSION_B: UiEvent =
+  ev({ id: 61, title: 'Event B', start_ms: MON + 11 * H, end_ms: MON + 11 * H + 30 * 60_000 });
+
+/** What `event_detail` resolves with per id, for the `WeekGrid` `popover`
+ *  fixture below — exported so `harness/tauri.ts` can answer `event_detail`
+ *  and `refresh_event` without a second, driftable copy of these ids. */
+export const POPOVER_DETAILS: Record<number, EventDetail> = {
+  // `start_ms` here is the series DTSTART — deliberately *not*
+  // `FOURTH_OCCURRENCE` — mirroring what a real recurring master's detail
+  // carries (`event_detail_impl` sets it from `event.start_utc`). The
+  // occurrence-trap spec exists to prove `respondToEvent` never sees it.
+  42: detail({
+    id: 42, title: 'Standup', is_recurring: true,
+    start_ms: SERIES_DTSTART, end_ms: SERIES_DTSTART + 30 * 60_000,
+    self_response: 'needsAction',
+    attendees: [attendee({ email: 'me@x.com', is_self: true, response_status: 'needsAction' })],
+  }),
+  50: detail({ id: 50, title: 'Sync', location: 'Room A' }),
+  60: detail({ id: 60, title: 'Event A' }),
+  61: detail({ id: 61, title: 'Event B' }),
+};
+
+/** What `refresh_event(50)` resolves with once a spec releases it — a
+ *  different `location` than `POPOVER_DETAILS[50]`, so the after-paint
+ *  refresh updating the popover in place is something a spec can actually
+ *  observe rather than infer. */
+export const POPOVER_REFRESHED_DETAIL: EventDetail = detail({ id: 50, title: 'Sync', location: 'Room B' });
+
+const popoverWeek = (): WeekPayload => {
+  const w = emptyWeek();
+  const events = [POPOVER_RECURRING, POPOVER_REFRESH_TARGET, POPOVER_SUPERSESSION_A, POPOVER_SUPERSESSION_B];
+  w.days[0] = day(
+    0, events,
+    events.map((_, i) => placed(0.05 + i * 0.1, 30 / (24 * 60), 0, 1, i)),
+  );
+  return w;
+};
+
 export const FIXTURES: Record<string, Record<string, any>> = {
   WeekGrid: {
     empty: { week: emptyWeek() },
     populated: { week: populatedWeek() },
+    popover: { week: popoverWeek() },
   },
   EventBlock: {
     // The duration ladder.
@@ -270,7 +329,7 @@ export const FIXTURES: Record<string, Record<string, any>> = {
           attendee({ email: 'petya@x.com', response_status: 'declined' }),
         ],
       }),
-      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop,
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop,
     },
     // The raw description is already entity-encoded, as a hostile calendar
     // invite's would be — `descriptionSegments` decodes it back to the
@@ -280,7 +339,7 @@ export const FIXTURES: Record<string, Record<string, any>> = {
     // `<script>` element — exactly the regression Step 7 breaks on purpose.
     'nasty-description': {
       detail: detail({ id: 2, description: '&lt;script&gt;alert(1)&lt;/script&gt;' }),
-      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop,
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop,
     },
     recurring: {
       detail: detail({
@@ -288,7 +347,7 @@ export const FIXTURES: Record<string, Record<string, any>> = {
         is_recurring: true,
         attendees: [attendee({ email: 'me@x.com', is_self: true })],
       }),
-      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop,
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop,
     },
     readonly: {
       detail: detail({
@@ -300,13 +359,13 @@ export const FIXTURES: Record<string, Record<string, any>> = {
           attendee({ email: 'petya@x.com', response_status: 'declined' }),
         ],
       }),
-      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop,
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop,
     },
     // The harness's `respond_to_event` stub rejects for this scenario name —
     // see tests/harness/tauri.ts.
     'respond-fails': {
       detail: detail({ id: 5, attendees: [attendee({ email: 'me@x.com', is_self: true })] }),
-      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop,
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop,
     },
     // `detail.start_ms` is the series DTSTART (Monday); the block actually
     // clicked is the fourth occurrence (Thursday) — the trap named in the
@@ -320,7 +379,19 @@ export const FIXTURES: Record<string, Record<string, any>> = {
         start_ms: SERIES_DTSTART,
         attendees: [attendee({ email: 'me@x.com', is_self: true })],
       }),
-      anchor: ANCHOR, occurrenceStartMs: FOURTH_OCCURRENCE, onclose: noop,
+      anchor: ANCHOR, occurrenceStartMs: FOURTH_OCCURRENCE, onclose: noop, onresponded: noop,
+    },
+    // Non-recurring, so the backend really does write back (unlike the
+    // bare-master "this one" case above) — the harness's `respond_to_event`
+    // stub for this scenario name returns an attendee list carrying the new
+    // response, so a spec can assert the guest list's own "you" row catches
+    // up to it, not just the RSVP buttons.
+    'writes-back': {
+      detail: detail({
+        id: 7,
+        attendees: [attendee({ email: 'me@x.com', is_self: true, response_status: 'needsAction' })],
+      }),
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop,
     },
   },
 };
