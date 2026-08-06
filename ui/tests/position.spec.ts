@@ -36,4 +36,10 @@ test.describe('placePopover', () => {
                            { width: 320, height: 900 }, VIEW);
     expect(p.top).toBe(8);
   });
+
+  test('a popover wider than the viewport pins to the left', () => {
+    const p = placePopover({ top: 100, left: 200, width: 120, height: 40 },
+                           { width: 1300, height: 400 }, VIEW);
+    expect(p.left).toBe(8);
+  });
 });
