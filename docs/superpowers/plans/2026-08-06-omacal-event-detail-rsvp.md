@@ -769,8 +769,8 @@ async fn respond_impl(
         Target::Instance { master, fallback } => {
             let found = client
                 .event_instances(&cal_google_id, master,
-                                 &crate::to_rfc3339(ev.start_utc - 1000),
-                                 &crate::to_rfc3339(ev.start_utc + 1000))
+                                 &omacal_sync::to_rfc3339(ev.start_utc - 1000),
+                                 &omacal_sync::to_rfc3339(ev.start_utc + 1000))
                 .await?;
             // Google's own id, never one built by string formatting: an
             // all-day event and an already-moved occurrence both format
@@ -813,6 +813,8 @@ async fn respond_impl(
 ```
 
 `refresh_event` is the same shape without the patch: `get_event`, `merge_patched`, `upsert_event`, return the detail. Its failures are the caller's to ignore.
+
+**`to_rfc3339` needs one word changed to be reachable.** It already exists at `crates/omacal-sync/src/lib.rs:14` as a *private* `fn`, so `src-tauri` cannot call it. Make it `pub` and call it as `omacal_sync::to_rfc3339`. Do not copy the three lines into `src-tauri` — a second implementation of a timestamp format is exactly the kind of duplication that drifts.
 
 Add the two small helpers this needs — `from_google_attendee` (a `model::Attendee` → `omacal_store::Attendee` map, the same one Task 2 wrote inline; lift it here and have Task 2's call site use it) and `merge_patched` (copy `etag`, `sequence`, `attendees`, and the derived `self_response` onto the stored row). Also add `omacal_store::event_for_write(pool, id)` returning `(StoredEvent, access_role, calendar google_id, account email)` — the same join as `event_by_id` from Task 3 with two more columns; extend that function rather than writing a second one.
 
