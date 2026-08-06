@@ -12,9 +12,11 @@ pub fn is_tombstone(ev: &Event) -> bool {
 /// Maps one wire attendee to its stored shape. `pub` beyond this crate: the
 /// RSVP command in `src-tauri` reaches this same mapping a third time, on the
 /// conflict-retry path that re-reads an event fresh from Google, and a second
-/// hand-written copy of this five-field struct literal is exactly the kind of
+/// hand-written copy of this seven-field struct literal is exactly the kind of
 /// duplication that drifts when Google adds a field to one side and not the
-/// other.
+/// other. `comment` and `additional_guests` are carried through unchanged even
+/// though nothing in this app reads them yet: an RSVP patch replaces Google's
+/// whole attendee array, so a field this mapping drops is erased for real.
 pub fn from_google_attendee(a: &omacal_google::model::Attendee) -> omacal_store::Attendee {
     omacal_store::Attendee {
         email: a.email.clone(),
@@ -22,6 +24,8 @@ pub fn from_google_attendee(a: &omacal_google::model::Attendee) -> omacal_store:
         response_status: a.response_status.clone(),
         optional: a.optional,
         is_self: a.is_self,
+        comment: a.comment.clone(),
+        additional_guests: a.additional_guests,
     }
 }
 
@@ -193,6 +197,8 @@ mod tests {
             response_status: "tentative".into(),
             optional: true,
             is_self: true,
+            comment: Some("running late".into()),
+            additional_guests: 2,
         };
         let s = from_google_attendee(&a);
         assert_eq!(s.email, "x@y.com");
@@ -200,6 +206,8 @@ mod tests {
         assert_eq!(s.response_status, "tentative");
         assert!(s.optional);
         assert!(s.is_self);
+        assert_eq!(s.comment.as_deref(), Some("running late"), "comment dropped");
+        assert_eq!(s.additional_guests, 2, "additional_guests dropped");
     }
 
     #[test]
@@ -267,10 +275,12 @@ mod tests {
         ev.attendees = vec![
             omacal_google::model::Attendee {
                 email: "other@x".into(), display_name: None,
-                response_status: "accepted".into(), optional: false, is_self: false },
+                response_status: "accepted".into(), optional: false, is_self: false,
+                comment: None, additional_guests: 0 },
             omacal_google::model::Attendee {
                 email: "me@x".into(), display_name: None,
-                response_status: "needsAction".into(), optional: false, is_self: true },
+                response_status: "needsAction".into(), optional: false, is_self: true,
+                comment: None, additional_guests: 0 },
         ];
         let s = to_stored(&ev, 1, "Europe/Sofia").unwrap();
         assert_eq!(s.self_response.as_deref(), Some("needsAction"));

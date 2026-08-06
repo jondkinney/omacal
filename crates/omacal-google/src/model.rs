@@ -36,6 +36,15 @@ pub struct Attendee {
     pub optional: bool,
     #[serde(rename = "self", default)]
     pub is_self: bool,
+    /// A free-text note the attendee left on their RSVP. Writable, and not
+    /// modelled anywhere else in this app — carried through unchanged rather
+    /// than dropped, since an RSVP patch replaces Google's whole attendee
+    /// array and anything this struct doesn't round-trip is erased for real.
+    pub comment: Option<String>,
+    /// How many extra guests this attendee is bringing. Also writable and
+    /// otherwise unmodelled; same reason as `comment`.
+    #[serde(default)]
+    pub additional_guests: i64,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

@@ -51,6 +51,15 @@ pub struct Attendee {
     /// True for the signed-in user's own row. This is the entry an RSVP edits,
     /// and the only one it may edit.
     pub is_self: bool,
+    /// A free-text note the attendee left on their RSVP. Not surfaced by this
+    /// app's own UI, but writable on Google's side — carried through
+    /// unchanged rather than dropped, since an RSVP patch replaces the whole
+    /// attendee array and any field this struct doesn't round-trip is erased
+    /// for real, for every attendee, on every response.
+    pub comment: Option<String>,
+    /// How many extra guests this attendee is bringing. Also writable and
+    /// otherwise unmodelled; same reason as `comment`.
+    pub additional_guests: i64,
 }
 
 const SELECT_COLS: &str = "e.id, e.calendar_id, e.google_id, e.summary, e.location,
@@ -583,9 +592,11 @@ mod tests {
             organizer_email: Some("ana@x.com".into()),
             attendees: vec![
                 Attendee { email: "ana@x.com".into(), display_name: Some("Ana".into()),
-                           response_status: "accepted".into(), optional: false, is_self: false },
+                           response_status: "accepted".into(), optional: false, is_self: false,
+                           comment: Some("running 5 late".into()), additional_guests: 1 },
                 Attendee { email: "me@x.com".into(), display_name: None,
-                           response_status: "needsAction".into(), optional: true, is_self: true },
+                           response_status: "needsAction".into(), optional: true, is_self: true,
+                           comment: None, additional_guests: 0 },
             ],
         };
         upsert_event(&pool, &ev).await.unwrap();
@@ -602,6 +613,10 @@ mod tests {
         assert!(got.attendees[1].is_self, "the self flag must survive");
         assert!(got.attendees[1].optional, "the optional flag must survive");
         assert_eq!(got.attendees[0].display_name.as_deref(), Some("Ana"));
+        assert_eq!(got.attendees[0].comment.as_deref(), Some("running 5 late"),
+                   "comment lost in the round trip");
+        assert_eq!(got.attendees[0].additional_guests, 1,
+                   "additional_guests lost in the round trip");
 
         // The update path: a re-sync of the same google_id must overwrite the
         // stored attendee list, not merge into it or leave it alone. Dropping
@@ -610,7 +625,8 @@ mod tests {
         let mut changed = ev.clone();
         changed.attendees = vec![
             Attendee { email: "me@x.com".into(), display_name: None,
-                       response_status: "accepted".into(), optional: true, is_self: true },
+                       response_status: "accepted".into(), optional: true, is_self: true,
+                       comment: None, additional_guests: 0 },
         ];
         upsert_event(&pool, &changed).await.unwrap();
 
