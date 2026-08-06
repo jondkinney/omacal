@@ -40,6 +40,11 @@ export const MAX_DESCRIPTION_LENGTH = 32 * 1024;
 // descriptionSegments, an adversarial input never reaches this function at
 // its full size, so testing only through descriptionSegments couldn't tell
 // a fixed scan from a quadratic one that just happens to be fast at 32KB.
+// Its output is plain stripped text — not entity-decoded, not link-checked —
+// so it is *not* a general-purpose safe-HTML utility: never pass its result
+// to `{@html}`. Always render a description through descriptionSegments,
+// which runs this as one step among several and returns segments a
+// component renders with `{#each}` instead.
 export function stripTags(input: string): string {
   let out = '';
   let i = 0;

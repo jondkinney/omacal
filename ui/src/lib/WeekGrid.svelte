@@ -1,8 +1,12 @@
 <!-- ui/src/lib/WeekGrid.svelte -->
 <script lang="ts">
-  import type { WeekPayload } from './api';
+  import { tick } from 'svelte';
+  import type { WeekPayload, UiEvent } from './api';
+  import type { Rect } from './position';
   import EventBlock from './EventBlock.svelte';
   import AllDayBand from './AllDayBand.svelte';
+  import EventPopover from './EventPopover.svelte';
+  import { getEventDetail, refreshEvent, type EventDetail } from './eventdetail';
 
   let { week }: { week: WeekPayload } = $props();
 
@@ -59,6 +63,65 @@
       el.scrollTop = Math.max(0, frac * el.scrollHeight - el.clientHeight / 3);
     });
   });
+
+  // The open popover. `selected` is the *UiEvent block that was clicked* —
+  // not derived from `detail` — because every expanded occurrence of a
+  // recurring master shares that master's store row id, so only the block
+  // itself (its own `start_ms`) says which occurrence was actually clicked.
+  // `respondToEvent` needs exactly that value; see eventdetail.ts.
+  let selected = $state<UiEvent | null>(null);
+  let anchor = $state<Rect | null>(null);
+  let detail = $state<EventDetail | null>(null);
+
+  async function openPopover(event: UiEvent, rect: Rect) {
+    selected = event;
+    anchor = rect;
+    detail = null;
+
+    let d: EventDetail;
+    try {
+      d = await getEventDetail(event.id);
+    } catch {
+      // Nothing to show. Close rather than leave an empty shell open, but
+      // only if the user hasn't already clicked something else while this
+      // was in flight.
+      if (selected === event) closePopover();
+      return;
+    }
+    if (selected !== event) return; // superseded while loading
+    detail = d;
+
+    // Fires only once the popover has painted the local detail — a
+    // freshness optimisation, not a load, so a rejection (offline, a
+    // revoked token) is silently ignored and the last-synced detail already
+    // on screen stands unchanged.
+    await tick();
+    if (selected !== event) return;
+    refreshEvent(event.id)
+      .then((fresh) => {
+        if (selected === event && JSON.stringify(fresh) !== JSON.stringify(detail)) {
+          detail = fresh;
+        }
+      })
+      .catch(() => {});
+  }
+
+  function closePopover() {
+    selected = null;
+    anchor = null;
+    detail = null;
+  }
+
+  // A successful "this one" RSVP against a bare master leaves `detail`
+  // itself unchanged — the backend deliberately skips its local write-back
+  // there (see `respond_to_event`'s own comment) — so nothing about the
+  // response can be read back off `detail`. `EventPopover` reports the
+  // response it just landed directly; restyling the clicked block from that
+  // report, rather than from a re-fetch, is what makes the grid update
+  // without waiting on the next sync.
+  function handleResponded(response: 'accepted' | 'tentative' | 'declined') {
+    if (selected) selected.response = response;
+  }
 </script>
 
 <div class="grid">
@@ -89,7 +152,7 @@
       {/each}
 
       {#each day.placed as p}
-        <EventBlock event={day.events[p.idx]} placed={p} />
+        <EventBlock event={day.events[p.idx]} placed={p} onopen={openPopover} />
       {/each}
 
       {#if isToday}
@@ -101,6 +164,10 @@
     </div>
   {/each}
 </div>
+
+{#if selected && anchor && detail}
+  <EventPopover {detail} {anchor} occurrenceStartMs={selected.start_ms} onclose={closePopover} onresponded={handleResponded} />
+{/if}
 
 <style>
   .grid { display: grid; grid-template-columns: 44px repeat(7, 1fr); }

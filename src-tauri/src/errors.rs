@@ -58,6 +58,16 @@ const SAFE_EXACT: &[&str] = &[
     "that event is no longer here",
     "this calendar cannot be answered from omacal",
     "you are not a guest on this event",
+    // src-tauri/src/events.rs — `resolve_instance_id`'s empty-lookup branch on
+    // a bare series master (reached from `respond_via_client`, called by
+    // `respond_to_event`). Fixed literal, no interpolation, and reached via a
+    // bare `?` with no `.context(..)` added anywhere between the `bail!` and
+    // `.map_err(|e| crate::errors::user_facing(&e))`, so `err.to_string()` is
+    // byte-identical to the literal below. Without this entry, the one RSVP
+    // failure a user is likeliest to actually hit — clicking "This one" on an
+    // occurrence the local store has no exception row for yet — read as
+    // OPAQUE instead of naming what happened.
+    "could not find that occurrence on the calendar",
 ];
 
 /// The generic replacement. Deliberately says where to look rather than
@@ -162,6 +172,19 @@ mod tests {
             let err = anyhow::anyhow!("{safe}");
             assert_eq!(user_facing(&err), *safe, "a safe prefix was withheld");
         }
+    }
+
+    /// `every_exact_message_passes_through_unchanged` below only ever proves
+    /// that whatever is *currently* in `SAFE_EXACT` behaves correctly — it
+    /// cannot catch this specific literal being missing from the list in the
+    /// first place. This is the RSVP failure a user is likeliest to actually
+    /// hit (`resolve_instance_id`, reached by clicking "This one" on an
+    /// occurrence the local store has no exception row for yet), so it gets
+    /// its own direct check rather than relying only on the loop below.
+    #[test]
+    fn the_missing_occurrence_error_reaches_the_user_unobscured() {
+        let err = anyhow::anyhow!("could not find that occurrence on the calendar");
+        assert_eq!(user_facing(&err), "could not find that occurrence on the calendar");
     }
 
     /// Same pairing for the exact-match list.

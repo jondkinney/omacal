@@ -1,9 +1,10 @@
-import { mount } from 'svelte';
+import { mount, unmount } from 'svelte';
 import WeekGrid from '../../src/lib/WeekGrid.svelte';
 import EventBlock from '../../src/lib/EventBlock.svelte';
 import AllDayBand from '../../src/lib/AllDayBand.svelte';
 import Header from '../../src/lib/Header.svelte';
 import CalendarPopover from '../../src/lib/CalendarPopover.svelte';
+import EventPopover from '../../src/lib/EventPopover.svelte';
 import { FIXTURES } from '../fixtures';
 import { installTauriStub } from './tauri';
 
@@ -26,7 +27,7 @@ const params = new URLSearchParams(location.search);
 const name = params.get('c') ?? 'WeekGrid';
 const fixture = params.get('f') ?? 'default';
 
-const COMPONENTS: Record<string, any> = { WeekGrid, EventBlock, AllDayBand, Header, CalendarPopover };
+const COMPONENTS: Record<string, any> = { WeekGrid, EventBlock, AllDayBand, Header, CalendarPopover, EventPopover };
 const target = document.getElementById('app')!;
 
 if (name === 'App') {
@@ -54,6 +55,20 @@ if (name === 'App') {
     // prop rather than `get_calendars`, so the scenario name only matters
     // for the write commands the stub answers.
     if (name === 'CalendarPopover') installTauriStub(fixture);
-    mount(COMPONENTS[name], { target, props });
+    if (name === 'EventPopover') {
+      // EventPopover calls `invoke` itself too (`respond_to_event`), same
+      // reasoning as CalendarPopover above.
+      installTauriStub(fixture);
+      // In the real app, WeekGrid owns whether EventPopover exists at all —
+      // `onclose` sets its `detail` to null, which unmounts the popover via
+      // `{#if}`. Mounted standalone here, nothing else plays that role, so
+      // `onclose` has to actually remove the component itself or "Escape
+      // closes it" would have nothing to observe: the fixture's own
+      // `onclose` is a no-op, since it can't know about this harness.
+      let app: object;
+      app = mount(EventPopover, { target, props: { ...props, onclose: () => unmount(app) } });
+    } else {
+      mount(COMPONENTS[name], { target, props });
+    }
   }
 }

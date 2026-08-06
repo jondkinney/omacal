@@ -14,6 +14,49 @@ pub fn demo_mode() -> bool {
     std::env::var("OMACAL_SEED_DEMO").map(|v| v == "1").unwrap_or(false)
 }
 
+/// "Excitel weekly"'s description — the only field in this file exercising
+/// `descriptionSegments`' link detection in demo mode, alongside a bare
+/// `<b>` tag proving the popover shows it as text, not markup.
+const EXCITEL_WEEKLY_DESCRIPTION: &str =
+    "Weekly sync on delivery risk and blockers. <b>Bring updates.</b>\n\nJoin: https://meet.google.com/abc-defg-hij";
+
+/// The guest list for "Excitel weekly" — the popover's own demo fixture.
+/// One of each RSVP state the week view itself already covers
+/// (`the_fixture_exercises_every_rsvp_state`), so the guest list and the
+/// event's own colour agree, plus a `self` row so `can_respond` is true and
+/// the RSVP controls actually render.
+fn excitel_weekly_guests() -> Vec<omacal_store::Attendee> {
+    vec![
+        omacal_store::Attendee {
+            email: "ivan@excitel.com".into(),
+            display_name: Some("Ivan".into()),
+            response_status: "accepted".into(),
+            optional: false,
+            is_self: false,
+            comment: None,
+            additional_guests: 0,
+        },
+        omacal_store::Attendee {
+            email: DEMO_SUB.into(),
+            display_name: Some("Demo".into()),
+            response_status: "needsAction".into(),
+            optional: false,
+            is_self: true,
+            comment: None,
+            additional_guests: 0,
+        },
+        omacal_store::Attendee {
+            email: "petya@excitel.com".into(),
+            display_name: Some("Petya".into()),
+            response_status: "declined".into(),
+            optional: false,
+            is_self: false,
+            comment: None,
+            additional_guests: 0,
+        },
+    ]
+}
+
 struct Spec {
     cal: usize,
     title: &'static str,
@@ -129,6 +172,16 @@ pub async fn seed_demo(pool: &SqlitePool, now_ms: i64) -> anyhow::Result<usize> 
             (s, s + sp.dur_min * MIN)
         };
 
+        // Only "Excitel weekly" carries a description and a guest list: the
+        // popover has to be exercisable in demo mode (`OMACAL_SEED_DEMO=1`,
+        // no Google account anywhere near it), which needs at least one demo
+        // event with something in both fields.
+        let (description, attendees) = if sp.title == "Excitel weekly" {
+            (Some(EXCITEL_WEEKLY_DESCRIPTION.to_string()), excitel_weekly_guests())
+        } else {
+            (None, Vec::new())
+        };
+
         omacal_store::upsert_event(
             pool,
             &StoredEvent {
@@ -149,11 +202,11 @@ pub async fn seed_demo(pool: &SqlitePool, now_ms: i64) -> anyhow::Result<usize> 
                 self_response: Some(sp.response.to_string()),
                 conference_uri: None,
                 color_hex: None,
-                description: None,
+                description,
                 etag: None,
                 sequence: 0,
                 organizer_email: None,
-                attendees: Vec::new(),
+                attendees,
             },
         )
         .await?;
@@ -232,6 +285,38 @@ mod tests {
                GROUP BY start_utc, end_utc HAVING COUNT(*) >= 2)")
             .fetch_one(&pool).await.unwrap();
         assert!(exact_overlap >= 1, "need an exact overlap to exercise column splitting");
+    }
+
+    /// Task 8's own requirement: the popover has to be exercisable with
+    /// `OMACAL_SEED_DEMO=1` and no Google account, which needs at least one
+    /// demo event with a description (for `descriptionSegments`) and a full
+    /// guest list — one of each of the three RSVP states plus a `self` row,
+    /// since without one `can_respond` is false and the RSVP controls never
+    /// render at all.
+    #[tokio::test]
+    async fn the_popover_fixture_has_a_description_and_a_full_guest_list() {
+        let pool = omacal_store::connect_memory().await.unwrap();
+        seed_demo(&pool, MON + 3 * DAY).await.unwrap();
+
+        let id: i64 = sqlx::query_scalar("SELECT id FROM events WHERE summary = 'Excitel weekly'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let (ev, access_role) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
+
+        assert!(ev.description.is_some(), "nothing for descriptionSegments to render");
+        assert_eq!(access_role, "owner", "a non-writable role would hide the RSVP controls too");
+
+        assert!(
+            ev.attendees.iter().any(|a| a.is_self),
+            "without a self row, can_respond is false and the RSVP controls never render"
+        );
+        for state in ["accepted", "declined", "needsAction"] {
+            assert!(
+                ev.attendees.iter().any(|a| a.response_status == state),
+                "no demo guest is in state {state}"
+            );
+        }
     }
 
     #[test]

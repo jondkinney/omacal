@@ -378,3 +378,84 @@ test.describe('CalendarPopover', () => {
     await expect(page.locator('.note')).toHaveText(`Work · ${CALENDAR_SYNC_REMOVED} events deleted`);
   });
 });
+
+test.describe('EventPopover', () => {
+  const show = (f: string) => `/tests/harness/index.html?c=EventPopover&f=${f}`;
+
+  test('shows the guest list with each response', async ({ page }) => {
+    await page.goto(show('standup'));
+    await expect(page.locator('.guest')).toHaveCount(3);
+    await expect(page.locator('.guest.accepted')).toHaveCount(1);
+    await expect(page.locator('.guest.declined')).toHaveCount(1);
+  });
+
+  test('a description containing markup is shown as text', async ({ page }) => {
+    await page.goto(show('nasty-description'));
+    await expect(page.locator('.desc')).toContainText('<script>alert(1)</script>');
+    await expect(page.locator('.desc script')).toHaveCount(0);
+  });
+
+  test('a one-off event offers no scope choice', async ({ page }) => {
+    await page.goto(show('standup'));
+    await expect(page.locator('.rsvp')).toBeVisible();
+    await expect(page.locator('.scope')).toHaveCount(0);
+  });
+
+  test('a recurring event asks which occurrences', async ({ page }) => {
+    await page.goto(show('recurring'));
+    await expect(page.locator('.scope')).toBeVisible();
+    await expect(page.getByRole('radio', { name: /This one/ })).toBeChecked();
+  });
+
+  test('a read-only calendar offers no rsvp at all', async ({ page }) => {
+    await page.goto(show('readonly'));
+    await expect(page.locator('.guest')).toHaveCount(3);
+    await expect(page.locator('.rsvp')).toHaveCount(0);
+  });
+
+  test('a failed response rolls the choice back and says why', async ({ page }) => {
+    await page.goto(show('respond-fails'));
+    await page.getByRole('button', { name: 'No' }).click();
+    await expect(page.locator('.note.err')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'No' })).not.toHaveClass(/chosen/);
+  });
+
+  test('responding to a later occurrence sends that occurrence, not the series start', async ({ page }) => {
+    // The trap named in the Interfaces block: `detail.start_ms` is the series
+    // DTSTART for a master row, and passing it silently patches occurrence #0
+    // for everyone. Assert the fourth argument is the clicked block's own start.
+    await page.goto(show('recurring-fourth-occurrence'));
+    await page.getByRole('button', { name: 'No' }).click();
+    const call = await page.evaluate(() => (window as any).__lastRespondCall);
+    expect(call.occurrenceStartMs).toBe(1786600800000); // Thu 13 Aug, the clicked block
+    expect(call.occurrenceStartMs).not.toBe(1786341600000); // Mon 10 Aug, the series start
+  });
+
+  test('a successful response shows immediately, without waiting for a sync', async ({ page }) => {
+    // The backend deliberately returns the master's unchanged detail after a
+    // "this one" RSVP, so nothing moves on screen unless the UI reflects the
+    // choice itself. Five minutes of a dead button reads as a failure.
+    await page.goto(show('recurring-fourth-occurrence'));
+    await page.getByRole('button', { name: 'No' }).click();
+    await expect(page.getByRole('button', { name: 'No' })).toHaveClass(/chosen/);
+  });
+
+  test('escape closes it even when focus has fallen to the body', async ({ page }) => {
+    // Plan 1c shipped this bug once: a keydown handler on the panel misses
+    // Escape entirely once a disabled control drops focus to <body>, and a
+    // test that only presses Escape with the trigger focused cannot see it.
+    await page.goto(show('standup'));
+    await expect(page.locator('.pop')).toBeVisible();
+    await page.evaluate(() => (document.activeElement as HTMLElement)?.blur());
+    expect(await page.evaluate(() => document.activeElement?.tagName)).toBe('BODY');
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.pop')).toHaveCount(0);
+  });
+
+  test('clicking a guest list does not close it', async ({ page }) => {
+    // The scrim must sit behind the panel, not over it.
+    await page.goto(show('standup'));
+    await page.locator('.guest').first().click();
+    await expect(page.locator('.pop')).toBeVisible();
+  });
+});

@@ -1,6 +1,8 @@
 import type { UiEvent, Placed, WeekPayload } from '../src/lib/api';
 import type { AppStatus } from '../src/lib/status';
 import type { Calendar } from '../src/lib/calendars';
+import type { Attendee, EventDetail } from '../src/lib/eventdetail';
+import type { Rect } from '../src/lib/position';
 
 const H = 3_600_000;
 // Fixed well in the past (not just "a Monday", but a Monday that will never
@@ -111,6 +113,9 @@ const block = (title: string, mins: number, response: UiEvent['response'],
   event: ev({ title, location, response, start_ms: MON + 9 * H,
               end_ms: MON + 9 * H + mins * 60_000 }),
   placed: placed(0.2, mins / (24 * 60)),
+  // None of EventBlock's own specs click the block; a no-op still keeps
+  // the fixture a valid set of props for the component's real signature.
+  onopen: noop,
 });
 
 // Header's action props are callbacks, never events, so no-ops satisfy the
@@ -136,6 +141,45 @@ const cal = (o: Partial<Calendar> & { id: number; account_email: string; summary
   is_primary: false,
   ...o,
 });
+
+const attendee = (o: Partial<Attendee> & { email: string }): Attendee => ({
+  display_name: null,
+  response_status: 'needsAction',
+  optional: false,
+  is_self: false,
+  ...o,
+});
+
+const detail = (o: Partial<EventDetail> & { id: number }): EventDetail => ({
+  title: 'Standup',
+  description: null,
+  location: null,
+  conference_uri: null,
+  start_ms: MON + 9 * H,
+  end_ms: MON + 9 * H + 30 * 60_000,
+  is_all_day: false,
+  is_recurring: false,
+  color: '#5b8def',
+  organizer_email: null,
+  self_response: 'needsAction',
+  can_respond: true,
+  attendees: [],
+  ...o,
+});
+
+/** An arbitrary on-screen anchor — no EventPopover spec asserts on placement
+ *  itself (that's `position.spec.ts`'s job), only on what the popover shows. */
+const ANCHOR: Rect = { top: 100, left: 100, width: 120, height: 40 };
+
+/** Monday 10 Aug 2026 06:00 UTC — a series' DTSTART, used as `detail.start_ms`
+ *  for the recurring fixtures below. This is the value the trap named in the
+ *  task brief passes to `respondToEvent` when it's read off `detail` instead
+ *  of the clicked block. */
+const SERIES_DTSTART = 1_786_341_600_000;
+/** Thursday 13 Aug 2026 06:00 UTC — the fourth occurrence of that series
+ *  (Mon/Tue/Wed/Thu), three days later. What the clicked block's own
+ *  `start_ms` actually is, and the only value `respondToEvent` may see. */
+const FOURTH_OCCURRENCE = 1_786_600_800_000;
 
 export const FIXTURES: Record<string, Record<string, any>> = {
   WeekGrid: {
@@ -213,6 +257,70 @@ export const FIXTURES: Record<string, Record<string, any>> = {
         cal({ id: 1, account_email: 'me@x.com', summary: 'Work', is_primary: true }),
       ],
       onchange: noop,
+    },
+  },
+  EventPopover: {
+    standup: {
+      detail: detail({
+        id: 1,
+        title: 'Standup',
+        attendees: [
+          attendee({ email: 'ana@x.com', display_name: 'Ana', response_status: 'accepted' }),
+          attendee({ email: 'me@x.com', is_self: true, response_status: 'needsAction' }),
+          attendee({ email: 'petya@x.com', response_status: 'declined' }),
+        ],
+      }),
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop,
+    },
+    // The raw description is already entity-encoded, as a hostile calendar
+    // invite's would be — `descriptionSegments` decodes it back to the
+    // literal string `<script>alert(1)</script>` as inert *text*, never as
+    // markup (see sanitize.spec.ts). Rendering that string via `{@html}`
+    // instead of `{#each}` would turn it back into a real (if inert)
+    // `<script>` element — exactly the regression Step 7 breaks on purpose.
+    'nasty-description': {
+      detail: detail({ id: 2, description: '&lt;script&gt;alert(1)&lt;/script&gt;' }),
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop,
+    },
+    recurring: {
+      detail: detail({
+        id: 3,
+        is_recurring: true,
+        attendees: [attendee({ email: 'me@x.com', is_self: true })],
+      }),
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop,
+    },
+    readonly: {
+      detail: detail({
+        id: 4,
+        can_respond: false,
+        attendees: [
+          attendee({ email: 'ana@x.com', response_status: 'accepted' }),
+          attendee({ email: 'me@x.com', is_self: true, response_status: 'needsAction' }),
+          attendee({ email: 'petya@x.com', response_status: 'declined' }),
+        ],
+      }),
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop,
+    },
+    // The harness's `respond_to_event` stub rejects for this scenario name —
+    // see tests/harness/tauri.ts.
+    'respond-fails': {
+      detail: detail({ id: 5, attendees: [attendee({ email: 'me@x.com', is_self: true })] }),
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop,
+    },
+    // `detail.start_ms` is the series DTSTART (Monday); the block actually
+    // clicked is the fourth occurrence (Thursday) — the trap named in the
+    // task brief. `occurrenceStartMs` carries the correct value in
+    // regardless of what `detail.start_ms` says, exactly as WeekGrid threads
+    // it through in the real app.
+    'recurring-fourth-occurrence': {
+      detail: detail({
+        id: 6,
+        is_recurring: true,
+        start_ms: SERIES_DTSTART,
+        attendees: [attendee({ email: 'me@x.com', is_self: true })],
+      }),
+      anchor: ANCHOR, occurrenceStartMs: FOURTH_OCCURRENCE, onclose: noop,
     },
   },
 };

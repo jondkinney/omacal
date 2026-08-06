@@ -62,6 +62,15 @@ export type Harness = {
 /** What `set_calendar_sync(id, false)` reports removing, absent a forced failure. */
 export const CALENDAR_SYNC_REMOVED = 143;
 
+/** A well-shaped but otherwise unused `EventDetail`, returned by the
+ *  `respond_to_event` stub — see the case below for why its content never
+ *  matters to a spec. */
+const RESPOND_STUB_DETAIL = {
+  id: 0, title: null, description: null, location: null, conference_uri: null,
+  start_ms: 0, end_ms: 0, is_all_day: false, is_recurring: false, color: null,
+  organizer_email: null, self_response: null, can_respond: true, attendees: [],
+};
+
 const listeners = new Map<string, Set<(e: unknown) => void>>();
 const callbacks = new Map<number, (e: unknown) => void>();
 const hold = new Set<number>();
@@ -230,6 +239,18 @@ export function installTauriStub(scenario: string): Harness {
         return calendarResult(cmd, CALENDAR_SYNC_REMOVED);
       case 'sync_now':
         return 0;
+      case 'respond_to_event':
+        // Exposed so a spec can assert on exactly what `EventPopover` sent —
+        // in particular, that the fourth argument is the clicked block's own
+        // `start_ms` and never `detail.start_ms` (the task brief's trap).
+        (window as any).__lastRespondCall = args;
+        if (scenario === 'respond-fails') return Promise.reject('could not reach Google right now.');
+        // The resolved detail is deliberately never read by EventPopover: a
+        // "this one" RSVP against a bare master leaves the backend's own
+        // detail unchanged (see respond_to_event's doc comment), so the
+        // popover shows the choice optimistically rather than trust this
+        // return value. Any well-shaped stand-in satisfies its type.
+        return RESPOND_STUB_DETAIL;
       case 'sign_in':
         // Tauri rejects a `Result<_, String>` with the bare string, so the
         // app sees exactly the sentence Rust produced.

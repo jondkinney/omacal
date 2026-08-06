@@ -1,8 +1,13 @@
 <script lang="ts">
   import type { UiEvent, Placed } from './api';
+  import type { Rect } from './position';
   import { locationLabel } from './location';
 
-  let { event, placed }: { event: UiEvent; placed: Placed } = $props();
+  let {
+    event,
+    placed,
+    onopen,
+  }: { event: UiEvent; placed: Placed; onopen: (event: UiEvent, rect: Rect) => void } = $props();
 
   const minutes = $derived((event.end_ms - event.start_ms) / 60_000);
 
@@ -20,6 +25,15 @@
 
   const width = $derived(100 / placed.columns);
   const left = $derived(placed.column * width);
+
+  // `getBoundingClientRect()` here, not the block's own layout numbers
+  // (`placed`, percentages of a scrolling column): the popover positions
+  // itself against the viewport, and this is the one place that rect is
+  // available without the parent re-deriving it from geometry it doesn't own.
+  function open(e: MouseEvent) {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    onopen(event, { top: r.top, left: r.left, width: r.width, height: r.height });
+  }
 </script>
 
 <button
@@ -30,6 +44,7 @@
     --cal:{event.color}; z-index:{placed.column + 1};
   "
   title={event.title}
+  onclick={open}
 >
   {#if event.response === 'needsAction'}<i class="rs">?</i>{/if}
   <b>{event.title}</b>
