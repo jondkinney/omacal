@@ -337,8 +337,28 @@ async fn respond_via_client(
         }
     };
 
+    // `ev.etag` is the version of `ev.google_id`, and of nothing else. When
+    // the instance lookup above resolved to a *different* id — scope "this"
+    // on a series master rendered directly — `If-Match` would be checked
+    // against that other resource's version, which this row has never held.
+    // A conditional request naming another resource's version cannot pass, so
+    // sending it spends the single retry below on a rejection that was
+    // certain before the request left, leaving nothing for the concurrent
+    // edit the retry exists to survive. We hold no version of the instance to
+    // condition on, and an unconditional patch is what that actually means.
+    //
+    // Deliberate rather than incidental: today the guaranteed rejection is
+    // *protective* by accident, because the retry re-reads the resolved id
+    // and re-applies the answer to its own attendee list. Dropping the etag
+    // drops that accident too, so on this path the body stays the one built
+    // from the master's stored attendees — which is what an occurrence that
+    // is not a materialised exception has anyway. The exposed case is an
+    // exception created elsewhere since the last sync, carrying a guest list
+    // of its own that this store has no row for; see the fix report.
+    let if_match = if event_id == ev.google_id { ev.etag.as_deref() } else { None };
+
     let body = serde_json::json!({ "attendees": body_attendees });
-    let patched = match client.patch_event(cal_google_id, &event_id, &body, ev.etag.as_deref()).await {
+    let patched = match client.patch_event(cal_google_id, &event_id, &body, if_match).await {
         Ok(p) => p,
         Err(omacal_google::ApiError::PreconditionFailed) => {
             // Someone edited the event while the popover was open. Re-read,
@@ -720,8 +740,13 @@ mod tests {
         let (pool, id) = seeded_pool_with(&ev).await;
 
         let server = wiremock::MockServer::start().await;
+        // The other half of the `if_match` decision: the patch is going to
+        // this row's *own* id, so the row's etag is the right precondition
+        // and must still be sent. Dropping it unconditionally would make
+        // every RSVP a last-writer-wins overwrite.
         wiremock::Mock::given(wiremock::matchers::method("PATCH"))
             .and(wiremock::matchers::path("/calendars/primary/events/ev1"))
+            .and(wiremock::matchers::header("if-match", "\"old\""))
             .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "id": "ev1", "status": "confirmed", "etag": "\"new\"", "sequence": 4,
                 "attendees": [{"email": "me@x.com", "responseStatus": "declined",
@@ -850,8 +875,14 @@ mod tests {
             })))
             .mount(&server).await;
 
+        // No `If-Match`: the only etag this row holds is `master1`'s, and the
+        // patch is going to a different resource. Without this matcher the
+        // mock accepts a header real Google would reject, and the mismatched
+        // etag reads as harmless — see the `if_match` comment in
+        // `respond_via_client`.
         wiremock::Mock::given(wiremock::matchers::method("PATCH"))
             .and(wiremock::matchers::path("/calendars/primary/events/master1_20260807T000000Z"))
+            .and(|req: &wiremock::Request| !req.headers.contains_key("if-match"))
             .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "id": "master1_20260807T000000Z", "status": "confirmed", "etag": "\"occ-etag\"",
                 "attendees": [{"email": "me@x.com", "responseStatus": "declined",
