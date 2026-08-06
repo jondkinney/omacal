@@ -113,30 +113,33 @@ fn occurrences(src: &StoredEvent, from_ms: i64, to_ms: i64) -> Vec<Interval> {
     }
 }
 
-/// The eight instants bounding the week's seven days, computed **in `tz`**.
+/// The `n + 1` local-midnight boundaries starting at `start_ms`, computed
+/// **in `tz`**.
 ///
-/// Never `week_start + n * DAY_MS`: on a DST transition day that arithmetic is
+/// `n + 1` and not `n`: every consumer needs the *end* of the last day, and a
+/// DST day is not 24 hours, so it cannot be derived by addition. Never
+/// `start_ms + n * DAY_MS` either: on a DST transition day that arithmetic is
 /// off by an hour, which both misplaces events and squashes or stretches the
 /// day's geometry. `Zoned::checked_add(1.day())` does calendar-day arithmetic,
 /// so a 23- or 25-hour day comes out at its true length.
 ///
 /// Falls back to fixed 24-hour days only if the zone is unknown — the grid must
 /// still render.
-fn day_boundaries(week_start_ms: i64, tz: &str) -> Vec<i64> {
+fn n_day_boundaries(start_ms: i64, n: usize, tz: &str) -> Vec<i64> {
     use jiff::{Timestamp, ToSpan};
 
-    let fallback = || (0..=7).map(|i| week_start_ms + i * DAY_MS).collect::<Vec<_>>();
+    let fallback = || (0..=n as i64).map(|i| start_ms + i * DAY_MS).collect::<Vec<_>>();
 
-    let Ok(start) = Timestamp::from_millisecond(week_start_ms) else {
+    let Ok(start) = Timestamp::from_millisecond(start_ms) else {
         return fallback();
     };
     let Ok(mut z) = start.in_tz(tz) else {
         return fallback();
     };
 
-    let mut out = Vec::with_capacity(8);
+    let mut out = Vec::with_capacity(n + 1);
     out.push(z.timestamp().as_millisecond());
-    for _ in 0..7 {
+    for _ in 0..n {
         match z.checked_add(1.day()) {
             Ok(next) => {
                 z = next;
@@ -151,9 +154,21 @@ fn day_boundaries(week_start_ms: i64, tz: &str) -> Vec<i64> {
     out
 }
 
-/// Column `0..=6` for an instant inside the week, or `None` outside it.
+/// The eight instants bounding a week's seven days.
+///
+/// A thin `n = 7` alias over `n_day_boundaries`, kept so the boundary-math
+/// tests below — written before Day/Month existed and calling this directly
+/// — don't need to thread a day count through. Has no caller outside
+/// `#[cfg(test)]`.
+#[cfg(test)]
+fn day_boundaries(week_start_ms: i64, tz: &str) -> Vec<i64> {
+    n_day_boundaries(week_start_ms, 7, tz)
+}
+
+/// Column `0..bounds.len() - 1` for an instant inside the window, or `None`
+/// outside it.
 fn column_for(bounds: &[i64], ms: i64) -> Option<usize> {
-    if ms < bounds[0] || ms >= bounds[7] {
+    if ms < bounds[0] || ms >= *bounds.last().unwrap() {
         return None;
     }
     Some(bounds.partition_point(|&b| b <= ms) - 1)
@@ -172,30 +187,32 @@ fn timed_column(bounds: &[i64], iv: &Interval) -> Option<usize> {
         .or_else(|| (iv.start_ms < bounds[0] && iv.end_ms > bounds[0]).then_some(0))
 }
 
-/// Column index that may fall outside `0..=6`, for all-day spans that begin
-/// before or end after this week. Only the sign matters to `pack_lanes`, which
-/// turns it into a continuation flag, so approximating the days beyond the
-/// week's edges with fixed 24-hour arithmetic is harmless.
+/// Column index that may fall outside `0..bounds.len() - 1`, for all-day
+/// spans that begin before or end after this window. Only the sign matters to
+/// `pack_lanes`, which turns it into a continuation flag, so approximating the
+/// days beyond the window's edges with fixed 24-hour arithmetic is harmless.
 fn signed_column(bounds: &[i64], ms: i64) -> i32 {
+    let n = bounds.len() - 1;
+    let end = bounds[n];
     if ms < bounds[0] {
         -(((bounds[0] - ms - 1) / DAY_MS) + 1) as i32
-    } else if ms >= bounds[7] {
-        7 + ((ms - bounds[7]) / DAY_MS) as i32
+    } else if ms >= end {
+        n as i32 + ((ms - end) / DAY_MS) as i32
     } else {
         (bounds.partition_point(|&b| b <= ms) - 1) as i32
     }
 }
 
-/// Turns stored events into seven laid-out day columns plus the all-day band.
+/// Turns stored events into `n` laid-out day columns plus the all-day band.
 ///
-/// `week_start_ms` is midnight in `tz` on the week's Monday; `tz` is the display
-/// zone. All day-boundary maths flows through `day_boundaries`, so a week
-/// containing a DST transition lays out correctly.
-pub fn assemble_week(events: &[StoredEvent], week_start_ms: i64, tz: &str) -> WeekPayload {
-    let bounds = day_boundaries(week_start_ms, tz);
-    let week_end_ms = bounds[7];
+/// `start_ms` is midnight in `tz` on the window's first day; `tz` is the
+/// display zone. All day-boundary maths flows through `n_day_boundaries`, so
+/// a window containing a DST transition lays out correctly.
+pub fn assemble_days(events: &[StoredEvent], start_ms: i64, n: usize, tz: &str) -> WeekPayload {
+    let bounds = n_day_boundaries(start_ms, n, tz);
+    let end_ms = bounds[n];
 
-    let mut day_events: Vec<Vec<UiEvent>> = vec![Vec::new(); 7];
+    let mut day_events: Vec<Vec<UiEvent>> = vec![Vec::new(); n];
     let mut all_day_events: Vec<UiEvent> = Vec::new();
     let mut segments: Vec<Segment> = Vec::new();
 
@@ -208,7 +225,7 @@ pub fn assemble_week(events: &[StoredEvent], week_start_ms: i64, tz: &str) -> We
         if src.status == "cancelled" {
             continue;
         }
-        for iv in occurrences(src, bounds[0], week_end_ms) {
+        for iv in occurrences(src, bounds[0], end_ms) {
             // Only a master can match: the keys are master ids, and an
             // exception never carries its own id as its master.
             if suppressed.contains(&(src.calendar_id, src.google_id.as_str(), iv.start_ms)) {
@@ -227,9 +244,9 @@ pub fn assemble_week(events: &[StoredEvent], week_start_ms: i64, tz: &str) -> We
         }
     }
 
-    let (all_day, overflow) = pack_lanes(&segments, 7, 2);
+    let (all_day, overflow) = pack_lanes(&segments, n as u16, 2);
 
-    let days = (0..7)
+    let days = (0..n)
         .map(|d| {
             let evs = std::mem::take(&mut day_events[d]);
             let intervals: Vec<Interval> = evs
@@ -244,6 +261,13 @@ pub fn assemble_week(events: &[StoredEvent], week_start_ms: i64, tz: &str) -> We
         .collect();
 
     WeekPayload { days, all_day, all_day_events, overflow }
+}
+
+/// The week view. A thin wrapper so `assemble_days` has one caller shape and
+/// Day view is provably the same engine — see
+/// `one_day_and_seven_days_agree_about_the_day_they_share`.
+pub fn assemble_week(events: &[StoredEvent], week_start_ms: i64, tz: &str) -> WeekPayload {
+    assemble_days(events, week_start_ms, 7, tz)
 }
 
 #[cfg(test)]
@@ -510,6 +534,37 @@ mod tests {
         // Each column ends exactly where the next begins; no gaps, no overlaps.
         for pair in w.days.windows(2) {
             assert_eq!(pair[0].end_ms, pair[1].start_ms);
+        }
+    }
+
+    #[test]
+    fn one_day_and_seven_days_agree_about_the_day_they_share() {
+        // This is the guard that Day is genuinely the week engine at n=1 rather
+        // than a parallel implementation that will drift. If someone later
+        // "optimises" assemble_days for the n=1 case, this fails.
+        let evs = vec![ev("standup", MON + 9 * 3_600_000, MON + 9 * 3_600_000 + 30 * 60_000, false)];
+
+        let week = assemble_days(&evs, MON, 7, "Europe/Sofia");
+        let day = assemble_days(&evs, week.days[0].start_ms, 1, "Europe/Sofia");
+
+        assert_eq!(day.days.len(), 1);
+        assert_eq!(day.days[0].start_ms, week.days[0].start_ms);
+        assert_eq!(day.days[0].end_ms, week.days[0].end_ms);
+        assert_eq!(
+            day.days[0].events.len(),
+            week.days[0].events.len(),
+            "the same day assembled alone and as part of a week disagreed"
+        );
+    }
+
+    #[test]
+    fn a_single_day_window_still_bounds_its_all_day_lane() {
+        // pack_lanes is called with `n` as row_len; passing 7 for a one-day view
+        // would let an all-day event claim columns that do not exist.
+        let evs = vec![ev("trip", MON, MON + 3 * DAY, true)];
+        let day = assemble_days(&evs, MON, 1, "Europe/Sofia");
+        for lane in &day.all_day {
+            assert!(lane.end_col < 1, "a 1-day view produced column {}", lane.end_col);
         }
     }
 }
