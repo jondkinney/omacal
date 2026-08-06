@@ -161,8 +161,12 @@ const noop = () => {};
 // now render always shows Week as current; none of these specs click it, so
 // no fixture needs a different value. `onpick: noop` for the same reason
 // none of `Header`'s other action props do more than satisfy the type here.
+// `anchorMs: MON` alongside `weekStartMs: MON`: MON *is* a Monday, so the
+// two agree here and every existing Header assertion — including the two
+// screenshots — sees exactly the DOM it saw before the title learned to
+// follow the view.
 const header = (status: AppStatus, busy = false) => ({
-  status, weekStartMs: MON, busy, error: null as string | null, calendars: [] as Calendar[],
+  status, anchorMs: MON, weekStartMs: MON, busy, error: null as string | null, calendars: [] as Calendar[],
   view: 'week' as View, onpick: noop,
   onPrev: noop, onNext: noop, onToday: noop, onSignIn: noop, onSync: noop, oncalendarchange: noop,
 });

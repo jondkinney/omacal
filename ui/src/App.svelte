@@ -31,10 +31,9 @@
   let anchorMs = $state(dayStart(Date.now()));
   let view = $state<View>('week');
 
-  // Derived purely for Header's title and its Prev/Next stepping, which stay
-  // week-shaped regardless of which view is on screen — unchanged from
-  // before this task, just re-derived from `anchorMs` instead of being its
-  // own `$state`.
+  // Derived purely for Header's title, and only in Week view: the week of Mon
+  // 29 Jan reads "January" even though it runs into February. Day and Month
+  // title themselves from `anchorMs` instead — see `Header`'s own `titleMs`.
   const weekStartMs = $derived(weekStart(new Date(anchorMs)));
 
   let week = $state<WeekPayload | null>(null);
@@ -217,28 +216,29 @@
     anchorMs = dayStart(Date.now());
   }
 
-  // Header's own Prev/Next: always a week, regardless of `view` (its
-  // aria-label says "week" unconditionally, so it doesn't follow `step`'s
-  // per-view unit). `setDate`-based, like `step` itself (Fix round 1,
-  // finding 5) — the raw-millisecond arithmetic this replaced
-  // (`anchorMs -= WEEK`) shifts the *wall-clock hour* across a real DST
-  // transition rather than the calendar day, which can walk `anchorMs` off
-  // a day boundary for good (every later click compounds the drift).
-  // Playwright's UTC-pinned `timezoneId` can't itself exercise a DST
-  // transition, so this has no regression spec — `step`'s own day/week/month
-  // specs already prove `setDate` arithmetic keeps `anchorMs` day-aligned.
-  function stepHeaderWeek(dir: 1 | -1) {
-    const d = new Date(anchorMs);
-    d.setDate(d.getDate() + dir * 7);
-    anchorMs = d.getTime();
-  }
+  // `year`/`bigyear` stay reachable-looking but inert: the switcher's own
+  // buttons are `disabled`, and `pick` — which both the buttons and the
+  // number keys go through — is where that is actually enforced, so neither
+  // path can become a back door around the other. Enabling those buttons
+  // early would otherwise leave `view === 'year'`, `fetchPlan` answering
+  // `{kind:'none'}`, and the markup below quietly rendering the last
+  // `WeekGrid` payload as if it were a year.
+  const DISABLED_VIEWS = new Set<View>(['year', 'bigyear']);
 
   function pick(v: View) {
+    if (DISABLED_VIEWS.has(v)) return;
     view = v;
   }
 
-  // `H`/`L` step by the current view's unit (spec §7.6): a day, a week, or a
+  // `H`/`L` — and the header's own `‹`/`›`, which are the same motion by
+  // mouse — step by the current view's unit (spec §7.6): a day, a week, or a
   // calendar month. `year`/`bigyear` have no unit yet — Plan 4's concern.
+  //
+  // `setDate`-based throughout (Fix round 1, finding 5): the raw-millisecond
+  // arithmetic this replaced (`anchorMs -= WEEK`) shifts the *wall-clock
+  // hour* across a real DST transition rather than the calendar day, which
+  // can walk `anchorMs` off a day boundary for good — every later step
+  // compounds the drift.
   function step(dir: 1 | -1) {
     const d = new Date(anchorMs);
     if (view === 'day') d.setDate(d.getDate() + dir);
@@ -325,20 +325,18 @@
     return !!t.closest?.('.pop');
   }
 
+  // Numbers, not initials, because `Y` is wanted for both "year" and "yes,
+  // accept" (spec §7.6). `4`/`5` reach `pick` like any other view and are
+  // turned away there, alongside a click on the same disabled slot.
   const KEY_VIEW: Record<string, View> = {
     '1': 'day', '2': 'week', '3': 'month', '4': 'year', '5': 'bigyear',
   };
-  // `year`/`bigyear` stay reachable-looking but inert from the keyboard too —
-  // the switcher's own buttons are `disabled`, and a shortcut must not be a
-  // back door around that (spec §7.6: numbers, not initials, because `Y` is
-  // wanted for both "year" and "yes, accept").
-  const DISABLED_VIEWS = new Set<View>(['year', 'bigyear']);
 
   function handleKeydown(e: KeyboardEvent) {
     if (isTypingTarget(e)) return;
     const keyed = KEY_VIEW[e.key];
     if (keyed) {
-      if (!DISABLED_VIEWS.has(keyed)) pick(keyed);
+      pick(keyed);
       return;
     }
     switch (e.key.toLowerCase()) {
@@ -353,9 +351,9 @@
 
 <main>
   <Header
-    {status} {weekStartMs} {busy} {error} {calendars} {view}
-    onPrev={() => stepHeaderWeek(-1)}
-    onNext={() => stepHeaderWeek(1)}
+    {status} {anchorMs} {weekStartMs} {busy} {error} {calendars} {view}
+    onPrev={() => step(-1)}
+    onNext={() => step(1)}
     onToday={goToday}
     onSignIn={handleSignIn}
     onSync={handleSync}

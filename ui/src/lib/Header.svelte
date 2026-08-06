@@ -6,11 +6,15 @@
   import ViewSwitcher, { type View } from './ViewSwitcher.svelte';
 
   let {
-    status, weekStartMs, busy, error, calendars, view, onpick,
+    status, anchorMs, weekStartMs, busy, error, calendars, view, onpick,
     onPrev, onNext, onToday, onSignIn, onSync, oncalendarchange,
     open = $bindable(false),
   }: {
     status: AppStatus | null;
+    /** The date every view is rendered against — `App`'s own anchor. Day and
+     *  Month are built from this one directly. */
+    anchorMs: number;
+    /** The Monday of `anchorMs`'s week, which is what Week view renders. */
     weekStartMs: number;
     busy: boolean;
     error: string | null;
@@ -27,9 +31,31 @@
     open?: boolean;
   } = $props();
 
+  // The title names the month of whatever unit is actually on screen. Week's
+  // has always been the month its *Monday* falls in — the week of Mon 29 Jan
+  // reads "January" even though it runs into February — but Day and Month
+  // render `anchorMs`'s own month, and titling those from the week start
+  // names the wrong one whenever the anchor's week began in the previous
+  // month. Reachable in two keystrokes from today (`3`, then `L`: a September
+  // grid titled "August"), and in one from Day view on any 1st-of-month that
+  // isn't a Monday.
+  const titleMs = $derived(view === 'week' ? weekStartMs : anchorMs);
   const title = $derived(
-    new Date(weekStartMs).toLocaleDateString(undefined, { month: 'long', year: 'numeric' })
+    new Date(titleMs).toLocaleDateString(undefined, { month: 'long', year: 'numeric' })
   );
+
+  // `‹`/`›` step the current view's unit, exactly as `H`/`L` do (`App`'s own
+  // `step`), so the label has to follow the view too: a control announced as
+  // "Previous week" that moves the grid by a month — or, in Month view,
+  // sometimes not at all and sometimes across a month boundary — is worse
+  // than either behaviour on its own. `year`/`bigyear` have no unit yet
+  // (`step` returns early for them, and both are unreachable while the
+  // switcher disables them); they name their own slot so the record is
+  // complete rather than defaulting to a week they don't step by.
+  const NAV_UNIT: Record<View, string> = {
+    day: 'day', week: 'week', month: 'month', year: 'year', bigyear: 'year',
+  };
+  const unit = $derived(NAV_UNIT[view]);
   const connected = $derived((status?.accounts.length ?? 0) > 0);
 
   // "Synced 4 min ago" is a function of the clock, so it has to be told the
@@ -49,8 +75,8 @@
   <div class="left">
     <h1>{title}</h1>
     <div class="nav">
-      <button onclick={onPrev} aria-label="Previous week">‹</button>
-      <button onclick={onNext} aria-label="Next week">›</button>
+      <button onclick={onPrev} aria-label="Previous {unit}">‹</button>
+      <button onclick={onNext} aria-label="Next {unit}">›</button>
     </div>
     <button class="today" onclick={onToday}>Today</button>
     <ViewSwitcher {view} {onpick} />

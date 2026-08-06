@@ -235,6 +235,66 @@ test.describe('App', () => {
     expect(Number(shown)).toBe(1786341600000); // the day that was clicked
   });
 
+  // Whole-branch review, finding 1: the `<h1>` was derived from `weekStartMs`
+  // in every view, so Day and Month — which render `anchorMs`'s own month —
+  // were titled with the month the *Monday of that week* falls in. The two
+  // disagree whenever the anchor's week began in the previous month, which is
+  // two keystrokes away from any given day. 1 Feb 2024 is the shape: a
+  // Thursday, in the week that started Mon 29 Jan.
+  //
+  // All three units in one spec, because the bug is precisely that they
+  // shared one: Day and Month must read February, Week must still read
+  // January for the same anchor.
+  test('the title names the month of the unit actually on screen', async ({ page }) => {
+    await page.goto(app('connected'));
+    await expect(page.locator('.vswitch button')).toHaveCount(5); // see above
+    await page.keyboard.press('1'); // Day view, anchored on Mon 29 Jan (APP_MON)
+    await page.keyboard.press('l'); // 30 Jan
+    await page.keyboard.press('l'); // 31 Jan
+    await page.keyboard.press('l'); // 1 Feb — a Thursday, week still begins 29 Jan
+    await expect(page.locator('h1')).toHaveText('February 2024');
+
+    await page.keyboard.press('3'); // Month view: the February grid, titled for February
+    await expect(page.locator('.mrow')).toHaveCount(6);
+    await expect(page.locator('h1')).toHaveText('February 2024');
+
+    // Week keeps its own rule — the month its Monday falls in — which is what
+    // makes this anchor tell the three units apart at all.
+    await page.keyboard.press('2');
+    await expect(page.locator('h1')).toHaveText('January 2024');
+  });
+
+  // The same seam by mouse. `‹`/`›` used to step a week in every view and say
+  // "Previous week"/"Next week" while doing it — in Month view that moved the
+  // grid by a week, sometimes not changing the month at all and sometimes
+  // crossing a boundary. They step the view's own unit now, and are announced
+  // for it.
+  test('the header arrows step the view they are labelled for', async ({ page }) => {
+    await page.goto(app('connected'));
+    await expect(page.locator('.vswitch button')).toHaveCount(5); // see above
+    await page.keyboard.press('1');
+
+    const day = page.getByRole('button', { name: 'Next day' });
+    await expect(day).toBeVisible();
+    await expect(page.locator('.col')).toHaveCount(1);
+    const before = Number(await page.locator('.col').getAttribute('data-start-ms'));
+    await day.click();
+    // `toHaveAttribute` retries, so this waits for the re-fetch rather than
+    // racing the click against it.
+    await expect(page.locator('.col'))
+      .toHaveAttribute('data-start-ms', String(before + 24 * 3600 * 1000)); // 30 Jan
+
+    await page.keyboard.press('3');
+    await expect(page.locator('h1')).toHaveText('January 2024');
+    const month = page.getByRole('button', { name: 'Next month' });
+    await expect(month).toBeVisible();
+    await month.click();
+    // A whole month, not the seven days that would have left this in January.
+    await expect(page.locator('h1')).toHaveText('February 2024');
+    await page.getByRole('button', { name: 'Previous month' }).click();
+    await expect(page.locator('h1')).toHaveText('January 2024');
+  });
+
   test('H and L step by the current view\'s unit', async ({ page }) => {
     await page.goto(app('connected'));
     await expect(page.locator('.vswitch button')).toHaveCount(5); // see above

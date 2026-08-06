@@ -147,5 +147,9 @@
   .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
 
   .more { font-size: 9px; color: var(--muted); opacity: .8; padding: 0; background: transparent;
-          border: 0; text-align: left; cursor: pointer; font: inherit; }
+          border: 0; text-align: left; font: inherit; }
+  /* Only the cell-level `+N more` is a button. The row-level one is a `div`
+     covering several days at once, with no single day to hand the parent, so
+     it does nothing when clicked — and must not invite the click. */
+  button.more { cursor: pointer; }
 </style>
