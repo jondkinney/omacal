@@ -503,6 +503,19 @@ export const busyDayMonth = (): MonthPayload => {
   return m;
 };
 
+/** The id `busyDayMonth`'s own "Standup" event gets from `ev()`'s
+ *  `Math.floor(start_ms / 1000)` rule — registered so `App`'s Month-view
+ *  popover integration spec (Task 5, Fix round 1, finding 4) can open a
+ *  real popover via a real `event_detail` round trip, same reasoning as
+ *  `APP_WEEK_EVENT_ID` above for Week's own event. */
+const APP_MONTH_EVENT_ID = Math.floor((BUSY_DAY_START_MS + 9 * H) / 1000);
+POPOVER_DETAILS[APP_MONTH_EVENT_ID] = detail({
+  id: APP_MONTH_EVENT_ID,
+  title: 'Standup',
+  start_ms: BUSY_DAY_START_MS + 9 * H,
+  end_ms: BUSY_DAY_START_MS + 9 * H + 30 * 60_000,
+});
+
 export const FIXTURES: Record<string, Record<string, any>> = {
   WeekGrid: {
     empty: { week: emptyWeek() },

@@ -245,6 +245,71 @@ test.describe('App', () => {
     expect(Number(after) - Number(before)).toBe(7 * 24 * 3600 * 1000);
   });
 
+  // Fix round 1, finding 2: the pinned "H and L step" spec above only ever
+  // presses `2` first, so the day and month units were unexercised — the
+  // reviewer changed the month branch to step by seven days (silently
+  // behaving like week-stepping) and all 262 tests passed. Day and month
+  // each get their own spec below.
+  test('H and L step by a day when Day view is active', async ({ page }) => {
+    await page.goto(app('connected'));
+    await expect(page.locator('.vswitch button')).toHaveCount(5);
+    await page.keyboard.press('1');
+    const before = await page.locator('.col').first().getAttribute('data-start-ms');
+    await page.keyboard.press('l');
+    const after = await page.locator('.col').first().getAttribute('data-start-ms');
+    expect(Number(after) - Number(before)).toBe(24 * 3600 * 1000);
+  });
+
+  // Fix round 1, finding 1: a bare `setMonth` overflows for a day-of-month
+  // the target month doesn't have — Jan 31 `+1` used to land on Mar 3,
+  // skipping February outright, and stayed wrong forever after (`H` from
+  // there landed Feb 3, not back on Jan 31). This spec starts from the 31st
+  // for exactly that reason — it is finding 1's regression spec and finding
+  // 2's month-unit spec at once. 2024 is a leap year, so the correct,
+  // clamped landing is Feb 29, not Feb 28 or Mar 3.
+  test('H and L step by a month, clamped to the target month\'s last day', async ({ page }) => {
+    await page.goto(app('connected'));
+    await expect(page.locator('.vswitch button')).toHaveCount(5);
+    await page.keyboard.press('1'); // Day view, anchored on 29 Jan (APP_MON)
+    await page.keyboard.press('l'); // 30 Jan
+    await page.keyboard.press('l'); // 31 Jan
+    await page.keyboard.press('3'); // Month view; the anchor survives the switch (31 Jan)
+    await page.keyboard.press('l'); // step +1 month from the 31st
+    await page.keyboard.press('1'); // back to Day view to read the anchor off `.col`
+    const shown = await page.locator('.col').getAttribute('data-start-ms');
+    expect(Number(shown)).toBe(Date.UTC(2024, 1, 29)); // 29 Feb 2024 — clamped, not skipped to March
+  });
+
+  // Fix round 1, finding 3: the switcher's own buttons are `disabled` for
+  // `year`/`bigyear`, but the keyboard path is a separate code path — the
+  // reviewer removed the `DISABLED_VIEWS` guard entirely (so `4`/`5` would
+  // switch views) and all 19 App specs stayed green. A disabled button the
+  // keyboard still triggers is worse than no button.
+  test('4 and 5 do not switch views from the keyboard', async ({ page }) => {
+    await page.goto(app('connected'));
+    const active = page.locator('.vswitch button.active');
+    await expect(active).toHaveCount(1);
+    const before = await active.textContent();
+    await page.keyboard.press('4');
+    await page.keyboard.press('5');
+    expect(await active.textContent()).toBe(before);
+  });
+
+  // Fix round 1, finding 4: `MonthGrid`'s own spec proves it *calls*
+  // `onopen`; nothing proved App's `monthSelId`/`monthDetail`/`EventPopover`
+  // wiring on the receiving end actually opens anything. The reviewer
+  // replaced `onopen={openMonthEvent}` with a no-op and all 38 App specs
+  // stayed green — the DoD's "clicking an event in any view opens the
+  // popover" was unverified for Month.
+  test('clicking an event in Month view opens the popover', async ({ page }) => {
+    await page.goto(app('connected'));
+    await expect(page.locator('.vswitch button')).toHaveCount(5);
+    await page.keyboard.press('3');
+    await page.locator('.mcell .timed').first().click();
+    await expect(page.locator('.pop')).toBeVisible();
+    await expect(page.locator('.pop h2')).toHaveText('Standup');
+  });
+
   test('T returns to today', async ({ page }) => {
     await page.goto(app('connected'));
     const col = page.locator('.col').first();

@@ -16,8 +16,6 @@
   import EventPopover from './lib/EventPopover.svelte';
   import ViewSwitcher, { type View } from './lib/ViewSwitcher.svelte';
 
-  const WEEK = 7 * 24 * 3_600_000;
-
   /** Midnight local on the day `ms` falls in — `T`'s target, and Day view's
    *  own boundary. */
   function dayStart(ms: number): number {
@@ -219,6 +217,22 @@
     anchorMs = dayStart(Date.now());
   }
 
+  // Header's own Prev/Next: always a week, regardless of `view` (its
+  // aria-label says "week" unconditionally, so it doesn't follow `step`'s
+  // per-view unit). `setDate`-based, like `step` itself (Fix round 1,
+  // finding 5) — the raw-millisecond arithmetic this replaced
+  // (`anchorMs -= WEEK`) shifts the *wall-clock hour* across a real DST
+  // transition rather than the calendar day, which can walk `anchorMs` off
+  // a day boundary for good (every later click compounds the drift).
+  // Playwright's UTC-pinned `timezoneId` can't itself exercise a DST
+  // transition, so this has no regression spec — `step`'s own day/week/month
+  // specs already prove `setDate` arithmetic keeps `anchorMs` day-aligned.
+  function stepHeaderWeek(dir: 1 | -1) {
+    const d = new Date(anchorMs);
+    d.setDate(d.getDate() + dir * 7);
+    anchorMs = d.getTime();
+  }
+
   function pick(v: View) {
     view = v;
   }
@@ -229,7 +243,21 @@
     const d = new Date(anchorMs);
     if (view === 'day') d.setDate(d.getDate() + dir);
     else if (view === 'week') d.setDate(d.getDate() + dir * 7);
-    else if (view === 'month') d.setMonth(d.getMonth() + dir);
+    else if (view === 'month') {
+      // A bare `setMonth` overflows for a day-of-month the target month
+      // doesn't have — Jan 31 `+1` rolls past February into Mar 3, not Feb
+      // 28/29, and repeating it walks the 3rd of every month forever
+      // (Fix round 1, finding 1). Stepping from the 1st avoids the overflow
+      // during the month change itself, then clamping to the target month's
+      // real last day is the standard fix — it isn't perfectly invertible
+      // (Jan 31 `+1``-1` lands on Jan 28/29, not back on 31), but no month
+      // is ever skipped or duplicated, which is the actual bug.
+      const dom = d.getDate();
+      d.setDate(1);
+      d.setMonth(d.getMonth() + dir);
+      const lastDayOfTarget = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+      d.setDate(Math.min(dom, lastDayOfTarget));
+    }
     else return;
     anchorMs = d.getTime();
   }
@@ -326,8 +354,8 @@
 <main>
   <Header
     {status} {weekStartMs} {busy} {error} {calendars} {view}
-    onPrev={() => (anchorMs -= WEEK)}
-    onNext={() => (anchorMs += WEEK)}
+    onPrev={() => stepHeaderWeek(-1)}
+    onNext={() => stepHeaderWeek(1)}
     onToday={goToday}
     onSignIn={handleSignIn}
     onSync={handleSync}
