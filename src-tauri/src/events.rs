@@ -54,19 +54,26 @@ pub async fn event_detail(
     state: tauri::State<'_, AppState>,
     id: i64,
 ) -> Result<EventDetail, String> {
-    event_detail_impl(&state.pool, state.demo, id).await.map_err(|e| crate::errors::user_facing(&e))
+    event_detail_impl(&state, id).await.map_err(|e| crate::errors::user_facing(&e))
 }
 
 /// The body of `event_detail`, minus the Tauri `State` wrapper — also the tail
 /// end of `respond_to_event` and `refresh_event`, both of which return the
 /// freshly-written row through the same shape rather than re-deriving it
 /// themselves.
-async fn event_detail_impl(pool: &SqlitePool, demo: bool, id: i64) -> anyhow::Result<EventDetail> {
-    let (event, access_role) = omacal_store::event_by_id(pool, id)
+///
+/// Takes the whole `&AppState`, not `(&pool, demo)`, for the same reason
+/// [`respond_to_event_impl`] and [`refresh_event_impl`] do: the wrapper above
+/// then has no argument left to get wrong. Spelled out as two parameters, the
+/// wrapper could pass `false` for `demo` and the entire workspace stayed green
+/// at 240 passing tests — while the demo popover started offering three RSVP
+/// buttons again, the exact thing the gate inside exists to prevent.
+async fn event_detail_impl(state: &AppState, id: i64) -> anyhow::Result<EventDetail> {
+    let (event, access_role) = omacal_store::event_by_id(&state.pool, id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("that event is no longer here"))?;
 
-    let can_respond = can_respond(demo, &access_role, &event.attendees);
+    let can_respond = can_respond(state.demo, &access_role, &event.attendees);
     let is_recurring = is_recurring(&event.recurrence, &event.recurring_event_id);
 
     Ok(EventDetail {
@@ -313,15 +320,16 @@ async fn respond_impl(
     )
     .await?;
 
-    event_detail_impl(&state.pool, state.demo, id).await
+    event_detail_impl(state, id).await
 }
 
 /// The network exchange and local write-back half of [`respond_impl`], with
 /// the `CalendarClient` already built.
 ///
 /// Returns nothing: reading the freshly-written row back is the caller's job,
-/// since only it knows whether the app is in demo mode — which
-/// [`event_detail_impl`] needs and this function has no business carrying.
+/// since only it holds the `AppState` [`event_detail_impl`] needs — this
+/// function is handed a bare pool precisely so a test can drive it without
+/// one.
 #[allow(clippy::too_many_arguments)]
 async fn respond_via_client(
     pool: &SqlitePool,
@@ -478,7 +486,7 @@ async fn refresh_impl(state: &AppState, id: i64) -> anyhow::Result<EventDetail> 
     merge_patched(&mut row, &fresh);
     omacal_store::upsert_event(&state.pool, &row).await?;
 
-    event_detail_impl(&state.pool, state.demo, id).await
+    event_detail_impl(state, id).await
 }
 
 #[cfg(test)]
@@ -1098,18 +1106,52 @@ mod tests {
     /// vacuous — a fixture that could not be answered either way would prove
     /// nothing about demo mode.
     #[tokio::test]
+    ///
+    /// Driven through `state_with`, the same `AppState` the `#[tauri::command]`
+    /// wrapper builds from, rather than through a loose `demo` argument: the
+    /// wrapper is then a call with nothing left to get wrong, and this test is
+    /// what proves the flag it carries is the app's own.
     async fn the_detail_payload_reports_no_rsvp_in_demo_mode() {
         let ev = stored(vec![guest(true)]);
         let (pool, id) = seeded_pool_with(&ev).await; // its calendar is seeded `owner`
 
-        let live = event_detail_impl(&pool, false, id).await.unwrap();
+        let live = event_detail_impl(&state_with(pool.clone(), false), id).await.unwrap();
         assert!(live.can_respond, "the fixture must be answerable outside demo mode");
 
-        let demo = event_detail_impl(&pool, true, id).await.unwrap();
+        let demo = event_detail_impl(&state_with(pool, true), id).await.unwrap();
         assert!(
             !demo.can_respond,
             "demo mode offered RSVP buttons that `demo_sync_guard` can only refuse"
         );
+    }
+
+    /// `respond_impl`'s own `can_respond(state.demo, …)` — the second demo
+    /// gate on the write path, behind [`respond_to_event_impl`]'s. Nothing
+    /// reached it before this test, because the guard in front always fired
+    /// first, so `state.demo` there could be replaced with `false` and the
+    /// workspace stayed green.
+    ///
+    /// It refuses *before* `load_config`, which is what makes it worth having:
+    /// were the outer guard ever deleted, this one still stops demo mode
+    /// reaching the config file, the Keychain and Google.
+    #[tokio::test]
+    async fn responding_refuses_in_demo_mode_even_with_the_outer_guard_bypassed() {
+        let ev = stored(vec![guest(true)]);
+        let (pool, id) = seeded_pool_with(&ev).await; // seeded `owner`, with a `self` guest
+
+        // What stops the assertion below being vacuous: this fixture clears
+        // every *other* condition, so only demo mode can be refusing it.
+        // Checked through the predicate rather than by calling `respond_impl`
+        // with `demo: false` — past `can_respond` that call reads the real
+        // `~/.config/omacal/config.toml`, then the Keychain, then Google,
+        // which no test may do.
+        assert!(can_respond(false, "owner", &ev.attendees));
+
+        let err = respond_impl(&state_with(pool, true), id, "declined", "all", 0)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("cannot be answered from omacal"), "{err}");
     }
 
     /// An `AppState` a test can hold: demo mode's whole point is that nothing

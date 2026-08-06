@@ -10,12 +10,37 @@ export default defineConfig({
   // It is a WebKit-under-Playwright artifact, not anything this app does, but
   // `components.spec.ts` had grown to exactly 63 tests, so the next test added
   // to it — any test — was the one that hung. Spreading tests across workers
-  // keeps each worker's context count an order of magnitude below the ceiling.
+  // keeps each worker's context count under the ceiling.
   //
   // Tests here are already independent: each does its own `page.goto` and gets
   // its own page, and all shared state (the fixtures, the Tauri stub) is
   // per-page.
   fullyParallel: true,
+  // …but only if there are enough workers to spread them across, and that is
+  // not something to leave to the host. Playwright defaults `workers` to half
+  // the logical core count, so a 2-vCPU CI runner gets *one* — every test in
+  // the project lands in a single process, which passes the ceiling at test 64
+  // and stalls there, surfacing as a 30-second timeout inside whatever
+  // unrelated test happens to occupy that slot. Nothing about the failing test
+  // is the cause, which is what makes it expensive to diagnose.
+  //
+  // The margin the default leaves is also thinner than "spread them out"
+  // suggests. Measured by counting contexts per worker process over a full
+  // run on a 10-core box: 5 workers (the default here) peaks at 26 of the 64
+  // available, 4 peaks at 36, 6 peaks at 24. Scheduling is by duration, not by
+  // count, so the busiest worker takes well over its even share — 36 at 4
+  // workers, where an even split would be 27.
+  //
+  // Six, fixed rather than derived from the host: it holds the peak near 24
+  // (~2.7x clear) for a project of ~106 tests, costs nothing measurable here
+  // (14.1s against 13.9s at 4), and gives the CI runner and the laptop the
+  // same schedule, which a suite built on pixel comparison would rather have
+  // than a second of wall time. Revisit the number if a project passes ~250
+  // tests; the peak scales with it.
+  //
+  // PWDEBUG already forces a single worker inside Playwright, so this cannot
+  // rescue a debug run of the whole suite — debug one test, not 106.
+  workers: process.env.PWDEBUG ? 1 : 6,
   // Snapshots are the point of this suite; a stale one must fail, not silently update.
   updateSnapshots: 'missing',
   expect: { toHaveScreenshot: { maxDiffPixelRatio: 0.01 } },
