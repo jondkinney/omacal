@@ -73,7 +73,10 @@ as dot-and-title. The day number and `+N more` both switch to Day view.
 
 **Year** — the 12-up mini-month grid. A day with an all-day event gets a dot;
 today is a filled disc. Clicking any date switches to Day view. This view exists
-for "what weekday is the 14th", not for planning.
+for "what weekday is the 14th", not for planning — which is why, unlike Big Year,
+it stays freely navigable in both directions. Date arithmetic about the past is
+legitimate; the unsynced shading of §6 is what keeps it honest about dots it
+cannot know.
 
 **Big Year** — one screen, the whole year, **all-day and multi-day events only**.
 
@@ -86,6 +89,13 @@ for "what weekday is the 14th", not for planning.
   readable without counting.
 - Starts on the Monday on or before 1 January and runs 14 rows. Days outside the
   year are dimmed rather than blank, keeping the grid rectangular.
+- **Reaches this year and next year only.** `‹` is disabled on the current year;
+  `›` reaches next year and stops. Big Year is a planning surface — what is
+  coming, not what happened — and bounding it this way also keeps it inside what
+  the sync window plausibly holds. Note this does *not* eliminate §6: from
+  August 2026 the window starts in February 2026, so January of the current year
+  is already outside it, and next year's final months are past its far edge.
+  Both ends still need the unsynced treatment.
 - Month starts get an inline chip on day 1.
 - An event crossing a row boundary splits; both halves get a flat edge and a
   `‹` continuation marker.
