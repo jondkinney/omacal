@@ -45,10 +45,6 @@ pub struct WeekPayload {
     pub overflow: Vec<usize>,
 }
 
-// `Month*` and `assemble_month` are not called from `lib.rs` yet — `get_month`
-// is wired up in the next task. Suppressed here rather than left to rot
-// unverified; the four tests below are the only current caller.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize)]
 pub struct MonthCell {
     pub start_ms: i64,
@@ -62,7 +58,6 @@ pub struct MonthCell {
     pub timed: Vec<UiEvent>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize)]
 pub struct MonthRow {
     pub cells: Vec<MonthCell>, // always 7
@@ -73,7 +68,6 @@ pub struct MonthRow {
     pub bar_overflow: Vec<usize>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize)]
 pub struct MonthPayload {
     pub rows: Vec<MonthRow>, // always 6
@@ -341,6 +335,13 @@ pub fn assemble_week(events: &[StoredEvent], week_start_ms: i64, tz: &str) -> We
 /// lane-packed independently at `row_len = 7` for its own spanning bars, and
 /// each cell gets a flat, sorted list of the day's timed events for the UI to
 /// lay out.
+///
+/// Not called from `lib.rs` yet — `get_month` is wired up in the next task.
+/// Suppressed here rather than left to rot unverified; the tests below are
+/// the only current caller. `MonthCell`/`MonthRow`/`MonthPayload` need no
+/// annotation of their own: they're constructed inside this function, so
+/// rustc's "never constructed" check doesn't fire on them once this one item
+/// is allowed.
 #[allow(dead_code)]
 pub fn assemble_month(events: &[StoredEvent], year: i32, month: u32, tz: &str) -> MonthPayload {
     use jiff::civil::date;
@@ -735,6 +736,31 @@ mod tests {
         // Otherwise the grid changes height as you page through the year.
         let m = assemble_month(&[], 2026, 2, "Europe/Sofia");
         assert_eq!(m.rows.len(), 6);
+    }
+
+    /// June 2026's 1st is itself a Monday — the one shape every other weekday
+    /// absorbs. A backward search that steps one day too far before checking
+    /// converges on the same Monday for every other starting weekday, and
+    /// only misfires here, landing a week early. Value computed independently
+    /// (Europe/Sofia local midnight, cross-checked against the plan's
+    /// `AUG_GRID_START` derivation method): 2026-06-01 00:00 Sofia =
+    /// 1780261200000.
+    #[test]
+    fn a_month_that_starts_on_a_monday_has_no_leading_days() {
+        let m = assemble_month(&[], 2026, 6, "Europe/Sofia");
+        assert_eq!(m.rows[0].cells[0].start_ms, 1780261200000, "grid must start Mon 1 Jun");
+        assert!(m.rows[0].cells[0].in_month, "1 Jun is itself the Monday the grid starts on");
+    }
+
+    /// January 2026 opens on a Thursday, so the Monday on or before it falls
+    /// in the *previous* calendar year: 2025-12-29, a boundary the naive "same
+    /// year" assumption would get wrong. Value computed independently
+    /// (Europe/Sofia local midnight): 2025-12-29 00:00 Sofia = 1766959200000.
+    #[test]
+    fn a_grid_start_can_fall_in_the_previous_year() {
+        let m = assemble_month(&[], 2026, 1, "Europe/Sofia");
+        assert_eq!(m.rows[0].cells[0].start_ms, 1766959200000, "grid must start Mon 29 Dec 2025");
+        assert!(!m.rows[0].cells[0].in_month, "29 Dec 2025 belongs to December, not January");
     }
 
     #[test]
