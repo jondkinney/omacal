@@ -149,9 +149,16 @@
 
   // What actually renders: `week.days`, but with any occurrence that still
   // has a live (not yet evicted) override showing its overridden `response`
-  // instead of the payload's own. All-day events are left untouched —
-  // nothing in this file opens a popover for one (`AllDayBand` has no
-  // `onopen` path), so no override can ever target one.
+  // instead of the payload's own.
+  //
+  // All-day events are outside this, and do not need to be in it. They live
+  // in `week.all_day_events`, never in a day column, and an `AllDayBand`
+  // chip renders no RSVP state at all — so there is nothing on a chip for an
+  // override to restyle. `payloadResponse` walks only `week.days` and
+  // therefore returns `undefined` for one, which makes `handleResponded`
+  // record nothing for a chip; the answer still reaches Google either way.
+  // Give chips a response style and both this and `payloadResponse` have to
+  // grow an all-day arm together.
   const effectiveDays = $derived(
     week.days.map((d) => ({
       ...d,
@@ -257,7 +264,17 @@
   {/each}
 </div>
 
-<AllDayBand lanes={week.all_day} events={week.all_day_events} overflow={week.overflow} />
+<!-- `openPopover` unchanged, and deliberately so: a chip hands it the same
+     `UiEvent` + viewport rect an `EventBlock` does, and an all-day
+     occurrence's `start_ms` is its own day (`commands::assemble_week` calls
+     `to_ui` per expanded occurrence), which is exactly what
+     `occurrenceStartMs` has to carry. -->
+<AllDayBand
+  lanes={week.all_day}
+  events={week.all_day_events}
+  overflow={week.overflow}
+  onopen={openPopover}
+/>
 
 <div class="grid body" bind:this={bodyEl} data-testid="week-body">
   <div class="gutter">

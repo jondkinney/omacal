@@ -1,11 +1,27 @@
 <!-- ui/src/lib/AllDayBand.svelte -->
 <script lang="ts">
   import type { Lane, UiEvent } from './api';
+  import type { Rect } from './position';
 
-  let { lanes, events, overflow }:
-    { lanes: Lane[]; events: UiEvent[]; overflow: number[] } = $props();
+  let { lanes, events, overflow, onopen }:
+    { lanes: Lane[]; events: UiEvent[]; overflow: number[];
+      /** Same contract as `EventBlock`'s, and wired to the same
+       *  `WeekGrid.openPopover`. Required rather than optional: every
+       *  `is_all_day` event is routed here by `commands::assemble_week`, so a
+       *  chip is the *only* representation one ever gets — a caller that
+       *  omitted this would leave an all-day off-site with a guest list
+       *  unopenable, which is the state this prop exists to end. */
+      onopen: (event: UiEvent, rect: Rect) => void } = $props();
 
   const laneCount = $derived(lanes.length ? Math.max(...lanes.map((l) => l.lane)) + 1 : 0);
+
+  // `getBoundingClientRect()` for the same reason `EventBlock` uses it: the
+  // popover places itself against the viewport, and a chip's own geometry is
+  // grid-line coordinates, which say nothing about where it landed on screen.
+  function open(event: UiEvent, e: MouseEvent) {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    onopen(event, { top: r.top, left: r.left, width: r.width, height: r.height });
+  }
 </script>
 
 {#if lanes.length || overflow.length}
@@ -14,7 +30,7 @@
     <div class="rows">
       {#each lanes as lane}
         {@const ev = events[lane.idx]}
-        <div
+        <button
           class="chip"
           class:cl={lane.cont_left}
           class:cr={lane.cont_right}
@@ -24,9 +40,10 @@
             --cal:{ev.color};
           "
           title={ev.title}
+          onclick={(e) => open(ev, e)}
         >
           {lane.cont_left ? '‹ ' : ''}{ev.title}
-        </div>
+        </button>
       {/each}
       {#if overflow.length}
         <div class="more" style="grid-row:{laneCount + 1}; grid-column:1 / -1">
@@ -47,10 +64,25 @@
      width off their days. The separation lives inside the chip instead. */
   .rows { display: grid; grid-template-columns: repeat(7, 1fr); }
 
-  .chip { font-size: 9.5px; border-radius: 4px; padding: 2px 7px; white-space: nowrap;
+  /* A <button>, like EventBlock, rather than a <div> with a click handler
+     bolted on: the role, the tab stop and Enter/Space all come for free and
+     stay correct. The first three declarations exist only to undo the UA
+     button styles the <div> never had — without them the chip picks up
+     native chrome, a centred label and the button font. `border: 0` restores
+     what a <div> starts with, so the colour spine below is unchanged rather
+     than added on top of a default button border.
+
+     EventBlock replaced its own one-sided border with an inset shadow, over
+     a WKWebView artifact where corners away from the border rendered square.
+     Not copied here: that spine has to go dashed for a continuing span
+     (`.cl` below), which a shadow cannot do, and the committed WebKit
+     snapshot for this band is what says the corners are in fact round. */
+  .chip { appearance: none; -webkit-appearance: none;
+          font: inherit; text-align: left; cursor: pointer;
+          border: 0; border-left: 2px solid var(--cal);
+          font-size: 9.5px; border-radius: 4px; padding: 2px 7px; white-space: nowrap;
           overflow: hidden; text-overflow: ellipsis;
           margin: 0 2px 2px 0;
-          border-left: 2px solid var(--cal);
           background: color-mix(in srgb, var(--cal) 16%, transparent);
           color: color-mix(in srgb, var(--cal) 60%, var(--text)); }
   /* Flat edges mark a span continuing beyond this week. */

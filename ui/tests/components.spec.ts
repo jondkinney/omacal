@@ -172,6 +172,51 @@ test.describe('WeekGrid popover flow', () => {
     // it would, if `isSelected` compared `id` alone.
     await expect(page.locator('.pop')).toBeVisible();
   });
+
+  // `commands::assemble_week` routes every `is_all_day` event into
+  // `all_day_events` and never into a day column, so a band chip is the only
+  // representation one ever gets. The chips were plain `<div>`s carrying a
+  // `title` and nothing else — no click, no role, no tab stop — which meant
+  // an all-day off-site with a guest list simply could not be opened.
+  test('an all-day chip opens the popover with its guest list', async ({ page }) => {
+    await page.goto(show('popover-all-day'));
+    await page.getByRole('button', { name: 'Team off-site' }).click();
+    await expect(page.locator('.pop h2')).toHaveText('Team off-site');
+    const guests = page.locator('.pop .guest');
+    await expect(guests).toHaveCount(2);
+    await expect(guests.nth(0)).toHaveText('Ana');
+    await expect(guests.nth(1)).toContainText('(you)');
+  });
+
+  test('an all-day chip opens from the keyboard, not only the mouse', async ({ page }) => {
+    // Free with a real `<button>`, and only with one: a `<div role="button">`
+    // would need its own keydown handler, and a bare `<div>` — what this was
+    // — is not reachable by Tab at all. Following `EventBlock`'s element
+    // choice is what makes this pass with no key handling in `AllDayBand`.
+    await page.goto(show('popover-all-day'));
+    await page.getByRole('button', { name: 'Team off-site' }).focus();
+    await page.keyboard.press('Enter');
+    await expect(page.locator('.pop h2')).toHaveText('Team off-site');
+  });
+
+  // The one that matters. All-day occurrences are contiguous by construction
+  // — each ends exactly where the next begins — which is the shape the
+  // backend's instance lookup resolves most delicately, and why the bracket
+  // fix and the body-provenance fix had to land before this path was opened
+  // at all. If the chip passed anything but its own `start_ms`, the RSVP
+  // would land on the series' first day with `sendUpdates=all`.
+  test("an all-day recurring RSVP sends the clicked day, not the series start", async ({ page }) => {
+    await page.goto(show('popover-all-day'));
+    await page.getByRole('button', { name: 'Diwali' }).click();
+    await expect(page.locator('.pop')).toBeVisible();
+    await page.getByRole('button', { name: 'No' }).click();
+    const call = await page.evaluate(() => (window as any).__lastRespondCall);
+    // POPOVER_DETAILS[81].start_ms is the series DTSTART; the clicked chip is
+    // the third day of the series — see fixtures.ts.
+    expect(call.occurrenceStartMs).toBe(POPOVER_DETAILS[81].start_ms + 2 * 24 * 3_600_000);
+    expect(call.occurrenceStartMs).not.toBe(POPOVER_DETAILS[81].start_ms);
+    expect(call.scope).toBe('this');
+  });
 });
 
 test.describe('EventBlock duration ladder', () => {

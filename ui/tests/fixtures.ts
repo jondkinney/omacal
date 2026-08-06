@@ -281,6 +281,55 @@ POPOVER_DETAILS[TWO_OCC_ID] = detail({
   start_ms: TWO_OCC_1_START, end_ms: TWO_OCC_1_START + 30 * 60_000,
 });
 
+// The all-day band. `commands::assemble_week` routes every `is_all_day`
+// event into `all_day_events` and never into a day column, so a chip is the
+// only representation either of these ever gets — there is no `EventBlock`
+// path to fall back on.
+const ALLDAY_OFFSITE: UiEvent = ev({
+  id: 80, title: 'Team off-site', is_all_day: true, color: '#e2a03f',
+  start_ms: MON, end_ms: MON + 24 * H,
+});
+/** An all-day series' own DTSTART — what `event_detail` reports as the
+ *  master row's `start_ms`, and the value an RSVP must never send. */
+const ALLDAY_SERIES_DTSTART = MON;
+/** The third day of that series. All-day occurrences are contiguous by
+ *  construction — each ends exactly where the next begins — which is the
+ *  shape the backend's `events.instances` lookup resolves most delicately,
+ *  and the reason this case is worth a spec of its own. */
+const ALLDAY_THIRD_OCCURRENCE = MON + 2 * 24 * H;
+const ALLDAY_RECURRING: UiEvent = ev({
+  id: 81, title: 'Diwali', is_all_day: true, color: '#2dd4bf',
+  start_ms: ALLDAY_THIRD_OCCURRENCE, end_ms: ALLDAY_THIRD_OCCURRENCE + 24 * H,
+});
+
+POPOVER_DETAILS[80] = detail({
+  id: 80, title: 'Team off-site', is_all_day: true,
+  start_ms: MON, end_ms: MON + 24 * H,
+  attendees: [
+    attendee({ email: 'ana@x.com', display_name: 'Ana', response_status: 'accepted' }),
+    attendee({ email: 'me@x.com', is_self: true }),
+  ],
+});
+POPOVER_DETAILS[81] = detail({
+  id: 81, title: 'Diwali', is_all_day: true, is_recurring: true,
+  // The series DTSTART, deliberately *not* the clicked day — the same trap
+  // `POPOVER_DETAILS[42]` sets for the timed path, which the all-day path
+  // reaches through entirely different markup and so has to prove separately.
+  start_ms: ALLDAY_SERIES_DTSTART, end_ms: ALLDAY_SERIES_DTSTART + 24 * H,
+  attendees: [attendee({ email: 'me@x.com', is_self: true })],
+});
+
+const popoverAllDayWeek = (): WeekPayload => {
+  const w = emptyWeek();
+  w.all_day_events = [ALLDAY_OFFSITE, ALLDAY_RECURRING];
+  // One chip per day, on its own lane, so neither can be clicked by accident.
+  w.all_day = [
+    { idx: 0, lane: 0, start_col: 0, end_col: 0, cont_left: false, cont_right: false },
+    { idx: 1, lane: 1, start_col: 2, end_col: 2, cont_left: false, cont_right: false },
+  ];
+  return w;
+};
+
 const popoverTwoOccurrencesWeek = (): WeekPayload => {
   const w = emptyWeek();
   const events = [POPOVER_TWO_OCC_1, POPOVER_TWO_OCC_2];
@@ -294,6 +343,7 @@ export const FIXTURES: Record<string, Record<string, any>> = {
     populated: { week: populatedWeek() },
     popover: { week: popoverWeek() },
     'popover-two-occurrences': { week: popoverTwoOccurrencesWeek() },
+    'popover-all-day': { week: popoverAllDayWeek() },
   },
   EventBlock: {
     // The duration ladder.
@@ -308,17 +358,22 @@ export const FIXTURES: Record<string, Record<string, any>> = {
     'rsvp-declined-15': block('All hands', 15, 'declined', null),
   },
   AllDayBand: {
+    // None of these specs click a chip — opening a popover needs a real
+    // `WeekGrid` behind it, which is where those specs live. A no-op still
+    // keeps the fixture a valid set of props, same as `EventBlock`'s.
     populated: {
       lanes: populatedWeek().all_day,
       events: populatedWeek().all_day_events,
       overflow: [],
+      onopen: noop,
     },
     overflow: {
       lanes: populatedWeek().all_day,
       events: populatedWeek().all_day_events,
       overflow: [2, 3],
+      onopen: noop,
     },
-    empty: { lanes: [], events: [], overflow: [] },
+    empty: { lanes: [], events: [], overflow: [], onopen: noop },
   },
   Header: {
     disconnected: header({ accounts: [], last_sync_ms: null, demo: false }),
