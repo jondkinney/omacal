@@ -1,0 +1,12 @@
+-- A JSON column rather than a child table. Nothing queries attendees
+-- independently, and `upsert_event` must stay a single statement: since the
+-- Plan 1c race fix it runs inside `apply()`'s BEGIN IMMEDIATE transaction, and
+-- a child table would drag attendee writes into that transaction.
+ALTER TABLE events ADD COLUMN attendees_json TEXT;
+
+-- The backfill. `description`, `etag`, `sequence` and `organizer_email` have
+-- existed since 0001 and were never written, so every row already stored is
+-- missing data the popover needs. Dropping every cursor makes the next sync a
+-- full window fetch, which is the only way those rows acquire it. Costs one
+-- slow sync on first launch after the update.
+DELETE FROM sync_state;

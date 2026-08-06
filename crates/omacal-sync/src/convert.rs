@@ -78,6 +78,13 @@ pub fn to_stored(ev: &Event, calendar_id: i64, cal_tz: &str) -> Option<StoredEve
         conference_uri: ev.hangout_link.clone(),
         // Joined in from `calendars` on read; nothing to write here.
         color_hex: None,
+        // Wired up in a later task; kept at their defaults here so this crate
+        // keeps compiling against the new `StoredEvent` fields.
+        description: None,
+        etag: None,
+        sequence: 0,
+        organizer_email: None,
+        attendees: Vec::new(),
     })
 }
 
@@ -131,6 +138,13 @@ pub fn to_cancelled_exception(ev: &Event, calendar_id: i64, cal_tz: &str) -> Opt
         self_response: None,
         conference_uri: None,
         color_hex: None,
+        // A tombstone carries little more than its id; there is no detail to
+        // store for a slot that only exists to be suppressed.
+        description: None,
+        etag: None,
+        sequence: 0,
+        organizer_email: None,
+        attendees: Vec::new(),
     })
 }
 

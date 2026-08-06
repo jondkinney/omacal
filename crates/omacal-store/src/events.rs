@@ -32,12 +32,32 @@ pub struct StoredEvent {
     /// on `calendars`, not `events`, so `upsert_event` neither reads nor writes
     /// it; a hand-built `StoredEvent` on the write path leaves it `None`.
     pub color_hex: Option<String>,
+    pub description: Option<String>,
+    pub etag: Option<String>,
+    pub sequence: i64,
+    pub organizer_email: Option<String>,
+    pub attendees: Vec<Attendee>,
+}
+
+/// One invitee. Mirrors Google's `attendees[]` entry, kept in a JSON column
+/// rather than a table — see 0003_attendees.sql for why.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Attendee {
+    pub email: String,
+    pub display_name: Option<String>,
+    /// `accepted` | `declined` | `tentative` | `needsAction`.
+    pub response_status: String,
+    pub optional: bool,
+    /// True for the signed-in user's own row. This is the entry an RSVP edits,
+    /// and the only one it may edit.
+    pub is_self: bool,
 }
 
 const SELECT_COLS: &str = "e.id, e.calendar_id, e.google_id, e.summary, e.location,
      e.start_utc, e.end_utc, e.start_tz, e.end_tz, e.is_all_day, e.recurrence,
      e.recurring_event_id, e.original_start_utc,
-     e.status, e.self_response, e.conference_uri, c.color_hex";
+     e.status, e.self_response, e.conference_uri, c.color_hex,
+     e.description, e.etag, e.sequence, e.organizer_email, e.attendees_json";
 
 fn row_to_event(row: &sqlx::sqlite::SqliteRow) -> StoredEvent {
     StoredEvent {
@@ -58,6 +78,17 @@ fn row_to_event(row: &sqlx::sqlite::SqliteRow) -> StoredEvent {
         self_response: row.get("self_response"),
         conference_uri: row.get("conference_uri"),
         color_hex: row.get("color_hex"),
+        description: row.get("description"),
+        etag: row.get("etag"),
+        sequence: row.get("sequence"),
+        organizer_email: row.get("organizer_email"),
+        // A malformed or absent JSON column must not fail the whole window
+        // query — most personal events have no guests at all, so `NULL` here
+        // is the common path, not an edge case.
+        attendees: row
+            .get::<Option<String>, _>("attendees_json")
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default(),
     }
 }
 
@@ -76,13 +107,15 @@ pub async fn upsert_event<'e, E>(exec: E, ev: &StoredEvent) -> anyhow::Result<i6
 where
     E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
 {
-    // 16 columns, 16 placeholders, 16 binds, all in the same order. Keep them
+    // 21 columns, 21 placeholders, 21 binds, all in the same order. Keep them
     // that way: a mismatch here writes a value into the wrong column silently.
+    let attendees_json = serde_json::to_string(&ev.attendees)?;
     let id: i64 = sqlx::query(
         "INSERT INTO events (calendar_id, google_id, summary, location, start_utc, end_utc,
              start_tz, end_tz, is_all_day, recurrence, recurring_event_id,
-             original_start_utc, status, self_response, conference_uri, updated_at)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)
+             original_start_utc, status, self_response, conference_uri, updated_at,
+             description, etag, sequence, organizer_email, attendees_json)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)
          ON CONFLICT (calendar_id, google_id) DO UPDATE SET
              summary = excluded.summary, location = excluded.location,
              start_utc = excluded.start_utc, end_utc = excluded.end_utc,
@@ -91,7 +124,10 @@ where
              recurring_event_id = excluded.recurring_event_id,
              original_start_utc = excluded.original_start_utc,
              status = excluded.status, self_response = excluded.self_response,
-             conference_uri = excluded.conference_uri, updated_at = excluded.updated_at
+             conference_uri = excluded.conference_uri, updated_at = excluded.updated_at,
+             description = excluded.description, etag = excluded.etag,
+             sequence = excluded.sequence, organizer_email = excluded.organizer_email,
+             attendees_json = excluded.attendees_json
          RETURNING id",
     )
     .bind(ev.calendar_id)          // ?1  calendar_id
@@ -110,6 +146,11 @@ where
     .bind(&ev.self_response)       // ?14 self_response
     .bind(&ev.conference_uri)      // ?15 conference_uri
     .bind(now_ms())                // ?16 updated_at
+    .bind(&ev.description)         // ?17 description
+    .bind(&ev.etag)                // ?18 etag
+    .bind(ev.sequence)             // ?19 sequence
+    .bind(&ev.organizer_email)     // ?20 organizer_email
+    .bind(attendees_json)          // ?21 attendees_json
     .fetch_one(exec)
     .await?
     .get("id");
@@ -195,6 +236,8 @@ mod tests {
             status: "confirmed".into(),
             self_response: Some("accepted".into()), conference_uri: None,
             color_hex: None,
+            description: None, etag: None, sequence: 0, organizer_email: None,
+            attendees: Vec::new(),
         }
     }
 
@@ -287,6 +330,8 @@ mod tests {
             recurring_event_id: Some("master".into()), original_start_utc: Some(1_500),
             status: "tentative".into(), self_response: Some("needsAction".into()),
             conference_uri: Some("https://meet/x".into()), color_hex: None,
+            description: None, etag: None, sequence: 0, organizer_email: None,
+            attendees: Vec::new(),
         };
         upsert_event(&pool, &full).await.unwrap();
 
@@ -427,5 +472,151 @@ mod tests {
             .fetch_one(&pool).await.unwrap();
         assert_eq!(selected, 1);
         assert_eq!(sync_enabled, 1, "a fresh calendar syncs by default");
+    }
+
+    #[tokio::test]
+    async fn attendees_round_trip_through_the_store() {
+        let pool = crate::connect_memory().await.unwrap();
+        let cal = seed(&pool).await;
+
+        let ev = StoredEvent {
+            id: 0,
+            calendar_id: cal,
+            google_id: "ev1".into(),
+            summary: Some("Weekly Standup".into()),
+            location: None,
+            start_utc: 1786341600000,
+            end_utc: 1786343400000,
+            start_tz: "Europe/Sofia".into(),
+            end_tz: "Europe/Sofia".into(),
+            is_all_day: false,
+            recurrence: None,
+            recurring_event_id: None,
+            original_start_utc: None,
+            status: "confirmed".into(),
+            self_response: Some("needsAction".into()),
+            conference_uri: None,
+            color_hex: None,
+            description: Some("Sprint sync.".into()),
+            etag: Some("\"etag-1\"".into()),
+            sequence: 3,
+            organizer_email: Some("ana@x.com".into()),
+            attendees: vec![
+                Attendee { email: "ana@x.com".into(), display_name: Some("Ana".into()),
+                           response_status: "accepted".into(), optional: false, is_self: false },
+                Attendee { email: "me@x.com".into(), display_name: None,
+                           response_status: "needsAction".into(), optional: true, is_self: true },
+            ],
+        };
+        upsert_event(&pool, &ev).await.unwrap();
+
+        let back = events_in_window(&pool, 1786300000000, 1786400000000).await.unwrap();
+        let got = back.iter().find(|e| e.google_id == "ev1").expect("event stored");
+
+        assert_eq!(got.description.as_deref(), Some("Sprint sync."));
+        assert_eq!(got.etag.as_deref(), Some("\"etag-1\""));
+        assert_eq!(got.sequence, 3);
+        assert_eq!(got.organizer_email.as_deref(), Some("ana@x.com"));
+        assert_eq!(got.attendees.len(), 2, "attendees lost in the round trip");
+        assert_eq!(got.attendees[1].email, "me@x.com");
+        assert!(got.attendees[1].is_self, "the self flag must survive");
+        assert!(got.attendees[1].optional, "the optional flag must survive");
+        assert_eq!(got.attendees[0].display_name.as_deref(), Some("Ana"));
+
+        // The update path: a re-sync of the same google_id must overwrite the
+        // stored attendee list, not merge into it or leave it alone. Dropping
+        // "ana@x.com" entirely (rather than only editing "me@x.com" in place)
+        // also proves the list can shrink, not just mutate an existing entry.
+        let mut changed = ev.clone();
+        changed.attendees = vec![
+            Attendee { email: "me@x.com".into(), display_name: None,
+                       response_status: "accepted".into(), optional: true, is_self: true },
+        ];
+        upsert_event(&pool, &changed).await.unwrap();
+
+        let back2 = events_in_window(&pool, 1786300000000, 1786400000000).await.unwrap();
+        let got2 = back2.iter().find(|e| e.google_id == "ev1").expect("event still stored");
+        assert_eq!(got2.attendees.len(), 1,
+                   "the second upsert must replace the attendee list, not merge it");
+        assert_eq!(got2.attendees[0].email, "me@x.com");
+        assert_eq!(got2.attendees[0].response_status, "accepted",
+                   "the second write's response status did not take effect");
+    }
+
+    #[tokio::test]
+    async fn an_event_with_no_attendees_reads_back_as_an_empty_list() {
+        // A NULL column must not become a parse error. Most personal events have
+        // no guests at all, so this is the common path, not an edge case.
+        let pool = crate::connect_memory().await.unwrap();
+        let cal = seed(&pool).await;
+        sqlx::query(
+            "INSERT INTO events (calendar_id, google_id, start_utc, end_utc,
+                 start_tz, end_tz, status, updated_at)
+             VALUES (?1, 'bare', 1786341600000, 1786343400000,
+                     'Europe/Sofia', 'Europe/Sofia', 'confirmed', 0)")
+            .bind(cal).execute(&pool).await.unwrap();
+
+        let back = events_in_window(&pool, 1786300000000, 1786400000000).await.unwrap();
+        let got = back.iter().find(|e| e.google_id == "bare").unwrap();
+        assert!(got.attendees.is_empty());
+        assert_eq!(got.sequence, 0);
+    }
+
+    /// Migrations normally all run together at `connect_memory` time, which
+    /// would make an assertion here observe only the `DELETE`'s effect, not
+    /// the migration actually running against rows that predate it. To
+    /// observe the real ordering, this applies 0001 and 0002 by hand, inserts
+    /// a pre-upgrade sync cursor, then applies 0003 on top and checks it is
+    /// gone.
+    #[tokio::test]
+    async fn the_migration_drops_every_sync_cursor_so_old_rows_get_backfilled() {
+        use sqlx::migrate::{Migration, MigrationSource, Migrator};
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+        use std::error::Error;
+        use std::future::Future;
+        use std::pin::Pin;
+        use std::str::FromStr;
+
+        /// A fixed list of already-resolved migrations, so a slice of the
+        /// real migration set can be run on its own.
+        #[derive(Debug)]
+        struct Subset(Vec<Migration>);
+        impl MigrationSource<'static> for Subset {
+            fn resolve(
+                self,
+            ) -> Pin<
+                Box<dyn Future<Output = Result<Vec<Migration>, Box<dyn Error + Sync + Send>>> + Send>,
+            > {
+                Box::pin(async move { Ok(self.0) })
+            }
+        }
+
+        let all = sqlx::migrate!("./migrations");
+        let opts = SqliteConnectOptions::from_str("sqlite::memory:").unwrap().foreign_keys(true);
+        // `max_connections(1)`, same reason as `connect_memory`: every other
+        // connection to `:memory:` would be its own empty database.
+        let pool = SqlitePoolOptions::new().max_connections(1).connect_with(opts).await.unwrap();
+
+        let pre_upgrade: Vec<Migration> = all.iter().filter(|m| m.version < 3).cloned().collect();
+        assert_eq!(pre_upgrade.len(), 2, "expected exactly 0001 and 0002 before 0003 lands");
+        Migrator::new(Subset(pre_upgrade)).await.unwrap().run(&pool).await.unwrap();
+
+        let cal = seed(&pool).await;
+        sqlx::query("INSERT INTO sync_state (calendar_id, sync_token, window_start, window_end)
+                     VALUES (?1, 'tok-from-before-the-upgrade', 0, 0)")
+            .bind(cal).execute(&pool).await.unwrap();
+
+        let just_0003: Vec<Migration> = all.iter().filter(|m| m.version == 3).cloned().collect();
+        assert_eq!(just_0003.len(), 1, "expected exactly one migration at version 3");
+        let mut only_0003 = Migrator::new(Subset(just_0003)).await.unwrap();
+        // This source only lists version 3; without this, `run` sees versions
+        // 1 and 2 already applied but absent from its own list and refuses to
+        // proceed (`VersionMissing`), rather than treating that as fine.
+        only_0003.set_ignore_missing(true);
+        only_0003.run(&pool).await.unwrap();
+
+        let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sync_state")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(left, 0, "a surviving cursor means old rows never get their attendees");
     }
 }

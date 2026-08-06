@@ -113,6 +113,8 @@ mod tests {
             recurrence: None, recurring_event_id: None, original_start_utc: None,
             status: "confirmed".into(), self_response: None, conference_uri: None,
             color_hex: None,
+            description: None, etag: None, sequence: 0, organizer_email: None,
+            attendees: Vec::new(),
         }
     }
 

@@ -149,6 +149,11 @@ pub async fn seed_demo(pool: &SqlitePool, now_ms: i64) -> anyhow::Result<usize> 
                 self_response: Some(sp.response.to_string()),
                 conference_uri: None,
                 color_hex: None,
+                description: None,
+                etag: None,
+                sequence: 0,
+                organizer_email: None,
+                attendees: Vec::new(),
             },
         )
         .await?;

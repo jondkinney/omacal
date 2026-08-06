@@ -260,6 +260,8 @@ mod tests {
             status: "confirmed".into(),
             self_response: Some("accepted".into()), conference_uri: None,
             color_hex: None,
+            description: None, etag: None, sequence: 0, organizer_email: None,
+            attendees: Vec::new(),
         }
     }
 
