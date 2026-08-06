@@ -55,15 +55,25 @@ if (name === 'App') {
     // prop rather than `get_calendars`, so the scenario name only matters
     // for the write commands the stub answers.
     if (name === 'CalendarPopover') installTauriStub(fixture);
-    // WeekGrid takes its own `week` from a fixture prop too, same as every
-    // other leaf here, but clicking one of its blocks opens a real
-    // `EventPopover` that calls `event_detail`/`refresh_event`/
-    // `respond_to_event` itself — installed unconditionally (harmless for
-    // the specs that never click anything) rather than gated on the
-    // fixture name, since it is the *click*, not the fixture, that decides
-    // whether anything actually reaches `invoke`.
-    if (name === 'WeekGrid') installTauriStub(fixture);
-    if (name === 'EventPopover') {
+    if (name === 'WeekGrid') {
+      // Clicking one of its blocks opens a real `EventPopover` that calls
+      // `event_detail`/`refresh_event`/`respond_to_event` itself — installed
+      // unconditionally (harmless for the specs that never click anything)
+      // rather than gated on the fixture name, since it is the *click*, not
+      // the fixture, that decides whether anything actually reaches `invoke`.
+      installTauriStub(fixture);
+      // `week` is a `$state` here — this file's `.svelte.ts` extension is
+      // what makes that legal outside a component — rather than the plain
+      // value every other fixture prop is. A spec proving the override-
+      // eviction fix needs to simulate what `App.svelte`'s `loadWeek` does
+      // after a real sync: replace `week` with a freshly fetched payload,
+      // out from under an `EventPopover`/block that's already been
+      // interacted with. `mount()`'s props are read reactively when given
+      // as a getter, so this is enough to make that live from outside.
+      let week = $state(props.week);
+      (window as any).__setWeek = (w: unknown) => { week = w; };
+      mount(WeekGrid, { target, props: { get week() { return week; } } });
+    } else if (name === 'EventPopover') {
       // EventPopover calls `invoke` itself too (`respond_to_event`), same
       // reasoning as CalendarPopover above.
       installTauriStub(fixture);

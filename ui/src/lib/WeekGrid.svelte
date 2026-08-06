@@ -88,9 +88,10 @@
 
   // Optimistic RSVP overrides, keyed by "id:startMs" so one occurrence's
   // answer never bleeds onto another sharing the same recurring master's
-  // row id. Reassigned wholesale on every change (`markResponded`) — same
-  // reasoning as `CalendarPopover`'s own `busy` Set: `$state` does not make
-  // a plain `Map`'s own mutations reactive, only the variable binding does.
+  // row id. Reassigned wholesale on every change (`handleResponded`, the
+  // eviction effect below) — same reasoning as `CalendarPopover`'s own
+  // `busy` Set: `$state` does not make a plain `Map`'s own mutations
+  // reactive, only the variable binding does.
   //
   // Deliberately *not* mutating `week.days[...].events[...].response`
   // directly: `week` is this component's own prop, not something it was
@@ -99,23 +100,64 @@
   // control (whether the caller's own `week` happens to be a deep-reactive
   // `$state` proxy). An override this component declares and owns with its
   // own `$state` is guaranteed reactive regardless of what `week` is.
-  let responseOverrides = $state<Map<string, UiEvent['response']>>(new Map());
+  //
+  // `baseline` is the payload's *own* response at the moment the override
+  // was recorded — not just the overridden value. Without it, an override
+  // would win over every future payload for the rest of the session:
+  // decline locally, then accept from another device, and the next sync's
+  // payload would arrive saying "accepted" while the grid kept showing
+  // "declined" until the app relaunched. Comparing the *current* payload
+  // against `baseline` (see the eviction effect below) is what lets a
+  // fresher sync win once it actually disagrees with what this override
+  // was recorded against — the in-place mutation this replaced self-healed
+  // on the next payload for free; an owned override has to do it on purpose.
+  type Override = { response: UiEvent['response']; baseline: UiEvent['response'] };
+  let responseOverrides = $state<Map<string, Override>>(new Map());
 
   function overrideKey(id: number, startMs: number): string {
     return `${id}:${startMs}`;
   }
 
-  // What actually renders: `week.days`, but with any occurrence that has an
-  // override showing its overridden `response` instead of the payload's
-  // own. All-day events are left untouched — nothing in this file opens a
-  // popover for one (`AllDayBand` has no `onopen` path), so no override can
-  // ever target one.
+  /** The payload's own (un-overridden) response for one occurrence, or
+   *  `undefined` if `week` no longer carries it at all (the week navigated
+   *  away, or the occurrence fell out of the window). */
+  function payloadResponse(id: number, startMs: number): UiEvent['response'] | undefined {
+    for (const d of week.days) {
+      const found = d.events.find((e) => e.id === id && e.start_ms === startMs);
+      if (found) return found.response;
+    }
+    return undefined;
+  }
+
+  // Evicts any override whose recorded `baseline` no longer matches what
+  // `week` itself says — a fresher payload landed and disagrees, so it
+  // wins. Runs whenever `week` changes (that's what `payloadResponse`
+  // reads); reassigning `responseOverrides` here also re-triggers this
+  // effect, but only entries actually evicted are ever removed, so the
+  // second pass finds nothing left to do and settles immediately.
+  $effect(() => {
+    let next: Map<string, Override> | null = null;
+    for (const [key, ov] of responseOverrides) {
+      const [idStr, startMsStr] = key.split(':');
+      const current = payloadResponse(Number(idStr), Number(startMsStr));
+      if (current !== undefined && current !== ov.baseline) {
+        (next ??= new Map(responseOverrides)).delete(key);
+      }
+    }
+    if (next) responseOverrides = next;
+  });
+
+  // What actually renders: `week.days`, but with any occurrence that still
+  // has a live (not yet evicted) override showing its overridden `response`
+  // instead of the payload's own. All-day events are left untouched —
+  // nothing in this file opens a popover for one (`AllDayBand` has no
+  // `onopen` path), so no override can ever target one.
   const effectiveDays = $derived(
     week.days.map((d) => ({
       ...d,
       events: d.events.map((e) => {
         const override = responseOverrides.get(overrideKey(e.id, e.start_ms));
-        return override ? { ...e, response: override } : e;
+        return override ? { ...e, response: override.response } : e;
       }),
     })),
   );
@@ -176,8 +218,12 @@
   // would otherwise record the override under the wrong occurrence, or not
   // at all.
   function handleResponded(id: number, startMs: number, response: 'accepted' | 'tentative' | 'declined') {
+    const baseline = payloadResponse(id, startMs);
+    // Not in this week's payload (any more) — nothing to restyle, and
+    // nothing to record a baseline against.
+    if (baseline === undefined) return;
     const next = new Map(responseOverrides);
-    next.set(overrideKey(id, startMs), response);
+    next.set(overrideKey(id, startMs), { response, baseline });
     responseOverrides = next;
   }
 </script>

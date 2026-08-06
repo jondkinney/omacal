@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { FIXED_NOW, POPOVER_DETAILS, POPOVER_REFRESHED_DETAIL } from './fixtures';
+import { FIXED_NOW, POPOVER_DETAILS, POPOVER_REFRESHED_DETAIL, popoverWeekWithResponse } from './fixtures';
 import { CALENDAR_SYNC_REMOVED } from './harness/tauri';
 
 const show = (c: string, f: string) => `/tests/harness/index.html?c=${c}&f=${f}`;
@@ -123,6 +123,54 @@ test.describe('WeekGrid popover flow', () => {
     );
     // Still B — the late arrival for A must not clobber what's on screen.
     await expect(page.locator('.pop h2')).toHaveText('Event B');
+  });
+
+  test('an override survives a payload that still disagrees with the baseline it was recorded against', async ({ page }) => {
+    await page.goto(show('popover'));
+    const block = page.getByRole('button', { name: 'Standup' });
+    await block.click();
+    await page.getByRole('button', { name: 'No' }).click();
+    await expect(block).toHaveClass(/declined/);
+
+    // A fresh sync lands (what App.svelte's loadWeek does after a real
+    // sync — replaces `week` wholesale), but Standup's own response in it
+    // still reads 'needsAction', exactly what it was when the override was
+    // recorded. Nothing has actually caught up yet, so the override must
+    // still win.
+    await page.evaluate((week) => (window as any).__setWeek(week), popoverWeekWithResponse(42, 'needsAction'));
+    await expect(block).toHaveClass(/declined/);
+  });
+
+  test('an override clears once the payload moves off the baseline it was recorded against', async ({ page }) => {
+    await page.goto(show('popover'));
+    const block = page.getByRole('button', { name: 'Standup' });
+    await block.click();
+    await page.getByRole('button', { name: 'No' }).click();
+    await expect(block).toHaveClass(/declined/);
+
+    // A fresh sync lands with a response that differs from the baseline —
+    // accepted from another device, or anything else. Without eviction, the
+    // override would keep masking every future payload for the rest of the
+    // session; the payload must win once it actually disagrees.
+    await page.evaluate((week) => (window as any).__setWeek(week), popoverWeekWithResponse(42, 'accepted'));
+    await expect(block).toHaveClass(/accepted/);
+    await expect(block).not.toHaveClass(/declined/);
+  });
+
+  test('a late failure for one occurrence does not close a popover open for a different occurrence sharing the same id', async ({ page }) => {
+    // Coverage gap: every other fixture here has at most one occurrence per
+    // store row id, so dropping `start_ms` from `isSelected` (leaving only
+    // `id`) still passed every other spec in this file. Two occurrences of
+    // one series, sharing an id, close it.
+    await page.goto(show('popover-two-occurrences'));
+    await page.evaluate(() => window.__harness.holdNextEventCall('event_detail', 70));
+    await page.getByRole('button', { name: 'Daily sync 1' }).click(); // parked
+    await page.getByRole('button', { name: 'Daily sync 2' }).click(); // same id, different start_ms — succeeds
+    await expect(page.locator('.pop')).toBeVisible();
+    await page.evaluate(() => window.__harness.rejectEventCall('event_detail', 70, 'offline'));
+    // Occurrence 1's late failure must not close occurrence 2's popover —
+    // it would, if `isSelected` compared `id` alone.
+    await expect(page.locator('.pop')).toBeVisible();
   });
 });
 

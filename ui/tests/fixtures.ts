@@ -239,11 +239,54 @@ const popoverWeek = (): WeekPayload => {
   return w;
 };
 
+/** The `popover` fixture's payload, but with a different `response` for one
+ *  event — what the WeekGrid override-eviction specs use to simulate a
+ *  fresh sync landing (`App.svelte`'s `loadWeek`, replacing `week` wholesale)
+ *  while an optimistic override for that same event is in place. */
+export function popoverWeekWithResponse(id: number, response: UiEvent['response']): WeekPayload {
+  const w = popoverWeek();
+  for (const d of w.days) {
+    for (const e of d.events) {
+      if (e.id === id) e.response = response;
+    }
+  }
+  return w;
+}
+
+// Two occurrences of one recurring series, sharing a single store row id —
+// closes a coverage gap `isSelected`'s `start_ms` half otherwise had.
+// Every other fixture here has at most one occurrence per id, so dropping
+// `start_ms` from that comparison (leaving only `id`) left every other spec
+// in this file green.
+const TWO_OCC_ID = 70;
+const TWO_OCC_1_START = MON + 9 * H;
+const TWO_OCC_2_START = TWO_OCC_1_START + 24 * H;
+const POPOVER_TWO_OCC_1: UiEvent =
+  ev({ id: TWO_OCC_ID, title: 'Daily sync 1', start_ms: TWO_OCC_1_START, end_ms: TWO_OCC_1_START + 30 * 60_000 });
+const POPOVER_TWO_OCC_2: UiEvent =
+  ev({ id: TWO_OCC_ID, title: 'Daily sync 2', start_ms: TWO_OCC_2_START, end_ms: TWO_OCC_2_START + 30 * 60_000 });
+
+/** `event_detail(70)` resolves the same way regardless of which occurrence
+ *  was clicked — both share this one store row, exactly the premise this
+ *  whole task exists to handle correctly. */
+POPOVER_DETAILS[TWO_OCC_ID] = detail({
+  id: TWO_OCC_ID, title: 'Daily sync', is_recurring: true,
+  start_ms: TWO_OCC_1_START, end_ms: TWO_OCC_1_START + 30 * 60_000,
+});
+
+const popoverTwoOccurrencesWeek = (): WeekPayload => {
+  const w = emptyWeek();
+  const events = [POPOVER_TWO_OCC_1, POPOVER_TWO_OCC_2];
+  w.days[0] = day(0, events, events.map((_, i) => placed(0.05 + i * 0.1, 30 / (24 * 60), 0, 1, i)));
+  return w;
+};
+
 export const FIXTURES: Record<string, Record<string, any>> = {
   WeekGrid: {
     empty: { week: emptyWeek() },
     populated: { week: populatedWeek() },
     popover: { week: popoverWeek() },
+    'popover-two-occurrences': { week: popoverTwoOccurrencesWeek() },
   },
   EventBlock: {
     // The duration ladder.
