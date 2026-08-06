@@ -99,6 +99,28 @@ async fn get_day(
     Ok(commands::assemble_days(&events, day_start_ms, 1, &tz))
 }
 
+#[tauri::command]
+async fn get_month(
+    state: tauri::State<'_, AppState>,
+    year: i32,
+    month: u32,
+) -> Result<commands::MonthPayload, String> {
+    let tz = display_tz(&state.pool);
+    let grid_start_ms = commands::month_grid_start_ms(year, month, &tz);
+    // Same widening as `get_week`/`get_day`, for the same reason: an event
+    // that begins just before the 42-day grid, or a DST-lengthened edge day,
+    // must not be missed.
+    const DAY: i64 = 24 * 3_600_000;
+    let events = omacal_store::events_in_window(
+        &state.pool,
+        grid_start_ms - DAY,
+        grid_start_ms + 43 * DAY,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(commands::assemble_month(&events, year, month, &tz))
+}
+
 const KEYRING_SERVICE: &str = "omacal";
 
 /// Google's Calendar API root. A constant so the one place that overrides it —
@@ -545,6 +567,7 @@ pub fn run() {
             get_palette,
             get_week,
             get_day,
+            get_month,
             get_status,
             sign_in,
             sync_now,

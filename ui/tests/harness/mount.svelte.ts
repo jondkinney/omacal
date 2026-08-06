@@ -1,5 +1,6 @@
 import { mount, unmount } from 'svelte';
 import WeekGrid from '../../src/lib/WeekGrid.svelte';
+import MonthGrid from '../../src/lib/MonthGrid.svelte';
 import EventBlock from '../../src/lib/EventBlock.svelte';
 import AllDayBand from '../../src/lib/AllDayBand.svelte';
 import Header from '../../src/lib/Header.svelte';
@@ -27,7 +28,9 @@ const params = new URLSearchParams(location.search);
 const name = params.get('c') ?? 'WeekGrid';
 const fixture = params.get('f') ?? 'default';
 
-const COMPONENTS: Record<string, any> = { WeekGrid, EventBlock, AllDayBand, Header, CalendarPopover, EventPopover };
+const COMPONENTS: Record<string, any> = {
+  WeekGrid, MonthGrid, EventBlock, AllDayBand, Header, CalendarPopover, EventPopover,
+};
 const target = document.getElementById('app')!;
 
 if (name === 'App') {
@@ -75,6 +78,23 @@ if (name === 'App') {
       // Spread first, then shadow `week` with the live getter — naming only
       // `week` here would silently drop any second prop a fixture grows.
       mount(WeekGrid, { target, props: { ...props, get week() { return week; } } });
+    } else if (name === 'MonthGrid') {
+      // `onopen`/`ondaypick` are callback props, not Tauri commands, so they
+      // have no home in `tauri.ts`'s `invoke` switch — same reasoning as
+      // `__lastRespondCall` there, just one layer up: capture exactly what
+      // the component handed back, on the window, for a spec to read.
+      mount(MonthGrid, {
+        target,
+        props: {
+          ...props,
+          onopen: (event: unknown, rect: unknown) => {
+            (window as any).__lastOpen = { event, rect };
+          },
+          ondaypick: (startMs: unknown) => {
+            (window as any).__lastDayPick = startMs;
+          },
+        },
+      });
     } else if (name === 'EventPopover') {
       // EventPopover calls `invoke` itself too (`respond_to_event`), same
       // reasoning as CalendarPopover above.

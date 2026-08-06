@@ -20,6 +20,21 @@ export type WeekPayload = {
   days: DayColumn[]; all_day: Lane[]; all_day_events: UiEvent[]; overflow: number[];
 };
 
+/** One day of a month grid. `in_month` is false for the leading/trailing days
+ *  that belong to a neighbouring month — drawn dimmed, not hidden, so the
+ *  grid stays rectangular. `timed` is complete and sorted by start; the UI
+ *  decides how many lines fit and computes its own `+N more`. */
+export type MonthCell = { start_ms: number; end_ms: number; in_month: boolean; timed: UiEvent[] };
+/** One week-row of a month grid: seven cells plus the multi-day/all-day bars
+ *  spanning them, already lane-packed and row-clipped (`bars: Lane[]`, each
+ *  entry one placed segment — not a container of segments). */
+export type MonthRow = {
+  cells: MonthCell[]; bars: Lane[]; bar_events: UiEvent[]; bar_overflow: number[];
+};
+/** `rows` is always 6, even when the month fits in five, so the grid never
+ *  changes height as you page through the year. */
+export type MonthPayload = { rows: MonthRow[]; year: number; month: number };
+
 /** Midnight local on the Monday of the week containing `d`. */
 export function weekStart(d: Date): number {
   const m = new Date(d);
@@ -33,3 +48,6 @@ export const getWeek = (weekStartMs: number) =>
 
 export const getDay = (dayStartMs: number) =>
   invoke<WeekPayload>('get_day', { dayStartMs });
+
+export const getMonth = (year: number, month: number) =>
+  invoke<MonthPayload>('get_month', { year, month });

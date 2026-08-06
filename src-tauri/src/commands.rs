@@ -212,7 +212,10 @@ fn local_midnight_ms(d: jiff::civil::Date, tz: &str) -> i64 {
 
 /// The Monday on or before `year`-`month`-01, at local midnight in `tz` — the
 /// anchor for the 42-cell month grid.
-fn month_grid_start_ms(year: i32, month: u32, tz: &str) -> i64 {
+///
+/// `pub(crate)`: `get_month` needs this same anchor to size its fetch window
+/// *before* calling `assemble_month`, which recomputes it internally.
+pub(crate) fn month_grid_start_ms(year: i32, month: u32, tz: &str) -> i64 {
     use jiff::civil::{date, Weekday};
 
     let mut grid_start = date(year as i16, month as i8, 1);
@@ -335,14 +338,6 @@ pub fn assemble_week(events: &[StoredEvent], week_start_ms: i64, tz: &str) -> We
 /// lane-packed independently at `row_len = 7` for its own spanning bars, and
 /// each cell gets a flat, sorted list of the day's timed events for the UI to
 /// lay out.
-///
-/// Not called from `lib.rs` yet — `get_month` is wired up in the next task.
-/// Suppressed here rather than left to rot unverified; the tests below are
-/// the only current caller. `MonthCell`/`MonthRow`/`MonthPayload` need no
-/// annotation of their own: they're constructed inside this function, so
-/// rustc's "never constructed" check doesn't fire on them once this one item
-/// is allowed.
-#[allow(dead_code)]
 pub fn assemble_month(events: &[StoredEvent], year: i32, month: u32, tz: &str) -> MonthPayload {
     use jiff::civil::date;
 

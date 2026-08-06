@@ -784,3 +784,47 @@ test.describe('EventPopover', () => {
     await expect(page.locator('.pop')).toBeVisible();
   });
 });
+
+test.describe('MonthGrid', () => {
+  const show = (f: string) => `/tests/harness/index.html?c=MonthGrid&f=${f}`;
+
+  test('renders six rows of seven, with out-of-month days dimmed', async ({ page }) => {
+    await page.goto(show('august'));
+    await expect(page.locator('.mrow')).toHaveCount(6);
+    await expect(page.locator('.mcell')).toHaveCount(42);
+    await expect(page.locator('.mcell.out')).toHaveCount(11); // 5 leading + 6 trailing
+  });
+
+  test('a multi-day event is one bar, not one chip per day', async ({ page }) => {
+    await page.goto(show('august'));
+    await expect(page.locator('.bar', { hasText: 'Berlin trip' })).toHaveCount(1);
+  });
+
+  test('a timed event shows a dot and a title, and no time', async ({ page }) => {
+    // Spec §2: a time prefix costs about a third of a narrow cell.
+    await page.goto(show('august'));
+    const line = page.locator('.mcell .timed').first();
+    await expect(line).toContainText('Standup');
+    await expect(line).not.toContainText(':');
+  });
+
+  test('+N more asks the parent for that day', async ({ page }) => {
+    await page.goto(show('busy-day'));
+    await page.locator('.more').first().click();
+    const picked = await page.evaluate(() => (window as any).__lastDayPick);
+    expect(picked).toBe(1786341600000); // Mon 10 Aug
+  });
+
+  test('clicking the day number asks the parent for that day too', async ({ page }) => {
+    await page.goto(show('august'));
+    await page.locator('.mcell .num').nth(14).click();
+    expect(await page.evaluate(() => (window as any).__lastDayPick)).toBeTruthy();
+  });
+
+  test('clicking an event opens the popover, not the day', async ({ page }) => {
+    await page.goto(show('august'));
+    await page.locator('.mcell .timed').first().click();
+    expect(await page.evaluate(() => (window as any).__lastOpen)).toBeTruthy();
+    expect(await page.evaluate(() => (window as any).__lastDayPick)).toBeFalsy();
+  });
+});

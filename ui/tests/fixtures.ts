@@ -1,4 +1,4 @@
-import type { UiEvent, Placed, Lane, WeekPayload } from '../src/lib/api';
+import type { UiEvent, Placed, Lane, WeekPayload, MonthPayload, MonthRow } from '../src/lib/api';
 import type { AppStatus } from '../src/lib/status';
 import type { Calendar } from '../src/lib/calendars';
 import type { Attendee, EventDetail } from '../src/lib/eventdetail';
@@ -360,6 +360,89 @@ const popoverTwoOccurrencesWeek = (): WeekPayload => {
   return w;
 };
 
+// Month grid. Playwright's `timezoneId: 'UTC'` (see playwright.config.ts)
+// means the browser reads every timestamp as UTC, so these fixtures use
+// plain `Date.UTC` boundaries directly rather than routing through a
+// timezone — the same shortcut `labelledWeek` above takes for granted.
+//
+// August 2026 begins Saturday 1 Aug, so its grid runs Mon 27 Jul - Sun 6 Sep:
+// 5 leading out-of-month days, 6 trailing — the same month the Rust suite
+// (`commands.rs`'s `august_2026_starts_on_a_saturday_and_needs_six_rows`)
+// exercises, chosen here for the same reason.
+/** Monday 27 Jul 2026 00:00 UTC — the month grid's anchor. */
+const AUG_GRID_START = Date.UTC(2026, 6, 27);
+/** Saturday 1 Aug 2026 00:00 UTC. */
+const AUG_MONTH_START = Date.UTC(2026, 7, 1);
+/** Tuesday 1 Sep 2026 00:00 UTC. */
+const SEP_MONTH_START = Date.UTC(2026, 8, 1);
+
+/** An empty 6x7 grid for `year`/`month`, with `in_month` computed the same
+ *  way `assemble_month` does — against `[monthStartMs, nextMonthStartMs)` —
+ *  so a fixture only has to say what's *inside* a cell, never redo the
+ *  boundary arithmetic per cell. */
+function emptyMonth(
+  year: number, month: number,
+  gridStartMs: number, monthStartMs: number, nextMonthStartMs: number,
+): MonthPayload {
+  const rows: MonthRow[] = Array.from({ length: 6 }, (_, r) => ({
+    cells: Array.from({ length: 7 }, (_, c) => {
+      const start = gridStartMs + (r * 7 + c) * 24 * H;
+      return {
+        start_ms: start,
+        end_ms: start + 24 * H,
+        in_month: start >= monthStartMs && start < nextMonthStartMs,
+        timed: [] as UiEvent[],
+      };
+    }),
+    bars: [] as Lane[],
+    bar_events: [] as UiEvent[],
+    bar_overflow: [] as number[],
+  }));
+  return { rows, year, month };
+}
+
+/** August 2026: a timed event and a multi-day bar, each named for what its
+ *  spec checks. Monday 10 Aug lands at row 2, column 0 — the same cell the
+ *  Rust suite's `timed_events_land_in_their_own_day_sorted` uses. */
+const augustMonth = (): MonthPayload => {
+  const m = emptyMonth(2026, 8, AUG_GRID_START, AUG_MONTH_START, SEP_MONTH_START);
+
+  m.rows[2].cells[0].timed = [
+    ev({ title: 'Standup', start_ms: Date.UTC(2026, 7, 10, 9), end_ms: Date.UTC(2026, 7, 10, 9, 30) }),
+  ];
+
+  // Mon 3 Aug - Wed 5 Aug, entirely inside row 1 (Aug 3-9): one bar, not one
+  // chip per day.
+  const berlinTrip = ev({
+    title: 'Berlin trip', is_all_day: true,
+    start_ms: Date.UTC(2026, 7, 3), end_ms: Date.UTC(2026, 7, 6),
+  });
+  m.rows[1].bars = [{ idx: 0, lane: 0, start_col: 0, end_col: 2, cont_left: false, cont_right: false }];
+  m.rows[1].bar_events = [berlinTrip];
+
+  return m;
+};
+
+/** The exact value the `+N more` spec pins as Monday 10 Aug 2026 — carried
+ *  over verbatim from the Rust suite's own constant for that day
+ *  (`commands.rs`), not recomputed as this file's own UTC midnight for it. */
+const BUSY_DAY_START_MS = 1_786_341_600_000;
+
+/** One day with four timed events — one more than `MonthGrid`'s `MAX_LINES`
+ *  — so `+1 more` appears and can be clicked. */
+const busyDayMonth = (): MonthPayload => {
+  const m = emptyMonth(2026, 8, AUG_GRID_START, AUG_MONTH_START, SEP_MONTH_START);
+  const cell = m.rows[2].cells[0];
+  cell.start_ms = BUSY_DAY_START_MS;
+  cell.timed = [
+    ev({ title: 'Standup', start_ms: BUSY_DAY_START_MS + 9 * H, end_ms: BUSY_DAY_START_MS + 9 * H + 30 * 60_000 }),
+    ev({ title: 'Design review', start_ms: BUSY_DAY_START_MS + 10 * H, end_ms: BUSY_DAY_START_MS + 11 * H }),
+    ev({ title: 'Lunch', start_ms: BUSY_DAY_START_MS + 12 * H, end_ms: BUSY_DAY_START_MS + 13 * H }),
+    ev({ title: 'Retro', start_ms: BUSY_DAY_START_MS + 16 * H, end_ms: BUSY_DAY_START_MS + 17 * H }),
+  ];
+  return m;
+};
+
 export const FIXTURES: Record<string, Record<string, any>> = {
   WeekGrid: {
     empty: { week: emptyWeek() },
@@ -369,6 +452,10 @@ export const FIXTURES: Record<string, Record<string, any>> = {
     'popover-all-day': { week: popoverAllDayWeek() },
     'single-day': { week: singleDayWeek() },
     'single-day-overlap': { week: singleDayOverlapWeek() },
+  },
+  MonthGrid: {
+    august: { month: augustMonth() },
+    'busy-day': { month: busyDayMonth() },
   },
   EventBlock: {
     // The duration ladder.
