@@ -153,8 +153,20 @@ pub(crate) fn target_event_id(
 }
 
 /// The `[timeMin, timeMax)` window `events.instances` is bracketed with when
-/// resolving "this occurrence" to a concrete Google event id: one second
-/// either side of the *clicked* occurrence's own start.
+/// resolving "this occurrence" to a concrete Google event id: the *clicked*
+/// occurrence's own start, to one second after it.
+///
+/// `timeMin` is that start exactly, with nothing subtracted. Google documents
+/// `timeMin` as an exclusive lower bound on an instance's *end* time, not on
+/// its start — an instance comes back when `end > timeMin` and `start <
+/// timeMax`. Backing `timeMin` off by a second therefore also admits the
+/// *previous* occurrence of a contiguous series: one ending exactly when this
+/// one begins clears `end > start - 1s`, and its own start clears `timeMax`.
+/// Google orders instances by start, so that predecessor arrives first and
+/// [`resolve_instance_id`] takes it — patching the wrong day, with
+/// `sendUpdates=all` telling the whole guest list about it. At `timeMin =
+/// start` the predecessor fails `end > timeMin` and drops out, while the
+/// clicked occurrence (whose end is strictly after its own start) stays.
 ///
 /// Deliberately a function of `occurrence_start_ms` alone, never of the
 /// stored row's `start_utc`: every expanded occurrence of a recurring master
@@ -164,7 +176,7 @@ pub(crate) fn target_event_id(
 /// occurrence of the series, regardless of which day was actually clicked.
 pub(crate) fn instance_lookup_window(occurrence_start_ms: i64) -> (String, String) {
     (
-        omacal_sync::to_rfc3339(occurrence_start_ms - 1000),
+        omacal_sync::to_rfc3339(occurrence_start_ms),
         omacal_sync::to_rfc3339(occurrence_start_ms + 1000),
     )
 }
@@ -174,6 +186,12 @@ pub(crate) fn instance_lookup_window(occurrence_start_ms: i64) -> (String, Strin
 /// `found.first()` is Google's own id for the occurrence — never built by
 /// string-formatting the master id and a timestamp, since an all-day event
 /// and an already-moved occurrence both format differently.
+///
+/// *First*, specifically, and not any other member of the list: Google
+/// returns instances ordered by start time, and [`instance_lookup_window`]
+/// brackets the lookup from the clicked occurrence's own start, so the
+/// earliest instance the window can contain is the one that was clicked.
+/// Anything after it in the list started later and is a different occurrence.
 ///
 /// When the lookup finds nothing, `fallback` is a safe stand-in *only* when
 /// the row was already a materialised exception: there, `master != fallback`,
@@ -519,8 +537,30 @@ mod tests {
         let window_4 = instance_lookup_window(occurrence_4);
 
         assert_ne!(window_0, window_4, "the window must move with the clicked occurrence");
-        assert_eq!(window_4.0, omacal_sync::to_rfc3339(occurrence_4 - 1000));
+        assert_eq!(window_4.0, omacal_sync::to_rfc3339(occurrence_4));
         assert_eq!(window_4.1, omacal_sync::to_rfc3339(occurrence_4 + 1000));
+    }
+
+    /// `timeMin` bounds an instance's *end*, exclusively — not its start. A
+    /// window that starts even a moment before the clicked occurrence sweeps
+    /// in the occurrence *before* it whenever the series is contiguous
+    /// (back-to-back 30-minute standups, an all-day event repeating daily):
+    /// that predecessor's end is exactly this occurrence's start, so it
+    /// clears an exclusive bound placed any earlier, and Google returns it
+    /// first because it starts first. The RSVP then lands on the wrong day
+    /// and `sendUpdates=all` mails it to everyone.
+    #[test]
+    fn the_window_starts_at_the_occurrence_so_a_contiguous_predecessor_cannot_match() {
+        let clicked = 1_785_715_200_000;
+        let predecessor_end = clicked; // back-to-back: it ends as this one starts
+        let (time_min, _) = instance_lookup_window(clicked);
+
+        assert_eq!(
+            time_min,
+            omacal_sync::to_rfc3339(predecessor_end),
+            "timeMin is exclusive on an instance's *end*: set any earlier than the clicked \
+             start and the predecessor ending there clears it and is returned first"
+        );
     }
 
     fn wire_instance(id: &str) -> omacal_google::model::Event {
@@ -539,6 +579,28 @@ mod tests {
         assert_eq!(
             resolve_instance_id(&found, "master", "instance-9").unwrap(),
             "master_20260804T060000Z"
+        );
+    }
+
+    /// Which element is taken is not a free choice, and until this test
+    /// nothing said so: no other test ever handed `resolve_instance_id` more
+    /// than one instance, so `first()` could be swapped for `last()` — or any
+    /// other index — without a single failure anywhere in the workspace.
+    ///
+    /// Google orders instances by start time and the window starts at the
+    /// clicked occurrence, so the earliest is the one that was clicked; a
+    /// later entry is a different occurrence, and patching it would answer the
+    /// wrong day with `sendUpdates=all`.
+    #[test]
+    fn the_earliest_instance_returned_is_the_one_that_was_clicked() {
+        let found = vec![
+            wire_instance("master_20260807T090000Z"), // the clicked occurrence
+            wire_instance("master_20260808T090000Z"), // a later one, ordered after it
+        ];
+        assert_eq!(
+            resolve_instance_id(&found, "master", "master").unwrap(),
+            "master_20260807T090000Z",
+            "the RSVP must land on the earliest instance in the window, not a later one"
         );
     }
 
@@ -735,17 +797,28 @@ mod tests {
 
         // Bracketed by the clicked occurrence: a lookup bracketed by
         // SERIES_DTSTART instead would not match this mock at all, and the
-        // call below would 404.
+        // call below would 404. `timeMin` is the occurrence's own start with
+        // nothing subtracted — see `instance_lookup_window` for why a second
+        // either side is not a harmless margin.
+        //
+        // Two items, not one: Google orders instances by start, and taking
+        // anything but the first patches a different occurrence of the same
+        // series. With a single item in the response that choice is invisible
+        // — `found.first()` and `found.last()` agree — and nothing else in
+        // the suite ever returns more than one.
         wiremock::Mock::given(wiremock::matchers::method("GET"))
             .and(wiremock::matchers::path("/calendars/primary/events/master1/instances"))
             .and(wiremock::matchers::query_param(
-                "timeMin", omacal_sync::to_rfc3339(occurrence_4 - 1000),
+                "timeMin", omacal_sync::to_rfc3339(occurrence_4),
             ))
             .and(wiremock::matchers::query_param(
                 "timeMax", omacal_sync::to_rfc3339(occurrence_4 + 1000),
             ))
             .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "items": [{"id": "master1_20260807T000000Z", "status": "confirmed"}]
+                "items": [
+                    {"id": "master1_20260807T000000Z", "status": "confirmed"},
+                    {"id": "master1_20260808T000000Z", "status": "confirmed"}
+                ]
             })))
             .mount(&server).await;
 
