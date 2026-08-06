@@ -342,37 +342,67 @@ async fn respond_via_client(
         .or_else(|| ev.recurrence.as_ref().map(|_| ev.google_id.as_str()));
     let target = target_event_id(scope, series, &ev.google_id);
 
-    let event_id = match &target {
-        Target::Master(master_id) => master_id.clone(),
+    // The resolved instance is kept, not just its id: it is the only
+    // description this code will ever hold of the resource it is about to
+    // patch. `event_instances` asks for no `fields` mask, so each item is a
+    // full event — `etag` and `attendees` included — and both are needed
+    // below. Discarding it and re-fetching would cost a third round trip for
+    // data already in hand.
+    let (event_id, instance) = match &target {
+        Target::Master(master_id) => (master_id.clone(), None),
         Target::Instance { master, fallback } => {
             let (time_min, time_max) = instance_lookup_window(occurrence_start_ms);
             let found = client.event_instances(cal_google_id, master, &time_min, &time_max).await?;
-            resolve_instance_id(&found, master, fallback)?
+            let id = resolve_instance_id(&found, master, fallback)?;
+            let inst = found.iter().find(|i| i.id == id).cloned();
+            (id, inst)
         }
     };
 
-    // `ev.etag` is the version of `ev.google_id`, and of nothing else. When
-    // the instance lookup above resolved to a *different* id — scope "this"
-    // on a series master rendered directly — `If-Match` would be checked
-    // against that other resource's version, which this row has never held.
-    // A conditional request naming another resource's version cannot pass, so
-    // sending it spends the single retry below on a rejection that was
-    // certain before the request left, leaving nothing for the concurrent
-    // edit the retry exists to survive. We hold no version of the instance to
-    // condition on, and an unconditional patch is what that actually means.
+    // Both the body and the precondition have to describe *the resource being
+    // patched*, and past this point that is not necessarily the row we loaded.
     //
-    // Deliberate rather than incidental: today the guaranteed rejection is
-    // *protective* by accident, because the retry re-reads the resolved id
-    // and re-applies the answer to its own attendee list. Dropping the etag
-    // drops that accident too, so on this path the body stays the one built
-    // from the master's stored attendees — which is what an occurrence that
-    // is not a materialised exception has anyway. The exposed case is an
-    // exception created elsewhere since the last sync, carrying a guest list
-    // of its own that this store has no row for; see the fix report.
-    let if_match = if event_id == ev.google_id { ev.etag.as_deref() } else { None };
+    // `ev.attendees` and `ev.etag` belong to `ev.google_id`. When the lookup
+    // above resolved to a different id — scope "this" on a series master
+    // rendered directly — patching with them writes the *master's* guest list
+    // onto one occurrence and, with `sendUpdates=all`, mails the result to
+    // everyone on it. That silently reverts any answer given against that
+    // occurrence alone, which is precisely what a materialised exception
+    // records: in Google Calendar, a guest answering "this event" is itself
+    // what materialises the instance. The window in which this store has not
+    // yet seen that exception is one sync interval wide, and `suppressed_slots`
+    // renders the master until it closes — so "a colleague declined one
+    // occurrence minutes ago" is the ordinary case, not an exotic one.
+    //
+    // The instance's own attendees and etag are therefore used instead: the
+    // answer is re-applied over the guest list Google just reported for that
+    // occurrence, and `If-Match` names the version that list came from, so a
+    // concurrent edit still loses the race to the 412 arm below rather than
+    // being overwritten.
+    //
+    // The remaining arm — a different id with no instance in hand — is the
+    // empty-lookup fallback, and it cannot reach here: `resolve_instance_id`
+    // only returns `fallback` when `master != fallback`, which is the shape
+    // where `ev` *is* the materialised exception, so `event_id ==
+    // ev.google_id` and the row's own etag is the right precondition.
+    let (body_attendees, if_match) = if event_id == ev.google_id {
+        (body_attendees, ev.etag.clone())
+    } else if let Some(inst) = &instance {
+        let inst_attendees: Vec<omacal_store::Attendee> =
+            inst.attendees.iter().map(omacal_sync::from_google_attendee).collect();
+        let from_instance = attendees_with_self_response(&inst_attendees, response)
+            .ok_or_else(|| anyhow::anyhow!("you are not a guest on this event"))?;
+        (from_instance, inst.etag.clone())
+    } else {
+        // Unreachable per the paragraph above, but stated rather than assumed:
+        // an unconditional patch is what "we hold no version of this resource"
+        // actually means, and a precondition naming another resource's version
+        // could only spend the single retry below on a certain rejection.
+        (body_attendees, None)
+    };
 
     let body = serde_json::json!({ "attendees": body_attendees });
-    let patched = match client.patch_event(cal_google_id, &event_id, &body, if_match).await {
+    let patched = match client.patch_event(cal_google_id, &event_id, &body, if_match.as_deref()).await {
         Ok(p) => p,
         Err(omacal_google::ApiError::PreconditionFailed) => {
             // Someone edited the event while the popover was open. Re-read,
@@ -894,20 +924,26 @@ mod tests {
             ))
             .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "items": [
-                    {"id": "master1_20260807T000000Z", "status": "confirmed"},
-                    {"id": "master1_20260808T000000Z", "status": "confirmed"}
+                    {"id": "master1_20260807T000000Z", "status": "confirmed",
+                     "etag": "\"occ-4-etag\"",
+                     "attendees": [{"email": "me@x.com", "responseStatus": "needsAction",
+                                    "optional": false, "self": true}]},
+                    {"id": "master1_20260808T000000Z", "status": "confirmed",
+                     "etag": "\"occ-5-etag\"",
+                     "attendees": [{"email": "me@x.com", "responseStatus": "needsAction",
+                                    "optional": false, "self": true}]}
                 ]
             })))
             .mount(&server).await;
 
-        // No `If-Match`: the only etag this row holds is `master1`'s, and the
-        // patch is going to a different resource. Without this matcher the
-        // mock accepts a header real Google would reject, and the mismatched
-        // etag reads as harmless — see the `if_match` comment in
-        // `respond_via_client`.
+        // `If-Match` is the *instance's* etag, taken from the lookup above —
+        // never `master1`'s, which is the version of a different resource and
+        // could only ever be rejected. Matching on the header pins which of
+        // the two items was used as well: `"occ-5-etag"` here would mean the
+        // second instance, i.e. the wrong day.
         wiremock::Mock::given(wiremock::matchers::method("PATCH"))
             .and(wiremock::matchers::path("/calendars/primary/events/master1_20260807T000000Z"))
-            .and(|req: &wiremock::Request| !req.headers.contains_key("if-match"))
+            .and(wiremock::matchers::header("if-match", "\"occ-4-etag\""))
             .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "id": "master1_20260807T000000Z", "status": "confirmed", "etag": "\"occ-etag\"",
                 "attendees": [{"email": "me@x.com", "responseStatus": "declined",
@@ -934,6 +970,127 @@ mod tests {
             "the instance's etag must not be stamped onto the master's own row");
         assert_eq!(row.self_response.as_deref(), Some("needsAction"),
             "the master's local self_response must not change from one occurrence's answer");
+    }
+
+    /// Provenance. The patch body for a resolved occurrence must be built
+    /// from *that occurrence's* guest list, as Google just reported it — not
+    /// from the master row this store happens to hold.
+    ///
+    /// The scenario is ordinary, not contrived. A colleague answering "this
+    /// event" on one occurrence is itself what materialises that instance on
+    /// Google's side; until the next sync (five minutes at most) this store
+    /// still has only the master, and `suppressed_slots` renders the master
+    /// for that slot. Answering the same occurrence in that window with the
+    /// master's array would push Ana's stale `accepted` back over her
+    /// `declined` — and `sendUpdates=all` would tell the whole guest list
+    /// about it.
+    #[tokio::test]
+    async fn an_occurrence_rsvp_carries_that_occurrences_guest_list_not_the_masters() {
+        const OCCURRENCE: i64 = 1_785_715_200_000;
+
+        // The stored master: Ana still reads `accepted` here, because this
+        // store has not seen her exception yet.
+        let mut ev = stored(vec![
+            Attendee {
+                email: "ana@x.com".into(), display_name: None,
+                response_status: "accepted".into(), optional: false, is_self: false,
+                comment: None, additional_guests: 0,
+            },
+            guest(true),
+        ]);
+        ev.google_id = "master1".into();
+        ev.recurrence = Some("RRULE:FREQ=DAILY".into());
+        ev.start_utc = OCCURRENCE;
+        ev.etag = Some("\"master-etag\"".into());
+        let (pool, _id) = seeded_pool_with(&ev).await;
+
+        let server = wiremock::MockServer::start().await;
+
+        // What Google actually has for this occurrence: Ana declined it.
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/calendars/primary/events/master1/instances"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [{
+                    "id": "master1_20260804T060000Z", "status": "confirmed",
+                    "etag": "\"occ-etag\"",
+                    "attendees": [
+                        {"email": "ana@x.com", "responseStatus": "declined", "optional": false},
+                        {"email": "me@x.com", "responseStatus": "needsAction",
+                         "optional": false, "self": true}
+                    ]
+                }]
+            })))
+            .mount(&server).await;
+
+        // The only body this may send. Built from the master's array instead,
+        // Ana would read `accepted` and nothing here would match — the call
+        // then 404s and the `unwrap()` below panics.
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path("/calendars/primary/events/master1_20260804T060000Z"))
+            .and(wiremock::matchers::header("if-match", "\"occ-etag\""))
+            .and(wiremock::matchers::body_json(serde_json::json!({
+                "attendees": [
+                    {"email": "ana@x.com", "responseStatus": "declined",
+                     "optional": false, "additionalGuests": 0},
+                    {"email": "me@x.com", "responseStatus": "accepted",
+                     "optional": false, "additionalGuests": 0}
+                ]
+            })))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "master1_20260804T060000Z", "status": "confirmed", "etag": "\"occ-2\""
+            })))
+            .expect(1)
+            .mount(&server).await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "at-1");
+        // Deliberately the master's own attendees, exactly as `respond_impl`
+        // builds them: the fix is that `respond_via_client` replaces this
+        // once it knows the patch is going somewhere else.
+        let body_attendees = attendees_with_self_response(&ev.attendees, "accepted").unwrap();
+        respond_via_client(
+            &pool, "accepted", "this", OCCURRENCE, ev, "primary", body_attendees, &client,
+        )
+        .await
+        .unwrap();
+    }
+
+    /// The other half of taking the instance as authoritative: if *its* list
+    /// has no row of ours, there is nothing to answer, and the master's list
+    /// is not a stand-in for one — sending it is the write this whole fix
+    /// exists to stop. No PATCH mock is mounted at all, so any attempt to
+    /// send one 404s rather than passing quietly.
+    #[tokio::test]
+    async fn an_occurrence_you_are_no_longer_a_guest_on_is_not_answered_from_the_masters_list() {
+        const OCCURRENCE: i64 = 1_785_715_200_000;
+
+        let mut ev = stored(vec![guest(true)]);
+        ev.google_id = "master1".into();
+        ev.recurrence = Some("RRULE:FREQ=DAILY".into());
+        ev.start_utc = OCCURRENCE;
+        let (pool, _id) = seeded_pool_with(&ev).await;
+
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/calendars/primary/events/master1/instances"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [{
+                    "id": "master1_20260804T060000Z", "status": "confirmed",
+                    "etag": "\"occ-etag\"",
+                    "attendees": [
+                        {"email": "ana@x.com", "responseStatus": "accepted", "optional": false}
+                    ]
+                }]
+            })))
+            .mount(&server).await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "at-1");
+        let body_attendees = attendees_with_self_response(&ev.attendees, "declined").unwrap();
+        let err = respond_via_client(
+            &pool, "declined", "this", OCCURRENCE, ev, "primary", body_attendees, &client,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("not a guest on this event"), "{err}");
     }
 
     /// `can_respond` is a predicate; this is the payload the UI actually
