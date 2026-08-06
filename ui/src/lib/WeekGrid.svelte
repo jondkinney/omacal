@@ -64,17 +64,65 @@
     });
   });
 
-  // The open popover. `selected` is the *UiEvent block that was clicked* —
-  // not derived from `detail` — because every expanded occurrence of a
-  // recurring master shares that master's store row id, so only the block
-  // itself (its own `start_ms`) says which occurrence was actually clicked.
-  // `respondToEvent` needs exactly that value; see eventdetail.ts.
-  let selected = $state<UiEvent | null>(null);
+  // The open popover. `selectedId`/`selectedStartMs` name the *UiEvent block
+  // that was clicked* — every expanded occurrence of a recurring master
+  // shares that master's store row id, so only the block's own `start_ms`
+  // says which occurrence was actually clicked, and `respondToEvent` needs
+  // exactly that value (see eventdetail.ts).
+  //
+  // A pair of primitives, not the `UiEvent` object itself: reassigning an
+  // object into a `$state` variable proxies it, and a later `===`/`!==`
+  // against the original (unproxied, or differently-proxied) reference can
+  // then read as unequal even for "the same" event — Svelte's own
+  // `state_proxy_equality_mismatch` warning exists exactly for this
+  // mistake. `id` + `start_ms` are plain numbers; equality between two
+  // reads of a number never depends on which proxy either passed through.
+  let selectedId = $state<number | null>(null);
+  let selectedStartMs = $state<number | null>(null);
   let anchor = $state<Rect | null>(null);
   let detail = $state<EventDetail | null>(null);
 
+  function isSelected(event: UiEvent): boolean {
+    return selectedId === event.id && selectedStartMs === event.start_ms;
+  }
+
+  // Optimistic RSVP overrides, keyed by "id:startMs" so one occurrence's
+  // answer never bleeds onto another sharing the same recurring master's
+  // row id. Reassigned wholesale on every change (`markResponded`) — same
+  // reasoning as `CalendarPopover`'s own `busy` Set: `$state` does not make
+  // a plain `Map`'s own mutations reactive, only the variable binding does.
+  //
+  // Deliberately *not* mutating `week.days[...].events[...].response`
+  // directly: `week` is this component's own prop, not something it was
+  // ever given via `$state()` here, and whether mutating a nested field of
+  // it is even observable depends on machinery this component does not
+  // control (whether the caller's own `week` happens to be a deep-reactive
+  // `$state` proxy). An override this component declares and owns with its
+  // own `$state` is guaranteed reactive regardless of what `week` is.
+  let responseOverrides = $state<Map<string, UiEvent['response']>>(new Map());
+
+  function overrideKey(id: number, startMs: number): string {
+    return `${id}:${startMs}`;
+  }
+
+  // What actually renders: `week.days`, but with any occurrence that has an
+  // override showing its overridden `response` instead of the payload's
+  // own. All-day events are left untouched — nothing in this file opens a
+  // popover for one (`AllDayBand` has no `onopen` path), so no override can
+  // ever target one.
+  const effectiveDays = $derived(
+    week.days.map((d) => ({
+      ...d,
+      events: d.events.map((e) => {
+        const override = responseOverrides.get(overrideKey(e.id, e.start_ms));
+        return override ? { ...e, response: override } : e;
+      }),
+    })),
+  );
+
   async function openPopover(event: UiEvent, rect: Rect) {
-    selected = event;
+    selectedId = event.id;
+    selectedStartMs = event.start_ms;
     anchor = rect;
     detail = null;
 
@@ -85,10 +133,10 @@
       // Nothing to show. Close rather than leave an empty shell open, but
       // only if the user hasn't already clicked something else while this
       // was in flight.
-      if (selected === event) closePopover();
+      if (isSelected(event)) closePopover();
       return;
     }
-    if (selected !== event) return; // superseded while loading
+    if (!isSelected(event)) return; // superseded while loading
     detail = d;
 
     // Fires only once the popover has painted the local detail — a
@@ -96,10 +144,10 @@
     // revoked token) is silently ignored and the last-synced detail already
     // on screen stands unchanged.
     await tick();
-    if (selected !== event) return;
+    if (!isSelected(event)) return;
     refreshEvent(event.id)
       .then((fresh) => {
-        if (selected === event && JSON.stringify(fresh) !== JSON.stringify(detail)) {
+        if (isSelected(event) && JSON.stringify(fresh) !== JSON.stringify(detail)) {
           detail = fresh;
         }
       })
@@ -107,7 +155,8 @@
   }
 
   function closePopover() {
-    selected = null;
+    selectedId = null;
+    selectedStartMs = null;
     anchor = null;
     detail = null;
   }
@@ -116,11 +165,20 @@
   // itself unchanged — the backend deliberately skips its local write-back
   // there (see `respond_to_event`'s own comment) — so nothing about the
   // response can be read back off `detail`. `EventPopover` reports the
-  // response it just landed directly; restyling the clicked block from that
-  // report, rather than from a re-fetch, is what makes the grid update
-  // without waiting on the next sync.
-  function handleResponded(response: 'accepted' | 'tentative' | 'declined') {
-    if (selected) selected.response = response;
+  // response it just landed directly; recording it as an override, rather
+  // than waiting on a re-fetch, is what makes the grid restyle without
+  // waiting on the next sync.
+  //
+  // `id`/`startMs` are captured by the caller *at render time* (see the
+  // `{@const}` below), not read back off `selectedId`/`selectedStartMs`
+  // here: `respond()` is async and keeps running after this popover
+  // unmounts, and a scrim click or another block opening in the meantime
+  // would otherwise record the override under the wrong occurrence, or not
+  // at all.
+  function handleResponded(id: number, startMs: number, response: 'accepted' | 'tentative' | 'declined') {
+    const next = new Map(responseOverrides);
+    next.set(overrideKey(id, startMs), response);
+    responseOverrides = next;
   }
 </script>
 
@@ -144,7 +202,7 @@
     {/each}
   </div>
 
-  {#each week.days as day}
+  {#each effectiveDays as day}
     {@const isToday = day.start_ms === todayStart}
     <div class="col" class:today={isToday}>
       {#each HOURS as h}
@@ -165,8 +223,25 @@
   {/each}
 </div>
 
-{#if selected && anchor && detail}
-  <EventPopover {detail} {anchor} occurrenceStartMs={selected.start_ms} onclose={closePopover} onresponded={handleResponded} />
+{#if selectedId !== null && selectedStartMs !== null && anchor && detail}
+  <!-- `id`/`startMs` are captured *now*, at this render, not read back off
+       `selectedId`/`selectedStartMs` inside the callback below. `respond()`
+       is async and keeps running after this block unmounts — a scrim click
+       or Escape while an RSVP is still in flight clears the selection (or,
+       after another block is opened, replaces it) before the response
+       lands. Reading the module-level state at that point would restyle
+       the wrong block or nothing at all; closing over the pair captured
+       here restyles the one block this popover was ever open for,
+       regardless of what has since been clicked. -->
+  {@const id = selectedId}
+  {@const startMs = selectedStartMs}
+  <EventPopover
+    {detail}
+    {anchor}
+    occurrenceStartMs={startMs}
+    onclose={closePopover}
+    onresponded={(r) => handleResponded(id, startMs, r)}
+  />
 {/if}
 
 <style>
