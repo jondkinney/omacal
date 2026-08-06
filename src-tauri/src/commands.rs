@@ -45,6 +45,42 @@ pub struct WeekPayload {
     pub overflow: Vec<usize>,
 }
 
+// `Month*` and `assemble_month` are not called from `lib.rs` yet — `get_month`
+// is wired up in the next task. Suppressed here rather than left to rot
+// unverified; the four tests below are the only current caller.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize)]
+pub struct MonthCell {
+    pub start_ms: i64,
+    pub end_ms: i64,
+    /// False for the leading and trailing days that belong to a neighbouring
+    /// month. Drawn dimmed rather than blank so the grid stays rectangular.
+    pub in_month: bool,
+    /// Timed events for this day, sorted by start. The UI decides how many
+    /// fit and renders `+N more` from what it drops — cell height is a
+    /// layout question and the backend has no business guessing it.
+    pub timed: Vec<UiEvent>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize)]
+pub struct MonthRow {
+    pub cells: Vec<MonthCell>, // always 7
+    /// Multi-day and all-day events spanning this row, lane-packed at
+    /// row_len 7. Indices point into `bar_events`.
+    pub bars: Vec<Lane>,
+    pub bar_events: Vec<UiEvent>,
+    pub bar_overflow: Vec<usize>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize)]
+pub struct MonthPayload {
+    pub rows: Vec<MonthRow>, // always 6
+    pub year: i32,
+    pub month: u32, // 1-12
+}
+
 fn to_ui(src: &StoredEvent, start_ms: i64, end_ms: i64) -> UiEvent {
     UiEvent {
         id: src.id,
@@ -165,6 +201,33 @@ fn day_boundaries(week_start_ms: i64, tz: &str) -> Vec<i64> {
     n_day_boundaries(week_start_ms, 7, tz)
 }
 
+/// Local midnight for a civil date, in `tz`, as epoch milliseconds. Falls
+/// back to UTC if the zone is unknown — the grid must still render, the same
+/// fallback philosophy as `n_day_boundaries`.
+fn local_midnight_ms(d: jiff::civil::Date, tz: &str) -> i64 {
+    let midnight = d.at(0, 0, 0, 0);
+    match midnight.in_tz(tz) {
+        Ok(z) => z.timestamp().as_millisecond(),
+        Err(_) => midnight
+            .to_zoned(jiff::tz::TimeZone::UTC)
+            .expect("UTC is always a valid zone")
+            .timestamp()
+            .as_millisecond(),
+    }
+}
+
+/// The Monday on or before `year`-`month`-01, at local midnight in `tz` — the
+/// anchor for the 42-cell month grid.
+fn month_grid_start_ms(year: i32, month: u32, tz: &str) -> i64 {
+    use jiff::civil::{date, Weekday};
+
+    let mut grid_start = date(year as i16, month as i8, 1);
+    while grid_start.weekday() != Weekday::Monday {
+        grid_start = grid_start.yesterday().expect("civil date underflow");
+    }
+    local_midnight_ms(grid_start, tz)
+}
+
 /// Column `0..bounds.len() - 1` for an instant inside the window, or `None`
 /// outside it.
 fn column_for(bounds: &[i64], ms: i64) -> Option<usize> {
@@ -268,6 +331,84 @@ pub fn assemble_days(events: &[StoredEvent], start_ms: i64, n: usize, tz: &str) 
 /// `one_day_and_seven_days_agree_about_the_day_they_share`.
 pub fn assemble_week(events: &[StoredEvent], week_start_ms: i64, tz: &str) -> WeekPayload {
     assemble_days(events, week_start_ms, 7, tz)
+}
+
+/// Six week-rows of a calendar month, always 42 cells regardless of how many
+/// weeks the month actually spans — a grid that changes height as you page
+/// through the year is worse than one dimmed row.
+///
+/// Unlike `assemble_days`, Month needs no time positioning: each row is
+/// lane-packed independently at `row_len = 7` for its own spanning bars, and
+/// each cell gets a flat, sorted list of the day's timed events for the UI to
+/// lay out.
+#[allow(dead_code)]
+pub fn assemble_month(events: &[StoredEvent], year: i32, month: u32, tz: &str) -> MonthPayload {
+    use jiff::civil::date;
+
+    let grid_start_ms = month_grid_start_ms(year, month, tz);
+    let bounds = n_day_boundaries(grid_start_ms, 42, tz);
+
+    let month_start_ms = local_midnight_ms(date(year as i16, month as i8, 1), tz);
+    let (next_year, next_month) = if month == 12 { (year + 1, 1) } else { (year, month + 1) };
+    let next_month_start_ms = local_midnight_ms(date(next_year as i16, next_month as i8, 1), tz);
+
+    let suppressed = suppressed_slots(events);
+
+    let rows = (0..6)
+        .map(|r| {
+            let row_bounds = &bounds[r * 7..=r * 7 + 7];
+            let row_start = row_bounds[0];
+            let row_end = row_bounds[7];
+
+            let mut day_events: Vec<Vec<UiEvent>> = vec![Vec::new(); 7];
+            let mut bar_events: Vec<UiEvent> = Vec::new();
+            let mut segments: Vec<Segment> = Vec::new();
+
+            for src in events {
+                // A cancelled exception exists only to record that an
+                // occurrence was deleted; see `assemble_days`.
+                if src.status == "cancelled" {
+                    continue;
+                }
+                for iv in occurrences(src, row_start, row_end) {
+                    if suppressed.contains(&(src.calendar_id, src.google_id.as_str(), iv.start_ms)) {
+                        continue;
+                    }
+                    if src.is_all_day {
+                        let start_col = signed_column(row_bounds, iv.start_ms);
+                        // Google's all-day end is exclusive, so the last
+                        // covered day is one millisecond before it.
+                        let end_col = signed_column(row_bounds, iv.end_ms - 1);
+                        segments.push(Segment { idx: bar_events.len(), start_col, end_col });
+                        bar_events.push(to_ui(src, iv.start_ms, iv.end_ms));
+                    } else if let Some(col) = timed_column(row_bounds, &iv) {
+                        day_events[col].push(to_ui(src, iv.start_ms, iv.end_ms));
+                    }
+                }
+            }
+
+            // Three lanes, matching the spec's month rows.
+            let (bars, bar_overflow) = pack_lanes(&segments, 7, 3);
+
+            let cells = (0..7)
+                .map(|c| {
+                    let mut timed = std::mem::take(&mut day_events[c]);
+                    timed.sort_by_key(|e| e.start_ms);
+                    let start_ms = row_bounds[c];
+                    MonthCell {
+                        start_ms,
+                        end_ms: row_bounds[c + 1],
+                        in_month: start_ms >= month_start_ms && start_ms < next_month_start_ms,
+                        timed,
+                    }
+                })
+                .collect();
+
+            MonthRow { cells, bars, bar_events, bar_overflow }
+        })
+        .collect();
+
+    MonthPayload { rows, year, month }
 }
 
 #[cfg(test)]
@@ -566,5 +707,75 @@ mod tests {
         for lane in &day.all_day {
             assert!(lane.end_col < 1, "a 1-day view produced column {}", lane.end_col);
         }
+    }
+
+    fn all_day_event(start: i64, end: i64) -> omacal_store::StoredEvent {
+        ev(&format!("allday_{start}"), start, end, true)
+    }
+
+    fn timed_event(start: i64, end: i64) -> omacal_store::StoredEvent {
+        ev(&format!("timed_{start}"), start, end, false)
+    }
+
+    #[test]
+    fn august_2026_starts_on_a_saturday_and_needs_six_rows() {
+        // August 2026 begins Sat 1 Aug, so the grid runs Mon 27 Jul - Sun 6 Sep.
+        // It exercises leading out-of-month days, trailing ones, and six rows.
+        let m = assemble_month(&[], 2026, 8, "Europe/Sofia");
+        assert_eq!(m.rows.len(), 6);
+        assert_eq!(m.rows[0].cells.len(), 7);
+        assert_eq!(m.rows[0].cells[0].start_ms, 1785099600000, "grid must start Mon 27 Jul");
+        assert!(!m.rows[0].cells[0].in_month, "27 Jul belongs to July");
+        assert!(m.rows[0].cells[5].in_month, "1 Aug is a Saturday, column 5");
+        assert!(!m.rows[5].cells[6].in_month, "the last cell belongs to September");
+    }
+
+    #[test]
+    fn a_month_that_fits_in_five_rows_still_renders_six() {
+        // Otherwise the grid changes height as you page through the year.
+        let m = assemble_month(&[], 2026, 2, "Europe/Sofia");
+        assert_eq!(m.rows.len(), 6);
+    }
+
+    #[test]
+    fn a_multi_day_event_crossing_a_row_boundary_appears_in_both_rows_clipped() {
+        // Sun 2 Aug -> Tue 4 Aug straddles the first row's end. It must appear
+        // in both rows, clipped to each, and never as one event counted
+        // twice.
+        //
+        // The brief's epoch values (1785963600000, 1786222800000) land on
+        // Thu 6 Aug and Sun 9 Aug in Europe/Sofia, not Sun 2 / Tue 4 as
+        // named — verified against the plan's fixture table
+        // (`docs/superpowers/plans/2026-08-06-omacal-day-month-views.md`,
+        // where `AUG_1` = Sat 2026-08-01 00:00 Sofia = 1785531600000).
+        // Recomputed here instead of adjusting the assertions to match
+        // whatever the code produces: start = Sun 2 Aug 00:00 Sofia
+        // (1785618000000), end = Wed 5 Aug 00:00 Sofia (1785877200000,
+        // exclusive per Google's all-day convention), covering Sun 2 - Tue
+        // 4 Aug inclusive.
+        let evs = vec![all_day_event(1785618000000, 1785877200000)];
+        let m = assemble_month(&evs, 2026, 8, "Europe/Sofia");
+        // `bars: Vec<Lane>` — each `Lane` is already one placed, row-clipped
+        // segment (see `omacal_core::lanes::Lane`), not a container of
+        // segments, so the count of bars *is* the count of segments placed
+        // in the row.
+        assert_eq!(m.rows[0].bars.len(), 1, "row 0 should carry the Sunday tail");
+        assert_eq!(m.rows[1].bars.len(), 1, "row 1 should carry the Mon-Tue head");
+        for lane in &m.rows[0].bars {
+            assert!(lane.end_col <= 6, "a segment escaped its row: {}", lane.end_col);
+        }
+    }
+
+    #[test]
+    fn timed_events_land_in_their_own_day_sorted() {
+        let evs = vec![
+            timed_event(1786341600000 + 3 * 3_600_000, 1786341600000 + 4 * 3_600_000),
+            timed_event(1786341600000, 1786341600000 + 30 * 60_000),
+        ];
+        let m = assemble_month(&evs, 2026, 8, "Europe/Sofia");
+        // Mon 10 Aug is row 2, column 0.
+        let cell = &m.rows[2].cells[0];
+        assert_eq!(cell.timed.len(), 2);
+        assert!(cell.timed[0].start_ms < cell.timed[1].start_ms, "not sorted by start");
     }
 }
