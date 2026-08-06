@@ -5,7 +5,10 @@ use std::str::FromStr;
 pub mod calendars;
 pub mod events;
 pub use calendars::{list_calendars, set_selected, set_sync_enabled, CalendarRow};
-pub use events::{delete_event, event_by_id, events_in_window, upsert_event, Attendee, StoredEvent};
+pub use events::{
+    delete_event, event_by_id, event_for_write, events_in_window, upsert_event, Attendee,
+    StoredEvent,
+};
 
 /// Opens (creating if needed) the database at `url` and runs migrations.
 pub async fn connect(url: &str) -> anyhow::Result<SqlitePool> {

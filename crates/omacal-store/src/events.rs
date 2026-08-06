@@ -174,30 +174,57 @@ where
     Ok(())
 }
 
-/// One event plus its calendar's `access_role`, by row id.
+/// The query behind both [`event_by_id`] and [`event_for_write`]: one event
+/// row, its calendar's `access_role`, the calendar's own `google_id`, and the
+/// email of the account that owns it. The last two need a second join beyond
+/// `calendars` — they live on `accounts` — because an RSVP has to know which
+/// account's access token to use, not just whether the calendar is writable.
 ///
-/// The role travels alongside the event rather than being a second query the
-/// caller makes itself, because the two are only ever needed together: an
-/// `EventDetail` cannot decide whether to show RSVP controls from the event
-/// row alone. Returning a column list plus one extra (`access_role`), rather
-/// than a hand-picked subset, is what lets a later task add the calendar's
-/// `google_id` and the account's email here as further columns instead of a
-/// rewrite.
-pub async fn event_by_id(
+/// `c.google_id` is aliased: `SELECT_COLS` already selects the *event's* own
+/// `google_id` as `e.google_id`, and an unaliased second column of the same
+/// name would collide when read back by name.
+async fn event_row_for_write(
     pool: &SqlitePool,
     id: i64,
-) -> anyhow::Result<Option<(StoredEvent, String)>> {
+) -> anyhow::Result<Option<(StoredEvent, String, String, String)>> {
     let sql = format!(
-        "SELECT {SELECT_COLS}, c.access_role
+        "SELECT {SELECT_COLS}, c.access_role, c.google_id AS cal_google_id, a.email AS account_email
          FROM events e
          JOIN calendars c ON c.id = e.calendar_id
+         JOIN accounts a ON a.id = c.account_id
          WHERE e.id = ?1"
     );
     let row = sqlx::query(&sql).bind(id).fetch_optional(pool).await?;
     Ok(row.map(|r| {
         let access_role: String = r.get("access_role");
-        (row_to_event(&r), access_role)
+        let cal_google_id: String = r.get("cal_google_id");
+        let account_email: String = r.get("account_email");
+        (row_to_event(&r), access_role, cal_google_id, account_email)
     }))
+}
+
+/// One event plus its calendar's `access_role`, by row id.
+///
+/// The role travels alongside the event rather than being a second query the
+/// caller makes itself, because the two are only ever needed together: an
+/// `EventDetail` cannot decide whether to show RSVP controls from the event
+/// row alone.
+pub async fn event_by_id(
+    pool: &SqlitePool,
+    id: i64,
+) -> anyhow::Result<Option<(StoredEvent, String)>> {
+    Ok(event_row_for_write(pool, id).await?.map(|(ev, role, _, _)| (ev, role)))
+}
+
+/// One event plus everything an RSVP write needs beyond it: the calendar's
+/// `access_role` (can this calendar be answered at all), the calendar's own
+/// `google_id` (which calendar to patch), and the owning account's email
+/// (which account's access token to use).
+pub async fn event_for_write(
+    pool: &SqlitePool,
+    id: i64,
+) -> anyhow::Result<Option<(StoredEvent, String, String, String)>> {
+    event_row_for_write(pool, id).await
 }
 
 /// Events overlapping `[from_ms, to_ms)` on selected calendars, plus every
@@ -720,5 +747,43 @@ mod tests {
         assert_eq!(got.calendar_id, cal_on_a);
         assert_eq!(access_role, "owner",
             "must be cal_on_a's own role, not a calendar that merely shares an id with it");
+    }
+
+    #[tokio::test]
+    async fn event_for_write_returns_the_calendars_google_id_and_the_owning_accounts_email() {
+        let pool = connect_memory().await.unwrap();
+        let cal = seed(&pool).await;
+        let id = upsert_event(&pool, &ev(cal, "a", 1000, 2000)).await.unwrap();
+
+        let (got, access_role, cal_google_id, account_email) =
+            event_for_write(&pool, id).await.unwrap().expect("event exists");
+        assert_eq!(got.google_id, "a", "the event's own google_id must not be shadowed");
+        assert_eq!(access_role, "owner");
+        assert_eq!(cal_google_id, "primary", "seed()'s calendar google_id");
+        assert_eq!(account_email, "e@x", "seed()'s account email");
+    }
+
+    #[tokio::test]
+    async fn event_for_write_returns_none_for_an_unknown_id() {
+        let pool = connect_memory().await.unwrap();
+        assert!(event_for_write(&pool, 999).await.unwrap().is_none());
+    }
+
+    /// The same guard as `event_by_id_returns_the_events_own_calendar_not_one_sharing_its_id`,
+    /// extended to the account join: `seed_two_accounts` crosses calendar and
+    /// account ids so joining `accounts` on the wrong column (e.g. `a.id =
+    /// c.id` instead of `a.id = c.account_id`) still returns *an* account, just
+    /// the wrong one.
+    #[tokio::test]
+    async fn event_for_write_resolves_the_owning_account_not_one_sharing_an_id() {
+        let pool = connect_memory().await.unwrap();
+        let (_cal_on_b, cal_on_a) = seed_two_accounts(&pool).await;
+        let id = upsert_event(&pool, &ev(cal_on_a, "a", 1000, 2000)).await.unwrap();
+
+        let (_, _, cal_google_id, account_email) =
+            event_for_write(&pool, id).await.unwrap().expect("event exists");
+        assert_eq!(cal_google_id, "cal-on-a");
+        assert_eq!(account_email, "a@x",
+            "must be account a's own email, not account b's merely sharing an id with cal_on_a");
     }
 }

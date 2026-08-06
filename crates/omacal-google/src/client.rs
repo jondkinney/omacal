@@ -444,11 +444,20 @@ mod tests {
         assert_eq!(ev.summary.as_deref(), Some("Standup"));
     }
 
+    /// The calendar id here is deliberately email-shaped (`cal@x.com`), the
+    /// same way `get_event_url_encodes_the_calendar_and_event_ids` above
+    /// proves its own encoding: `respond_to_event` is the first real caller
+    /// of `event_instances`, and it always passes an email-shaped calendar
+    /// id. A plain-ASCII id like `"primary"` round-trips through
+    /// `urlencoding_path` unchanged, so a test using only that would not
+    /// notice `urlencoding_path` being removed from this method — which is
+    /// exactly what happened once already: a reviewer removed it here and
+    /// every test in the crate still passed.
     #[tokio::test]
-    async fn event_instances_returns_the_expanded_items() {
+    async fn event_instances_url_encodes_the_calendar_id() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/calendars/primary/events/master1/instances"))
+            .and(path("/calendars/cal%40x.com/events/master1/instances"))
             .and(query_param("timeMin", "2026-08-01T00:00:00Z"))
             .and(query_param("timeMax", "2026-08-31T00:00:00Z"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
@@ -461,7 +470,7 @@ mod tests {
 
         let c = CalendarClient::new(server.uri(), "at-1");
         let instances = c
-            .event_instances("primary", "master1", "2026-08-01T00:00:00Z", "2026-08-31T00:00:00Z")
+            .event_instances("cal@x.com", "master1", "2026-08-01T00:00:00Z", "2026-08-31T00:00:00Z")
             .await
             .unwrap();
         assert_eq!(instances.len(), 2);

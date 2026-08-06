@@ -1,5 +1,5 @@
 pub mod convert;
-pub use convert::{is_tombstone, to_cancelled_exception, to_stored};
+pub use convert::{from_google_attendee, is_tombstone, to_cancelled_exception, to_stored};
 
 use omacal_google::{ApiError, CalendarClient, EventsRequest};
 use sqlx::SqlitePool;
@@ -11,7 +11,11 @@ pub struct SyncOutcome {
     pub did_full_resync: bool,
 }
 
-fn to_rfc3339(ms: i64) -> String {
+/// Formats an epoch-millisecond instant as RFC 3339, for Google's `timeMin`/
+/// `timeMax` query parameters. `pub` so the RSVP command (in `src-tauri`) can
+/// build the window it asks `events.instances` about without a second,
+/// drifting copy of the same three lines.
+pub fn to_rfc3339(ms: i64) -> String {
     jiff::Timestamp::from_millisecond(ms)
         .map(|t| t.to_string())
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())

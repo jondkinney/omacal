@@ -9,6 +9,22 @@ pub fn is_tombstone(ev: &Event) -> bool {
     ev.status == "cancelled"
 }
 
+/// Maps one wire attendee to its stored shape. `pub` beyond this crate: the
+/// RSVP command in `src-tauri` reaches this same mapping a third time, on the
+/// conflict-retry path that re-reads an event fresh from Google, and a second
+/// hand-written copy of this five-field struct literal is exactly the kind of
+/// duplication that drifts when Google adds a field to one side and not the
+/// other.
+pub fn from_google_attendee(a: &omacal_google::model::Attendee) -> omacal_store::Attendee {
+    omacal_store::Attendee {
+        email: a.email.clone(),
+        display_name: a.display_name.clone(),
+        response_status: a.response_status.clone(),
+        optional: a.optional,
+        is_self: a.is_self,
+    }
+}
+
 /// Resolves one endpoint to an epoch-millisecond instant.
 ///
 /// Timed events carry RFC 3339 with an offset. All-day events carry a bare
@@ -82,17 +98,7 @@ pub fn to_stored(ev: &Event, calendar_id: i64, cal_tz: &str) -> Option<StoredEve
         etag: ev.etag.clone(),
         sequence: ev.sequence,
         organizer_email: (!ev.organizer.email.is_empty()).then(|| ev.organizer.email.clone()),
-        attendees: ev
-            .attendees
-            .iter()
-            .map(|a| omacal_store::Attendee {
-                email: a.email.clone(),
-                display_name: a.display_name.clone(),
-                response_status: a.response_status.clone(),
-                optional: a.optional,
-                is_self: a.is_self,
-            })
-            .collect(),
+        attendees: ev.attendees.iter().map(from_google_attendee).collect(),
     })
 }
 
@@ -153,17 +159,7 @@ pub fn to_cancelled_exception(ev: &Event, calendar_id: i64, cal_tz: &str) -> Opt
         etag: ev.etag.clone(),
         sequence: ev.sequence,
         organizer_email: (!ev.organizer.email.is_empty()).then(|| ev.organizer.email.clone()),
-        attendees: ev
-            .attendees
-            .iter()
-            .map(|a| omacal_store::Attendee {
-                email: a.email.clone(),
-                display_name: a.display_name.clone(),
-                response_status: a.response_status.clone(),
-                optional: a.optional,
-                is_self: a.is_self,
-            })
-            .collect(),
+        attendees: ev.attendees.iter().map(from_google_attendee).collect(),
     })
 }
 
@@ -184,6 +180,26 @@ mod tests {
             hangout_link: None, attendees: vec![], sequence: 0,
             organizer: Organizer::default(),
         }
+    }
+
+    /// The mapping used by every call site — `to_stored`, `to_cancelled_exception`,
+    /// and the RSVP conflict-retry path in `src-tauri` — must carry every
+    /// field, not just the ones `to_stored`'s own tests happen to exercise.
+    #[test]
+    fn from_google_attendee_maps_every_field() {
+        let a = omacal_google::model::Attendee {
+            email: "x@y.com".into(),
+            display_name: Some("X".into()),
+            response_status: "tentative".into(),
+            optional: true,
+            is_self: true,
+        };
+        let s = from_google_attendee(&a);
+        assert_eq!(s.email, "x@y.com");
+        assert_eq!(s.display_name.as_deref(), Some("X"));
+        assert_eq!(s.response_status, "tentative");
+        assert!(s.optional);
+        assert!(s.is_self);
     }
 
     #[test]
