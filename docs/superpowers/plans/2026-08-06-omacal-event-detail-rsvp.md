@@ -1061,6 +1061,27 @@ brackets its instance lookup with the series DTSTART and "This one" patches the
 *first* occurrence — with `sendUpdates=all`, notifying everyone that you declined
 the wrong date. Pass `event.start_ms` from the block the user actually clicked.
 
+> **The trap: `detail.start_ms` is the wrong value, and it is the one closest to
+> hand.** `event_detail_impl` sets `start_ms: event.start_utc`, which for a master
+> row *is* the series DTSTART. So
+> `respondToEvent(detail.id, r, 'this', detail.start_ms)` type-checks, reads
+> correctly, and silently reinstates the whole bug. **No Rust test can catch
+> this** — the backend receives a plausible timestamp either way. The argument
+> must come from the `UiEvent` of the block that was clicked, threaded through
+> the popover alongside the anchor rect. Step 5 requires a UI test asserting
+> exactly that.
+
+**A successful "this one" RSVP leaves the UI stale, and this task must close it.**
+When the row is a bare master, the backend deliberately skips its local
+write-back (writing the instance's etag and attendees onto the master row would
+corrupt it), and returns the *master's* unchanged detail. So the popover shows
+the old answer and the block keeps its old colour until the next sync tick —
+up to 5 minutes, and the focus-triggered sync will not fire because the popover
+has focus. The user declines, Google accepts, and nothing on screen moves.
+`refreshEvent` is **not** an escape hatch: it reads by the master's `google_id`,
+so it cannot see the new exception either. Reflect the chosen response
+optimistically in the popover and the block, and reconcile on the next sync.
+
 - [ ] **Step 1: Write the failing specs**
 
 ```ts
@@ -1104,6 +1125,26 @@ test.describe('EventPopover', () => {
     await page.getByRole('button', { name: 'No' }).click();
     await expect(page.locator('.note.err')).toBeVisible();
     await expect(page.getByRole('button', { name: 'No' })).not.toHaveClass(/chosen/);
+  });
+
+  test('responding to a later occurrence sends that occurrence, not the series start', async ({ page }) => {
+    // The trap named in the Interfaces block: `detail.start_ms` is the series
+    // DTSTART for a master row, and passing it silently patches occurrence #0
+    // for everyone. Assert the fourth argument is the clicked block's own start.
+    await page.goto(show('recurring-fourth-occurrence'));
+    await page.getByRole('button', { name: 'No' }).click();
+    const call = await page.evaluate(() => (window as any).__lastRespondCall);
+    expect(call.occurrenceStartMs).toBe(1786600800000); // Thu 13 Aug, the clicked block
+    expect(call.occurrenceStartMs).not.toBe(1786341600000); // Mon 10 Aug, the series start
+  });
+
+  test('a successful response shows immediately, without waiting for a sync', async ({ page }) => {
+    // The backend deliberately returns the master's unchanged detail after a
+    // "this one" RSVP, so nothing moves on screen unless the UI reflects the
+    // choice itself. Five minutes of a dead button reads as a failure.
+    await page.goto(show('recurring-fourth-occurrence'));
+    await page.getByRole('button', { name: 'No' }).click();
+    await expect(page.getByRole('button', { name: 'No' })).toHaveClass(/chosen/);
   });
 
   test('escape closes it even when focus has fallen to the body', async ({ page }) => {
