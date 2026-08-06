@@ -264,35 +264,49 @@ test.describe('App', () => {
     await expect(page.locator('h1')).toHaveText('January 2024');
   });
 
-  // The same seam by mouse. `‹`/`›` used to step a week in every view and say
-  // "Previous week"/"Next week" while doing it — in Month view that moved the
-  // grid by a week, sometimes not changing the month at all and sometimes
-  // crossing a boundary. They step the view's own unit now, and are announced
-  // for it.
-  test('the header arrows step the view they are labelled for', async ({ page }) => {
+  // The same seam by mouse. `‹`/`›` used to step a week in *every* view while
+  // announcing themselves as "Previous week"/"Next week" — in Month view that
+  // moved the grid by a week, sometimes not changing the month at all and
+  // sometimes crossing a boundary. One spec per unit, so each proves its own
+  // motion rather than the first failure hiding the rest.
+  test('the header arrows step a day in Day view, and say so', async ({ page }) => {
     await page.goto(app('connected'));
     await expect(page.locator('.vswitch button')).toHaveCount(5); // see above
     await page.keyboard.press('1');
-
-    const day = page.getByRole('button', { name: 'Next day' });
-    await expect(day).toBeVisible();
+    const next = page.getByRole('button', { name: 'Next day' });
+    await expect(next).toBeVisible();
     await expect(page.locator('.col')).toHaveCount(1);
+
     const before = Number(await page.locator('.col').getAttribute('data-start-ms'));
-    await day.click();
+    await next.click();
     // `toHaveAttribute` retries, so this waits for the re-fetch rather than
     // racing the click against it.
     await expect(page.locator('.col'))
       .toHaveAttribute('data-start-ms', String(before + 24 * 3600 * 1000)); // 30 Jan
+    await page.getByRole('button', { name: 'Previous day' }).click();
+    await expect(page.locator('.col')).toHaveAttribute('data-start-ms', String(before));
+  });
+
+  // Read off Day view's own column rather than the `<h1>`, so this pins the
+  // *motion* independently of the title fix above: a week step from 29 Jan
+  // lands on 5 Feb, which names February just as correctly as 29 Feb does.
+  test('the header arrows step a month in Month view, and say so', async ({ page }) => {
+    await page.goto(app('connected'));
+    await expect(page.locator('.vswitch button')).toHaveCount(5); // see above
+    await page.keyboard.press('3'); // Month view, anchored Mon 29 Jan (APP_MON)
+    const next = page.getByRole('button', { name: 'Next month' });
+    await expect(next).toBeVisible();
+    await next.click();
+
+    await page.keyboard.press('1');
+    await expect(page.locator('.col'))
+      .toHaveAttribute('data-start-ms', String(Date.UTC(2024, 1, 29))); // 29 Feb, not 5 Feb
 
     await page.keyboard.press('3');
-    await expect(page.locator('h1')).toHaveText('January 2024');
-    const month = page.getByRole('button', { name: 'Next month' });
-    await expect(month).toBeVisible();
-    await month.click();
-    // A whole month, not the seven days that would have left this in January.
-    await expect(page.locator('h1')).toHaveText('February 2024');
     await page.getByRole('button', { name: 'Previous month' }).click();
-    await expect(page.locator('h1')).toHaveText('January 2024');
+    await page.keyboard.press('1');
+    await expect(page.locator('.col'))
+      .toHaveAttribute('data-start-ms', String(Date.UTC(2024, 0, 29))); // back to 29 Jan
   });
 
   test('H and L step by the current view\'s unit', async ({ page }) => {
