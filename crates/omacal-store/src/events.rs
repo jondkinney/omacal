@@ -174,6 +174,32 @@ where
     Ok(())
 }
 
+/// One event plus its calendar's `access_role`, by row id.
+///
+/// The role travels alongside the event rather than being a second query the
+/// caller makes itself, because the two are only ever needed together: an
+/// `EventDetail` cannot decide whether to show RSVP controls from the event
+/// row alone. Returning a column list plus one extra (`access_role`), rather
+/// than a hand-picked subset, is what lets a later task add the calendar's
+/// `google_id` and the account's email here as further columns instead of a
+/// rewrite.
+pub async fn event_by_id(
+    pool: &SqlitePool,
+    id: i64,
+) -> anyhow::Result<Option<(StoredEvent, String)>> {
+    let sql = format!(
+        "SELECT {SELECT_COLS}, c.access_role
+         FROM events e
+         JOIN calendars c ON c.id = e.calendar_id
+         WHERE e.id = ?1"
+    );
+    let row = sqlx::query(&sql).bind(id).fetch_optional(pool).await?;
+    Ok(row.map(|r| {
+        let access_role: String = r.get("access_role");
+        (row_to_event(&r), access_role)
+    }))
+}
+
 /// Events overlapping `[from_ms, to_ms)` on selected calendars, plus every
 /// recurring master on a selected calendar. Masters are returned unconditionally
 /// because their stored `start_utc` is the series start, which may be years
@@ -618,5 +644,34 @@ mod tests {
         let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sync_state")
             .fetch_one(&pool).await.unwrap();
         assert_eq!(left, 0, "a surviving cursor means old rows never get their attendees");
+    }
+
+    #[tokio::test]
+    async fn event_by_id_returns_the_event_and_its_calendars_access_role() {
+        let pool = connect_memory().await.unwrap();
+        let cal = seed(&pool).await;
+        let id = upsert_event(&pool, &ev(cal, "a", 1000, 2000)).await.unwrap();
+
+        let (got, access_role) = event_by_id(&pool, id).await.unwrap().expect("event exists");
+        assert_eq!(got.google_id, "a");
+        assert_eq!(access_role, "owner", "seed()'s calendar is owned");
+    }
+
+    #[tokio::test]
+    async fn event_by_id_reports_a_read_only_calendars_role() {
+        let pool = connect_memory().await.unwrap();
+        let cal = seed(&pool).await;
+        sqlx::query("UPDATE calendars SET access_role = 'reader' WHERE id = ?1")
+            .bind(cal).execute(&pool).await.unwrap();
+        let id = upsert_event(&pool, &ev(cal, "a", 1000, 2000)).await.unwrap();
+
+        let (_, access_role) = event_by_id(&pool, id).await.unwrap().expect("event exists");
+        assert_eq!(access_role, "reader");
+    }
+
+    #[tokio::test]
+    async fn event_by_id_returns_none_for_an_unknown_id() {
+        let pool = connect_memory().await.unwrap();
+        assert!(event_by_id(&pool, 999).await.unwrap().is_none());
     }
 }
