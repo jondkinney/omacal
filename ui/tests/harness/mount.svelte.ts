@@ -72,7 +72,9 @@ if (name === 'App') {
       // as a getter, so this is enough to make that live from outside.
       let week = $state(props.week);
       (window as any).__setWeek = (w: unknown) => { week = w; };
-      mount(WeekGrid, { target, props: { get week() { return week; } } });
+      // Spread first, then shadow `week` with the live getter — naming only
+      // `week` here would silently drop any second prop a fixture grows.
+      mount(WeekGrid, { target, props: { ...props, get week() { return week; } } });
     } else if (name === 'EventPopover') {
       // EventPopover calls `invoke` itself too (`respond_to_event`), same
       // reasoning as CalendarPopover above.

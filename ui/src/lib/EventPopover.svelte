@@ -52,6 +52,13 @@
     if (!panelEl) return;
     const viewport = { width: window.innerWidth, height: window.innerHeight };
     pos = placePopover(anchor, { width: panelEl.offsetWidth, height: panelEl.offsetHeight }, viewport);
+    // `role="dialog"` + `aria-modal` says "you are in here now"; without
+    // moving focus in, Tab continues from whatever the click left focused and
+    // walks straight out into the grid behind the scrim — a screen reader
+    // then reads a week of blocks the scrim has already made unclickable.
+    // `tabindex="-1"` on the panel is what makes it a legal focus target
+    // without adding it to the tab order itself.
+    panelEl.focus();
   });
 
   // Optimistic RSVP. `chosen` is `null` until the user picks something in
@@ -132,10 +139,16 @@
      panel — the guest list included — never reaches this button. -->
 <button class="scrim" aria-label="Close" onclick={onclose}></button>
 
+<!-- `role="dialog"` rather than `CalendarPopover`'s `role="group"`: this panel
+     has a guest list, external links and three buttons, and the scrim behind
+     it makes everything else unclickable — that is a dialog, and claiming it
+     obliges `aria-modal` and the focus move in `onMount`. -->
 <div
   class="pop"
   bind:this={panelEl}
   role="dialog"
+  aria-modal="true"
+  tabindex="-1"
   aria-label={detail.title ?? '(no title)'}
   style="top:{pos.top}px; left:{pos.left}px"
 >
@@ -206,6 +219,10 @@
          background: var(--surface); border: 1px solid var(--hairline);
          border-radius: 8px; padding: 12px 14px; box-shadow: 0 8px 28px rgba(0, 0, 0, .45);
          font-size: 12px; }
+  /* The panel is focused on mount to contain the tab order, not because it is
+     itself operable — a ring around the whole popover would only be noise.
+     The controls inside keep theirs. */
+  .pop:focus { outline: none; }
 
   h2 { font-size: 14px; font-weight: 600; margin: 0 0 4px; letter-spacing: -.01em; }
   .when { color: var(--muted); font-size: 11px; margin: 0 0 8px; }

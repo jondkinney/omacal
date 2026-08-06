@@ -539,6 +539,22 @@ test.describe('EventPopover', () => {
     await expect(page.locator('.guest.declined')).toHaveCount(1);
   });
 
+  test('the panel claims to be modal and takes focus on open', async ({ page }) => {
+    // The scrim already makes the grid behind unclickable. Without
+    // `aria-modal` and the focus move, the tab order still begins wherever
+    // the click left it — outside the panel, walking through a week of blocks
+    // a mouse can no longer reach.
+    //
+    // Deliberately asserts where focus *starts*, not where Tab goes next:
+    // WebKit only tabs to buttons and links when Full Keyboard Access is on,
+    // so a Tab assertion here would be testing a browser preference. Focus
+    // containment proper (wrapping Tab at the last control) is not
+    // implemented — starting inside is what this covers.
+    await page.goto(show('standup'));
+    await expect(page.locator('.pop')).toHaveAttribute('aria-modal', 'true');
+    await expect(page.locator('.pop')).toBeFocused();
+  });
+
   test('a description containing markup is shown as text', async ({ page }) => {
     await page.goto(show('nasty-description'));
     await expect(page.locator('.desc')).toContainText('<script>alert(1)</script>');

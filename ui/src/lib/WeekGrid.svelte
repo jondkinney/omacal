@@ -217,6 +217,24 @@
   // unmounts, and a scrim click or another block opening in the meantime
   // would otherwise record the override under the wrong occurrence, or not
   // at all.
+  //
+  // Two things this deliberately does not do, both self-correcting:
+  //
+  // Answering with `scope: 'all'` restyles only the block that was clicked,
+  // even though every occurrence of that series just changed. The override is
+  // keyed by `id:startMs` and this only knows the one occurrence, so the rest
+  // of the week keeps the payload's own colour until the next `week` lands —
+  // at which point they all agree, and the clicked block's override is
+  // evicted by the effect above for disagreeing with its baseline.
+  //
+  // A `scope: 'this'` RSVP against a bare master materialises an exception on
+  // Google's side. The next sync stores that exception as a row of its own,
+  // so the occurrence comes back with a *different* store row id — and this
+  // override's key, built from the master's, can never match anything again.
+  // It is inert rather than wrong (nothing renders against a key nothing
+  // has), and the eviction effect cannot reach it either, since
+  // `payloadResponse` returns `undefined` for it. It simply sits in the Map
+  // until the app closes.
   function handleResponded(id: number, startMs: number, response: 'accepted' | 'tentative' | 'declined') {
     const baseline = payloadResponse(id, startMs);
     // Not in this week's payload (any more) — nothing to restyle, and

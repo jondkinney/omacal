@@ -187,6 +187,48 @@ mod tests {
         assert_eq!(user_facing(&err), "could not find that occurrence on the calendar");
     }
 
+    /// The list's *membership*, named as data rather than read back off the
+    /// list itself. Every other test here proves only that whatever
+    /// `SAFE_EXACT` currently holds behaves correctly — delete an entry and
+    /// they all stay green while the message it named silently starts reading
+    /// as `OPAQUE`.
+    ///
+    /// This guards the UX direction, not the leak direction. A *missing*
+    /// entry makes `user_facing` strictly more conservative: nothing escapes,
+    /// the user just loses an actionable message and is told to read the log
+    /// instead. The leak direction needs a human to wrongly *add* an entry
+    /// for a message that interpolates something, which is what the rule in
+    /// `SAFE_EXACT`'s own doc comment is for and what no test can check —
+    /// hence the length assertion, so an addition has to pass back through
+    /// that rule here rather than arriving unremarked.
+    #[test]
+    fn every_message_the_app_relies_on_showing_is_still_allowlisted() {
+        const EXPECTED: &[&str] = &[
+            "Sign-in timed out — no response from the browser. Try again.",
+            "state mismatch — possible CSRF, sign-in aborted",
+            "account has no primary calendar",
+            "Google returned no refresh token — revoke the app's access and retry",
+            "that event is no longer here",
+            "this calendar cannot be answered from omacal",
+            "you are not a guest on this event",
+            "could not find that occurrence on the calendar",
+        ];
+        for expected in EXPECTED {
+            assert!(
+                SAFE_EXACT.contains(expected),
+                "`{expected}` is no longer allowlisted: the user now reads \"{OPAQUE}\" instead \
+                 of a message that told them what happened"
+            );
+        }
+        assert_eq!(
+            SAFE_EXACT.len(),
+            EXPECTED.len(),
+            "SAFE_EXACT gained an entry this test does not name — add it above, having first \
+             checked it against the rule in SAFE_EXACT's doc comment: a fixed literal, no \
+             interpolation, no `.context(..)` anywhere on its way here"
+        );
+    }
+
     /// Same pairing for the exact-match list.
     #[test]
     fn every_exact_message_passes_through_unchanged() {

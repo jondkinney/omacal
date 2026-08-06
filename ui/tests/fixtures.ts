@@ -242,7 +242,14 @@ const popoverWeek = (): WeekPayload => {
 /** The `popover` fixture's payload, but with a different `response` for one
  *  event — what the WeekGrid override-eviction specs use to simulate a
  *  fresh sync landing (`App.svelte`'s `loadWeek`, replacing `week` wholesale)
- *  while an optimistic override for that same event is in place. */
+ *  while an optimistic override for that same event is in place.
+ *
+ *  `popoverWeek()` returns a fresh payload but reuses the module-level
+ *  `UiEvent` constants inside it, so the assignment below mutates shared
+ *  state: two calls in the same process leave the second starting from what
+ *  the first wrote. Harmless as used — each call names the response it wants,
+ *  so it never reads what a previous one left — but it is not a pure builder,
+ *  and a caller that assumed it was would be wrong. */
 export function popoverWeekWithResponse(id: number, response: UiEvent['response']): WeekPayload {
   const w = popoverWeek();
   for (const d of w.days) {

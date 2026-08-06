@@ -311,6 +311,26 @@ mod tests {
             "INSERT INTO calendars (account_id, google_id, summary, timezone, access_role)
              VALUES (1, 'cal-on-a', 'On A', 'UTC', 'owner')",
         ).execute(pool).await.unwrap();
+
+        // The crossing is the whole fixture, and nothing else checks it: an
+        // edit that renumbered these rows — an extra account inserted first, a
+        // reordering — would leave both join tests below passing for the
+        // coincidental reason they exist to rule out, saying nothing while
+        // looking like they still do.
+        for google_id in ["cal-on-b", "cal-on-a"] {
+            let (id, account_id): (i64, i64) =
+                sqlx::query_as("SELECT id, account_id FROM calendars WHERE google_id = ?1")
+                    .bind(google_id)
+                    .fetch_one(pool)
+                    .await
+                    .unwrap();
+            debug_assert_ne!(
+                id, account_id,
+                "{google_id}: no calendar's id may equal its own account_id, or a join on the \
+                 wrong column still returns the right row"
+            );
+        }
+
         (1, 2)
     }
 

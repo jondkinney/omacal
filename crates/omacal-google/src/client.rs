@@ -249,6 +249,13 @@ impl CalendarClient {
 }
 
 /// Calendar ids are email-like and must be percent-encoded in the path.
+///
+/// `form_urlencoded` applies the *query string* rules, where a space becomes
+/// `+`; in a path it would have to be `%20`. Nothing this builds a path from
+/// can carry a space — calendar ids are email addresses, and event ids are
+/// Google's own base32hex — so the difference has never been reachable. A
+/// caller that could pass one would need a path-specific encoder rather than
+/// this.
 fn urlencoding_path(s: &str) -> String {
     url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
 }
