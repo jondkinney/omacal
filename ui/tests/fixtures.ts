@@ -1,4 +1,4 @@
-import type { UiEvent, Placed, WeekPayload } from '../src/lib/api';
+import type { UiEvent, Placed, Lane, WeekPayload } from '../src/lib/api';
 import type { AppStatus } from '../src/lib/status';
 import type { Calendar } from '../src/lib/calendars';
 import type { Attendee, EventDetail } from '../src/lib/eventdetail';
@@ -374,6 +374,37 @@ export const FIXTURES: Record<string, Record<string, any>> = {
       onopen: noop,
     },
     empty: { lanes: [], events: [], overflow: [], onopen: noop },
+    // Every corner state a chip can be in, one per lane, so a spec can
+    // snapshot each chip on its own at zero tolerance. `cont_left` flattens
+    // the left corners and turns the colour spine dashed; `cont_right`
+    // flattens the right ones. A one-sided border meeting a border-radius is
+    // exactly the geometry that produced the WKWebView artifact documented
+    // in `EventBlock.svelte`, and `.cl` — dashed spine, two flat corners,
+    // two round — is the most exposed shape of the four.
+    //
+    // Separate from `populated` on purpose: that fixture's band-level
+    // snapshot is committed, and adding a chip to it would rewrite a
+    // baseline that exists to check something else.
+    corners: {
+      lanes: [
+        { idx: 0, lane: 0, start_col: 0, end_col: 1, cont_left: false, cont_right: false },
+        { idx: 1, lane: 1, start_col: 0, end_col: 1, cont_left: true, cont_right: false },
+        { idx: 2, lane: 2, start_col: 0, end_col: 1, cont_left: false, cont_right: true },
+        { idx: 3, lane: 3, start_col: 0, end_col: 1, cont_left: true, cont_right: true },
+      ] as Lane[],
+      events: [
+        ev({ title: 'Rounded both ends', is_all_day: true, color: '#e2a03f',
+             start_ms: MON, end_ms: MON + 24 * H }),
+        ev({ title: 'From last week', is_all_day: true, color: '#2dd4bf',
+             start_ms: MON, end_ms: MON + 24 * H }),
+        ev({ title: 'Into next week', is_all_day: true, color: '#5b8def',
+             start_ms: MON, end_ms: MON + 24 * H }),
+        ev({ title: 'Straight through', is_all_day: true, color: '#f472b6',
+             start_ms: MON, end_ms: MON + 24 * H }),
+      ],
+      overflow: [],
+      onopen: noop,
+    },
   },
   Header: {
     disconnected: header({ accounts: [], last_sync_ms: null, demo: false }),

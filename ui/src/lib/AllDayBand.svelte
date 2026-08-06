@@ -75,8 +75,12 @@
      EventBlock replaced its own one-sided border with an inset shadow, over
      a WKWebView artifact where corners away from the border rendered square.
      Not copied here: that spine has to go dashed for a continuing span
-     (`.cl` below), which a shadow cannot do, and the committed WebKit
-     snapshot for this band is what says the corners are in fact round. */
+     (`.cl` below), and no shadow can be dashed. So this keeps the shape that
+     caused the artifact, and the `AllDayBand chip corners` specs guard it —
+     one zero-tolerance snapshot per corner state, at `threshold: 0`.
+     Deliberately not the band's own `allday-populated.png`: that frame is
+     1280x42 under `maxDiffPixelRatio: 0.01`, ~537 pixels of slack against an
+     artifact worth about 3-4 per corner, so it would not notice. */
   .chip { appearance: none; -webkit-appearance: none;
           font: inherit; text-align: left; cursor: pointer;
           border: 0; border-left: 2px solid var(--cal);

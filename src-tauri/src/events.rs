@@ -397,10 +397,14 @@ async fn respond_via_client(
     //     above are now brought into line with.
     //
     // So: same resource, use the row. Different resource, describe *it* —
-    // from the instance already in hand, or by fetching it. The fetch is a
-    // third round trip, paid only on the branch that has no alternative; the
-    // one-off, whole-series and "this occurrence" paths are unchanged at one,
-    // one and two.
+    // from the instance already in hand, or by fetching it.
+    //
+    // The fetch happens on exactly one branch, scope "all" from an exception
+    // row, and it is that branch's *first* request, not an extra one on top
+    // of others: nothing precedes it, because a `Target::Master` never does
+    // an instances lookup. It takes that path from one request to two. Every
+    // other path is unchanged — one for a one-off, one for the whole series
+    // from a master, two for "this occurrence".
     let (body_attendees, if_match) = if event_id == ev.google_id {
         (body_attendees, ev.etag.clone())
     } else {
@@ -1108,6 +1112,88 @@ mod tests {
         .await
         .unwrap_err();
         assert!(err.to_string().contains("not a guest on this event"), "{err}");
+    }
+
+    /// The one combination nothing else here covers end to end: an exception
+    /// row answered with `scope: "this"`. It is the only path that does an
+    /// instances lookup, comes back to the *same* resource it started from,
+    /// and then writes back locally — the other three tests each cover at
+    /// most two of those.
+    ///
+    /// The pieces are individually guarded (`resolve_instance_id` picks the
+    /// id, a one-off covers the same-resource arm, another covers the
+    /// write-back), so no mutation of today's code slips past unnoticed
+    /// without this. It earns its place against a *future* change: if
+    /// `resolve_instance_id`'s contract moves, this is the shape that
+    /// silently starts patching the master instead.
+    #[tokio::test]
+    async fn answering_one_occurrence_from_an_exception_row_patches_that_row_and_folds_it_back() {
+        const OCCURRENCE: i64 = 1_785_715_200_000;
+
+        let mut ev = stored(vec![guest(true)]);
+        ev.google_id = "exception1".into();
+        ev.recurring_event_id = Some("master1".into());
+        ev.original_start_utc = Some(OCCURRENCE);
+        ev.start_utc = OCCURRENCE;
+        ev.etag = Some("\"exception-etag\"".into());
+        let (pool, id) = seeded_pool_with(&ev).await;
+
+        let server = wiremock::MockServer::start().await;
+
+        // The lookup goes to the *master* — an exception has no instances of
+        // its own — and Google answers with the exception itself, since that
+        // is what now occupies the slot. So `event_id` comes back equal to
+        // `ev.google_id`, and the row is its own target.
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/calendars/primary/events/master1/instances"))
+            .and(wiremock::matchers::query_param(
+                "timeMin", omacal_sync::to_rfc3339(OCCURRENCE),
+            ))
+            .and(wiremock::matchers::query_param(
+                "timeMax", omacal_sync::to_rfc3339(OCCURRENCE + 1000),
+            ))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [{
+                    "id": "exception1", "status": "confirmed",
+                    "etag": "\"exception-etag\"",
+                    "attendees": [{"email": "me@x.com", "responseStatus": "needsAction",
+                                   "optional": false, "self": true}]
+                }]
+            })))
+            .expect(1)
+            .mount(&server).await;
+
+        // `exception1`, not `master1` and not a hand-formatted
+        // `master1_<timestamp>`; and with a precondition, since this row does
+        // hold a version of the resource being patched.
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path("/calendars/primary/events/exception1"))
+            .and(wiremock::matchers::header("if-match", "\"exception-etag\""))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "exception1", "status": "confirmed", "etag": "\"exception-2\"",
+                "sequence": 3,
+                "attendees": [{"email": "me@x.com", "responseStatus": "declined",
+                               "optional": false, "self": true}]
+            })))
+            .expect(1)
+            .mount(&server).await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "at-1");
+        let body_attendees = attendees_with_self_response(&ev.attendees, "declined").unwrap();
+        respond_via_client(
+            &pool, "declined", "this", OCCURRENCE, ev, "primary", body_attendees, &client,
+        )
+        .await
+        .unwrap();
+
+        // Patch landed on this row's own id, so the write-back is not only
+        // allowed but required — the complement of
+        // `answering_a_non_first_occurrence_...`, which asserts the opposite
+        // for a patch that landed elsewhere.
+        let (row, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
+        assert_eq!(row.etag.as_deref(), Some("\"exception-2\""), "the write-back did not happen");
+        assert_eq!(row.sequence, 3);
+        assert_eq!(row.self_response.as_deref(), Some("declined"));
     }
 
     /// The provenance rule's other arm: `scope: "all"` from a *materialised

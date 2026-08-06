@@ -336,6 +336,57 @@ test.describe('AllDayBand', () => {
   });
 });
 
+// The chip's colour spine is a border on one side only, meeting a
+// border-radius. That is the exact geometry behind the artifact
+// `EventBlock.svelte` documents: WebKit derives each corner's curve from the
+// two border widths meeting there, and in macOS WKWebView the corners away
+// from the border rendered square. `EventBlock` removed the cause by
+// replacing its spine with an inset shadow; a chip cannot, because `.cl` has
+// to draw that spine *dashed*, which no shadow can do. So the chip keeps the
+// shape and this guards it instead.
+//
+// Per chip and at zero tolerance, neither of which is incidental. The band's
+// own `allday-populated.png` is 1280x42 under the config's
+// `maxDiffPixelRatio: 0.01` — about 537 pixels of slack, against roughly 3-4
+// pixels per corner. That snapshot would not notice this artifact returning;
+// it has ~5% of its budget to spare on it. A chip-sized frame at
+// `maxDiffPixels: 0` has none.
+//
+// `threshold: 0` is load-bearing, and not obviously so. `maxDiffPixels: 0`
+// alone does nothing here: `threshold` is the *per-pixel* tolerance pixelmatch
+// applies before a pixel counts as differing at all, and at its default of 0.2
+// a squared-off corner is invisible. The chip's fill is
+// `color-mix(… 16%, transparent)`, so a corner pixel flipping from page
+// background to chip fill moves (23,23,26) to about (55,45,32) — a YIQ delta
+// of ~314 against the 1409 that threshold 0.2 permits. Being nearly
+// transparent is exactly what makes this artifact cheap to miss. Even
+// threshold 0.1 (1409 -> 352) still ignores it; anything at or above ~0.095
+// does. Verified by mutation, not by reading: squaring the two corners away
+// from the border passes at the default and fails at 0.
+//
+// Zero costs nothing in stability here — the four baselines below were
+// produced by a different element type on a different run and match byte for
+// byte — because the frame holds no antialiased text edges that move between
+// runs on a fixed platform.
+//
+// These four baselines were generated from the pre-change `<div>` markup
+// (`git show 6d278b8:ui/src/lib/AllDayBand.svelte`) and are committed
+// unmodified: the `<button>` this became reproduces them pixel for pixel in
+// both engines, which is the evidence that the swap cost nothing. From here
+// they guard against the artifact appearing, in either direction.
+test.describe('AllDayBand chip corners', () => {
+  const CHIPS = ['plain', 'cont-left', 'cont-right', 'cont-both'];
+  for (const [i, name] of CHIPS.entries()) {
+    test(`a ${name} chip renders pixel for pixel`, async ({ page }) => {
+      await page.goto(show('AllDayBand', 'corners'));
+      await expect(page.locator('.chip').nth(i)).toHaveScreenshot(
+        `allday-chip-${name}.png`,
+        { maxDiffPixels: 0, maxDiffPixelRatio: 0, threshold: 0 },
+      );
+    });
+  }
+});
+
 test.describe('Header', () => {
   test('disconnected state offers to connect', async ({ page }) => {
     await page.goto(show('Header', 'disconnected'));

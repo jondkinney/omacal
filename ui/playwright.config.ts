@@ -32,11 +32,12 @@ export default defineConfig({
   // workers, where an even split would be 27.
   //
   // Six, fixed rather than derived from the host: it holds the peak near 24
-  // (~2.7x clear) for a project of ~106 tests, costs nothing measurable here
+  // (~2.7x clear) for a project of ~110 tests — 113 as of this comment, and
+  // the figures above were measured at 106 — costs nothing measurable here
   // (14.1s against 13.9s at 4), and gives the CI runner and the laptop the
   // same schedule, which a suite built on pixel comparison would rather have
-  // than a second of wall time. Revisit the number if a project passes ~250
-  // tests; the peak scales with it.
+  // than a second of wall time. The peak scales with the project's test
+  // count, so revisit the number as it approaches ~250.
   //
   // PWDEBUG already forces a single worker inside Playwright, so this cannot
   // rescue a debug run of the whole suite — debug one test, not 106.
