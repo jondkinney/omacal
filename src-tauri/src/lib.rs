@@ -257,7 +257,7 @@ const DEMO_SYNC_MESSAGE: &str =
 /// no config or keyring I/O anywhere near it — so callers that check it first
 /// (`sync_now`, `sign_in`, and the background loop) cannot reach that I/O in
 /// demo mode.
-fn demo_sync_guard(demo: bool) -> Result<(), String> {
+pub(crate) fn demo_sync_guard(demo: bool) -> Result<(), String> {
     if demo {
         Err(DEMO_SYNC_MESSAGE.to_string())
     } else {

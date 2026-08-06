@@ -1,5 +1,6 @@
 /// Error messages this app itself produces that are safe to show verbatim,
-/// matched by prefix against the literal strings the code actually emits.
+/// matched by exact prefix against the literal strings the code actually
+/// emits.
 ///
 /// An allowlist, not a deny-list: anything that does not match one of these
 /// prefixes is withheld behind `OPAQUE`, including any error shape nobody has
@@ -9,10 +10,17 @@
 /// withhold is the safer failure mode for a function whose only job is
 /// secret-safety.
 ///
+/// A message belongs here — rather than in [`SAFE_EXACT`] — only when it
+/// genuinely carries variable, benign trailing detail of its own (a
+/// filesystem path, a `std::io::Error`'s message). `starts_with` semantics
+/// admit *anything* appended after the prefix, so a prefix entry for a
+/// message with no legitimate variable part would also admit a future
+/// `format!("{lit}: {detail}")` built by wrapping it in more context — the
+/// exposure [`SAFE_EXACT`] exists to close.
+///
 /// Each entry below is cited against the one call site that emits it, checked
-/// to confirm it interpolates nothing beyond what is already known-benign (a
-/// filesystem path, a `std::io::Error`'s message, or nothing at all), and that
-/// nothing further up the call chain wraps it in additional `.context(..)`
+/// to confirm it interpolates nothing beyond what is already known-benign, and
+/// that nothing further up the call chain wraps it in additional `.context(..)`
 /// that could smuggle something else in ahead of it.
 const SAFE_PREFIXES: &[&str] = &[
     // src-tauri/src/lib.rs:96 (`load_config`'s missing-file branch). Interpolates
@@ -20,6 +28,16 @@ const SAFE_PREFIXES: &[&str] = &[
     // directory (os error 2)"); fires before any secret is ever read off disk,
     // so "client_secret" here can only ever be the literal key name.
     "no config at ",
+];
+
+/// Error messages matched as a whole, not a prefix: nothing may come before or
+/// after one of these before `user_facing` will show it. Every entry here is a
+/// fixed literal with no variable part of its own, so `starts_with` would be
+/// strictly weaker than the prefix list already grants prefix-only strings
+/// (see the doc comment above) — exact matching is what keeps a future
+/// `format!("{lit}: {detail}")` that wraps one of these in more context from
+/// silently starting to pass.
+const SAFE_EXACT: &[&str] = &[
     // crates/omacal-google/src/auth.rs:171 (the `TIMED_OUT` constant), raised
     // at auth.rs:206 with no interpolation and propagated to `sign_in_impl`
     // via a bare `?` with no `.context(..)` added along the way.
@@ -31,6 +49,15 @@ const SAFE_PREFIXES: &[&str] = &[
     "account has no primary calendar",
     // src-tauri/src/lib.rs:174. Fixed literal, no interpolation.
     "Google returned no refresh token — revoke the app's access and retry",
+    // src-tauri/src/events.rs — `event_detail_impl`'s missing-row branch (also
+    // reached from `respond_impl`/`refresh_impl`'s own lookup), and
+    // `respond_impl`'s two guard checks. All three are reached only through
+    // `.map_err(|e| crate::errors::user_facing(&e))` with no `.context(..)`
+    // added anywhere on the way, so `err.to_string()` is byte-identical to
+    // each literal below.
+    "that event is no longer here",
+    "this calendar cannot be answered from omacal",
+    "you are not a guest on this event",
 ];
 
 /// The generic replacement. Deliberately says where to look rather than
@@ -45,6 +72,9 @@ const OPAQUE: &str = "Sync failed. See the application log for details.";
 pub fn user_facing(err: &anyhow::Error) -> String {
     let text = err.to_string();
 
+    if SAFE_EXACT.iter().any(|s| text == *s) {
+        return text;
+    }
     if SAFE_PREFIXES.iter().any(|p| text.starts_with(p)) {
         return text;
     }
@@ -98,37 +128,65 @@ mod tests {
         assert!(!shown.is_empty());
     }
 
-    /// The match is a *prefix* match, and only a prefix match.
+    /// The match is a *prefix* match, and only a prefix match — for both lists,
+    /// since `SAFE_EXACT` is (deliberately) a strictly narrower check than
+    /// `starts_with` would be.
     ///
-    /// Every other test here uses a string containing no safe prefix anywhere,
-    /// so none of them can tell `starts_with` from `contains` — swapping the two
-    /// left the whole suite green. That distinction is the entire safety
-    /// property: what leads a message is text this app wrote, whereas what
-    /// appears further in can be anything an error we wrapped chose to say. An
-    /// error is safe because of who wrote its opening words, not because those
-    /// words appear somewhere in it.
+    /// Every other test here uses a string containing no safe string anywhere,
+    /// so none of them can tell `starts_with`/`==` from `contains` — swapping
+    /// either for `contains` left the whole suite green. That distinction is
+    /// the entire safety property: what leads a message is text this app
+    /// wrote, whereas what appears further in can be anything an error we
+    /// wrapped chose to say. An error is safe because of who wrote its opening
+    /// words, not because those words appear somewhere in it.
     #[test]
-    fn a_safe_prefix_appearing_mid_string_is_still_withheld() {
-        for safe in SAFE_PREFIXES {
+    fn a_safe_string_appearing_mid_message_is_still_withheld() {
+        for safe in SAFE_PREFIXES.iter().chain(SAFE_EXACT.iter()) {
             let err = anyhow::anyhow!(
                 "the token endpoint rejected the request: {safe}: ya29.a0AfB_pretend_token"
             );
             let shown = user_facing(&err);
             assert_eq!(
                 shown, OPAQUE,
-                "a safe prefix buried mid-string got the whole message shown: {shown}"
+                "a safe string buried mid-message got the whole message shown: {shown}"
             );
-            assert!(!shown.contains("ya29"), "token leaked behind a mid-string safe prefix: {shown}");
+            assert!(!shown.contains("ya29"), "token leaked behind a mid-string safe string: {shown}");
         }
     }
 
-    /// The pair to the test above: the same strings, leading, must still pass —
+    /// The pair to the test above: the same prefixes, leading, must still pass —
     /// or the allowlist could be made vacuously safe by matching nothing.
     #[test]
     fn every_safe_prefix_still_passes_when_it_leads() {
         for safe in SAFE_PREFIXES {
             let err = anyhow::anyhow!("{safe}");
-            assert_eq!(user_facing(&err), *safe, "a safe message was withheld");
+            assert_eq!(user_facing(&err), *safe, "a safe prefix was withheld");
+        }
+    }
+
+    /// Same pairing for the exact-match list.
+    #[test]
+    fn every_exact_message_passes_through_unchanged() {
+        for safe in SAFE_EXACT {
+            let err = anyhow::anyhow!("{safe}");
+            assert_eq!(user_facing(&err), *safe, "a safe exact message was withheld");
+        }
+    }
+
+    /// The property exact matching exists for: unlike a prefix, nothing may
+    /// follow one of these strings either. A future
+    /// `format!("{lit}: {api_error}")` built by wrapping one of these literals
+    /// in more context must not silently start passing through just because it
+    /// begins with already-allowlisted text.
+    #[test]
+    fn an_exact_message_with_something_appended_is_withheld() {
+        for safe in SAFE_EXACT {
+            let err = anyhow::anyhow!("{safe}: unexpected detail that must not reach the ui");
+            let shown = user_facing(&err);
+            assert_eq!(
+                shown, OPAQUE,
+                "an exact-match string admitted trailing text: {shown}"
+            );
         }
     }
 

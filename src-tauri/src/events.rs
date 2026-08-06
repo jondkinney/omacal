@@ -1,7 +1,7 @@
 use crate::AppState;
 use sqlx::SqlitePool;
 
-#[derive(serde::Serialize)]
+#[derive(Debug, serde::Serialize)]
 pub struct EventDetail {
     pub id: i64,
     pub title: Option<String>,
@@ -48,13 +48,13 @@ pub async fn event_detail(
 }
 
 /// The body of `event_detail`, minus the Tauri `State` wrapper — also the tail
-/// end of `respond_to_event` and `refresh_event`, both of which return the
+/// end of `respond_via_client` and `refresh_event`, both of which return the
 /// freshly-written row through the same shape rather than re-deriving it
 /// themselves.
 async fn event_detail_impl(pool: &SqlitePool, id: i64) -> anyhow::Result<EventDetail> {
     let (event, access_role) = omacal_store::event_by_id(pool, id)
         .await?
-        .ok_or_else(|| anyhow::anyhow!("event {id} not found"))?;
+        .ok_or_else(|| anyhow::anyhow!("that event is no longer here"))?;
 
     let can_respond = can_respond(&access_role, &event.attendees);
     let is_recurring = is_recurring(&event.recurrence, &event.recurring_event_id);
@@ -79,9 +79,12 @@ async fn event_detail_impl(pool: &SqlitePool, id: i64) -> anyhow::Result<EventDe
 
 /// Rebuilds the attendee array with only the `self` row's response changed.
 ///
-/// Every other attendee is copied through field for field. Google replaces the
-/// list wholesale on patch, so anything omitted here is *erased* from the real
-/// event — including other people's answers.
+/// Every other attendee is copied through field for field — including
+/// `comment` and `additionalGuests`, which nothing else in this app reads or
+/// writes but which Google still holds writable per-attendee state. Google
+/// replaces the list wholesale on patch, so anything omitted here is *erased*
+/// from the real event — including other people's answers, and their own
+/// notes and guest counts.
 ///
 /// `None` when no attendee is marked `self`: there is no row of ours to edit,
 /// and sending the list anyway would rewrite other people's for no reason.
@@ -101,9 +104,13 @@ pub(crate) fn attendees_with_self_response(
                     "email": a.email,
                     "responseStatus": status,
                     "optional": a.optional,
+                    "additionalGuests": a.additional_guests,
                 });
                 if let Some(n) = &a.display_name {
                     v["displayName"] = serde_json::Value::String(n.clone());
+                }
+                if let Some(c) = &a.comment {
+                    v["comment"] = serde_json::Value::String(c.clone());
                 }
                 v
             })
@@ -145,6 +152,48 @@ pub(crate) fn target_event_id(
     }
 }
 
+/// The `[timeMin, timeMax)` window `events.instances` is bracketed with when
+/// resolving "this occurrence" to a concrete Google event id: one second
+/// either side of the *clicked* occurrence's own start.
+///
+/// Deliberately a function of `occurrence_start_ms` alone, never of the
+/// stored row's `start_utc`: every expanded occurrence of a recurring master
+/// shares that same database row (`commands::to_ui` gives them all the
+/// master's own id), and hence shares its `start_utc` — the series' own
+/// DTSTART. Bracketing by that would always resolve to the *first*
+/// occurrence of the series, regardless of which day was actually clicked.
+pub(crate) fn instance_lookup_window(occurrence_start_ms: i64) -> (String, String) {
+    (
+        omacal_sync::to_rfc3339(occurrence_start_ms - 1000),
+        omacal_sync::to_rfc3339(occurrence_start_ms + 1000),
+    )
+}
+
+/// Chooses which id to patch once `events.instances` has answered.
+///
+/// `found.first()` is Google's own id for the occurrence — never built by
+/// string-formatting the master id and a timestamp, since an all-day event
+/// and an already-moved occurrence both format differently.
+///
+/// When the lookup finds nothing, `fallback` is a safe stand-in *only* when
+/// the row was already a materialised exception: there, `master != fallback`,
+/// and `fallback` is that exception's own distinct id. When `master ==
+/// fallback` the clicked row *is* the series master (the call site offers its
+/// own id as both master and fallback for that shape), and falling back to it
+/// would silently widen "this occurrence" into "the whole series" — an empty
+/// lookup on a bare master has to fail loudly instead of guessing.
+pub(crate) fn resolve_instance_id(
+    found: &[omacal_google::model::Event],
+    master: &str,
+    fallback: &str,
+) -> anyhow::Result<String> {
+    match found.first() {
+        Some(i) => Ok(i.id.clone()),
+        None if master != fallback => Ok(fallback.to_string()),
+        None => anyhow::bail!("could not find that occurrence on the calendar"),
+    }
+}
+
 /// Copies onto `row` the fields a patch (or a refresh) response actually
 /// carries: `etag` and `sequence`, so the next write's conflict check is
 /// against the new version; `attendees`, so the guest list reflects what
@@ -158,29 +207,38 @@ pub(crate) fn merge_patched(row: &mut omacal_store::StoredEvent, patched: &omaca
     row.self_response = row.attendees.iter().find(|a| a.is_self).map(|a| a.response_status.clone());
 }
 
+/// `occurrence_start_ms` is the `start_ms` of the block the user actually
+/// clicked — see [`instance_lookup_window`] for why this cannot be derived
+/// from the stored row instead.
 #[tauri::command]
 pub async fn respond_to_event(
     state: tauri::State<'_, AppState>,
     id: i64,
     response: String,
     scope: String,
+    occurrence_start_ms: i64,
 ) -> Result<EventDetail, String> {
-    respond_impl(&state, id, &response, &scope).await.map_err(|e| crate::errors::user_facing(&e))
+    crate::demo_sync_guard(state.demo)?;
+    respond_impl(&state, id, &response, &scope, occurrence_start_ms)
+        .await
+        .map_err(|e| crate::errors::user_facing(&e))
 }
 
 /// Sends an RSVP to Google and folds the result back into the local store.
 ///
 /// `scope` is `"this"` (just the occurrence being viewed) or `"all"` (the
-/// whole series). Which Google event id that resolves to is [`target_event_id`];
-/// for `"this"` on a recurring event that id has to come from
-/// `events.instances`, not from string-formatting the master id and the
-/// occurrence's start time — an all-day event and an already-moved occurrence
-/// both format differently, and getting it wrong patches the wrong day.
+/// whole series); which Google event id that resolves to is
+/// [`target_event_id`]. Everything past building the `CalendarClient` lives
+/// in [`respond_via_client`], split out purely so a test can hand it a
+/// client pointed at a `wiremock` server instead of this function touching
+/// `load_config` or the Keychain — the same split `sync_accounts` (in
+/// `lib.rs`) uses for its access-token source.
 async fn respond_impl(
     state: &AppState,
     id: i64,
     response: &str,
     scope: &str,
+    occurrence_start_ms: i64,
 ) -> anyhow::Result<EventDetail> {
     let (ev, access_role, cal_google_id, account_email) = omacal_store::event_for_write(&state.pool, id)
         .await?
@@ -196,6 +254,34 @@ async fn respond_impl(
     let token = crate::access_token_for(state, &cfg, &account_email).await?;
     let client = omacal_google::CalendarClient::new(crate::GOOGLE_CALENDAR_API, &token);
 
+    respond_via_client(
+        &state.pool,
+        id,
+        response,
+        scope,
+        occurrence_start_ms,
+        ev,
+        &cal_google_id,
+        body_attendees,
+        &client,
+    )
+    .await
+}
+
+/// The network exchange and local write-back half of [`respond_impl`], with
+/// the `CalendarClient` already built.
+#[allow(clippy::too_many_arguments)]
+async fn respond_via_client(
+    pool: &SqlitePool,
+    id: i64,
+    response: &str,
+    scope: &str,
+    occurrence_start_ms: i64,
+    ev: omacal_store::StoredEvent,
+    cal_google_id: &str,
+    body_attendees: Vec<serde_json::Value>,
+    client: &omacal_google::CalendarClient,
+) -> anyhow::Result<EventDetail> {
     // A row carrying `recurrence` is a series master; scope "this" must still
     // go through instance resolution for it, which is why `own_id` is offered
     // as the master when there is no `recurring_event_id`.
@@ -208,35 +294,27 @@ async fn respond_impl(
     let event_id = match &target {
         Target::Master(master_id) => master_id.clone(),
         Target::Instance { master, fallback } => {
-            let found = client
-                .event_instances(
-                    &cal_google_id,
-                    master,
-                    &omacal_sync::to_rfc3339(ev.start_utc - 1000),
-                    &omacal_sync::to_rfc3339(ev.start_utc + 1000),
-                )
-                .await?;
-            // Google's own id, never one built by string formatting — see the
-            // function doc comment above.
-            found.first().map(|i| i.id.clone()).unwrap_or_else(|| fallback.clone())
+            let (time_min, time_max) = instance_lookup_window(occurrence_start_ms);
+            let found = client.event_instances(cal_google_id, master, &time_min, &time_max).await?;
+            resolve_instance_id(&found, master, fallback)?
         }
     };
 
     let body = serde_json::json!({ "attendees": body_attendees });
-    let patched = match client.patch_event(&cal_google_id, &event_id, &body, ev.etag.as_deref()).await {
+    let patched = match client.patch_event(cal_google_id, &event_id, &body, ev.etag.as_deref()).await {
         Ok(p) => p,
         Err(omacal_google::ApiError::PreconditionFailed) => {
             // Someone edited the event while the popover was open. Re-read,
             // re-apply our answer to the list as it is now, and try once more —
             // retrying with the same stale list would overwrite their change.
-            let fresh = client.get_event(&cal_google_id, &event_id).await?;
+            let fresh = client.get_event(cal_google_id, &event_id).await?;
             let fresh_attendees: Vec<omacal_store::Attendee> =
                 fresh.attendees.iter().map(omacal_sync::from_google_attendee).collect();
             let retry = attendees_with_self_response(&fresh_attendees, response)
                 .ok_or_else(|| anyhow::anyhow!("you are not a guest on this event"))?;
             client
                 .patch_event(
-                    &cal_google_id,
+                    cal_google_id,
                     &event_id,
                     &serde_json::json!({ "attendees": retry }),
                     fresh.etag.as_deref(),
@@ -246,24 +324,31 @@ async fn respond_impl(
         Err(e) => return Err(e.into()),
     };
 
-    // Close the loop locally: the week grid styles blocks from `self_response`,
-    // so without this the block stays looking accepted until the next tick.
-    // Straight through `upsert_event` — this is a direct user action, not sync,
-    // and does not belong in `apply()`'s transaction.
-    let mut row = ev;
-    merge_patched(&mut row, &patched);
-    omacal_store::upsert_event(&state.pool, &row).await?;
+    // Close the loop locally — but only when the patch actually targeted the
+    // row we loaded. When scope "this" resolved to a *different* Google event
+    // id (a series master rendered directly, or an exception this store has
+    // no local row for yet), `ev.google_id` names a row that is not the one
+    // Google just changed: stamping the instance's etag/attendees onto it
+    // would corrupt that row outright, since `upsert_event` is keyed on
+    // `(calendar_id, google_id)` and would write straight onto it. Leave it
+    // for the next sync to materialise correctly instead of guessing.
+    if event_id == ev.google_id {
+        let mut row = ev;
+        merge_patched(&mut row, &patched);
+        omacal_store::upsert_event(pool, &row).await?;
+    }
 
-    event_detail_impl(&state.pool, id).await
+    event_detail_impl(pool, id).await
 }
 
 #[tauri::command]
 pub async fn refresh_event(state: tauri::State<'_, AppState>, id: i64) -> Result<EventDetail, String> {
+    crate::demo_sync_guard(state.demo)?;
     refresh_impl(&state, id).await.map_err(|e| crate::errors::user_facing(&e))
 }
 
 /// Re-pulls one event from Google and folds it back in, the same shape as
-/// `respond_impl` minus the patch: `get_event`, [`merge_patched`],
+/// `respond_via_client` minus the patch: `get_event`, [`merge_patched`],
 /// `upsert_event`, then the fresh detail. Used to pick up a change made
 /// elsewhere — another attendee's answer, a moved time — while the popover was
 /// open. Its failures are the caller's to ignore: whatever `EventDetail` is
@@ -298,6 +383,8 @@ mod tests {
             response_status: "needsAction".into(),
             optional: false,
             is_self,
+            comment: None,
+            additional_guests: 0,
         }
     }
 
@@ -326,6 +413,8 @@ mod tests {
             response_status: "accepted".into(),
             optional: false,
             is_self: false,
+            comment: None,
+            additional_guests: 0,
         }];
         assert!(!can_respond("owner", &others));
         assert!(!can_respond("owner", &[]));
@@ -352,11 +441,14 @@ mod tests {
     fn three() -> Vec<Attendee> {
         vec![
             Attendee { email: "ana@x.com".into(), display_name: Some("Ana".into()),
-                       response_status: "accepted".into(), optional: false, is_self: false },
+                       response_status: "accepted".into(), optional: false, is_self: false,
+                       comment: Some("running 5 late".into()), additional_guests: 1 },
             Attendee { email: "me@x.com".into(), display_name: None,
-                       response_status: "needsAction".into(), optional: false, is_self: true },
+                       response_status: "needsAction".into(), optional: false, is_self: true,
+                       comment: None, additional_guests: 0 },
             Attendee { email: "petya@x.com".into(), display_name: None,
-                       response_status: "declined".into(), optional: true, is_self: false },
+                       response_status: "declined".into(), optional: true, is_self: false,
+                       comment: None, additional_guests: 2 },
         ]
     }
 
@@ -369,11 +461,15 @@ mod tests {
         assert_eq!(out.len(), 3, "an attendee was dropped");
         assert_eq!(out[0]["email"], "ana@x.com");
         assert_eq!(out[0]["responseStatus"], "accepted", "Ana's answer was overwritten");
+        assert_eq!(out[0]["displayName"], "Ana", "Ana's display name was dropped");
+        assert_eq!(out[0]["comment"], "running 5 late", "Ana's comment was dropped");
+        assert_eq!(out[0]["additionalGuests"], 1, "Ana's additional guests were dropped");
         assert_eq!(out[1]["email"], "me@x.com");
         assert_eq!(out[1]["responseStatus"], "declined");
         assert_eq!(out[2]["email"], "petya@x.com");
         assert_eq!(out[2]["responseStatus"], "declined", "Petya's answer was overwritten");
         assert_eq!(out[2]["optional"], true, "the optional flag was lost");
+        assert_eq!(out[2]["additionalGuests"], 2, "Petya's additional guests were dropped");
     }
 
     #[test]
@@ -408,6 +504,59 @@ mod tests {
         assert_eq!(target_event_id("this", None, "ev1"), Target::Master("ev1".into()));
     }
 
+    #[test]
+    fn the_instance_lookup_window_is_bracketed_by_the_clicked_occurrence_not_the_series_start() {
+        // Mirrors a real bug: every expanded occurrence of a recurring master
+        // shares the same database row (`commands::to_ui`), and hence the same
+        // `start_utc` — the series' own DTSTART. Bracketing the lookup by that
+        // would always resolve occurrence #0, no matter which day was actually
+        // clicked; the window has to come from the clicked occurrence itself.
+        const DAY: i64 = 24 * 3_600_000;
+        let series_dtstart = 1_785_715_200_000; // Monday, occurrence #0
+        let occurrence_4 = series_dtstart + 4 * DAY; // Friday, occurrence #4
+
+        let window_0 = instance_lookup_window(series_dtstart);
+        let window_4 = instance_lookup_window(occurrence_4);
+
+        assert_ne!(window_0, window_4, "the window must move with the clicked occurrence");
+        assert_eq!(window_4.0, omacal_sync::to_rfc3339(occurrence_4 - 1000));
+        assert_eq!(window_4.1, omacal_sync::to_rfc3339(occurrence_4 + 1000));
+    }
+
+    fn wire_instance(id: &str) -> omacal_google::model::Event {
+        omacal_google::model::Event {
+            id: id.into(), status: "confirmed".into(), etag: None, ical_uid: None,
+            summary: None, description: None, location: None,
+            start: Default::default(), end: Default::default(),
+            recurrence: None, recurring_event_id: None, original_start_time: None,
+            hangout_link: None, attendees: vec![], sequence: 0, organizer: Default::default(),
+        }
+    }
+
+    #[test]
+    fn a_found_instance_id_is_used_verbatim() {
+        let found = vec![wire_instance("master_20260804T060000Z")];
+        assert_eq!(
+            resolve_instance_id(&found, "master", "instance-9").unwrap(),
+            "master_20260804T060000Z"
+        );
+    }
+
+    #[test]
+    fn an_empty_lookup_falls_back_to_the_exceptions_own_id() {
+        // master != fallback: the row was already a materialised exception,
+        // and its own id is a safe stand-in.
+        assert_eq!(resolve_instance_id(&[], "master", "instance-9").unwrap(), "instance-9");
+    }
+
+    #[test]
+    fn an_empty_lookup_on_a_bare_master_errors_instead_of_widening_to_the_whole_series() {
+        // master == fallback is exactly the shape produced when the clicked
+        // row *is* the series master. Falling back here would patch every
+        // occurrence in the series instead of the one the user answered.
+        assert!(resolve_instance_id(&[], "master-1", "master-1").is_err());
+    }
+
     fn stored(attendees: Vec<Attendee>) -> omacal_store::StoredEvent {
         omacal_store::StoredEvent {
             id: 1, calendar_id: 1, google_id: "ev1".into(),
@@ -437,6 +586,7 @@ mod tests {
             attendees: vec![omacal_google::model::Attendee {
                 email: "me@x.com".into(), display_name: None,
                 response_status: "declined".into(), optional: false, is_self: true,
+                comment: None, additional_guests: 0,
             }],
             sequence: 5,
             organizer: Default::default(),
@@ -449,5 +599,213 @@ mod tests {
             row.self_response.as_deref(), Some("declined"),
             "self_response must be re-derived from the patched attendees, not left stale"
         );
+    }
+
+    // --- respond_via_client: reachable without touching load_config or the
+    // Keychain, since the CalendarClient is a parameter rather than built
+    // inside. Points it at a wiremock server and a `connect_memory` pool.
+
+    /// One account, one calendar, and `ev` upserted onto it — enough for
+    /// `respond_via_client`'s own reads (`event_by_id` inside
+    /// `event_detail_impl`) to succeed afterward. Returns the store row id.
+    async fn seeded_pool_with(ev: &omacal_store::StoredEvent) -> (SqlitePool, i64) {
+        let pool = omacal_store::connect_memory().await.unwrap();
+        sqlx::query("INSERT INTO accounts (google_sub, email, created_at) VALUES ('s','e@x',0)")
+            .execute(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO calendars (account_id, google_id, summary, timezone, access_role)
+             VALUES (1, 'primary', 'Work', 'UTC', 'owner')",
+        ).execute(&pool).await.unwrap();
+        let id = omacal_store::upsert_event(&pool, ev).await.unwrap();
+        (pool, id)
+    }
+
+    /// Guards the local write-back on its own: deleting `merge_patched` +
+    /// `upsert_event` from `respond_via_client` entirely does not fail
+    /// `cargo test --workspace` anywhere else, because nothing else calls
+    /// this function.
+    #[tokio::test]
+    async fn a_successful_patch_folds_its_response_back_into_the_local_row() {
+        let ev = stored(vec![guest(true)]);
+        let (pool, id) = seeded_pool_with(&ev).await;
+
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path("/calendars/primary/events/ev1"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "ev1", "status": "confirmed", "etag": "\"new\"", "sequence": 4,
+                "attendees": [{"email": "me@x.com", "responseStatus": "declined",
+                               "optional": false, "self": true}]
+            })))
+            .mount(&server).await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "at-1");
+        let body_attendees = attendees_with_self_response(&ev.attendees, "declined").unwrap();
+        respond_via_client(&pool, id, "declined", "all", 0, ev, "primary", body_attendees, &client)
+            .await
+            .unwrap();
+
+        let (row, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
+        assert_eq!(row.etag.as_deref(), Some("\"new\""), "the write-back did not happen");
+        assert_eq!(row.sequence, 4);
+        assert_eq!(row.self_response.as_deref(), Some("declined"));
+    }
+
+    /// The single most dangerous regression this feature can have: retrying
+    /// with the *stale* body would silently overwrite whatever change caused
+    /// the 412 in the first place. The mock event has gained a second
+    /// attendee (`ana@x.com`) between the first attempt and the retry — the
+    /// retry's body must include her, not just re-send the original
+    /// one-attendee payload.
+    #[tokio::test]
+    async fn a_stale_etag_retries_with_the_freshly_fetched_attendees_not_the_stale_ones() {
+        let ev = stored(vec![guest(true)]);
+        let (pool, id) = seeded_pool_with(&ev).await;
+
+        let server = wiremock::MockServer::start().await;
+
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path("/calendars/primary/events/ev1"))
+            .and(wiremock::matchers::body_json(serde_json::json!({
+                "attendees": [{"email": "me@x.com", "responseStatus": "declined",
+                               "optional": false, "additionalGuests": 0}]
+            })))
+            .respond_with(wiremock::ResponseTemplate::new(412))
+            .expect(1)
+            .mount(&server).await;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/calendars/primary/events/ev1"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "ev1", "status": "confirmed", "etag": "\"fresh\"",
+                "attendees": [
+                    {"email": "me@x.com", "responseStatus": "needsAction",
+                     "optional": false, "self": true},
+                    {"email": "ana@x.com", "responseStatus": "tentative", "optional": false}
+                ]
+            })))
+            .mount(&server).await;
+
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path("/calendars/primary/events/ev1"))
+            .and(wiremock::matchers::header("if-match", "\"fresh\""))
+            .and(wiremock::matchers::body_json(serde_json::json!({
+                "attendees": [
+                    {"email": "me@x.com", "responseStatus": "declined",
+                     "optional": false, "additionalGuests": 0},
+                    {"email": "ana@x.com", "responseStatus": "tentative",
+                     "optional": false, "additionalGuests": 0}
+                ]
+            })))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "ev1", "status": "confirmed", "etag": "\"new\""
+            })))
+            .expect(1)
+            .mount(&server).await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "at-1");
+        let body_attendees = attendees_with_self_response(&ev.attendees, "declined").unwrap();
+        respond_via_client(&pool, id, "declined", "all", 0, ev, "primary", body_attendees, &client)
+            .await
+            .unwrap();
+        // `.expect(1)` on the second PATCH mock fails on drop if the retry
+        // never sent that body — including if it resent the stale one, which
+        // would either 404 (no mock matches it a second time) or panic via
+        // `unwrap()` on the resulting `PreconditionFailed`.
+    }
+
+    /// Combines the fix for Critical 1 (the lookup window must come from the
+    /// *clicked* occurrence, not the master's own `start_utc`) with the fix
+    /// for Important 3 (a patch that landed on a different Google id than the
+    /// row loaded must not be folded back onto that row).
+    #[tokio::test]
+    async fn answering_a_non_first_occurrence_targets_that_occurrence_and_leaves_the_local_master_row_alone() {
+        const DAY: i64 = 24 * 3_600_000;
+        const SERIES_DTSTART: i64 = 1_785_715_200_000; // Monday
+        let occurrence_4 = SERIES_DTSTART + 4 * DAY; // Friday, occurrence #4
+
+        let mut ev = stored(vec![guest(true)]);
+        ev.google_id = "master1".into();
+        ev.recurrence = Some("RRULE:FREQ=DAILY".into());
+        ev.start_utc = SERIES_DTSTART; // every occurrence shares this row's own start
+        ev.etag = Some("\"master-etag\"".into());
+        let (pool, id) = seeded_pool_with(&ev).await;
+
+        let server = wiremock::MockServer::start().await;
+
+        // Bracketed by the clicked occurrence: a lookup bracketed by
+        // SERIES_DTSTART instead would not match this mock at all, and the
+        // call below would 404.
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/calendars/primary/events/master1/instances"))
+            .and(wiremock::matchers::query_param(
+                "timeMin", omacal_sync::to_rfc3339(occurrence_4 - 1000),
+            ))
+            .and(wiremock::matchers::query_param(
+                "timeMax", omacal_sync::to_rfc3339(occurrence_4 + 1000),
+            ))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [{"id": "master1_20260807T000000Z", "status": "confirmed"}]
+            })))
+            .mount(&server).await;
+
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path("/calendars/primary/events/master1_20260807T000000Z"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "master1_20260807T000000Z", "status": "confirmed", "etag": "\"occ-etag\"",
+                "attendees": [{"email": "me@x.com", "responseStatus": "declined",
+                               "optional": false, "self": true}]
+            })))
+            .expect(1)
+            .mount(&server).await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "at-1");
+        let body_attendees = attendees_with_self_response(&ev.attendees, "declined").unwrap();
+        respond_via_client(
+            &pool, id, "declined", "this", occurrence_4, ev, "primary", body_attendees, &client,
+        )
+        .await
+        .unwrap();
+
+        // The occurrence was patched — proved above by `.expect(1)` and by
+        // `unwrap()` not panicking (a wrongly-bracketed lookup 404s). The
+        // *local master row* must be untouched: `master1_20260807T000000Z` is
+        // a different Google id than `master1`, and stamping the instance's
+        // response onto the master's row would corrupt it.
+        let (row, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
+        assert_eq!(row.etag.as_deref(), Some("\"master-etag\""),
+            "the instance's etag must not be stamped onto the master's own row");
+        assert_eq!(row.self_response.as_deref(), Some("needsAction"),
+            "the master's local self_response must not change from one occurrence's answer");
+    }
+
+    /// Critical 2's failure mode, exercised end to end: no instance is found
+    /// for a bare master row (`master == fallback`), and there is no PATCH
+    /// mock mounted at all — if the fix regressed to "fall back to the
+    /// master", this test would fail via a 404 rather than by silently
+    /// succeeding and patching the whole series.
+    #[tokio::test]
+    async fn an_empty_instance_lookup_on_a_bare_master_errors_rather_than_patching_the_series() {
+        let mut ev = stored(vec![guest(true)]);
+        ev.google_id = "master1".into();
+        ev.recurrence = Some("RRULE:FREQ=DAILY".into());
+        let (pool, id) = seeded_pool_with(&ev).await;
+
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/calendars/primary/events/master1/instances"))
+            .respond_with(wiremock::ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"items": []})))
+            .mount(&server).await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "at-1");
+        let body_attendees = attendees_with_self_response(&ev.attendees, "declined").unwrap();
+        let start = ev.start_utc;
+        let err = respond_via_client(
+            &pool, id, "declined", "this", start, ev, "primary", body_attendees, &client,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("could not find that occurrence"), "{err}");
     }
 }
