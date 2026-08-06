@@ -236,8 +236,27 @@ pub async fn respond_to_event(
     scope: String,
     occurrence_start_ms: i64,
 ) -> Result<EventDetail, String> {
+    respond_to_event_impl(&state, id, &response, &scope, occurrence_start_ms).await
+}
+
+/// The body of `respond_to_event`, minus the Tauri `State` wrapper so the
+/// demo gate is reachable from a test — the same split `sign_in_impl` uses,
+/// and for the same reason: a gate that exists only inside a
+/// `#[tauri::command]` cannot be exercised without a running app, and an
+/// unexercised gate is one a future edit deletes in silence.
+///
+/// The gate is the first statement. Everything past it reads the config file,
+/// the Keychain and Google, and then *writes to somebody's real calendar* —
+/// the first thing in this app that does.
+async fn respond_to_event_impl(
+    state: &AppState,
+    id: i64,
+    response: &str,
+    scope: &str,
+    occurrence_start_ms: i64,
+) -> Result<EventDetail, String> {
     crate::demo_sync_guard(state.demo)?;
-    respond_impl(&state, id, &response, &scope, occurrence_start_ms)
+    respond_impl(state, id, response, scope, occurrence_start_ms)
         .await
         .map_err(|e| crate::errors::user_facing(&e))
 }
@@ -361,8 +380,17 @@ async fn respond_via_client(
 
 #[tauri::command]
 pub async fn refresh_event(state: tauri::State<'_, AppState>, id: i64) -> Result<EventDetail, String> {
+    refresh_event_impl(&state, id).await
+}
+
+/// The body of `refresh_event`, split for the same reason as
+/// [`respond_to_event_impl`]: the demo gate is the first statement, and it
+/// has to be reachable without a running app or nothing proves it is there.
+/// This one only reads from Google, but it reads with a real account's access
+/// token, and demo mode has no account to read as.
+async fn refresh_event_impl(state: &AppState, id: i64) -> Result<EventDetail, String> {
     crate::demo_sync_guard(state.demo)?;
-    refresh_impl(&state, id).await.map_err(|e| crate::errors::user_facing(&e))
+    refresh_impl(state, id).await.map_err(|e| crate::errors::user_facing(&e))
 }
 
 /// Re-pulls one event from Google and folds it back in, the same shape as
@@ -850,6 +878,55 @@ mod tests {
             "the instance's etag must not be stamped onto the master's own row");
         assert_eq!(row.self_response.as_deref(), Some("needsAction"),
             "the master's local self_response must not change from one occurrence's answer");
+    }
+
+    /// An `AppState` a test can hold: demo mode's whole point is that nothing
+    /// below the gate runs, so the token cache starts empty and stays that
+    /// way.
+    fn state_with(pool: SqlitePool, demo: bool) -> AppState {
+        AppState { pool, demo, tokens: Default::default() }
+    }
+
+    /// "Demo mode must never write to the real database or reach Google",
+    /// applied to the first command in this app that writes to somebody's
+    /// real calendar. Deleting the guard from `respond_to_event_impl` leaves
+    /// this reading `~/.config/omacal/config.toml`, then the Keychain, then
+    /// PATCHing Google with `sendUpdates=all` — against whatever account the
+    /// demo database happens to name.
+    #[tokio::test]
+    async fn responding_refuses_in_demo_mode_without_touching_config_keyring_or_google() {
+        let ev = stored(vec![guest(true)]);
+        let (pool, id) = seeded_pool_with(&ev).await;
+        let state = state_with(pool, true);
+
+        let err = respond_to_event_impl(&state, id, "declined", "this", ev.start_utc)
+            .await
+            .unwrap_err();
+        assert_eq!(err, crate::DEMO_SYNC_MESSAGE);
+
+        // Past the guard this would have folded Google's answer back onto the
+        // row — or failed with a config/keyring error, which is not this
+        // message either.
+        let (row, _) = omacal_store::event_by_id(&state.pool, id).await.unwrap().unwrap();
+        assert_eq!(row.etag.as_deref(), Some("\"old\""), "demo mode wrote to the store");
+        assert_eq!(row.self_response.as_deref(), Some("needsAction"));
+    }
+
+    /// The same guard on the other new command. `refresh_event` only reads
+    /// from Google, but it reads with a real account's access token — so it
+    /// still needs the config file and the Keychain, and demo mode has
+    /// neither an account nor any business asking for one.
+    #[tokio::test]
+    async fn refreshing_refuses_in_demo_mode_without_touching_config_keyring_or_google() {
+        let ev = stored(vec![guest(true)]);
+        let (pool, id) = seeded_pool_with(&ev).await;
+        let state = state_with(pool, true);
+
+        let err = refresh_event_impl(&state, id).await.unwrap_err();
+        assert_eq!(err, crate::DEMO_SYNC_MESSAGE);
+
+        let (row, _) = omacal_store::event_by_id(&state.pool, id).await.unwrap().unwrap();
+        assert_eq!(row.etag.as_deref(), Some("\"old\""), "demo mode wrote to the store");
     }
 
     /// Critical 2's failure mode, exercised end to end: no instance is found
