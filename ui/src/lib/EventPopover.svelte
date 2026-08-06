@@ -87,6 +87,22 @@
   let freshAttendees = $state<Attendee[] | null>(null);
   const shownAttendees = $derived(freshAttendees ?? detail.attendees);
 
+  // Google can send a `responseStatus` we do not model, so both tables are
+  // read with a `needsAction` fallback rather than indexed blindly — an
+  // unknown status should read as "hasn't answered", never as a blank circle.
+  const MARK: Record<string, string> = {
+    accepted: '✓',
+    declined: '✕',
+    tentative: '~',
+    needsAction: '?',
+  };
+  const STATUS_WORD: Record<string, string> = {
+    accepted: 'accepted',
+    declined: 'declined',
+    tentative: 'maybe',
+    needsAction: 'no reply yet',
+  };
+
   async function respond(response: 'accepted' | 'tentative' | 'declined', e: MouseEvent) {
     const btn = e.currentTarget as HTMLButtonElement;
     const previous = chosen;
@@ -177,7 +193,14 @@
     <div class="guests">
       {#each shownAttendees as a}
         <div class="guest {a.response_status}">
-          {a.display_name ?? a.email}{a.is_self ? ' (you)' : ''}
+          <!-- The glyph carries the status, not the colour. This app takes its
+               palette from the Omarchy theme, which offers no semantic green or
+               red — and at 11px a tick reads faster than a hue anyway. Colour
+               only reinforces: answered is full strength, everything else is
+               muted. `aria-hidden` because the word follows it in `.sr`. -->
+          <i class="mark" aria-hidden="true">{MARK[a.response_status] ?? MARK.needsAction}</i>
+          <span class="who">{a.display_name ?? a.email}{a.is_self ? ' (you)' : ''}</span>
+          <span class="sr">{STATUS_WORD[a.response_status] ?? STATUS_WORD.needsAction}</span>
         </div>
       {/each}
     </div>
@@ -237,11 +260,35 @@
   .conf:hover { text-decoration: underline; }
 
   .guests { margin: 8px 0; display: flex; flex-direction: column; gap: 3px; }
-  .guest { font-size: 11px; padding: 1px 0; }
+  .guest { font-size: 11px; padding: 1px 0; display: flex; align-items: center; gap: 6px; }
+  .who { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* `currentColor` so the ring always matches the name beside it — one rule
+     sets both, and a status can never end up with a ring in one strength and
+     a name in another. */
+  .mark {
+    flex: none; width: 13px; height: 13px; border-radius: 50%;
+    border: 1px solid currentColor; color: inherit;
+    display: grid; place-items: center;
+    font-size: 8px; font-style: normal; line-height: 1;
+  }
+
+  /* Answered-yes is the only row at full strength; everything else recedes.
+     That inverts the old styling, where four states shared two greys and the
+     difference between "coming" and "hasn't replied" was an opacity of .8. */
   .guest.accepted { color: var(--text); }
-  .guest.declined { color: var(--muted); text-decoration: line-through; }
-  .guest.tentative { color: var(--muted); }
-  .guest.needsAction { color: var(--muted); opacity: .8; }
+  .guest.tentative,
+  .guest.needsAction { color: var(--muted); }
+  .guest.declined { color: var(--muted); }
+  /* Strike the name, never the ring — a struck-through ✕ is unreadable. */
+  .guest.declined .who { text-decoration: line-through; }
+
+  /* Visually hidden, still announced: the ring is decorative to a screen
+     reader, so the status has to exist as text somewhere. */
+  .sr {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip-path: inset(50%); white-space: nowrap;
+  }
 
   .scope { display: flex; gap: 12px; font-size: 11px; margin: 8px 0 6px; color: var(--muted); }
   .scope label { display: flex; align-items: center; gap: 5px; cursor: pointer; }

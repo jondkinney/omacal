@@ -184,8 +184,11 @@ test.describe('WeekGrid popover flow', () => {
     await expect(page.locator('.pop h2')).toHaveText('Team off-site');
     const guests = page.locator('.pop .guest');
     await expect(guests).toHaveCount(2);
-    await expect(guests.nth(0)).toHaveText('Ana');
-    await expect(guests.nth(1)).toContainText('(you)');
+    // `.who` rather than the row: the row also carries the status glyph and a
+    // visually-hidden status word, and asserting on the whole row would break
+    // every time either changes while proving nothing extra about who is here.
+    await expect(guests.nth(0).locator('.who')).toHaveText('Ana');
+    await expect(guests.nth(1).locator('.who')).toContainText('(you)');
   });
 
   test('an all-day chip opens from the keyboard, not only the mouse', async ({ page }) => {
@@ -633,6 +636,25 @@ test.describe('EventPopover', () => {
     await expect(page.locator('.guest')).toHaveCount(3);
     await expect(page.locator('.guest.accepted')).toHaveCount(1);
     await expect(page.locator('.guest.declined')).toHaveCount(1);
+  });
+
+  test('each guest carries a status glyph, and a different one per status', async ({ page }) => {
+    // The whole point of the glyph is that "coming" and "hasn't replied" are
+    // told apart at a glance. Asserting each mark's own character is what
+    // catches a table that has gone uniform — a count of `.mark` would pass
+    // even if every guest showed the same symbol.
+    await page.goto(show('standup'));
+    await expect(page.locator('.guest.accepted .mark')).toHaveText('✓');
+    await expect(page.locator('.guest.declined .mark')).toHaveText('✕');
+    await expect(page.locator('.guest.needsAction .mark')).toHaveText('?');
+  });
+
+  test('the status is announced, not only drawn', async ({ page }) => {
+    // The ring is aria-hidden, so without the visually-hidden word a screen
+    // reader would hear a name and nothing about whether they are coming.
+    await page.goto(show('standup'));
+    await expect(page.locator('.guest.accepted .sr')).toHaveText('accepted');
+    await expect(page.locator('.guest.needsAction .sr')).toHaveText('no reply yet');
   });
 
   test('the panel claims to be modal and takes focus on open', async ({ page }) => {
