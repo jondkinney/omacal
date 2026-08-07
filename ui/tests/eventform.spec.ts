@@ -703,6 +703,203 @@ test.describe('an all-day event’s dates cross the boundary as dates', () => {
   });
 });
 
+// --- The other end of the same boundary -----------------------------------
+//
+// **Fix round 1, finding 1.** The fixture above leaves the **end** arm pinned
+// by nothing: reverting only `endDate` to the pre-fix
+// `dateOf(endMs - DAY_MS / 2)` left the whole suite green.
+//
+// That is a property of the fixture, not slack in it. The old derivation is
+// correct exactly while `browserOffset − calendarOffset ∈ [−12h, +12h)` —
+// stepping back half a day from the exclusive midnight absorbs any offset
+// difference smaller than that. Auckland (+12) read from Sofia (+3) is −9h,
+// inside the window, which is *why* the headline defect stretched a one-day
+// trip instead of moving it: the end came out right by construction.
+//
+// **This is a third fixture rule, and it is a pair property** — not the
+// calendar's zone alone, as the start arm needs. It needs
+// |browserOffset − calendarOffset| ≥ 12h, re-derived per fixture from both
+// zones, the way the shift rule is. `America/New_York` (−4 in August) read from
+// `Asia/Tokyo` (+9) is +13h, and it is an ordinary pairing rather than an
+// exotic one.
+//
+// Under the revert this fixture shows *and saves* a one-day trip as **two
+// days** — start right, end a day late. The mirror of the headline defect,
+// which this commit fixed and, until now, without a witness.
+
+/** Midnight in New York, as the store holds an all-day event. `-04:00` because
+ *  August is EDT; `dateIn` checks that claim against the zone itself. */
+const newYorkMidnight = (date: string): number => Date.parse(`${date}T00:00:00-04:00`);
+
+/** The half day the pre-fix `endDate` derivation stepped back — named so the
+ *  fixture check below is visibly the old code's own arithmetic. */
+const HALF_DAY_MS = 12 * 3_600_000;
+
+test.describe('an all-day event’s last day is read, not derived either', () => {
+  // The **browser**; the calendar is `America/New_York`. Thirteen hours apart,
+  // which is what the *end* arm needs and what the Auckland/Sofia pairing above
+  // cannot give at any time of year.
+  test.use({ timezoneId: 'Asia/Tokyo' });
+
+  test('a one-day trip on a calendar west of the browser keeps its last day', async ({ page }) => {
+    await page.goto(PURE);
+    const startMs = newYorkMidnight('2026-08-10');
+    const endMs = newYorkMidnight('2026-08-11');
+    const detail = allDayDetail('2026-08-10', '2026-08-10', startMs, endMs);
+
+    // Fixture check: the instants fall on the days the detail claims, in the
+    // calendar's own zone.
+    expect(dateIn(startMs, 'America/New_York')).toBe(detail.start_date);
+    expect(dateIn(endMs - 1, 'America/New_York')).toBe(detail.end_date);
+
+    // Fixture check, and the one this whole describe exists for: the **old
+    // code's own arithmetic**, run here, gives a different answer from the date
+    // the calendar keeps. Asserted rather than described, because the pairing
+    // that makes it true is a fact about two zones and can be got wrong.
+    expect(dateIn(endMs - HALF_DAY_MS, 'Asia/Tokyo')).toBe('2026-08-11');
+    expect(dateIn(endMs - HALF_DAY_MS, 'Asia/Tokyo')).not.toBe(detail.end_date);
+    // And the honest converse: this fixture does **not** separate the *start*
+    // arm. The browser reads the start instant as the right day, so nothing
+    // here would catch `dateOf(startMs)` — that is the Auckland/Sofia describe's
+    // job, and the two fixtures are needed for the two arms.
+    expect(dateIn(startMs, 'Asia/Tokyo')).toBe(detail.start_date);
+
+    const r = await page.evaluate((d) => {
+      const ef = (window as any).__eventform;
+      const value = ef.valueFromDetail(d, d.start_ms, d.end_ms);
+      return { value, when: ef.toEventInput(value, value).when };
+    }, detail);
+
+    // The last day a person would point at, unmoved.
+    expect(r.value.endDate).toBe('2026-08-10');
+    // …and the start, which was never in doubt here.
+    expect(r.value.date).toBe('2026-08-10');
+
+    expect(r.when.kind).toBe('allDay');
+    expect(r.when.startDate).toBe('2026-08-10');
+    // One day, still. Under the revert this is '2026-08-12' — a two-day event
+    // mailed to the whole guest list by a save that touched only the title.
+    expect(r.when.endDate).toBe('2026-08-11');
+  });
+});
+
+// --- Counting the occurrence's shift in whole days -------------------------
+//
+// **Fix round 1, finding 2.** `occurrenceDate` divides a millisecond difference
+// by a day and rounds. `Math.round` was argued in prose and asserted by
+// nothing: `Math.floor` left the whole suite green, and so did `Math.ceil`.
+//
+// Neither is equivalent. Both instants are midnight in the calendar's zone, so
+// their difference is a whole number of days **plus or minus the offset change
+// between them** — and a series straddling a transition is the only place that
+// shows. Spring-forward makes the gap short (95h for four days), fall-back
+// makes it long (97h). `Math.floor` gets the short one wrong, `Math.ceil` the
+// long one, and `Math.round` is the only one right on both.
+//
+// **Both fixtures are needed**; one alone leaves the other survivor alive. The
+// reviewer's note suggested a single straddling fixture would close it — a
+// spring-forward one does not catch `Math.ceil`, which is why there are two
+// tests here rather than one.
+//
+// The harm is exactly what `occurrenceDate` exists to prevent: the form opens a
+// day off the chip that was clicked, and a title-only save PATCHes the
+// occurrence there with `sendUpdates=all`.
+
+/** Midnight in Sofia. The offset is a parameter rather than a constant because
+ *  the change *between* two of them is the whole subject: EET is UTC+2, EEST
+ *  UTC+3, and every fixture below spans the switch. `dateIn` checks each. */
+const sofiaMidnight = (date: string, offset: '+02:00' | '+03:00'): number =>
+  Date.parse(`${date}T00:00:00${offset}`);
+
+test.describe('an all-day occurrence’s shift is counted in whole days', () => {
+  // Named rather than inherited. The subtraction in `occurrenceDate` is
+  // zone-free — that is the property — so the browser's zone cannot change the
+  // answer; UTC is chosen because it still reads the Sofia calendar's midnight
+  // as the *previous* day, so none of these can be passed by a `dateOf`
+  // derivation either.
+  test.use({ timezoneId: 'UTC' });
+
+  const SOFIA = 'Europe/Sofia';
+
+  /** Drives `valueFromDetail` for a one-day all-day series master and a clicked
+   *  chip, and reports what the form shows and what a save would send. */
+  const openedOn = async (
+    page: import('@playwright/test').Page,
+    master: ReturnType<typeof allDayDetail>,
+    chipStart: number,
+    chipEnd: number,
+  ) => {
+    await page.goto(PURE);
+    return page.evaluate(([d, s, e]) => {
+      const ef = (window as any).__eventform;
+      const value = ef.valueFromDetail(d, s, e);
+      return {
+        value, when: ef.toEventInput(value, value).when, browserReading: ef.dateOf(s),
+      };
+    }, [master, chipStart, chipEnd] as [typeof master, number, number]);
+  };
+
+  test('a series straddling a spring-forward keeps the clicked day', async ({ page }) => {
+    // 29 Mar 2026 is the European spring-forward: 03:00 becomes 04:00, so that
+    // day is 23 hours and four days of this series are 95, not 96.
+    const master = allDayDetail(
+      '2026-03-27', '2026-03-27',
+      sofiaMidnight('2026-03-27', '+02:00'), sofiaMidnight('2026-03-28', '+02:00'),
+    );
+    master.is_recurring = true;
+    const chipStart = sofiaMidnight('2026-03-31', '+03:00');
+    const chipEnd = sofiaMidnight('2026-04-01', '+03:00');
+
+    // Fixture checks. The gap in hours is asserted outright: it is the entire
+    // reason this fixture discriminates, and a fixture that quietly stopped
+    // straddling the transition would go on passing while proving nothing.
+    expect((chipStart - master.start_ms) / 3_600_000).toBe(95);
+    expect(dateIn(master.start_ms, SOFIA)).toBe('2026-03-27');
+    expect(dateIn(chipStart, SOFIA)).toBe('2026-03-31');
+
+    const r = await openedOn(page, master, chipStart, chipEnd);
+
+    // And that a browser-zone derivation cannot pass this either.
+    expect(r.browserReading).toBe('2026-03-30');
+
+    // `Math.floor(95/24)` is 3, and answers '2026-03-30' — the day before the
+    // chip the user clicked.
+    expect(r.value.date).toBe('2026-03-31');
+    expect(r.value.endDate).toBe('2026-03-31');
+    expect(r.when.startDate).toBe('2026-03-31');
+    expect(r.when.endDate).toBe('2026-04-01');
+  });
+
+  test('a series straddling a fall-back keeps the clicked day', async ({ page }) => {
+    // 25 Oct 2026 is the European fall-back: 04:00 becomes 03:00, so that day is
+    // 25 hours and four days of this series are 97. The mirror of the case
+    // above, and the one that catches `Math.ceil` — which the spring-forward
+    // fixture alone does not.
+    const master = allDayDetail(
+      '2026-10-23', '2026-10-23',
+      sofiaMidnight('2026-10-23', '+03:00'), sofiaMidnight('2026-10-24', '+03:00'),
+    );
+    master.is_recurring = true;
+    const chipStart = sofiaMidnight('2026-10-27', '+02:00');
+    const chipEnd = sofiaMidnight('2026-10-28', '+02:00');
+
+    expect((chipStart - master.start_ms) / 3_600_000).toBe(97);
+    expect(dateIn(master.start_ms, SOFIA)).toBe('2026-10-23');
+    expect(dateIn(chipStart, SOFIA)).toBe('2026-10-27');
+
+    const r = await openedOn(page, master, chipStart, chipEnd);
+
+    expect(r.browserReading).toBe('2026-10-26');
+
+    // `Math.ceil(97/24)` is 5, and answers '2026-10-28' — the day after the
+    // chip the user clicked.
+    expect(r.value.date).toBe('2026-10-27');
+    expect(r.value.endDate).toBe('2026-10-27');
+    expect(r.when.startDate).toBe('2026-10-27');
+    expect(r.when.endDate).toBe('2026-10-28');
+  });
+});
+
 test.describe('the anchor’s precision (characterised, not fixed)', () => {
   test('CHARACTERISED: a start with seconds on it loses them', async () => {
     // Zone-independent, so this one needs no page. Google stores a start to the

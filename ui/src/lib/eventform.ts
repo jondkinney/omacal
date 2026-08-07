@@ -283,6 +283,22 @@ export function blankValue(
  * came out right while its first day was a day early, and how a one-day trip
  * was saved as a two-day one.
  *
+ * `Math.round` rather than `floor` or `ceil`, and the difference is not
+ * cosmetic: a series straddling a spring-forward is 95 hours across four days
+ * and `floor` answers three, a fall-back is 97 and `ceil` answers five. Either
+ * opens the form a day off the chip that was clicked. Both are pinned, one
+ * fixture each, in `eventform.spec.ts`.
+ *
+ * The bound it works within, stated rather than left to be discovered: rounding
+ * recovers the right number of days while the offset changes by strictly less
+ * than 12 hours between the two instants. Every daylight-saving transition is
+ * inside that by an order of magnitude; a zone *redefinition* need not be.
+ * `Pacific/Apia` moved from UTC−11 to UTC+13 in December 2011 — 30 December
+ * never existed there — and this returns `2012-01-02` for a chip whose civil
+ * date is `2012-01-03`. Historical and exotic, and not a UI artefact: the same
+ * instants come out of `recur.rs`. Left unhandled deliberately, because the
+ * alternative is civil date arithmetic in a zone this browser does not know.
+ *
  * Each side is measured on its own rather than sharing one shift, because the
  * clicked block's `endMs` is carried for exactly that reason — see
  * `Occurrence`'s doc comment in `eventdetail.ts`.
@@ -296,7 +312,13 @@ export function blankValue(
  * quietly accommodated.
  */
 function occurrenceDate(date: string | null, rowMs: number, occurrenceMs: number): string {
-  if (date === null) {
+  // `!date`, not `=== null`. The type says `string | null`, but the type is a
+  // claim about the wire, and the failure this guard exists to report is
+  // exactly the one that falsifies it: a field that stops arriving under this
+  // name reaches here as `undefined`, which `=== null` waves through — and
+  // `addDays` then throws from somewhere else, with a message about splitting a
+  // string rather than about a malformed detail. The diagnostic is the point.
+  if (!date) {
     throw new Error('an all-day event with no date: an EventDetail carries both or neither');
   }
   return addDays(date, Math.round((occurrenceMs - rowMs) / DAY_MS));
