@@ -3602,6 +3602,145 @@ mod tests {
         assert_eq!(edit_zone(true, "Pacific/Auckland", "America/New_York"), "Pacific/Auckland");
     }
 
+    /// Midnight on `date` in `tz`, as epoch milliseconds — the coordinates an
+    /// all-day event actually lives in on either side of the boundary.
+    fn midnight_in(date: &str, tz: &str) -> i64 {
+        format!("{date}T00:00:00[{tz}]")
+            .parse::<jiff::Zoned>()
+            .unwrap_or_else(|e| panic!("{date} in {tz}: {e}"))
+            .timestamp()
+            .as_millisecond()
+    }
+
+    /// **A defect, pinned rather than fixed. The assertions below are the
+    /// WRONG answer, and each says what the right one is.** Do not "make this
+    /// pass" — it already passes. Fixing the defect must change these
+    /// expectations, deliberately, which is the whole reason it is written
+    /// this way round.
+    ///
+    /// **What happens:** an all-day event, saved with only its title changed,
+    /// moves a day and mails every guest (`sendUpdates=all`).
+    ///
+    /// **Why.** An all-day event has no instant — it has a *date*. Both sides
+    /// of this boundary turn that date into an instant, and they use different
+    /// zones to do it:
+    ///
+    /// * The **store** holds midnight in the *calendar's* zone. That is not
+    ///   incidental: Google returns an all-day `start` as a bare `date` with
+    ///   no zone, so `omacal_sync::resolve` falls back to `calendars.timezone`,
+    ///   and [`create_via_client`] writes against the same zone on purpose so
+    ///   the row it stores is the one the next sync recomputes.
+    /// * The **form** builds midnight in the *browser's* zone, because
+    ///   `eventform.ts` has nothing else to build it in — the whole UI reads
+    ///   instants through `new Date(ms)`, and `CalendarRow` does not carry
+    ///   `calendars.timezone` to the UI at all.
+    ///
+    /// So a date that nobody touched comes back as a different instant, and
+    /// the two-line consequence is in `changed_fields` and `event_time_json`:
+    /// the times trigger fires because the instants differ, and the instant is
+    /// then rendered back to a `date` in [`edit_zone`]'s zone — the calendar's
+    /// — which lands on the day before.
+    ///
+    /// **Not caused by Task 9, but first reachable through it.** `edit_zone`
+    /// and the instant-only `EventInput` predate the form; nothing could send
+    /// an all-day edit until there was something to send it from. The suite
+    /// could not have caught it either: Playwright runs at `timezoneId: 'UTC'`
+    /// and every Rust fixture before this one used `"UTC"` for both zones, so
+    /// the two coordinate systems coincided everywhere.
+    ///
+    /// **Where the boundary belongs** — for whoever fixes it. `EventInput`
+    /// should carry a *date* for an all-day event rather than an instant, so
+    /// that no zone conversion happens on this path at all; that is Google's
+    /// own model, and it is the only version where the round trip cannot lose.
+    /// The narrower alternative is to expose `calendars.timezone` to the UI so
+    /// the form builds its all-day instants in the same zone the store does.
+    /// Both hold Task 5's line that an all-day write uses the calendar's zone;
+    /// only the first also fixes the *display* half, where a browser zone west
+    /// of the calendar's already renders the wrong day before anybody saves.
+    #[test]
+    fn bug_an_untouched_all_day_date_moves_a_day_when_the_calendar_zone_is_not_the_browsers() {
+        // August, so New York is UTC-4 and Sofia UTC+3: seven hours apart, and
+        // the calendar is the western of the two.
+        const CAL_TZ: &str = "America/New_York";
+        const BROWSER_TZ: &str = "Europe/Sofia";
+
+        // The row as sync stored it: midnight in the calendar's zone.
+        let mut ev = stored(vec![]);
+        ev.google_id = "allday1".into();
+        ev.summary = Some("Berlin trip".into());
+        ev.is_all_day = true;
+        ev.start_utc = midnight_in("2026-08-10", CAL_TZ);
+        ev.end_utc = midnight_in("2026-08-11", CAL_TZ);
+
+        // What the form sends after the user edits the title and nothing else.
+        // `2026-08-10` is what it displayed — correct, in this direction — and
+        // midnight on it is built in the browser's zone.
+        let after = crate::write::EventFields {
+            summary: Some("Berlin trip (booked)".into()),
+            location: None,
+            description: None,
+            start_ms: midnight_in("2026-08-10", BROWSER_TZ),
+            end_ms: midnight_in("2026-08-11", BROWSER_TZ),
+            is_all_day: true,
+            tz: BROWSER_TZ.into(),
+            recurrence: None,
+        };
+
+        let body = edit_patch_body(&ev, ev.start_utc, ev.end_utc, ev.start_utc, CAL_TZ, &after);
+
+        assert_eq!(body["summary"], "Berlin trip (booked)", "the edit the user actually made");
+        assert!(
+            body.get("start").is_some(),
+            "CORRECT would be no `start` at all — the date did not change, and \
+             `changed_fields` omits an untouched time. It fires because the two \
+             sides built the same date into different instants."
+        );
+        assert_eq!(
+            body["start"]["date"], "2026-08-09",
+            "WRONG, and this is the harm: correct is 2026-08-10. The trip moves \
+             to the day before, and the PATCH goes out with sendUpdates=all."
+        );
+        assert_eq!(
+            body["end"]["date"], "2026-08-10",
+            "WRONG for the same reason: correct is 2026-08-11."
+        );
+    }
+
+    /// The same defect's control arm, and the reason the suite stayed green
+    /// through eight tasks: with one zone in play the two coordinate systems
+    /// coincide, the instants match, and the body carries the title alone.
+    ///
+    /// It is here so the test above cannot be misread as "`edit_patch_body`
+    /// always resends times" — the machinery is right, the coordinates are not.
+    #[test]
+    fn an_untouched_all_day_date_sends_no_times_when_both_zones_agree() {
+        const TZ: &str = "America/New_York";
+
+        let mut ev = stored(vec![]);
+        ev.google_id = "allday1".into();
+        ev.summary = Some("Berlin trip".into());
+        ev.is_all_day = true;
+        ev.start_utc = midnight_in("2026-08-10", TZ);
+        ev.end_utc = midnight_in("2026-08-11", TZ);
+
+        let after = crate::write::EventFields {
+            summary: Some("Berlin trip (booked)".into()),
+            location: None,
+            description: None,
+            start_ms: midnight_in("2026-08-10", TZ),
+            end_ms: midnight_in("2026-08-11", TZ),
+            is_all_day: true,
+            tz: TZ.into(),
+            recurrence: None,
+        };
+
+        let body = edit_patch_body(&ev, ev.start_utc, ev.end_utc, ev.start_utc, TZ, &after);
+
+        assert_eq!(body["summary"], "Berlin trip (booked)");
+        assert!(body.get("start").is_none(), "an untouched date must send no start: {body}");
+        assert!(body.get("end").is_none(), "an untouched date must send no end: {body}");
+    }
+
     /// A scope this command does not implement must be refused rather than
     /// left to fall through: [`target_event_id`] reads every scope that is not
     /// `"all"` as "this one", so an unrecognised one would silently edit a
