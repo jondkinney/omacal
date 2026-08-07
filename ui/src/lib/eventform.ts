@@ -53,8 +53,12 @@ export const CUSTOM_REPEAT = 'custom';
 
 /**
  * Everything the form edits, in the shapes its inputs actually hold — dates as
- * `yyyy-mm-dd` and times as `HH:MM`, never milliseconds. Converting to instants
- * is `toEventInput`'s job and happens once, on save.
+ * `yyyy-mm-dd` and times as `HH:MM`. Converting to instants is `whenOf`'s job
+ * and happens once, on save.
+ *
+ * The two `source…Ms` fields are the exception, and are not editable state: see
+ * their own comment for why a value has to remember what its civil fields were
+ * read off.
  */
 export type EventFormValue = {
   title: string;
@@ -89,6 +93,34 @@ export type EventFormValue = {
   start: string;
   /** `HH:MM`, 24-hour. Ignored when `isAllDay`. */
   end: string;
+  /**
+   * The instants `date`+`start` and `endDate`+`end` were **read off**, or
+   * `null` when they were not read off anything — a value assembled from two
+   * sources (`blankValue` moving a default onto a chosen day) or typed from
+   * nothing has no earlier instant behind it.
+   *
+   * Not editable state, and the only numbers on a type that otherwise holds
+   * civil strings. They are here because the reading is lossy in **both**
+   * directions and re-deriving what nobody touched therefore *moves* the event:
+   *
+   *   - `HH:MM` cannot say 09:00:37, so a start with seconds comes back 37
+   *     seconds early;
+   *   - a repeated wall-clock hour names two instants an hour apart with one
+   *     `yyyy-mm-dd HH:MM` between them, and `toMs` resolves that pair to the
+   *     earlier — a full hour early, for 12 block starts a year in
+   *     `Europe/Sofia`, 12 in `America/New_York`, 6 in `Australia/Lord_Howe`.
+   *
+   * `write::shifted_like` short-circuits only on an *exact* match, so a
+   * difference of any size is applied as a real move: renaming a meeting sends
+   * a start/end PATCH dragging it an hour earlier, with `sendUpdates=all`
+   * behind it.
+   *
+   * `whenOf` sends one of these unchanged exactly when the civil fields beside
+   * it still read as it — see `instantOf`. Nothing compares them against the
+   * form's `initial`, which is deliberate; that comment says why.
+   */
+  sourceStartMs: number | null;
+  sourceEndMs: number | null;
   isAllDay: boolean;
   location: string;
   description: string;
@@ -207,6 +239,12 @@ export const nextHalfHour = (nowMs: number): number =>
  * site: a 23:30 event ends at 00:00 the following morning, and an `endDate` left
  * on the start's own day makes `endAfterStart` refuse a form the user never got
  * wrong.
+ *
+ * Both instants are kept as well as read, because a create has the same
+ * boundary as an edit: half an hour from 03:30 lands on a 03:00 that is *later*
+ * across a fall-back, and re-parsing the pair `dateOf`/`timeOf` just produced
+ * puts the end half an hour before the start — a form that opens already
+ * refusing to save with no field on it visibly wrong. See `sourceStartMs`.
  */
 export function blankValueAt(startMs: number, calendarId: number | null): EventFormValue {
   const endMs = startMs + HALF_HOUR_MS;
@@ -216,6 +254,8 @@ export function blankValueAt(startMs: number, calendarId: number | null): EventF
     endDate: dateOf(endMs),
     start: timeOf(startMs),
     end: timeOf(endMs),
+    sourceStartMs: startMs,
+    sourceEndMs: endMs,
     isAllDay: false,
     location: '',
     description: '',
@@ -244,6 +284,15 @@ export function blankValueAt(startMs: number, calendarId: number | null): EventF
  * both dates on today, which `endAfterStart` reads as an end twenty-three and a
  * half hours *before* the start — a form that opens already refusing to save,
  * and no field on it visibly wrong.
+ *
+ * The instants `blankValueAt` kept are deliberately **not** moved with the
+ * dates, and nothing here has to clear them either, because `instantOf` asks
+ * whether an instant still reads as the fields beside it rather than taking
+ * anybody's word for it. Move the dates onto another day and they stop reading
+ * as it, so the answer is re-derived — which is right, since a value assembled
+ * from a clock and a *different* day was read off no single instant. Pass
+ * today's own day and nothing moved, so they still read as it and the clock's
+ * instant travels unchanged. Neither case needs stating twice.
  */
 export function blankValue(
   nowMs: number,
@@ -341,6 +390,23 @@ function occurrenceDate(date: string | null, rowMs: number, occurrenceMs: number
  * `start_date` for the whole shape of that defect. `occurrenceDate` above is
  * the only thing done to them, and it moves the day, never the zone.
  *
+ * **The two instants are kept as well as read**, on both arms. For a timed
+ * event that is the whole of Task 5's fix: `timeOf` cannot carry the seconds and
+ * a repeated wall-clock hour cannot be re-parsed back to the pass it came from,
+ * so a time nobody edited has to travel as the instant it arrived as. See
+ * `sourceStartMs` and `instantOf`.
+ *
+ * On the **all-day** arm they are inert rather than special-cased, and that is
+ * worth a sentence because a reader will look for the missing `is_all_day ?`
+ * here. `whenOf`'s all-day arm sends dates and never asks, so the only path
+ * that could ask is the user toggling All day *off* — and there the two answers
+ * coincide. `instantOf` passes an instant through only when this browser reads
+ * it as exactly the date and time beside it, and a stored midnight that reads
+ * that way is one `toMs` rebuilds identically. (The lone exception is a browser
+ * zone whose midnight is itself repeated, where the stored instant is the more
+ * faithful of the two.) A `null` on this arm would say something truer about
+ * the type and change no behaviour, at the cost of a branch no test can reach.
+ *
  * `guestCount` excludes the signed-in user's own attendee row: `sendUpdates=all`
  * mails the other guests, and telling somebody they are about to notify
  * themselves is just wrong.
@@ -363,6 +429,8 @@ export function valueFromDetail(
       : dateOf(endMs),
     start: timeOf(startMs),
     end: timeOf(endMs),
+    sourceStartMs: startMs,
+    sourceEndMs: endMs,
     isAllDay: detail.is_all_day,
     location: detail.location ?? '',
     // Verbatim. Never through `sanitize.ts`: that module exists for *rendering*
@@ -380,6 +448,33 @@ export function valueFromDetail(
 }
 
 /**
+ * The instant a form's civil pair names: `source` itself when the pair is still
+ * `source`'s own reading, and `toMs`'s answer otherwise.
+ *
+ * The whole of the pass-through, in one expression, and deliberately a question
+ * about the **value alone** rather than about the form's `initial`. `dateOf`
+ * and `timeOf` are exactly what put `date` and `time` there, so "this pair
+ * still reads as `source`" and "the user has not touched this time" are the
+ * same statement — and asking it locally also answers it correctly for a time
+ * that was edited and then typed back, which a comparison against `initial`
+ * would call a change and re-derive.
+ *
+ * Living here, under `whenOf`, rather than in `toEventInput` is what keeps
+ * `endAfterStart` honest: the Save guard asks `whenOf` too, so it judges the
+ * very instants that will be sent. A pass-through one layer higher would leave
+ * an event running 03:30 to 03:00 across a fall-back — thirty real minutes —
+ * refused by a button reading a re-derived span of minus thirty.
+ *
+ * Each side is asked on its own, because each is a function of exactly two
+ * civil fields and nothing else. Editing the end must not drag the start
+ * through a round trip that loses its seconds or its pass.
+ */
+const instantOf = (source: number | null, date: string, time: string): number =>
+  source !== null && dateOf(source) === date && timeOf(source) === time
+    ? source
+    : toMs(date, time);
+
+/**
  * The `WhenInput` a value names — **dates for an all-day event, instants for a
  * timed one, and never a translation between the two.**
  *
@@ -395,6 +490,11 @@ export function valueFromDetail(
  * the last day a person would point at, Google's `end.date` is the day after
  * it. `addDays` does that on whole days, once, with no zone in it.
  *
+ * The timed arm goes through `instantOf` rather than `toMs` alone, so a time
+ * nobody edited is sent as the instant it was read off instead of re-parsed
+ * out of a civil pair that cannot express it. Read that function for why the
+ * check belongs here and not in `toEventInput`.
+ *
  * Either instant on the timed arm may be `NaN` while the user is mid-edit, and
  * either date on the all-day arm may be unparseable for the same reason.
  * `endAfterStart` is what every caller checks before any of it is sent.
@@ -405,8 +505,8 @@ export function whenOf(value: EventFormValue): WhenInput {
   }
   return {
     kind: 'timed',
-    startMs: toMs(value.date, value.start),
-    endMs: toMs(value.endDate, value.end),
+    startMs: instantOf(value.sourceStartMs, value.date, value.start),
+    endMs: instantOf(value.sourceEndMs, value.endDate, value.end),
   };
 }
 
@@ -446,6 +546,12 @@ export const endAfterStart = (value: EventFormValue): boolean => {
  * act of saving an unrelated field. Comparing against `initial` rather than
  * taking a "touched" flag from the caller is deliberate: a flag can be
  * forgotten, and the failure is silent and irreversible.
+ *
+ * **`repeat` is the only field `initial` decides.** The other thing that turns
+ * on "did the user touch this" — whether a time is sent as the instant it came
+ * from or re-derived from a civil pair — deliberately does *not* ask `initial`,
+ * and does not happen here. It is `instantOf`, under `whenOf`, so that the Save
+ * guard and the wire cannot disagree about what a form contains.
  *
  * Empty strings become `null`, not `""`: `changed_fields` sends a `null` to
  * clear a field, and an empty summary sent as `""` would leave a Google event
