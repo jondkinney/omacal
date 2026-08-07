@@ -1,5 +1,7 @@
 import { test, expect } from '@playwright/test';
-import { FIXED_NOW, POPOVER_DETAILS, POPOVER_REFRESHED_DETAIL, popoverWeekWithResponse } from './fixtures';
+import {
+  FIXED_NOW, POPOVER_DETAILS, POPOVER_REFRESHED_DETAIL, popoverWeekWithResponse, YEAR_2026_NOW,
+} from './fixtures';
 import { CALENDAR_SYNC_REMOVED } from './harness/tauri';
 
 const show = (c: string, f: string) => `/tests/harness/index.html?c=${c}&f=${f}`;
@@ -870,6 +872,11 @@ test.describe('YearGrid', () => {
   });
 
   test('today is a filled disc', async ({ page }) => {
+    // `YearGrid` reads the real wall clock; `y2026` is a fixed calendar year,
+    // so the clock must be frozen to an instant inside it — same pattern as
+    // `FIXED_NOW` for the Header specs below — or this becomes a permanent
+    // failure the moment the real date rolls past 2026.
+    await page.clock.setFixedTime(YEAR_2026_NOW);
     await page.goto(show('y2026'));
     await expect(page.locator('.yday.today')).toHaveCount(1);
   });

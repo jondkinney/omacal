@@ -559,6 +559,15 @@ const y2026 = (): YearPayload => {
   return y;
 };
 
+/** An instant inside 2026, for freezing the page clock before `YearGrid`'s
+ *  own today-highlight spec. `YearGrid` reads the real wall clock via
+ *  `new Date()` (same as `MonthGrid`'s `todayStart`), and `y2026` is a fixed
+ *  calendar year — without freezing the clock to a date inside it, that spec
+ *  is a permanent failure waiting for 2027-01-01, for reasons unconnected to
+ *  any code change. Clear of both January (all marked `unsynced`) and 15
+ *  March (the dotted day), so the three specs stay independent. */
+export const YEAR_2026_NOW = Date.UTC(2026, 5, 10); // Wed 10 Jun 2026
+
 export const FIXTURES: Record<string, Record<string, any>> = {
   WeekGrid: {
     empty: { week: emptyWeek() },
