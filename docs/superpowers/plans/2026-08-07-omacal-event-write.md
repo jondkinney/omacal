@@ -508,44 +508,6 @@ pub(crate) struct EventFields {
     pub recurrence: Option<Option<String>>,
 }
 
-/// What the UI actually sends. Distinct from [`EventFields`] because the
-/// three-state above needs two levels of `Option` and JSON has one `null`.
-///
-/// `repeat` carries the dropdown's own vocabulary rather than an RRULE: the UI
-/// has no business authoring iCalendar, and keeping the mapping in one place
-/// ([`rrule_for`]) is what makes "a rule we cannot express is never
-/// overwritten" checkable.
-#[derive(Debug, Clone, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct EventInput {
-    pub summary: Option<String>,
-    pub location: Option<String>,
-    pub description: Option<String>,
-    pub start_ms: i64,
-    pub end_ms: i64,
-    pub is_all_day: bool,
-    pub tz: String,
-    /// Absent when the user did not touch Repeat.
-    #[serde(default)]
-    pub repeat: Option<String>,
-}
-
-/// `"never"` maps to `Some(None)` — clear the rule — because [`rrule_for`]
-/// returns `None` for it. That is the one case worth staring at: an absent
-/// `repeat` and a `repeat` of `"never"` must not collapse together.
-pub(crate) fn fields_from_input(input: EventInput) -> EventFields {
-    EventFields {
-        summary: input.summary,
-        location: input.location,
-        description: input.description,
-        start_ms: input.start_ms,
-        end_ms: input.end_ms,
-        is_all_day: input.is_all_day,
-        tz: input.tz,
-        recurrence: input.repeat.map(|r| rrule_for(&r)),
-    }
-}
-
 /// Google's `start`/`end` object. All-day events carry `date`; timed events
 /// carry `dateTime` and `timeZone`. Sending both is rejected.
 pub(crate) fn event_time_json(ms: i64, is_all_day: bool, tz: &str) -> Value {
@@ -724,6 +686,44 @@ Expected: FAIL — functions not found.
 - [ ] **Step 3: Implement**
 
 ```rust
+/// What the UI actually sends. Distinct from [`EventFields`] because the
+/// three-state above needs two levels of `Option` and JSON has one `null`.
+///
+/// `repeat` carries the dropdown's own vocabulary rather than an RRULE: the UI
+/// has no business authoring iCalendar, and keeping the mapping in one place
+/// ([`rrule_for`]) is what makes "a rule we cannot express is never
+/// overwritten" checkable.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct EventInput {
+    pub summary: Option<String>,
+    pub location: Option<String>,
+    pub description: Option<String>,
+    pub start_ms: i64,
+    pub end_ms: i64,
+    pub is_all_day: bool,
+    pub tz: String,
+    /// Absent when the user did not touch Repeat.
+    #[serde(default)]
+    pub repeat: Option<String>,
+}
+
+/// `"never"` maps to `Some(None)` — clear the rule — because [`rrule_for`]
+/// returns `None` for it. That is the one case worth staring at: an absent
+/// `repeat` and a `repeat` of `"never"` must not collapse together.
+pub(crate) fn fields_from_input(input: EventInput) -> EventFields {
+    EventFields {
+        summary: input.summary,
+        location: input.location,
+        description: input.description,
+        start_ms: input.start_ms,
+        end_ms: input.end_ms,
+        is_all_day: input.is_all_day,
+        tz: input.tz,
+        recurrence: input.repeat.map(|r| rrule_for(&r)),
+    }
+}
+
 /// The rule omacal writes for each Repeat option. `never` is `None`.
 pub(crate) fn rrule_for(repeat: &str) -> Option<String> {
     Some(
