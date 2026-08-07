@@ -43,6 +43,37 @@ pub(crate) fn event_time_json(ms: i64, is_all_day: bool, tz: &str) -> Value {
     }
 }
 
+/// When an event happens.
+///
+/// An all-day event has **no instant and no zone** — Google models it as a bare
+/// `date`, and so does the store once `omacal_sync::resolve` has read it. The
+/// enum exists so nobody can supply a zone for one: the previous shape took
+/// `(ms, is_all_day, tz)` and the two sides of the boundary converted that date
+/// to an instant in *different* zones, which moved events nobody moved.
+#[derive(Debug, Clone, PartialEq)]
+#[allow(dead_code)] // wired up in Task 2, which retires `event_time_json`.
+pub(crate) enum When {
+    Timed { start_ms: i64, end_ms: i64 },
+    /// Both `yyyy-mm-dd`. `end_date` is **exclusive** — the day after the last
+    /// one — matching Google's wire format and the store's `end_utc`.
+    AllDay { start_date: String, end_date: String },
+}
+
+/// Google's `start` and `end` objects. `tz` is read only by the timed arm.
+#[allow(dead_code)] // wired up in Task 2, which retires `event_time_json`.
+pub(crate) fn when_json(when: &When, tz: &str) -> (Value, Value) {
+    match when {
+        When::AllDay { start_date, end_date } => (
+            json!({ "date": start_date }),
+            json!({ "date": end_date }),
+        ),
+        When::Timed { start_ms, end_ms } => (
+            json!({ "dateTime": omacal_sync::to_rfc3339(*start_ms), "timeZone": tz }),
+            json!({ "dateTime": omacal_sync::to_rfc3339(*end_ms),   "timeZone": tz }),
+        ),
+    }
+}
+
 /// Where `target_ms` lands after the same *calendar* movement that takes
 /// `from_ms` to `to_ms`, read in `tz`.
 ///
@@ -480,6 +511,27 @@ mod tests {
         let v = event_time_json(1_785_398_400_000, true, "Not/AZone");
         assert!(v["date"].is_string());
         assert_eq!(v["date"].as_str().unwrap().len(), 10);
+    }
+
+    #[test]
+    fn an_all_day_when_needs_no_zone_and_sends_bare_dates() {
+        let w = When::AllDay { start_date: "2026-08-10".into(), end_date: "2026-08-11".into() };
+        // The zone is deliberately absurd: an all-day event must not consult it.
+        let (start, end) = when_json(&w, "Not/AZone");
+        assert_eq!(start, serde_json::json!({ "date": "2026-08-10" }));
+        assert_eq!(end, serde_json::json!({ "date": "2026-08-11" }));
+        assert!(start.get("dateTime").is_none());
+        assert!(start.get("timeZone").is_none());
+    }
+
+    #[test]
+    fn a_timed_when_sends_datetime_and_zone() {
+        let w = When::Timed { start_ms: 1_785_398_400_000, end_ms: 1_785_402_000_000 };
+        let (start, end) = when_json(&w, "Europe/Sofia");
+        assert!(start["dateTime"].is_string());
+        assert_eq!(start["timeZone"], "Europe/Sofia");
+        assert!(start.get("date").is_none());
+        assert!(end["dateTime"].is_string());
     }
 
     /// A wall clock in New York as an instant. `2026-03-08T02:00` is that
