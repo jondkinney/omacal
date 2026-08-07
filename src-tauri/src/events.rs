@@ -112,14 +112,38 @@ async fn event_detail_impl(state: &AppState, id: i64) -> anyhow::Result<EventDet
     })
 }
 
-/// Rebuilds the attendee array with only the `self` row's response changed.
+/// One attendee as Google's wire shape, with `response_status` overridden.
 ///
-/// Every other attendee is copied through field for field — including
-/// `comment` and `additionalGuests`, which nothing else in this app reads or
-/// writes but which Google still holds writable per-attendee state. Google
-/// replaces the list wholesale on patch, so anything omitted here is *erased*
-/// from the real event — including other people's answers, and their own
-/// notes and guest counts.
+/// **The single field list every write in this app sends an attendee through**,
+/// and deliberately only one. Google replaces the attendee array wholesale on
+/// both `insert` and `patch`, so a field missing from this function is not
+/// merely unrecorded — it is *erased from the real event*, for every guest, on
+/// every write. `comment` and `additionalGuests` are here for exactly that
+/// reason: nothing in this app reads or writes them, but they are writable
+/// per-attendee state that a guest set on Google's own client, and a second
+/// copy of this mapping that forgot them would delete other people's notes.
+///
+/// `is_self` is not sent. It is Google's own annotation of which row is the
+/// authenticated user's, computed per request from the credentials, and
+/// sending it back is meaningless at best.
+fn attendee_json(a: &omacal_store::Attendee, response_status: &str) -> serde_json::Value {
+    let mut v = serde_json::json!({
+        "email": a.email,
+        "responseStatus": response_status,
+        "optional": a.optional,
+        "additionalGuests": a.additional_guests,
+    });
+    if let Some(n) = &a.display_name {
+        v["displayName"] = serde_json::Value::String(n.clone());
+    }
+    if let Some(c) = &a.comment {
+        v["comment"] = serde_json::Value::String(c.clone());
+    }
+    v
+}
+
+/// Rebuilds the attendee array with only the `self` row's response changed.
+/// Every other attendee is copied through by [`attendee_json`], unchanged.
 ///
 /// `None` when no attendee is marked `self`: there is no row of ours to edit,
 /// and sending the list anyway would rewrite other people's for no reason.
@@ -135,22 +159,28 @@ pub(crate) fn attendees_with_self_response(
             .iter()
             .map(|a| {
                 let status = if a.is_self { response } else { a.response_status.as_str() };
-                let mut v = serde_json::json!({
-                    "email": a.email,
-                    "responseStatus": status,
-                    "optional": a.optional,
-                    "additionalGuests": a.additional_guests,
-                });
-                if let Some(n) = &a.display_name {
-                    v["displayName"] = serde_json::Value::String(n.clone());
-                }
-                if let Some(c) = &a.comment {
-                    v["comment"] = serde_json::Value::String(c.clone());
-                }
-                v
+                attendee_json(a, status)
             })
             .collect(),
     )
+}
+
+/// The attendee array unchanged — everybody, with the answer they already gave.
+///
+/// For copying a guest list onto a *different* event, which is what splitting
+/// a series with "this and following" does. Nobody's response is touched: the
+/// new series is the same meeting continuing, so a guest who accepted it has
+/// accepted the second half too, and resetting them all to `needsAction` would
+/// ask an entire team to answer an invitation they already answered.
+///
+/// Unlike [`attendees_with_self_response`] this does not answer `None` for a
+/// list with no `self` row. That function returns `None` because there is
+/// nothing of *ours* to change; here there is nothing of ours to change either
+/// way, and a list without us on it still has to be carried across — dropping
+/// it because the signed-in user is not a guest is precisely how the second
+/// half of a series loses its entire guest list.
+pub(crate) fn attendees_verbatim(attendees: &[omacal_store::Attendee]) -> Vec<serde_json::Value> {
+    attendees.iter().map(|a| attendee_json(a, &a.response_status)).collect()
 }
 
 /// Which Google event id an RSVP write targets.
@@ -628,7 +658,11 @@ async fn create_via_client(
         body["recurrence"] = serde_json::json!([rule]);
     }
 
-    let created = client.insert_event(cal_google_id, &body).await?;
+    // `"none"`: this create is the new-event form, which cannot add guests, so
+    // there is nobody to notify. The other caller of `insert_event` — the
+    // series split in [`split_series`] — carries a real guest list and passes
+    // `"all"`. See `insert_event`'s own doc comment.
+    let created = client.insert_event(cal_google_id, &body, "none").await?;
 
     // The same Google -> StoredEvent mapping `omacal-sync` uses for every
     // event it writes locally. Reusing it is what keeps a row created here
@@ -827,15 +861,14 @@ async fn update_impl(
         anyhow::bail!("demo mode — there is nothing to save");
     }
 
-    // `"following"` is Task 7's; refused here rather than left to fall
-    // through, because `target_event_id` reads every scope that is not
-    // `"all"` as "this one" — an unrecognised scope would quietly edit a
-    // single occurrence of the series the user asked to split. When Task 7
-    // lands, this arm goes and the message with it (it is deliberately not in
-    // `errors.rs`'s allowlist, so today it shows as the generic failure: a
-    // scope the shipped UI cannot yet send is a bug, not something to explain
-    // to a user).
-    if !matches!(scope, "this" | "all") {
+    // Every scope this command implements, named exhaustively. The check is
+    // not redundant with the `match` further down: `target_event_id` reads
+    // every scope that is not `"all"` as "this one", so an unrecognised scope
+    // arriving from a future UI would quietly edit a single occurrence of a
+    // series the user asked to do something else with. Deliberately not in
+    // `errors.rs`'s allowlist — a scope the shipped UI cannot send is a bug,
+    // not something to explain to a user.
+    if !matches!(scope, "this" | "all" | "following") {
         anyhow::bail!("that edit scope is not available yet");
     }
 
@@ -920,14 +953,78 @@ async fn update_via_client(
         .recurring_event_id
         .as_deref()
         .or_else(|| ev.recurrence.as_ref().map(|_| ev.google_id.as_str()));
+
+    // "This and following" is not a patch at all — it is two writes, and it
+    // leaves through [`split_series`] rather than falling into the machinery
+    // below. The two ways it does *not* leave here are the point of this
+    // block.
+    //
+    // A row that belongs to no series has no "following": there is one event,
+    // and editing it and everything after it is editing it. That reads as
+    // `"all"`, which for a one-off is a patch of the event itself — the same
+    // answer `target_event_id` documents for `(_, None)`.
+    //
+    // The clicked occurrence being the series' *own first* is the case that
+    // has to be caught rather than split. Truncating a master to end before
+    // its own DTSTART leaves a rule that expands to nothing: an event Google
+    // still holds, that renders in no grid, that the user cannot see and so
+    // cannot delete. There is nothing before the first occurrence to keep, so
+    // "this and following" there means the whole series, and `"all"` is what
+    // the user meant. The master is fetched to decide it — not read off `ev`,
+    // whose `start_utc` is the *exception's* start when the row is one.
+    //
+    // Both of those, and the truncation itself, are aimed at the occurrence's
+    // slot **on the rule's own grid** rather than at where it is rendered. For
+    // a master row the two are the same instant. For an exception — an
+    // occurrence somebody has already moved — they are not, and `UNTIL` is
+    // compared against the grid: aimed an hour late, the rule still generates
+    // the original slot and the shortened series keeps an occurrence it was
+    // meant to lose; aimed early, it loses one it was meant to keep. It is
+    // also what makes "the first occurrence, dragged later, is still the first
+    // occurrence" come out right.
+    let split_at_ms = ev.original_start_utc.unwrap_or(occurrence_start_ms);
+    // The master this block fetched, when it decided not to split after all.
+    // It is the very resource the `"all"` path below is about to ask for, so
+    // it is handed on rather than fetched twice.
+    let mut prefetched = None;
+    let scope = if scope == "following" {
+        match series {
+            None => "all",
+            Some(master_id) => {
+                let master = client.get_event(cal_google_id, master_id).await?;
+                let master_row = row_from_wire(&master, ev.calendar_id, cal_tz)?;
+                if split_at_ms > master_row.start_utc {
+                    return split_series(
+                        pool,
+                        split_at_ms,
+                        &ev,
+                        &master,
+                        &master_row,
+                        cal_google_id,
+                        cal_tz,
+                        &after,
+                        client,
+                    )
+                    .await;
+                }
+                prefetched = Some(master);
+                "all"
+            }
+        }
+    } else {
+        scope
+    };
+
     let target = target_event_id(scope, series, &ev.google_id);
 
     // The resolved instance is kept, not just its id: `event_instances` asks
     // for no `fields` mask, so each item is a full event — `etag` and its own
     // times included — and both are needed below. Re-fetching it would spend a
-    // request on data already in hand.
+    // request on data already in hand. `prefetched` is the same idea one step
+    // earlier: `Some` only on the `"following"`-became-`"all"` path, where it
+    // is by construction the master `target_event_id` has just named.
     let (event_id, instance) = match &target {
-        Target::Master(master_id) => (master_id.clone(), None),
+        Target::Master(master_id) => (master_id.clone(), prefetched),
         Target::Instance { master, fallback } => {
             let (time_min, time_max) = instance_lookup_window(occurrence_start_ms);
             let found = client.event_instances(cal_google_id, master, &time_min, &time_max).await?;
@@ -1008,6 +1105,237 @@ async fn update_via_client(
             }
         };
         omacal_store::upsert_event(pool, &row).await?;
+    }
+
+    Ok(())
+}
+
+/// "This and following": the same meeting, continuing — as two series where
+/// there was one.
+///
+/// # The order is the whole safety argument
+///
+/// **Create the tail first, shorten the original second.** Google has no
+/// transaction across two events, so one of the two writes can land without
+/// the other, and the two orders fail in opposite directions:
+///
+/// * create-then-truncate, failing at the truncate, leaves an overlapping
+///   *duplicate*. Every occurrence still exists; two of them sit on top of
+///   each other in the grid, and the user can delete one. Nothing is lost, and
+///   the error below says exactly that.
+/// * truncate-then-create, failing at the create, leaves **nothing at all**
+///   after the split point. The tail of the series is gone, silently and
+///   unrecoverably — the rule that generated it has already been rewritten, so
+///   there is no record of what those occurrences were.
+///
+/// Every error past the `insert` therefore says the same thing: the duplicate
+/// exists and needs a human. Reporting a bare transport failure there would
+/// leave the user with two series and no idea why.
+///
+/// # The new series carries the master's guest list, verbatim
+///
+/// A split is one meeting continuing, so the second half has the same people
+/// on it. Omitting `attendees` from the `insert` does not merely leave the
+/// list blank: it *removes every guest from the second half of their own
+/// series*, which is worse than any scheduling error this function could make
+/// and is invisible to the person who did it. They go through
+/// [`attendees_verbatim`], which is the same field-for-field mapping every
+/// other write uses — see [`attendee_json`] for why a second copy of that
+/// list is not an option.
+///
+/// That is also why the `insert` notifies (`sendUpdates=all`) where the
+/// new-event form does not. The truncation half already mails every guest that
+/// the series changed; creating the replacement silently would tell them half
+/// the story, and leave external guests with a meeting nobody invited them to.
+///
+/// # What the two bodies are built from
+///
+/// The new series takes its times from `after` **absolutely**, with no shift.
+/// It is anchored *at* the clicked occurrence, so the form's instants are
+/// already in the resource's own coordinates —
+/// [`crate::write::shifted_like`]'s `target == from` short circuit would
+/// return them unchanged, and going through it would only obscure that. This
+/// is the one write in this file where the form's numbers are used as they
+/// arrived; [`edit_patch_body`]'s doc comment covers why every other one
+/// cannot.
+///
+/// Its recurrence follows the same three-state as everywhere else: Repeat
+/// untouched carries the series' own lines across, Never makes the remainder a
+/// single event, and a chosen rule replaces the `RRULE` while keeping the rest.
+/// `EXDATE`/`RDATE` lines are carried in every case — an `EXDATE` in the tail
+/// names an occurrence somebody deleted, and dropping it would resurrect a
+/// cancelled meeting.
+///
+/// The truncation is `{"recurrence": [...]}` and nothing else. The user's edits
+/// belong to the tail; the original keeps the past exactly as it was.
+///
+/// It is aimed at `split_at_ms`, which is **not** the instant the tail starts
+/// at and need not be the instant the user clicked either. `UNTIL` is compared
+/// against the instants the *rule* generates, so the truncation has to name the
+/// occurrence's slot on that grid — its `originalStartTime` when the clicked
+/// occurrence is one somebody had already dragged elsewhere. The tail's own
+/// start, by contrast, is wherever the user put it. The caller separates the
+/// two; see [`update_via_client`].
+///
+/// # Two shapes this refuses rather than guesses at
+///
+/// A rule ending in `COUNT` cannot be split by rewriting text. The original
+/// converts to an `UNTIL` (see [`crate::write::truncated_rule`]), but the tail
+/// would need `COUNT` minus however many occurrences the first half consumed —
+/// a number only a full expansion of the rule knows, and one that an
+/// off-by-one in either direction turns into a meeting the user never
+/// scheduled or one that quietly disappears. Carrying `COUNT` across unchanged
+/// is the same bug with a bigger number. It stops and says so.
+///
+/// The `412` from a concurrent edit is not retried, unlike every other write
+/// here. The master was read moments earlier, so a `412` means somebody
+/// changed the series *during* the split; a retry would have to re-derive the
+/// truncation from a rule this function has not checked — one that may now end
+/// in `COUNT` — and the tail already exists by then. The duplicate is the safe
+/// place to stop.
+#[allow(clippy::too_many_arguments)]
+async fn split_series(
+    pool: &SqlitePool,
+    split_at_ms: i64,
+    ev: &omacal_store::StoredEvent,
+    master: &omacal_google::model::Event,
+    master_row: &omacal_store::StoredEvent,
+    cal_google_id: &str,
+    cal_tz: &str,
+    after: &crate::write::EventFields,
+    client: &omacal_google::CalendarClient,
+) -> anyhow::Result<()> {
+    let lines: Vec<String> = master.recurrence.clone().unwrap_or_default();
+    let rules: Vec<&String> = lines.iter().filter(|l| crate::write::is_rrule(l)).collect();
+    // Somebody removed the rule between the popover opening and the save.
+    // Deliberately not allowlisted in `errors.rs`: it is a state nobody has
+    // seen, and this stops rather than inventing a series to split.
+    if rules.is_empty() {
+        anyhow::bail!("that event no longer repeats, so there is nothing to split");
+    }
+    // Every rule line, not just the first: two `RRULE`s in one `recurrence` is
+    // not valid iCalendar and Google does not emit it, but checking one and
+    // truncating both is the shape a real bug hides in.
+    if rules.iter().any(|r| crate::write::has_count(r)) {
+        anyhow::bail!(
+            "omacal cannot split a series that ends after a set number of times — \
+             edit all events instead"
+        );
+    }
+
+    // ---- 1. The tail. -----------------------------------------------------
+    let zone = edit_zone(after.is_all_day, cal_tz, &ev.start_tz);
+    let mut body = serde_json::json!({
+        "start": crate::write::event_time_json(after.start_ms, after.is_all_day, zone),
+        "end":   crate::write::event_time_json(after.end_ms,   after.is_all_day, zone),
+    });
+    if let Some(s) = &after.summary     { body["summary"]     = s.clone().into(); }
+    if let Some(s) = &after.location    { body["location"]    = s.clone().into(); }
+    if let Some(s) = &after.description { body["description"] = s.clone().into(); }
+
+    match &after.recurrence {
+        // Repeat untouched: the tail repeats exactly as the series did.
+        None => body["recurrence"] = serde_json::json!(lines),
+        // Repeat set to Never: what is left of the series is one event.
+        Some(None) => {}
+        // A rule the user chose replaces the `RRULE` line only. The rest
+        // travel with it — see [`crate::write::is_rrule`] for why an `EXDATE`
+        // dropped here brings a cancelled occurrence back to life.
+        Some(Some(chosen)) => {
+            let mut kept = vec![chosen.clone()];
+            kept.extend(lines.iter().filter(|l| !crate::write::is_rrule(l)).cloned());
+            body["recurrence"] = serde_json::json!(kept);
+        }
+    }
+
+    let attendees = attendees_verbatim(&master_row.attendees);
+    if !attendees.is_empty() {
+        body["attendees"] = serde_json::json!(attendees);
+    }
+
+    let created = client.insert_event(cal_google_id, &body, "all").await?;
+
+    // ---- 2. The original, shortened. --------------------------------------
+    // Past this point the tail exists on Google, so every failure below is the
+    // duplicate, whatever its cause.
+    let shortened: Vec<String> = lines
+        .iter()
+        .map(|l| {
+            if crate::write::is_rrule(l) {
+                crate::write::truncated_rule(
+                    l,
+                    split_at_ms,
+                    master_row.is_all_day,
+                    edit_zone(master_row.is_all_day, cal_tz, &master_row.start_tz),
+                )
+            } else {
+                l.clone()
+            }
+        })
+        .collect();
+
+    let patched = client
+        .patch_event(
+            cal_google_id,
+            &master.id,
+            &serde_json::json!({ "recurrence": shortened }),
+            master.etag.as_deref(),
+        )
+        .await
+        .map_err(|e| {
+            tracing::error!(master = %master.id, created = %created.id, %e,
+                "series split created the new series but could not shorten the original");
+            anyhow::anyhow!(
+                "the new series was created but the original could not be shortened — \
+                 you now have two overlapping series and should delete one"
+            )
+        })?;
+
+    // ---- 3. Only now, the local store. ------------------------------------
+    // Deliberately after both writes rather than between them. A local row is
+    // a cache the next sync repairs, so writing one buys nothing on the
+    // failure path — while writing it *between* the two would put a database
+    // error in front of the message above, leaving the user with two series
+    // and an error that never mentions them.
+    //
+    // A created event Google describes in terms this app cannot store is left
+    // for the next sync rather than reported: both writes have landed by then,
+    // and failing here would claim the split did not happen when it did.
+    match omacal_sync::to_stored(&created, ev.calendar_id, cal_tz) {
+        Some(row) => {
+            omacal_store::upsert_event(pool, &row).await?;
+        }
+        None => tracing::warn!(created = %created.id,
+            "the new series was created but could not be stored locally; sync will pick it up"),
+    }
+
+    // Folded in only when the resource that was patched *is* the row that was
+    // loaded — the same conservatism as [`update_via_client`] and
+    // `respond_via_client`. It is conservatism rather than a safety property
+    // here: `to_stored` names its own `google_id`, and `upsert_event` is keyed
+    // on `(calendar_id, google_id)`, so a master folded back from an exception
+    // row would land on the master's row rather than over the exception's.
+    // Leaving it to sync keeps all three functions reading the same way.
+    //
+    // **No `merge_patched` fallback, unlike those two.** They fall back to it
+    // because it carries what *their* write changed — etag, sequence,
+    // attendees. This write changes `recurrence`, and `merge_patched` does not
+    // carry `recurrence` at all: using it here would stamp the new version onto
+    // a row still holding the *untruncated* rule, so the grid would go on
+    // expanding the series past the split while the store claimed to be up to
+    // date, and the next edit would condition on an etag whose rule it does not
+    // have. An unreadable response is left for sync instead — both writes have
+    // landed by then, so reporting a failure would be a lie about what
+    // happened, exactly as for the create above.
+    if master.id == ev.google_id {
+        match omacal_sync::to_stored(&patched, ev.calendar_id, cal_tz) {
+            Some(row) => {
+                omacal_store::upsert_event(pool, &row).await?;
+            }
+            None => tracing::warn!(master = %master.id,
+                "the series was split but the shortened original could not be stored locally; \
+                 sync will pick it up"),
+        }
     }
 
     Ok(())
@@ -2724,15 +3052,25 @@ mod tests {
         assert_eq!(edit_zone(true, "Pacific/Auckland", "America/New_York"), "Pacific/Auckland");
     }
 
-    /// `"following"` is Task 7's, and until it exists it must be refused
-    /// rather than left to fall through: [`target_event_id`] reads every scope
-    /// that is not `"all"` as "this one", so an unrecognised scope would
-    /// silently edit a single occurrence of the series the user asked to
-    /// split.
+    /// A scope this command does not implement must be refused rather than
+    /// left to fall through: [`target_event_id`] reads every scope that is not
+    /// `"all"` as "this one", so an unrecognised one would silently edit a
+    /// single occurrence of the series the user asked to do something else
+    /// with.
     ///
     /// Also proves the guard runs before `load_config` — past it this test
-    /// would read the real `~/.config/omacal/config.toml`, which no test may
-    /// do, and fail with that message instead.
+    /// would read the real `~/.config/omacal/config.toml` and then the real
+    /// Keychain, which no test may do, and fail with that message instead.
+    ///
+    /// **The scope here must be one nothing implements, and stay that way.**
+    /// This test used `"following"` while that scope was Task 7's stand-in for
+    /// "unimplemented", and implementing it turned the test into exactly the
+    /// thing its own second paragraph forbids: it ran through `load_config`,
+    /// read the real config off disk, and failed at the Keychain with "No
+    /// matching credential found". It passed the assertion for a year of
+    /// nobody looking only because the seeded account (`e@x`) happens to have
+    /// no keyring entry. `"thisAndPrevious"` is Google's own vocabulary for a
+    /// scope this app has no plans for.
     #[tokio::test]
     async fn an_unimplemented_scope_is_refused_rather_than_treated_as_this_occurrence() {
         let mut ev = weekly_master("RRULE:FREQ=WEEKLY");
@@ -2741,7 +3079,7 @@ mod tests {
         let err = update_impl(
             &state_with(pool, false),
             id,
-            "following",
+            "thisAndPrevious",
             OCCURRENCE,
             form("Standup (moved)", OCCURRENCE, OCCURRENCE + HOUR),
         )
@@ -3196,4 +3534,1067 @@ mod tests {
         assert_eq!(crate::errors::user_facing(&err), "this calendar is not writable from omacal");
     }
 
+    // --- update_event, scope "following": the series split. The only path in
+    // this app that makes two writes Google cannot make atomically, so the
+    // *order* of those writes is a property in its own right and gets its own
+    // tests — as does what happens when the second one fails.
+
+    /// `OCCURRENCE` less one second, as an RFC 5545 `UNTIL`. Verify with:
+    /// `python3 -c "import datetime as d; print(d.datetime.fromtimestamp(1786352400-1, d.timezone.utc))"`
+    const UNTIL_BEFORE_OCCURRENCE: &str = "RRULE:FREQ=WEEKLY;UNTIL=20260810T085959Z";
+
+    /// A guest list whose every writable field is set to something different,
+    /// so a body built from anything less than a full round trip fails on it:
+    /// an optional guest, a comment, extra guests, two display names and one
+    /// without, and three different answers. Google replaces the array
+    /// wholesale, so each of those is a real thing to lose.
+    fn wire_guests() -> serde_json::Value {
+        serde_json::json!([
+            {"email": "ana@x.com", "displayName": "Ana", "responseStatus": "accepted",
+             "optional": false, "self": true, "additionalGuests": 0},
+            {"email": "bo@x.com", "responseStatus": "declined", "optional": true,
+             "comment": "double-booked", "additionalGuests": 2},
+            {"email": "cy@x.com", "displayName": "Cy", "responseStatus": "needsAction",
+             "optional": false, "additionalGuests": 0}
+        ])
+    }
+
+    /// The same list as it must go back out: `self` dropped (Google's own
+    /// per-request annotation, not ours to send) and every other field intact,
+    /// including the answers people already gave — a split is the same meeting
+    /// continuing, so nobody is asked to RSVP again.
+    fn expected_guests() -> serde_json::Value {
+        serde_json::json!([
+            {"email": "ana@x.com", "displayName": "Ana", "responseStatus": "accepted",
+             "optional": false, "additionalGuests": 0},
+            {"email": "bo@x.com", "responseStatus": "declined", "optional": true,
+             "comment": "double-booked", "additionalGuests": 2},
+            {"email": "cy@x.com", "displayName": "Cy", "responseStatus": "needsAction",
+             "optional": false, "additionalGuests": 0}
+        ])
+    }
+
+    /// The series master as Google describes it. A split reads its rule, its
+    /// guest list and its version from *here* rather than from the local row:
+    /// this fixture's etag (`"m1"`) differs from `weekly_master`'s
+    /// (`"master-etag"`) and its guest list is one the local row does not have
+    /// at all, so a body built from the stored copy fails every assertion
+    /// below rather than passing by coincidence.
+    fn wire_master(rules: &[&str]) -> serde_json::Value {
+        serde_json::json!({
+            "id": "master1", "status": "confirmed", "etag": "\"m1\"",
+            "summary": "Standup",
+            "recurrence": rules,
+            "attendees": wire_guests(),
+            "start": {"dateTime": omacal_sync::to_rfc3339(DTSTART)},
+            "end":   {"dateTime": omacal_sync::to_rfc3339(DTSTART + HOUR)}
+        })
+    }
+
+    /// What a successful split's POST returns: the tail, as its own series.
+    fn wire_new_series(start_ms: i64) -> serde_json::Value {
+        serde_json::json!({
+            "id": "tail1", "status": "confirmed", "etag": "\"t1\"",
+            "summary": "Standup (from here)",
+            "recurrence": ["RRULE:FREQ=WEEKLY"],
+            "attendees": wire_guests(),
+            "start": {"dateTime": omacal_sync::to_rfc3339(start_ms)},
+            "end":   {"dateTime": omacal_sync::to_rfc3339(start_ms + HOUR)}
+        })
+    }
+
+    /// The GET every split begins with. Mounted with `.expect(1)` because the
+    /// whole design rests on the master being read before it is written.
+    async fn mount_master(server: &wiremock::MockServer, rules: &[&str]) {
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/master1"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(wire_master(rules)),
+            )
+            .expect(1)
+            .mount(server)
+            .await;
+    }
+
+    /// The property the whole task exists for, asserted on the wire rather
+    /// than on the source.
+    ///
+    /// Create-then-truncate failing halfway leaves an overlapping duplicate:
+    /// visible, deletable, nothing lost. Truncate-then-create failing halfway
+    /// deletes the tail of the series with no record of what was in it. There
+    /// is no transaction available across two Google events, so the order is
+    /// the only thing standing between a user and that second outcome.
+    ///
+    /// Both mocks match path *and* body — and the POST its `sendUpdates` too.
+    /// Matching the method alone would let a body with the wrong times, no
+    /// recurrence, no guest list or a truncation aimed at the wrong instant
+    /// sail through while this test went on passing.
+    #[tokio::test]
+    async fn following_creates_the_new_series_before_truncating_the_old() {
+        let mut ev = weekly_master("RRULE:FREQ=WEEKLY");
+        let (pool, id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+
+        let server = wiremock::MockServer::start().await;
+        mount_master(&server, &["RRULE:FREQ=WEEKLY"]).await;
+
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events"))
+            .and(wiremock::matchers::query_param("sendUpdates", "all"))
+            .and(wiremock::matchers::body_json(serde_json::json!({
+                "start": crate::write::event_time_json(OCCURRENCE, false, "UTC"),
+                "end":   crate::write::event_time_json(OCCURRENCE + HOUR, false, "UTC"),
+                "summary": "Standup (from here)",
+                "recurrence": ["RRULE:FREQ=WEEKLY"],
+                "attendees": expected_guests(),
+            })))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(wire_new_series(OCCURRENCE)),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/master1"))
+            .and(wiremock::matchers::header("if-match", "\"m1\""))
+            .and(wiremock::matchers::body_json(serde_json::json!({
+                "recurrence": [UNTIL_BEFORE_OCCURRENCE],
+            })))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "master1", "status": "confirmed", "etag": "\"m2\"",
+                "summary": "Standup",
+                "recurrence": [UNTIL_BEFORE_OCCURRENCE],
+                "attendees": wire_guests(),
+                "start": {"dateTime": omacal_sync::to_rfc3339(DTSTART)},
+                "end":   {"dateTime": omacal_sync::to_rfc3339(DTSTART + HOUR)}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        update_via_client(
+            &pool,
+            "following",
+            OCCURRENCE,
+            ev,
+            "cal@x.com",
+            "UTC",
+            form("Standup (from here)", OCCURRENCE, OCCURRENCE + HOUR),
+            &client,
+        )
+        .await
+        .unwrap();
+
+        let sent = requests(&server).await;
+        let post = sent.iter().position(|r| r.method.as_str() == "POST");
+        let patch = sent.iter().position(|r| r.method.as_str() == "PATCH");
+        assert!(post.is_some() && patch.is_some(), "one of the two writes never happened: {sent:?}");
+        assert!(
+            post < patch,
+            "the original was shortened before the tail existed: a failure between the two \
+             would have deleted the rest of the series with nothing to restore it from"
+        );
+
+        // Both halves reached the store, and neither wrote over the other:
+        // `upsert_event` is keyed on `(calendar_id, google_id)`.
+        let (row, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
+        assert_eq!(
+            row.recurrence.as_deref(),
+            Some(UNTIL_BEFORE_OCCURRENCE),
+            "the local master still expands past the split"
+        );
+        assert_eq!(row.etag.as_deref(), Some("\"m2\""));
+        let tail: i64 = sqlx::query_scalar("SELECT id FROM events WHERE google_id = 'tail1'")
+            .fetch_one(&pool)
+            .await
+            .expect("the new series was not stored locally");
+        assert_ne!(tail, row.id, "the tail was written over the master's own row");
+    }
+
+    /// The failure the ordering exists to make survivable. The tail is already
+    /// on Google by the time the truncate fails, so the user has two
+    /// overlapping series — and the error has to say so, because nothing else
+    /// will: both series render, one on top of the other, and "save failed"
+    /// would send them looking for an edit that did not happen instead of a
+    /// duplicate that did.
+    ///
+    /// The local master must still carry its *original* rule and version. A
+    /// write-back there would leave the store claiming a truncation Google
+    /// never performed, and the next edit would then condition on an etag that
+    /// does not exist.
+    #[tokio::test]
+    async fn a_failed_truncate_reports_the_leftover_duplicate() {
+        let mut ev = weekly_master("RRULE:FREQ=WEEKLY");
+        let (pool, id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+
+        let server = wiremock::MockServer::start().await;
+        mount_master(&server, &["RRULE:FREQ=WEEKLY"]).await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(wire_new_series(OCCURRENCE)),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/master1"))
+            .respond_with(wiremock::ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        let err = update_via_client(
+            &pool,
+            "following",
+            OCCURRENCE,
+            ev,
+            "cal@x.com",
+            "UTC",
+            form("Standup (from here)", OCCURRENCE, OCCURRENCE + HOUR),
+            &client,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("two overlapping series"),
+            "the leftover duplicate went unmentioned: {err}"
+        );
+        // Bound to `errors.rs`'s allowlist as well: a `.contains` check alone
+        // stays green while the user reads the generic OPAQUE message and is
+        // never told there is a duplicate to delete.
+        assert_eq!(
+            crate::errors::user_facing(&err),
+            "the new series was created but the original could not be shortened — \
+             you now have two overlapping series and should delete one"
+        );
+
+        let (row, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
+        assert_eq!(
+            row.recurrence.as_deref(),
+            Some("RRULE:FREQ=WEEKLY"),
+            "the store recorded a truncation Google refused"
+        );
+        assert_eq!(row.etag.as_deref(), Some("\"master-etag\""), "the master's version moved");
+    }
+
+    /// The gap that would have cost every guest the second half of their own
+    /// series. A split is one meeting continuing; creating the tail without
+    /// `attendees` does not leave the guest list blank for the organiser to
+    /// notice, it removes everybody from every occurrence after the split —
+    /// and the organiser, looking at the event they just edited, sees nothing
+    /// wrong.
+    ///
+    /// Asserted off `received_requests` rather than only through the matcher
+    /// in the ordering test, so this failure reads as a missing guest list
+    /// instead of an unmatched request.
+    #[tokio::test]
+    async fn the_new_series_carries_the_masters_whole_guest_list_and_tells_them() {
+        let mut ev = weekly_master("RRULE:FREQ=WEEKLY");
+        // The local row carries a *different*, one-person guest list. A body
+        // built from the stored copy rather than the master fails here.
+        ev.attendees = vec![guest(true)];
+        let (pool, _id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+
+        let server = wiremock::MockServer::start().await;
+        mount_master(&server, &["RRULE:FREQ=WEEKLY"]).await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(wire_new_series(OCCURRENCE)),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/master1"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(wire_master(&[
+                UNTIL_BEFORE_OCCURRENCE,
+            ])))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        update_via_client(
+            &pool,
+            "following",
+            OCCURRENCE,
+            ev,
+            "cal@x.com",
+            "UTC",
+            form("Standup (from here)", OCCURRENCE, OCCURRENCE + HOUR),
+            &client,
+        )
+        .await
+        .unwrap();
+
+        let sent = requests(&server).await;
+        let post = sent.iter().find(|r| r.method.as_str() == "POST").expect("no create was sent");
+        let body: serde_json::Value = serde_json::from_slice(&post.body).unwrap();
+        // `.get`, not `body["attendees"]`: `Value`'s `Index` answers `Null` for
+        // a missing key, so indexing cannot tell "no guest list" from "an
+        // empty one".
+        assert!(
+            body.get("attendees").is_some(),
+            "the second half of the series was created with no guests at all: {body}"
+        );
+        assert_eq!(
+            body["attendees"], expected_guests(),
+            "the guest list did not round-trip: every field this drops is erased from the \
+             real event, including other people's answers, comments and guest counts"
+        );
+        assert_eq!(
+            post.url.query(),
+            Some("sendUpdates=all"),
+            "the tail was created without telling its guests, while the truncation mailed \
+             them that the series had changed — half a story each"
+        );
+    }
+
+    /// The truncation carries the ending and nothing else.
+    ///
+    /// `UNTIL` is inclusive, so it lands one second before the occurrence that
+    /// moved to the new series: on it, and that occurrence exists twice; a
+    /// second late, and it exists nowhere. And the body is `recurrence` alone
+    /// — the user's edits belong to the tail, so a `summary` or `start` here
+    /// would rewrite the *past* occurrences too and mail every guest about it.
+    #[tokio::test]
+    async fn the_original_is_truncated_to_end_one_second_before_the_split() {
+        let mut ev = weekly_master("RRULE:FREQ=WEEKLY");
+        let (pool, _id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+
+        let server = wiremock::MockServer::start().await;
+        mount_master(&server, &["RRULE:FREQ=WEEKLY", "EXDATE:20260817T090000Z"]).await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(wire_new_series(OCCURRENCE)),
+            )
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/master1"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(wire_master(&[
+                UNTIL_BEFORE_OCCURRENCE,
+            ])))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        update_via_client(
+            &pool,
+            "following",
+            OCCURRENCE,
+            ev,
+            "cal@x.com",
+            "UTC",
+            form("Standup (from here)", OCCURRENCE, OCCURRENCE + HOUR),
+            &client,
+        )
+        .await
+        .unwrap();
+
+        let sent = requests(&server).await;
+        let patch = sent.iter().find(|r| r.method.as_str() == "PATCH").expect("no truncate");
+        let body: serde_json::Value = serde_json::from_slice(&patch.body).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "recurrence": [UNTIL_BEFORE_OCCURRENCE, "EXDATE:20260817T090000Z"],
+            }),
+            "the truncation either aimed at the wrong instant, rewrote the past occurrences \
+             as well, or lost the series' EXDATE list"
+        );
+    }
+
+    /// The other half of the same rule: an `EXDATE` names an occurrence
+    /// somebody deleted, so it has to travel with the tail as well. Dropping
+    /// it from the new series resurrects a meeting that was cancelled — and
+    /// `sendUpdates=all` then invites everyone to it.
+    ///
+    /// Also the Repeat-was-touched arm: a chosen rule replaces the `RRULE`
+    /// line and leaves every other line alone.
+    #[tokio::test]
+    async fn a_chosen_repeat_replaces_only_the_rule_and_the_exdates_travel_with_the_tail() {
+        let mut ev = weekly_master("RRULE:FREQ=WEEKLY");
+        let (pool, _id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+
+        let server = wiremock::MockServer::start().await;
+        mount_master(&server, &["RRULE:FREQ=WEEKLY", "EXDATE:20260817T090000Z"]).await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(wire_new_series(OCCURRENCE)),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(wire_master(&[
+                UNTIL_BEFORE_OCCURRENCE,
+            ])))
+            .mount(&server)
+            .await;
+
+        let mut after = form("Standup (from here)", OCCURRENCE, OCCURRENCE + HOUR);
+        after.recurrence = Some(Some("RRULE:FREQ=DAILY".into()));
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        update_via_client(&pool, "following", OCCURRENCE, ev, "cal@x.com", "UTC", after, &client)
+            .await
+            .unwrap();
+
+        let sent = requests(&server).await;
+        let post = sent.iter().find(|r| r.method.as_str() == "POST").expect("no create");
+        let body: serde_json::Value = serde_json::from_slice(&post.body).unwrap();
+        assert_eq!(
+            body["recurrence"],
+            serde_json::json!(["RRULE:FREQ=DAILY", "EXDATE:20260817T090000Z"]),
+            "the chosen rule either did not replace the old one, or the EXDATE was dropped \
+             and a cancelled occurrence came back: {body}"
+        );
+    }
+
+    /// The new series is anchored *at* the clicked occurrence, so the form's
+    /// instants are already in its own coordinates and go out untouched. Every
+    /// other write in this file shifts them, because it is aimed at a resource
+    /// anchored somewhere else; applying that shift here would move the tail by
+    /// the distance between the master and the occurrence — two weeks, in this
+    /// fixture — on top of the move the user actually made.
+    #[tokio::test]
+    async fn the_new_series_takes_the_forms_times_absolutely_rather_than_shifting_them() {
+        let mut ev = weekly_master("RRULE:FREQ=WEEKLY");
+        let (pool, _id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+        let moved = OCCURRENCE + 2 * HOUR;
+
+        let server = wiremock::MockServer::start().await;
+        mount_master(&server, &["RRULE:FREQ=WEEKLY"]).await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(wire_new_series(moved)),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(wire_master(&[
+                UNTIL_BEFORE_OCCURRENCE,
+            ])))
+            .mount(&server)
+            .await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        // The user dragged this occurrence two hours later and chose "this and
+        // following"; the clicked block is still `OCCURRENCE`.
+        update_via_client(
+            &pool,
+            "following",
+            OCCURRENCE,
+            ev,
+            "cal@x.com",
+            "UTC",
+            form("Standup", moved, moved + HOUR),
+            &client,
+        )
+        .await
+        .unwrap();
+
+        let sent = requests(&server).await;
+        let post = sent.iter().find(|r| r.method.as_str() == "POST").expect("no create");
+        let body: serde_json::Value = serde_json::from_slice(&post.body).unwrap();
+        assert_eq!(
+            body["start"],
+            crate::write::event_time_json(moved, false, "UTC"),
+            "the tail did not start where the user put it: {body}"
+        );
+        assert_eq!(body["end"], crate::write::event_time_json(moved + HOUR, false, "UTC"));
+        // The truncation is still aimed at the *clicked* occurrence, not at
+        // where the user moved it to: everything before the block they acted on
+        // must stay in the original series.
+        let patch = sent.iter().find(|r| r.method.as_str() == "PATCH").expect("no truncate");
+        let patched: serde_json::Value = serde_json::from_slice(&patch.body).unwrap();
+        assert_eq!(patched, serde_json::json!({ "recurrence": [UNTIL_BEFORE_OCCURRENCE] }));
+    }
+
+    /// Splitting at the series' own first occurrence has nothing to keep on
+    /// the original side. Truncating anyway leaves a master whose rule expands
+    /// to no occurrences at all: an event Google still holds, that renders in
+    /// no grid, that the user cannot see and therefore cannot delete — and one
+    /// more of them every time they do it. "This and following" from the first
+    /// occurrence *is* "all events", so that is what it does.
+    #[tokio::test]
+    async fn splitting_at_the_first_occurrence_edits_every_event_instead_of_orphaning_the_master() {
+        let mut ev = weekly_master("RRULE:FREQ=WEEKLY");
+        let (pool, _id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+
+        let server = wiremock::MockServer::start().await;
+        mount_master(&server, &["RRULE:FREQ=WEEKLY"]).await;
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/master1"))
+            .and(wiremock::matchers::body_json(
+                serde_json::json!({"summary": "Standup (renamed)"}),
+            ))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(wire_master(&[
+                "RRULE:FREQ=WEEKLY",
+            ])))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        update_via_client(
+            &pool,
+            "following",
+            DTSTART, // the series' own first occurrence
+            ev,
+            "cal@x.com",
+            "UTC",
+            form("Standup (renamed)", DTSTART, DTSTART + HOUR),
+            &client,
+        )
+        .await
+        .unwrap();
+
+        let sent = requests(&server).await;
+        assert!(
+            sent.iter().all(|r| r.method.as_str() != "POST"),
+            "a second series was created with nothing left in the first"
+        );
+        assert!(
+            sent.iter().all(|r| !r.url.path().ends_with("/instances")),
+            "\"following\" from the first occurrence became \"this one\""
+        );
+    }
+
+    /// `COUNT` and `UNTIL` are mutually exclusive, so the original converts
+    /// cleanly — but the *tail* would need `COUNT` less however many
+    /// occurrences the first half consumed, and only a full expansion of the
+    /// rule knows that number. Guessing it wrong in one direction schedules a
+    /// meeting nobody asked for and in the other quietly drops one; carrying
+    /// `COUNT` across unchanged does the first, every time, by the width of
+    /// the whole first half.
+    ///
+    /// So it stops, and it stops *before either write* — the strong part of
+    /// the claim. Refusing after the create would leave exactly the duplicate
+    /// this whole design is arranged to avoid.
+    #[tokio::test]
+    async fn a_series_that_ends_after_a_set_number_of_times_is_refused_before_any_write() {
+        let mut ev = weekly_master("RRULE:FREQ=WEEKLY;COUNT=10");
+        let (pool, id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+
+        let server = wiremock::MockServer::start().await;
+        mount_master(&server, &["RRULE:FREQ=WEEKLY;COUNT=10"]).await;
+        // Neither write is mounted: one arriving is a bare 404, which fails
+        // the assertions below rather than passing quietly.
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        let err = update_via_client(
+            &pool,
+            "following",
+            OCCURRENCE,
+            ev,
+            "cal@x.com",
+            "UTC",
+            form("Standup (from here)", OCCURRENCE, OCCURRENCE + HOUR),
+            &client,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(err.to_string().contains("set number of times"), "got: {err}");
+        assert_eq!(
+            crate::errors::user_facing(&err),
+            "omacal cannot split a series that ends after a set number of times — \
+             edit all events instead"
+        );
+
+        let sent = requests(&server).await;
+        assert!(
+            sent.iter().all(|r| matches!(r.method.as_str(), "GET")),
+            "a refusal still wrote something: {sent:?}"
+        );
+        let (row, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
+        assert_eq!(row.recurrence.as_deref(), Some("RRULE:FREQ=WEEKLY;COUNT=10"));
+    }
+
+    /// RFC 5545 §3.3.10: `UNTIL` must carry the same value type as `DTSTART`.
+    /// An all-day series' `DTSTART` is a bare date, so its `UNTIL` is one too
+    /// — and a date-valued `UNTIL` is inclusive of the day it names, so the
+    /// ending is the *previous* date, not the previous second.
+    ///
+    /// The zone that date is read in is the calendar's, matching
+    /// [`edit_zone`]'s all-day arm and the bare `date` the create sends
+    /// alongside it. `Pacific/Auckland` is UTC+12, so its midnight falls on the
+    /// previous date in UTC: a truncation that read the instant in UTC would
+    /// end the series a day early and take an occurrence the user meant to
+    /// keep.
+    #[tokio::test]
+    async fn splitting_an_all_day_series_ends_it_on_the_previous_date() {
+        let midnight = |wall: &str| {
+            wall.parse::<jiff::civil::DateTime>()
+                .unwrap()
+                .in_tz("Pacific/Auckland")
+                .unwrap()
+                .timestamp()
+                .as_millisecond()
+        };
+        let dtstart = midnight("2026-07-27T00:00:00");
+        let occurrence = midnight("2026-08-10T00:00:00");
+        assert_eq!(
+            jiff::Timestamp::from_millisecond(occurrence).unwrap().to_string(),
+            "2026-08-09T12:00:00Z",
+            "fixture check: this instant must fall on the previous date in UTC, or the \
+             assertion below proves nothing"
+        );
+
+        let mut ev = weekly_master("RRULE:FREQ=WEEKLY");
+        ev.is_all_day = true;
+        ev.start_utc = dtstart;
+        ev.end_utc = dtstart + 24 * HOUR;
+        ev.start_tz = "Pacific/Auckland".into();
+        ev.end_tz = "Pacific/Auckland".into();
+        let (pool, _id) = seeded_pool_on_cal(&mut ev, "Pacific/Auckland").await;
+
+        let all_day_master = serde_json::json!({
+            "id": "master1", "status": "confirmed", "etag": "\"m1\"",
+            "summary": "On call",
+            "recurrence": ["RRULE:FREQ=WEEKLY"],
+            "start": {"date": "2026-07-27"},
+            "end":   {"date": "2026-07-28"}
+        });
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/master1"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(all_day_master.clone()),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "tail1", "status": "confirmed", "etag": "\"t1\"",
+                "summary": "On call",
+                "recurrence": ["RRULE:FREQ=WEEKLY"],
+                "start": {"date": "2026-08-10"},
+                "end":   {"date": "2026-08-11"}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/master1"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(all_day_master),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut after = form("On call", occurrence, occurrence + 24 * HOUR);
+        after.is_all_day = true;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        update_via_client(
+            &pool,
+            "following",
+            occurrence,
+            ev,
+            "cal@x.com",
+            "Pacific/Auckland",
+            after,
+            &client,
+        )
+        .await
+        .unwrap();
+
+        let sent = requests(&server).await;
+        let patch = sent.iter().find(|r| r.method.as_str() == "PATCH").expect("no truncate");
+        let body: serde_json::Value = serde_json::from_slice(&patch.body).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({ "recurrence": ["RRULE:FREQ=WEEKLY;UNTIL=20260809"] }),
+            "an all-day series was ended with a date-time UNTIL, on the wrong day, or both"
+        );
+        let post = sent.iter().find(|r| r.method.as_str() == "POST").expect("no create");
+        let created: serde_json::Value = serde_json::from_slice(&post.body).unwrap();
+        assert_eq!(
+            created["start"],
+            serde_json::json!({"date": "2026-08-10"}),
+            "the tail's own start disagrees with the date the original was ended on"
+        );
+    }
+
+    /// The same split, driven from a materialised exception row instead of the
+    /// master. The rule, the guest list and the version all have to come from
+    /// the master — the exception has a rule of its own (none), a guest list
+    /// that may differ, and an etag that would only ever be rejected.
+    ///
+    /// And the exception's own row must be left alone: `upsert_event` is keyed
+    /// on `(calendar_id, google_id)`, so folding the master's new state back
+    /// here would write straight over a different event.
+    #[tokio::test]
+    async fn splitting_from_an_exception_row_reads_the_master_and_leaves_that_row_alone() {
+        let mut ev = stored(vec![]);
+        ev.google_id = "master1_20260810T090000Z".into();
+        ev.summary = Some("Standup".into());
+        ev.recurring_event_id = Some("master1".into());
+        ev.start_utc = OCCURRENCE;
+        ev.end_utc = OCCURRENCE + HOUR;
+        ev.etag = Some("\"exc\"".into());
+        let (pool, id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+
+        let server = wiremock::MockServer::start().await;
+        mount_master(&server, &["RRULE:FREQ=WEEKLY"]).await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(wire_new_series(OCCURRENCE)),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/master1"))
+            .and(wiremock::matchers::header("if-match", "\"m1\""))
+            .and(wiremock::matchers::body_json(serde_json::json!({
+                "recurrence": [UNTIL_BEFORE_OCCURRENCE],
+            })))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(wire_master(&[
+                UNTIL_BEFORE_OCCURRENCE,
+            ])))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        update_via_client(
+            &pool,
+            "following",
+            OCCURRENCE,
+            ev,
+            "cal@x.com",
+            "UTC",
+            form("Standup (from here)", OCCURRENCE, OCCURRENCE + HOUR),
+            &client,
+        )
+        .await
+        .unwrap();
+
+        let (row, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
+        assert_eq!(row.google_id, "master1_20260810T090000Z");
+        assert_eq!(
+            row.etag.as_deref(),
+            Some("\"exc\""),
+            "the master's version was stamped onto the exception's row"
+        );
+        assert_eq!(
+            row.recurrence, None,
+            "the master's truncated rule was written onto the exception's row"
+        );
+    }
+
+    /// Splitting at an occurrence somebody had already dragged somewhere else.
+    ///
+    /// `UNTIL` is compared against the instants the *rule* generates, so the
+    /// truncation has to be aimed at the occurrence's slot on that grid — its
+    /// `originalStartTime` — and not at where it is now rendered. This fixture
+    /// moved the 2026-08-10 occurrence five hours later; truncating there
+    /// leaves `UNTIL` after the 09:00 slot the rule still generates, so the
+    /// shortened series keeps an occurrence the user split away and it shows up
+    /// underneath the new one. Dragged the other way it is the mirror image: an
+    /// occurrence that should have stayed disappears from both series.
+    #[tokio::test]
+    async fn splitting_at_a_moved_occurrence_truncates_at_its_slot_not_at_where_it_was_dragged() {
+        let mut ev = stored(vec![]);
+        ev.google_id = "master1_20260810T090000Z".into();
+        ev.summary = Some("Standup".into());
+        ev.recurring_event_id = Some("master1".into());
+        ev.start_utc = OCCURRENCE + 5 * HOUR; // dragged five hours later
+        ev.end_utc = OCCURRENCE + 6 * HOUR;
+        ev.original_start_utc = Some(OCCURRENCE); // the slot the rule generates
+        ev.etag = Some("\"exc\"".into());
+        let clicked = ev.start_utc;
+        let (pool, _id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+
+        let server = wiremock::MockServer::start().await;
+        mount_master(&server, &["RRULE:FREQ=WEEKLY"]).await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(wire_new_series(clicked)),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/master1"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(wire_master(&[
+                UNTIL_BEFORE_OCCURRENCE,
+            ])))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        update_via_client(
+            &pool,
+            "following",
+            clicked,
+            ev,
+            "cal@x.com",
+            "UTC",
+            form("Standup (from here)", clicked, clicked + HOUR),
+            &client,
+        )
+        .await
+        .unwrap();
+
+        let sent = requests(&server).await;
+        let patch = sent.iter().find(|r| r.method.as_str() == "PATCH").expect("no truncate");
+        let body: serde_json::Value = serde_json::from_slice(&patch.body).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({ "recurrence": [UNTIL_BEFORE_OCCURRENCE] }),
+            "the truncation was aimed at where the occurrence was dragged to, so the rule \
+             still generates the slot it came from"
+        );
+        // The tail, by contrast, starts where the user actually wants it —
+        // the moved time, not the slot.
+        let post = sent.iter().find(|r| r.method.as_str() == "POST").expect("no create");
+        let created: serde_json::Value = serde_json::from_slice(&post.body).unwrap();
+        assert_eq!(created["start"], crate::write::event_time_json(clicked, false, "UTC"));
+    }
+
+    /// The same rule at the other end of the series: an occurrence dragged
+    /// later is still the *first* occurrence if its slot is the series' own
+    /// start, so "this and following" from it is still "all events". Aiming
+    /// the check at the dragged position instead splits the series and leaves
+    /// behind a master that expands to nothing — invisible, and undeletable
+    /// from this app.
+    #[tokio::test]
+    async fn a_dragged_first_occurrence_is_still_the_first_occurrence() {
+        let mut ev = stored(vec![]);
+        ev.google_id = "master1_20260727T090000Z".into();
+        ev.summary = Some("Standup".into());
+        ev.recurring_event_id = Some("master1".into());
+        ev.start_utc = DTSTART + 5 * HOUR; // the first occurrence, dragged
+        ev.end_utc = DTSTART + 6 * HOUR;
+        ev.original_start_utc = Some(DTSTART);
+        let clicked = ev.start_utc;
+        let (pool, _id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+
+        let server = wiremock::MockServer::start().await;
+        mount_master(&server, &["RRULE:FREQ=WEEKLY"]).await;
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/master1"))
+            .and(wiremock::matchers::body_json(
+                serde_json::json!({"summary": "Standup (renamed)"}),
+            ))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(wire_master(&[
+                "RRULE:FREQ=WEEKLY",
+            ])))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        update_via_client(
+            &pool,
+            "following",
+            clicked,
+            ev,
+            "cal@x.com",
+            "UTC",
+            form("Standup (renamed)", clicked, clicked + HOUR),
+            &client,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            requests(&server).await.iter().all(|r| r.method.as_str() != "POST"),
+            "the series was split at its own first occurrence, leaving a master that expands \
+             to nothing"
+        );
+    }
+
+    /// A truncation Google confirms in terms this store cannot read must leave
+    /// the local row alone rather than half-updating it.
+    ///
+    /// The obvious fallback — [`merge_patched`], which the two sibling write
+    /// paths use — is wrong *here specifically*, and quietly: it carries etag,
+    /// sequence and attendees, and this is the one write whose whole payload is
+    /// `recurrence`, which it does not carry. Applying it would leave the row
+    /// stamped with the new version while still holding the **untruncated**
+    /// rule: the grid would go on expanding the series straight through the
+    /// split, and the next edit would condition on an etag whose rule the store
+    /// does not have. Both writes have landed by this point, so the honest
+    /// answer is to leave the row for sync and report success.
+    #[tokio::test]
+    async fn a_truncation_this_store_cannot_read_leaves_the_local_row_for_sync() {
+        let mut ev = weekly_master("RRULE:FREQ=WEEKLY");
+        let (pool, id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+
+        let server = wiremock::MockServer::start().await;
+        mount_master(&server, &["RRULE:FREQ=WEEKLY"]).await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(wire_new_series(OCCURRENCE)),
+            )
+            .mount(&server)
+            .await;
+        // Accepted, and answered with a version this store cannot turn into a
+        // row: the times will not resolve. `to_stored` answers `None`.
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/master1"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "master1", "status": "confirmed", "etag": "\"m2\"", "sequence": 9,
+                "recurrence": [UNTIL_BEFORE_OCCURRENCE],
+                "start": {}, "end": {}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        update_via_client(
+            &pool,
+            "following",
+            OCCURRENCE,
+            ev,
+            "cal@x.com",
+            "UTC",
+            form("Standup (from here)", OCCURRENCE, OCCURRENCE + HOUR),
+            &client,
+        )
+        .await
+        .expect("both writes landed, so this must not report a failure");
+
+        let (row, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
+        assert_eq!(
+            row.etag.as_deref(),
+            Some("\"master-etag\""),
+            "the row took the new version without the rule that came with it: the grid still \
+             expands past the split, and the next edit conditions on an etag whose rule the \
+             store does not have"
+        );
+        assert_eq!(row.recurrence.as_deref(), Some("RRULE:FREQ=WEEKLY"));
+        assert_eq!(row.sequence, 1, "sequence moved without the rule moving with it");
+    }
+
+    /// A row belonging to no series has no "following": there is one event,
+    /// and editing it and everything after it is editing it. It must not
+    /// become an instances lookup — `target_event_id` reads every scope that
+    /// is not `"all"` as "this one" — and it must not try to split anything.
+    #[tokio::test]
+    async fn following_on_a_one_off_edits_that_event_and_looks_up_no_instances() {
+        let mut ev = stored(vec![]);
+        ev.summary = Some("Lunch".into());
+        ev.start_utc = OCCURRENCE;
+        ev.end_utc = OCCURRENCE + HOUR;
+        let (pool, _id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/ev1"))
+            .and(wiremock::matchers::body_json(serde_json::json!({"summary": "Brunch"})))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "ev1", "status": "confirmed", "etag": "\"e2\"",
+                "summary": "Brunch",
+                "start": {"dateTime": omacal_sync::to_rfc3339(OCCURRENCE)},
+                "end":   {"dateTime": omacal_sync::to_rfc3339(OCCURRENCE + HOUR)}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        update_via_client(
+            &pool,
+            "following",
+            OCCURRENCE,
+            ev,
+            "cal@x.com",
+            "UTC",
+            form("Brunch", OCCURRENCE, OCCURRENCE + HOUR),
+            &client,
+        )
+        .await
+        .unwrap();
+
+        let sent = requests(&server).await;
+        assert_eq!(sent.len(), 1, "a one-off split fetched or created something: {sent:?}");
+    }
+
+    /// The guard ordering, for the scope this task adds. `update_impl` reads
+    /// the real `~/.config/omacal/config.toml` and the real Keychain the
+    /// moment control reaches `load_config`, and then writes to a real
+    /// calendar with `sendUpdates=all` — twice, one of them a create. The demo
+    /// gate has to fire before any of that, and before the database is touched
+    /// at all: `id: 1` names no row on a bare `connect_memory` pool, so a gate
+    /// that ran second would report a missing event instead.
+    #[tokio::test]
+    async fn splitting_refuses_in_demo_mode_without_touching_config_keyring_or_google() {
+        let pool = omacal_store::connect_memory().await.unwrap();
+        let err = update_impl(
+            &state_with(pool, true),
+            1,
+            "following",
+            OCCURRENCE,
+            form("Standup", OCCURRENCE, OCCURRENCE + HOUR),
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("demo"), "got: {err}");
+        assert_eq!(crate::errors::user_facing(&err), "demo mode — there is nothing to save");
+    }
+
+    /// [`attendees_verbatim`] on its own, where the two properties that make
+    /// it different from [`attendees_with_self_response`] are visible: nobody's
+    /// answer changes, and a list with no `self` row still comes back whole.
+    /// Answering `None` there — the sibling's rule — would drop the guest list
+    /// of every series on a calendar shared with you.
+    #[test]
+    fn a_copied_guest_list_keeps_everybodys_answer_and_survives_having_no_self_row() {
+        let list = vec![
+            Attendee {
+                email: "bo@x.com".into(),
+                display_name: None,
+                response_status: "declined".into(),
+                optional: true,
+                is_self: false,
+                comment: Some("double-booked".into()),
+                additional_guests: 2,
+            },
+            Attendee {
+                email: "cy@x.com".into(),
+                display_name: Some("Cy".into()),
+                response_status: "accepted".into(),
+                optional: false,
+                is_self: false,
+                comment: None,
+                additional_guests: 0,
+            },
+        ];
+        assert!(attendees_with_self_response(&list, "accepted").is_none());
+
+        let out = attendees_verbatim(&list);
+        assert_eq!(
+            serde_json::json!(out),
+            serde_json::json!([
+                {"email": "bo@x.com", "responseStatus": "declined", "optional": true,
+                 "comment": "double-booked", "additionalGuests": 2},
+                {"email": "cy@x.com", "displayName": "Cy", "responseStatus": "accepted",
+                 "optional": false, "additionalGuests": 0}
+            ]),
+            "a copied guest list must round-trip every writable field and change no answers"
+        );
+    }
 }

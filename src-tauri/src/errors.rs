@@ -93,6 +93,25 @@ const SAFE_EXACT: &[&str] = &[
     // seen, and that one stays opaque rather than telling the user something
     // specific that may not be true.
     "that occurrence is no longer on the calendar",
+    // src-tauri/src/events.rs — `split_series`' refusal to split a series that
+    // ends after a fixed number of occurrences. Fixed literal, no
+    // interpolation, raised with `bail!` before either write and propagated by
+    // a bare `?` with no `.context(..)` on the way to `update_event`'s
+    // `.map_err(..)`. Allowlisted because the user can act on it: "All events"
+    // does what they wanted, and OPAQUE here would send them looking in a log
+    // for a decision rather than a fault.
+    "omacal cannot split a series that ends after a set number of times — \
+     edit all events instead",
+    // src-tauri/src/events.rs — `split_series`' second write failing after the
+    // first landed. Built by `map_err` from a fixed literal that drops the
+    // underlying `ApiError` entirely (it is logged instead), so no status line
+    // or URL is interpolated into it, and propagated by a bare `?` with no
+    // `.context(..)` added. **The one message in this list the user must act
+    // on**: two overlapping series are on their calendar, both render, and
+    // nothing else in the app will ever tell them. OPAQUE here would send them
+    // looking for an edit that did not happen instead of a duplicate that did.
+    "the new series was created but the original could not be shortened — \
+     you now have two overlapping series and should delete one",
 ];
 
 /// The generic replacement. Deliberately says where to look rather than
@@ -242,6 +261,10 @@ mod tests {
             "this calendar is not writable from omacal",
             "demo mode — there is nothing to save",
             "that occurrence is no longer on the calendar",
+            "omacal cannot split a series that ends after a set number of times — \
+             edit all events instead",
+            "the new series was created but the original could not be shortened — \
+             you now have two overlapping series and should delete one",
         ];
         for expected in EXPECTED {
             assert!(

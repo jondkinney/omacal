@@ -106,12 +106,20 @@ export const createEvent = (calendarId: number, fields: EventInput) =>
  * date and drops everything before it. Both values must come from the same
  * clicked block.
  *
- * `scope` has no `'following'` arm yet; the command refuses one rather than
- * treating it as "this occurrence".
+ * `'following'` splits the series in two: a new one starting at the clicked
+ * occurrence and carrying `fields`, and the original shortened to end just
+ * before it. That is two writes with no transaction across them, so it is the
+ * one scope that can partly succeed — it reports a leftover duplicate rather
+ * than pretending otherwise, and the message is meant to be shown as-is. It is
+ * also the one scope that notifies guests of a *creation*: the new series
+ * carries the whole guest list of the one it continues.
+ *
+ * A scope this command does not implement is refused outright rather than
+ * treated as "this occurrence".
  */
 export const updateEvent = (
   id: number,
-  scope: 'this' | 'all',
+  scope: 'this' | 'all' | 'following',
   occurrenceStartMs: number,
   fields: EventInput,
 ) => invoke<EventDetail>('update_event', { id, scope, occurrenceStartMs, fields });

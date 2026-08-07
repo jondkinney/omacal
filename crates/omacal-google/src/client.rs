@@ -247,13 +247,26 @@ impl CalendarClient {
         Ok(body.items)
     }
 
-    /// Create an event. `sendUpdates=none` because a newly created event has
-    /// no attendees to notify — omacal cannot add guests, so there is never
-    /// anybody on a fresh event to tell.
+    /// Create an event. `send_updates` is Google's own vocabulary — `"all"`,
+    /// `"externalOnly"` or `"none"` — and is a parameter rather than a
+    /// constant because the two creates in this app want opposite answers.
+    ///
+    /// A create typed into the new-event form has no attendees to notify:
+    /// omacal cannot add guests, so there is nobody on a fresh event to tell,
+    /// and `"none"` keeps a new entry in your own calendar from mailing
+    /// anyone. Splitting a recurring series with "this and following" is the
+    /// other case, and it is not the same one — the event it creates carries
+    /// the whole guest list of the series it continues. See
+    /// `events::split_series` for why that one passes `"all"`.
+    ///
+    /// Hardcoding `"none"` here, as this method did when a create could only
+    /// ever be guestless, is what makes that distinction invisible: a split
+    /// would move every guest's meeting and tell none of them.
     pub async fn insert_event(
         &self,
         cal: &str,
         body: &serde_json::Value,
+        send_updates: &str,
     ) -> Result<model::Event, ApiError> {
         let resp = self
             .http
@@ -263,7 +276,7 @@ impl CalendarClient {
                 urlencoding_path(cal)
             ))
             .bearer_auth(&self.access_token)
-            .query(&[("sendUpdates", "none")])
+            .query(&[("sendUpdates", send_updates)])
             .json(body)
             .send()
             .await
@@ -559,25 +572,33 @@ mod tests {
         assert_eq!(instances[0].id, "master1_20260803T090000Z");
     }
 
+    /// `.expect(1)` and the `query_param` matcher together are what make this
+    /// test about notification at all: without the matcher a request carrying
+    /// any `sendUpdates` would match, and without `.expect(1)` a request that
+    /// missed the mock would come back as wiremock's bare 404 and fail for a
+    /// reason that reads like a transport problem rather than a wrong query.
     #[tokio::test]
-    async fn insert_posts_the_body_and_never_notifies() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/calendars/cal%40x.com/events"))
-            .and(query_param("sendUpdates", "none"))
-            .and(body_json_string(r#"{"summary":"Lunch"}"#))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-                "id": "new1", "status": "confirmed", "etag": "\"e1\""
-            })))
-            .mount(&server)
-            .await;
+    async fn insert_posts_the_body_and_notifies_exactly_as_asked() {
+        for send_updates in ["none", "all"] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/calendars/cal%40x.com/events"))
+                .and(query_param("sendUpdates", send_updates))
+                .and(body_json_string(r#"{"summary":"Lunch"}"#))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "id": "new1", "status": "confirmed", "etag": "\"e1\""
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
 
-        let c = CalendarClient::new(server.uri(), "tok");
-        let ev = c
-            .insert_event("cal@x.com", &serde_json::json!({"summary": "Lunch"}))
-            .await
-            .unwrap();
-        assert_eq!(ev.id, "new1");
+            let c = CalendarClient::new(server.uri(), "tok");
+            let ev = c
+                .insert_event("cal@x.com", &serde_json::json!({"summary": "Lunch"}), send_updates)
+                .await
+                .unwrap();
+            assert_eq!(ev.id, "new1");
+        }
     }
 
     #[tokio::test]

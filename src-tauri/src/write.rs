@@ -213,6 +213,123 @@ pub(crate) fn rrule_for(repeat: &str) -> Option<String> {
     )
 }
 
+/// The `UNTIL` value that ends a series immediately before `before_ms`.
+///
+/// Two forms, because RFC 5545 §3.3.10 requires `UNTIL` to carry the same
+/// *value type* as `DTSTART`, and getting that wrong produces a rule other
+/// clients reject even where Google is lenient about it.
+///
+/// A timed series has a `DTSTART` with a zone, so `UNTIL` must be a UTC
+/// date-time: `before_ms` less one second, rendered `%Y%m%dT%H%M%SZ`. One
+/// second, because `UNTIL` is *inclusive* — landing it on the occurrence
+/// itself keeps that occurrence in both series, and a whole minute earlier
+/// would drop any occurrence in between.
+///
+/// An all-day series has a `DTSTART` that is a bare date, so `UNTIL` must be a
+/// bare date too — and "the moment before" is then the *previous day*, not the
+/// previous second, since a date-valued `UNTIL` is inclusive of the whole day
+/// it names. The date is read in `tz`, the same zone
+/// [`event_time_json`] renders an all-day `date` in for the very same write,
+/// so the rule this produces and the `start` sent alongside it cannot disagree.
+///
+/// **No daylight-saving hazard, unlike [`shifted_like`].** The timed form is an
+/// absolute UTC instant on both sides: one second is subtracted from epoch
+/// milliseconds and rendered in UTC, with no wall clock and no zone in
+/// between, so no transition can move it. The all-day form does read a wall
+/// clock, but only to name a calendar date — and a date is what a transition
+/// leaves alone. `shifted_like` needed civil arithmetic precisely because it
+/// carries a *span* across a transition; nothing here carries a span.
+fn until_value(before_ms: i64, is_all_day: bool, tz: &str) -> String {
+    let at = |ms: i64| {
+        let ts = jiff::Timestamp::from_millisecond(ms).unwrap_or(jiff::Timestamp::UNIX_EPOCH);
+        ts.in_tz(tz).unwrap_or_else(|_| ts.in_tz("UTC").expect("UTC always resolves"))
+    };
+    if is_all_day {
+        let date = at(before_ms).date();
+        // `yesterday` fails only at the very start of the supported range.
+        date.yesterday().unwrap_or(date).strftime("%Y%m%d").to_string()
+    } else {
+        jiff::Timestamp::from_millisecond(before_ms.saturating_sub(1000))
+            .unwrap_or(jiff::Timestamp::UNIX_EPOCH)
+            .in_tz("UTC")
+            .expect("UTC always resolves")
+            .strftime("%Y%m%dT%H%M%SZ")
+            .to_string()
+    }
+}
+
+/// One `RRULE` line, ending strictly before `before_ms`.
+///
+/// This is half of "this and following": the original series is shortened to
+/// stop just before the occurrence the user split at, and a new series carries
+/// the rest. `events::split_series` is the other half.
+///
+/// Three rewrites, each of which produces an invalid or wrong rule if skipped:
+///
+/// * **`UNTIL` is added** at [`until_value`]'s instant — see there for why it
+///   is one second (or one day) before rather than on the occurrence.
+/// * **An existing `UNTIL` is replaced, not appended.** Two `UNTIL` parts in
+///   one rule is not valid iCalendar, and which one a parser honours is
+///   anyone's guess.
+/// * **`COUNT` is dropped.** RFC 5545 §3.3.10 makes `COUNT` and `UNTIL`
+///   mutually exclusive: "the UNTIL and COUNT rule parts are OPTIONAL, but
+///   they MUST NOT occur in the same 'recur'". A rule carrying both is
+///   rejected outright by some parsers and silently resolved by others.
+///
+/// Everything else is carried through untouched and in its original order —
+/// `INTERVAL`, `BYDAY`, `WKST`, and any part this app does not model. The
+/// `RRULE:` prefix is split off first rather than matched as text, so a rule
+/// whose first part happens to be `UNTIL` is still rewritten rather than
+/// having it hide behind the prefix.
+///
+/// Parts are matched on their key, case-insensitively: RFC 5545's ABNF spells
+/// them uppercase and Google always emits them that way, but a rule that
+/// arrived from another client is not this function's to trust.
+pub(crate) fn truncated_rule(rule: &str, before_ms: i64, is_all_day: bool, tz: &str) -> String {
+    let (prefix, parts) = match rule.split_once(':') {
+        Some((name, parts)) => (format!("{name}:"), parts),
+        None => (String::new(), rule),
+    };
+
+    let mut kept: Vec<String> = parts
+        .split(';')
+        .filter(|part| {
+            let key = part.split('=').next().unwrap_or_default();
+            !key.eq_ignore_ascii_case("UNTIL") && !key.eq_ignore_ascii_case("COUNT")
+        })
+        .map(str::to_string)
+        .collect();
+    // Not `parts.split(';')` straight into `format!`: a rule that was nothing
+    // but a `COUNT` would leave an empty first part and produce `RRULE:;UNTIL=`.
+    kept.retain(|p| !p.is_empty());
+    kept.push(format!("UNTIL={}", until_value(before_ms, is_all_day, tz)));
+
+    format!("{prefix}{}", kept.join(";"))
+}
+
+/// Whether `line` is the `RRULE` of a `recurrence` array.
+///
+/// Google's `recurrence` is a list of iCalendar *lines*, only one of which is
+/// the repeat rule — the others are `EXDATE`/`RDATE` lists naming individual
+/// occurrences that were removed from or added to the series. Only the `RRULE`
+/// is truncated; the rest are carried across a split verbatim, since an
+/// `EXDATE` in the tail is an occurrence somebody deleted and re-creating it
+/// would resurrect a meeting that was cancelled.
+pub(crate) fn is_rrule(line: &str) -> bool {
+    line.trim_start().len() >= 5 && line.trim_start()[..5].eq_ignore_ascii_case("RRULE")
+}
+
+/// Whether `rule` ends after a fixed number of occurrences rather than on a
+/// date. Splitting one of these correctly means working out how many
+/// occurrences the first half consumed, which `events::split_series` refuses
+/// to guess at — see its doc comment.
+pub(crate) fn has_count(rule: &str) -> bool {
+    let parts = rule.split_once(':').map_or(rule, |(_, p)| p);
+    parts
+        .split(';')
+        .any(|part| part.split('=').next().unwrap_or_default().eq_ignore_ascii_case("COUNT"))
+}
+
 /// Which Repeat option, if any, represents `rule` exactly.
 ///
 /// Exact string equality against what [`rrule_for`] authors, deliberately —
@@ -501,6 +618,144 @@ mod tests {
         ] {
             assert_eq!(repeat_from_rrule(Some(exotic)), "custom", "{exotic}");
         }
+    }
+
+    /// 2026-07-30T08:00:00Z. Verify with:
+    /// `python3 -c "import datetime as d; print(d.datetime.fromtimestamp(1785398400, d.timezone.utc))"`
+    /// — one second earlier is 07:59:59Z, which is what every `UNTIL` below
+    /// expects. An earlier draft of the plan said `20260731` and was a day out.
+    const SPLIT: i64 = 1_785_398_400_000;
+
+    /// UNTIL is inclusive in RFC 5545, so it must land strictly before the
+    /// occurrence that moves to the new series — one second earlier. Getting
+    /// this wrong duplicates that occurrence in both series or drops it from
+    /// both.
+    #[test]
+    fn until_lands_one_second_before_the_split() {
+        let r = truncated_rule("RRULE:FREQ=WEEKLY", SPLIT, false, "UTC");
+        assert_eq!(r, "RRULE:FREQ=WEEKLY;UNTIL=20260730T075959Z");
+    }
+
+    /// An existing UNTIL is replaced, not appended — two UNTILs is invalid.
+    #[test]
+    fn an_existing_until_is_replaced() {
+        let r = truncated_rule("RRULE:FREQ=WEEKLY;UNTIL=20271231T000000Z", SPLIT, false, "UTC");
+        assert_eq!(r.matches("UNTIL").count(), 1);
+        assert!(r.ends_with("UNTIL=20260730T075959Z"), "got {r}");
+    }
+
+    /// COUNT and UNTIL are mutually exclusive in RFC 5545; a rule carrying
+    /// COUNT must lose it when truncated.
+    #[test]
+    fn count_is_dropped_when_until_is_added() {
+        let r = truncated_rule("RRULE:FREQ=DAILY;COUNT=10", SPLIT, false, "UTC");
+        assert!(!r.contains("COUNT"), "got {r}");
+        assert!(r.contains("UNTIL="));
+    }
+
+    /// The parts this app cannot author are exactly the ones a truncation must
+    /// not disturb: "every second Tuesday and Thursday" is carried through in
+    /// its original order, with only the ending rewritten. Rebuilding the rule
+    /// from a parse, or reordering it, is how a fortnightly meeting quietly
+    /// becomes a weekly one.
+    #[test]
+    fn every_other_part_survives_truncation_in_its_original_order() {
+        let r = truncated_rule(
+            "RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=TU,TH;WKST=SU;COUNT=8",
+            SPLIT,
+            false,
+            "UTC",
+        );
+        assert_eq!(r, "RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=TU,TH;WKST=SU;UNTIL=20260730T075959Z");
+    }
+
+    /// The timed form is an absolute UTC instant on both sides, so no zone the
+    /// caller passes can move it — which is what makes "no DST hazard" a
+    /// property rather than a hope. `Pacific/Kiritimati` (UTC+14) and
+    /// `Pacific/Niue` (UTC-11) are 25 hours apart and would land on different
+    /// *dates* if the zone were consulted at all.
+    #[test]
+    fn a_timed_until_is_the_same_instant_whatever_zone_it_is_asked_for() {
+        let utc = truncated_rule("RRULE:FREQ=WEEKLY", SPLIT, false, "UTC");
+        for tz in ["Pacific/Kiritimati", "Pacific/Niue", "America/New_York", "Not/AZone"] {
+            assert_eq!(truncated_rule("RRULE:FREQ=WEEKLY", SPLIT, false, tz), utc, "{tz}");
+        }
+    }
+
+    /// RFC 5545 §3.3.10: UNTIL must carry the same value type as DTSTART. An
+    /// all-day series' DTSTART is a bare date, so its UNTIL must be one too —
+    /// and a date-valued UNTIL is inclusive of the whole day it names, so
+    /// "before this occurrence" is the *previous day*, not the previous
+    /// second. Emitting `20260730T075959Z` here produces a rule other clients
+    /// reject, and one whose last day is ambiguous even where they don't.
+    #[test]
+    fn an_all_day_until_is_a_bare_date_on_the_previous_day() {
+        // Midnight on 2026-07-30 in Sofia, the instant an all-day occurrence
+        // on that date is stored at.
+        let midnight = "2026-07-30T00:00:00"
+            .parse::<jiff::civil::DateTime>()
+            .unwrap()
+            .in_tz("Europe/Sofia")
+            .unwrap()
+            .timestamp()
+            .as_millisecond();
+        let r = truncated_rule("RRULE:FREQ=WEEKLY", midnight, true, "Europe/Sofia");
+        assert_eq!(r, "RRULE:FREQ=WEEKLY;UNTIL=20260729");
+    }
+
+    /// The all-day date is read in the zone it is *stored* against, the same
+    /// one `event_time_json` renders the `start` of the very same write in.
+    /// Reading it in UTC instead is a day out for every zone whose midnight
+    /// falls on the other side of it — `Pacific/Auckland` (UTC+12) is midday
+    /// the *previous* day in UTC, so the series would keep an occurrence the
+    /// user split away.
+    #[test]
+    fn an_all_day_until_is_read_in_the_events_own_zone_not_utc() {
+        let midnight = "2026-07-30T00:00:00"
+            .parse::<jiff::civil::DateTime>()
+            .unwrap()
+            .in_tz("Pacific/Auckland")
+            .unwrap()
+            .timestamp()
+            .as_millisecond();
+        assert_eq!(
+            jiff::Timestamp::from_millisecond(midnight).unwrap().to_string(),
+            "2026-07-29T12:00:00Z",
+            "fixture check: this instant must fall on the previous date in UTC, or the \
+             assertion below proves nothing"
+        );
+        let r = truncated_rule("RRULE:FREQ=WEEKLY", midnight, true, "Pacific/Auckland");
+        assert_eq!(r, "RRULE:FREQ=WEEKLY;UNTIL=20260729");
+    }
+
+    /// Google always emits uppercase, but a rule that arrived through another
+    /// client is not ours to trust: a lowercase `count=` left in place is a
+    /// rule carrying both COUNT and UNTIL, which RFC 5545 forbids outright.
+    #[test]
+    fn a_lowercase_count_or_until_is_still_replaced() {
+        let r = truncated_rule("RRULE:freq=DAILY;count=10;until=20271231T000000Z", SPLIT, false, "UTC");
+        assert_eq!(r, "RRULE:freq=DAILY;UNTIL=20260730T075959Z");
+    }
+
+    #[test]
+    fn an_rrule_is_told_from_the_other_recurrence_lines() {
+        assert!(is_rrule("RRULE:FREQ=WEEKLY"));
+        assert!(is_rrule("rrule:FREQ=WEEKLY"));
+        assert!(!is_rrule("EXDATE;TZID=Europe/Sofia:20260810T090000"));
+        assert!(!is_rrule("RDATE:20260810T090000Z"));
+        assert!(!is_rrule(""));
+    }
+
+    #[test]
+    fn a_count_rule_is_told_from_a_dated_one() {
+        assert!(has_count("RRULE:FREQ=DAILY;COUNT=10"));
+        assert!(has_count("RRULE:FREQ=DAILY;count=10"));
+        assert!(!has_count("RRULE:FREQ=DAILY"));
+        assert!(!has_count("RRULE:FREQ=DAILY;UNTIL=20271231T000000Z"));
+        // Not a substring match: `BYSETPOS` and friends must not be mistaken
+        // for a `COUNT`, and a value that happens to contain the word is not a
+        // key. Both would refuse a split that is perfectly safe.
+        assert!(!has_count("RRULE:FREQ=MONTHLY;BYDAY=MO;BYSETPOS=-1"));
     }
 
     /// The two states JSON cannot tell apart on its own, and the reason
