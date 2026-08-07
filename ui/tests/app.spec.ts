@@ -193,16 +193,54 @@ test.describe('App', () => {
   // WeekGrid's own day-column class (see `WeekGrid.svelte`; the brief's draft
   // used `.daycol` as a placeholder, same correction Task 2 already made for
   // its own two specs).
-  test('the switcher offers five views, two of them not yet built', async ({ page }) => {
+
+  // Plan 4 Task 5: Year and Big Year join the other three, replacing the
+  // "two of them not yet built" spec this superseded — `disabled` slots are
+  // gone for good (DoD: "no disabled slots").
+  test('all five views are reachable', async ({ page }) => {
     await page.goto(app('connected'));
+    await expect(page.locator('.vswitch button[disabled]')).toHaveCount(0);
+    await page.keyboard.press('4');
+    await expect(page.locator('.ymonth')).toHaveCount(12);
+    await page.keyboard.press('5');
+    await expect(page.locator('.rrow')).toHaveCount(14);
+  });
+
+  test('H and L step by a year in the year views', async ({ page }) => {
+    await page.goto(app('connected'));
+    // Same mount race every other spec in this file guards against — see
+    // "number keys switch views" above: fired before `<svelte:window
+    // onkeydown>` has attached, the keypress lands on nothing and is gone.
     await expect(page.locator('.vswitch button')).toHaveCount(5);
-    // `exact: true`: Playwright's default (non-exact) name match is a
-    // substring test, and "Year" is a substring of "Big Year" too — without
-    // it this resolves to both buttons and throws a strict-mode violation
-    // before ever reaching the assertion. "Big Year" has no such collision
-    // the other way, so it needs no adjustment.
-    await expect(page.getByRole('button', { name: 'Year', exact: true })).toBeDisabled();
-    await expect(page.getByRole('button', { name: 'Big Year' })).toBeDisabled();
+    await page.keyboard.press('4');
+    const before = await page.locator('.ygrid').getAttribute('data-year');
+    await page.keyboard.press('l');
+    const after = await page.locator('.ygrid').getAttribute('data-year');
+    expect(Number(after)).toBe(Number(before) + 1);
+  });
+
+  test('big year reaches this year and next, and no further back', async ({ page }) => {
+    // Spec §4: it is a planning surface — what is coming, not what happened.
+    await page.goto(app('connected'));
+    await expect(page.locator('.vswitch button')).toHaveCount(5); // mount race — see above
+    await page.keyboard.press('5');
+    const opened = await page.locator('.ribbon').getAttribute('data-year');
+    await page.keyboard.press('h');
+    expect(await page.locator('.ribbon').getAttribute('data-year')).toBe(opened);
+    await page.keyboard.press('l');
+    expect(Number(await page.locator('.ribbon').getAttribute('data-year'))).toBe(Number(opened) + 1);
+    await page.keyboard.press('l');
+    expect(Number(await page.locator('.ribbon').getAttribute('data-year'))).toBe(Number(opened) + 1);
+  });
+
+  test('the arrows step a year too, and say so', async ({ page }) => {
+    await page.goto(app('connected'));
+    await expect(page.locator('.vswitch button')).toHaveCount(5); // mount race — see above
+    await page.keyboard.press('4');
+    await expect(page.getByRole('button', { name: 'Next year' })).toBeVisible();
+    const before = await page.locator('.ygrid').getAttribute('data-year');
+    await page.getByRole('button', { name: 'Next year' }).click();
+    expect(Number(await page.locator('.ygrid').getAttribute('data-year'))).toBe(Number(before) + 1);
   });
 
   test('number keys switch views', async ({ page }) => {
@@ -233,6 +271,28 @@ test.describe('App', () => {
     await expect(page.locator('.col')).toHaveCount(1);
     const shown = await page.locator('.col').getAttribute('data-start-ms');
     expect(Number(shown)).toBe(1786341600000); // the day that was clicked
+  });
+
+  test('the anchor date reaches Year view too, but never Big Year', async ({ page }) => {
+    // Spec §5 says "every switch", and Year is a switch. `yearNum` is its own
+    // counter seeded from the real clock, so Year used to open on the current
+    // year no matter where the anchor stood — here, anchored in Aug 2026 under
+    // a clock frozen to Jan 2024, it opened on 2024.
+    await page.goto(app('connected'));
+    await expect(page.locator('.vswitch button')).toHaveCount(5); // mount race — see above
+    await page.keyboard.press('3');
+    await page.locator('.mcell .num').nth(14).click(); // anchors on 10 Aug 2026
+    await expect(page.locator('.col')).toHaveCount(1);
+
+    await page.keyboard.press('4');
+    await expect(page.locator('.ygrid')).toHaveAttribute('data-year', '2026');
+
+    // Big Year is deliberately left out: spec §4 bounds it to the real current
+    // year and the next, so an anchor in the past has nowhere to put it —
+    // seeding it would either break the bound or drag the anchor forward past
+    // it. The clock is frozen to Jan 2024, so that bound is 2024.
+    await page.keyboard.press('5');
+    await expect(page.locator('.ribbon')).toHaveAttribute('data-year', '2024');
   });
 
   // Whole-branch review, finding 1: the `<h1>` was derived from `weekStartMs`
@@ -352,21 +412,6 @@ test.describe('App', () => {
     await page.keyboard.press('1'); // back to Day view to read the anchor off `.col`
     const shown = await page.locator('.col').getAttribute('data-start-ms');
     expect(Number(shown)).toBe(Date.UTC(2024, 1, 29)); // 29 Feb 2024 — clamped, not skipped to March
-  });
-
-  // Fix round 1, finding 3: the switcher's own buttons are `disabled` for
-  // `year`/`bigyear`, but the keyboard path is a separate code path — the
-  // reviewer removed the `DISABLED_VIEWS` guard entirely (so `4`/`5` would
-  // switch views) and all 19 App specs stayed green. A disabled button the
-  // keyboard still triggers is worse than no button.
-  test('4 and 5 do not switch views from the keyboard', async ({ page }) => {
-    await page.goto(app('connected'));
-    const active = page.locator('.vswitch button.active');
-    await expect(active).toHaveCount(1);
-    const before = await active.textContent();
-    await page.keyboard.press('4');
-    await page.keyboard.press('5');
-    expect(await active.textContent()).toBe(before);
   });
 
   // Fix round 1, finding 4: `MonthGrid`'s own spec proves it *calls*

@@ -1,5 +1,7 @@
 import { test, expect } from '@playwright/test';
-import { FIXED_NOW, POPOVER_DETAILS, POPOVER_REFRESHED_DETAIL, popoverWeekWithResponse } from './fixtures';
+import {
+  FIXED_NOW, POPOVER_DETAILS, POPOVER_REFRESHED_DETAIL, popoverWeekWithResponse, YEAR_2026_NOW,
+} from './fixtures';
 import { CALENDAR_SYNC_REMOVED } from './harness/tauri';
 
 const show = (c: string, f: string) => `/tests/harness/index.html?c=${c}&f=${f}`;
@@ -853,5 +855,199 @@ test.describe('MonthGrid', () => {
     await page.locator('.mcell .timed').first().click();
     expect(await page.evaluate(() => (window as any).__lastOpen)).toBeTruthy();
     expect(await page.evaluate(() => (window as any).__lastDayPick)).toBeFalsy();
+  });
+
+  test('a timed line keeps a real, readable height', async ({ page }) => {
+    // `MAX_BAR_LANES`'s own comment explains why: unlike `BigYearRibbon`,
+    // `.bars` here is deliberately content-sized rather than reserving
+    // `MAX_BAR_LANES` fixed tracks with `grid-template-rows` — a month row
+    // has only ~95px to divide, and a reserved bar strip leaves too little
+    // for the cell below, measured to squeeze every timed line down to
+    // 0.05px. Healthy is ~10px; 4px sits with margin on both sides of that
+    // gap without pinning to the exact pixel value.
+    await page.goto(show('busy-day'));
+    const line = page.locator('.mcell .timed').first();
+    expect((await line.boundingBox())!.height).toBeGreaterThan(4);
+  });
+});
+
+test.describe('YearGrid', () => {
+  const show = (f: string) => `/tests/harness/index.html?c=YearGrid&f=${f}`;
+
+  test('renders twelve months', async ({ page }) => {
+    await page.goto(show('y2026'));
+    await expect(page.locator('.ymonth')).toHaveCount(12);
+  });
+
+  test('a day with an all-day event gets a dot', async ({ page }) => {
+    await page.goto(show('y2026'));
+    await expect(page.locator('.yday.dotted')).toHaveCount(1);
+  });
+
+  test('today is a filled disc', async ({ page }) => {
+    // `YearGrid` reads the real wall clock; `y2026` is a fixed calendar year,
+    // so the clock must be frozen to an instant inside it — same pattern as
+    // `FIXED_NOW` for the Header specs below — or this becomes a permanent
+    // failure the moment the real date rolls past 2026.
+    await page.clock.setFixedTime(YEAR_2026_NOW);
+    await page.goto(show('y2026'));
+    await expect(page.locator('.yday.today')).toHaveCount(1);
+  });
+
+  test('unsynced days are distinct from empty ones', async ({ page }) => {
+    // §6: an empty January must not read as a free January.
+    await page.goto(show('y2026'));
+    const unsynced = page.locator('.yday.unsynced').first();
+    await expect(unsynced).toBeVisible();
+    await expect(unsynced).not.toHaveClass(/dotted/);
+  });
+
+  test('clicking a date asks the parent for that day', async ({ page }) => {
+    await page.goto(show('y2026'));
+    await page.locator('.yday').nth(200).click();
+    expect(await page.evaluate(() => (window as any).__lastDayPick)).toBeTruthy();
+  });
+});
+
+test.describe('BigYearRibbon', () => {
+  const show = (f: string) => `/tests/harness/index.html?c=BigYearRibbon&f=${f}`;
+
+  test('renders fourteen rows of twenty-eight', async ({ page }) => {
+    await page.goto(show('y2026'));
+    await expect(page.locator('.rrow')).toHaveCount(14);
+    await expect(page.locator('.rrow').first().locator('.rday')).toHaveCount(28);
+  });
+
+  test('weekend shading forms straight vertical stripes', async ({ page }) => {
+    // The 28-day row exists for this. Assert the column indices, not a
+    // screenshot: this is the property, and a screenshot would also pass
+    // for a subtly different one.
+    await page.goto(show('y2026'));
+    for (const r of [0, 7, 13]) {
+      const cols: number[] = [];
+      const days = page.locator('.rrow').nth(r).locator('.rday');
+      for (let i = 0; i < 28; i++) {
+        if ((await days.nth(i).getAttribute('class'))?.includes('wknd')) cols.push(i);
+      }
+      expect(cols).toEqual([5, 6, 12, 13, 19, 20, 26, 27]);
+    }
+  });
+
+  test('days outside the year are dimmed, not blank', async ({ page }) => {
+    await page.goto(show('y2026'));
+    const out = page.locator('.rday.out').first();
+    await expect(out).toBeVisible();
+    await expect(out).not.toBeEmpty();
+  });
+
+  test('a span crossing a row shows a continuation marker on both halves', async ({ page }) => {
+    await page.goto(show('crossing'));
+    await expect(page.locator('.pill.cont')).toHaveCount(2);
+  });
+
+  test('the legend names each calendar that has a pill', async ({ page }) => {
+    await page.goto(show('y2026'));
+    await expect(page.locator('.legend .item')).toHaveCount(2);
+  });
+
+  test('two calendars sharing a name still render the whole ribbon', async ({ page }) => {
+    // Two accounts subscribed to the same public calendar report the same
+    // `summary`, which `get_big_year` copies verbatim into `name`. Keying the
+    // legend by `name` makes Svelte 5 throw `each_key_duplicate`, and that is
+    // not a broken legend — the component never mounts, so the rows go with
+    // it. The rows are asserted first for exactly that reason: the legend
+    // count alone would not say which failure mode this is guarding.
+    await page.goto(show('same-name-legend'));
+    await expect(page.locator('.rrow')).toHaveCount(14);
+    await expect(page.locator('.pill')).toHaveCount(2);
+    await expect(page.locator('.legend .item')).toHaveCount(2);
+  });
+
+  test('clicking a pill opens the popover', async ({ page }) => {
+    await page.goto(show('y2026'));
+    await page.locator('.pill').first().click();
+    expect(await page.evaluate(() => (window as any).__lastOpen)).toBeTruthy();
+  });
+
+  test('a fully packed row keeps its day strip, and its weekend stripes with it', async ({ page }) => {
+    // Measured with the old (unreserved-lanes, unprotected-min-height) layout
+    // reinstated: `.rdays` itself collapsed to 0 height, but each `.rday` kept
+    // its own 15px content height and painted at the y-coordinate `.rdays`
+    // would have started at — inside the row *below*, since that row's own
+    // strip spans only ~37px. The stripe was never missing; it was painted in
+    // the wrong place, overlapping the next row's days. With `.pills`
+    // content-sized, row 0 here (three lanes plus a "+N more") is what drove
+    // `.rdays` into that squeeze, while every quieter row was fine — so the
+    // busiest row, the one that most needs reading, was the one that lost the
+    // property. Only the `.rdays` assertion below binds: `.rday.wknd`'s own
+    // height stays 15px whether or not the bug is present (see the boxes
+    // above), so a bounding-box assertion on it can never catch this.
+    await page.goto(show('three-lanes'));
+    const packed = page.locator('.rrow').first();
+
+    // `RESERVED_PILL_LANES` (2) trims the CSS budget below `PILL_LANE_CAP`
+    // (3, `pack_lanes`'s own cap) — reservation and cap are deliberately not
+    // the same number any more, so this is what proves the split didn't
+    // quietly become a cap of its own: all three of this row's genuinely
+    // overlapping spans still render, the row just grows past its reserved
+    // budget to fit the one it doesn't have a track for.
+    await expect(packed.locator('.pill')).toHaveCount(3);
+
+    expect((await packed.locator('.rdays').boundingBox())!.height).toBeGreaterThan(0);
+
+    // And the day strip is the same height in a packed row as in an empty
+    // one: `.rdays` sits at its own protected minimum regardless of how tall
+    // `.pills` grows beside it — true even here, where this row's third lane
+    // and overflow both exceed `RESERVED_PILL_LANES`'s budget and grow the
+    // row past it (see that constant's own comment). Without *any* lane
+    // reservation, a quiet row's `.pills` collapses toward nothing instead,
+    // and its `.rdays` inflates to absorb the slack — so the two diverge.
+    const quiet = page.locator('.rrow').nth(2);
+    const packedDays = (await packed.locator('.rdays').boundingBox())!.height;
+    const quietDays = (await quiet.locator('.rdays').boundingBox())!.height;
+    expect(Math.abs(packedDays - quietDays)).toBeLessThan(1);
+  });
+
+  test('all fourteen rows fit on one screen with no scroll', async ({ page }) => {
+    // The design doc's own promise for this view (spec §4): "Big Year — one
+    // screen, the whole year." `RESERVED_PILL_LANES`'s comment explains the
+    // budget this depends on: 14 rows at a uniform ~35px fit inside the
+    // ~530px container the suite's default 1280x720 viewport gives `.rows`
+    // (`devices['Desktop Chrome']`/`['Desktop Safari']` in
+    // playwright.config.ts — no `setViewportSize` here, same as every other
+    // spec in this file). Pinned so that budget can't drift back out of
+    // reach without a spec noticing, the way the original 3-lane reservation
+    // did.
+    await page.goto(show('y2026'));
+    await expect(page.locator('.rrow')).toHaveCount(14);
+    const overflow = await page.locator('.rows').evaluate((el) => el.scrollHeight - el.clientHeight);
+    expect(overflow).toBeLessThanOrEqual(0);
+  });
+
+  test('days outside the synced window are hatched, not left blank', async ({ page }) => {
+    // §6: the window opens 180 days back, so a ribbon anchored the previous
+    // December always begins outside it. Nothing else distinguishes those days
+    // from an in-window day with nothing on it, so without this an unsynced
+    // stretch reads as "free".
+    await page.goto(show('unsynced'));
+    await expect(page.locator('.rrow').nth(0).locator('.rday.unsynced')).toHaveCount(28);
+    await expect(page.locator('.rrow').nth(1).locator('.rday.unsynced')).toHaveCount(28);
+    await expect(page.locator('.rrow').nth(2).locator('.rday.unsynced')).toHaveCount(0);
+    // The hatch is a real painted background, not just a class name.
+    const hatched = page.locator('.rday.unsynced').first();
+    expect(await hatched.evaluate((el) => getComputedStyle(el).backgroundImage))
+      .toContain('repeating-linear-gradient');
+  });
+
+  test('two co-existing pills in one row each keep their own title', async ({ page }) => {
+    // `y2026` and `crossing` never pack more than one pill per row, so `idx`
+    // and `lane` never diverge there — a `pill_events[lane.idx]` /
+    // `pill_events[lane.lane]` mix-up would still pass every other spec in
+    // this file. Same guard as MonthGrid's `two-bars` spec.
+    await page.goto(show('two-pills'));
+    const pills = page.locator('.pill');
+    await expect(pills).toHaveCount(2);
+    await expect(pills.nth(0)).toContainText('Berlin trip');
+    await expect(pills.nth(1)).toContainText('Team offsite');
   });
 });

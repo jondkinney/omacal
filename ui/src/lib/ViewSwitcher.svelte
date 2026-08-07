@@ -1,18 +1,16 @@
 <!-- ui/src/lib/ViewSwitcher.svelte -->
 <script module lang="ts">
-  /** The five slots the plan settles on (spec §10). `year` and `bigyear` ship
-   *  disabled — Plan 4 fills them in rather than this control being rebuilt
-   *  when it does. */
+  /** The five slots the plan settles on (spec §10). */
   export type View = 'day' | 'week' | 'month' | 'year' | 'bigyear';
 </script>
 
 <script lang="ts">
-  const SLOTS: { id: View; label: string; disabled?: boolean }[] = [
+  const SLOTS: { id: View; label: string }[] = [
     { id: 'day', label: 'Day' },
     { id: 'week', label: 'Week' },
     { id: 'month', label: 'Month' },
-    { id: 'year', label: 'Year', disabled: true },
-    { id: 'bigyear', label: 'Big Year', disabled: true },
+    { id: 'year', label: 'Year' },
+    { id: 'bigyear', label: 'Big Year' },
   ];
 
   let { view, onpick }: { view: View; onpick: (v: View) => void } = $props();
@@ -22,7 +20,6 @@
   {#each SLOTS as slot}
     <button
       class:active={view === slot.id}
-      disabled={slot.disabled}
       aria-pressed={view === slot.id}
       onclick={() => onpick(slot.id)}
     >{slot.label}</button>

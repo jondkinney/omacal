@@ -1,4 +1,7 @@
-import type { UiEvent, Placed, Lane, WeekPayload, MonthPayload, MonthRow } from '../src/lib/api';
+import type {
+  UiEvent, Placed, Lane, WeekPayload, MonthPayload, MonthRow, YearPayload, YearMonth,
+  BigYearPayload, RibbonRow,
+} from '../src/lib/api';
 import type { AppStatus } from '../src/lib/status';
 import type { Calendar } from '../src/lib/calendars';
 import type { Attendee, EventDetail } from '../src/lib/eventdetail';
@@ -520,6 +523,250 @@ POPOVER_DETAILS[APP_MONTH_EVENT_ID] = detail({
   end_ms: BUSY_DAY_START_MS + 9 * H + 30 * 60_000,
 });
 
+// Real 2026 day counts and lead-blank (Monday-first weekday of the 1st)
+// values, cross-checked against the Rust suite's own pinned facts
+// (`commands.rs`'s `a_year_has_twelve_months_with_the_right_day_counts` and
+// `lead_blanks_line_the_first_up_under_its_weekday`: Jan opens on a Thursday
+// — 3 blanks — and Jun opens on a Monday — 0 blanks).
+const YEAR_2026_DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+const YEAR_2026_LEAD_BLANKS = [3, 6, 6, 2, 4, 0, 2, 5, 1, 3, 6, 1];
+
+/** An empty 12-month grid for `year`, every day's `start_ms` its own real UTC
+ *  midnight — real dates, not placeholders, since `YearGrid`'s own
+ *  today-highlight reads the actual wall clock and has nothing else to
+ *  compare it against. */
+function emptyYear(year: number, daysInMonth: number[], leadBlanks: number[]): YearPayload {
+  const months: YearMonth[] = daysInMonth.map((n, mi) => ({
+    month: mi + 1,
+    lead_blanks: leadBlanks[mi],
+    days: Array.from({ length: n }, (_, d) => ({
+      start_ms: Date.UTC(year, mi, d + 1),
+      day: d + 1,
+      has_all_day: false,
+      unsynced: false,
+    })),
+  }));
+  return { year, months };
+}
+
+/** 2026: all of January marked `unsynced` — mirroring §6, where an Aug 2026
+ *  "now" puts the synced window's start in February, so an empty January
+ *  must not read as free — and one all-day event (15 March) dotting the
+ *  grid elsewhere, clear of the unsynced range. */
+const y2026 = (): YearPayload => {
+  const y = emptyYear(2026, YEAR_2026_DAYS, YEAR_2026_LEAD_BLANKS);
+  for (const d of y.months[0].days) d.unsynced = true;
+  y.months[2].days[14].has_all_day = true;
+  return y;
+};
+
+/** An instant inside 2026, for freezing the page clock before `YearGrid`'s
+ *  own today-highlight spec. `YearGrid` reads the real wall clock via
+ *  `new Date()` (same as `MonthGrid`'s `todayStart`), and `y2026` is a fixed
+ *  calendar year — without freezing the clock to a date inside it, that spec
+ *  is a permanent failure waiting for 2027-01-01, for reasons unconnected to
+ *  any code change. Clear of both January (all marked `unsynced`) and 15
+ *  March (the dotted day), so the three specs stay independent. */
+export const YEAR_2026_NOW = Date.UTC(2026, 5, 10); // Wed 10 Jun 2026
+
+// Big Year ribbon. 1 Jan 2026 is a Thursday in UTC (same as the Rust suite's
+// own Europe/Sofia computation for the same year), so the Monday on or
+// before it is 29 Dec 2025 — the ribbon's anchor.
+const RIBBON_START = Date.UTC(2025, 11, 29);
+const YEAR_2026_START = Date.UTC(2026, 0, 1);
+const YEAR_2027_START = Date.UTC(2027, 0, 1);
+/** Row 1 begins exactly 28 days after the ribbon's own anchor. */
+const ROW1_START = RIBBON_START + 28 * 24 * H;
+
+/** An empty 14x28 ribbon for `year`, `in_year` computed the same way
+ *  `assemble_big_year` does — against `[yearStartMs, nextYearStartMs)` — so
+ *  a fixture only has to say what's *inside* a row, never redo the boundary
+ *  arithmetic per day. Mirrors `emptyMonth`/`emptyYear` above. */
+function emptyBigYear(
+  year: number, ribbonStartMs: number, yearStartMs: number, nextYearStartMs: number,
+): BigYearPayload {
+  const rows: RibbonRow[] = Array.from({ length: 14 }, (_, r) => ({
+    days: Array.from({ length: 28 }, (_, c) => {
+      const start = ribbonStartMs + (r * 28 + c) * 24 * H;
+      return {
+        start_ms: start,
+        in_year: start >= yearStartMs && start < nextYearStartMs,
+        unsynced: false,
+      };
+    }),
+    pills: [] as Lane[],
+    pill_events: [] as UiEvent[],
+    overflow: [] as number[],
+  }));
+  return { year, rows, legend: [] };
+}
+
+/** 2026's ribbon: two pills on two different calendars, in two different
+ *  rows, clear of any row boundary — enough for a two-item legend and a
+ *  clickable pill, without also exercising the row-crossing case
+ *  `crossingBigYear` covers on its own. */
+const bigYear2026 = (): BigYearPayload => {
+  const b = emptyBigYear(2026, RIBBON_START, YEAR_2026_START, YEAR_2027_START);
+
+  // Row 0, columns 8-10: Jan 6-8 2026, three days.
+  const leave = ev({
+    id: 900, title: 'Rahul on leave', is_all_day: true, color: '#e2a03f',
+    start_ms: RIBBON_START + 8 * 24 * H, end_ms: RIBBON_START + 11 * 24 * H,
+  });
+  b.rows[0].pill_events = [leave];
+  b.rows[0].pills = [
+    { idx: 0, lane: 0, start_col: 8, end_col: 10, cont_left: false, cont_right: false },
+  ];
+
+  // Row 1, columns 4-6: Jan 30 - Feb 1 2026, three days.
+  const offsite = ev({
+    id: 901, title: 'Team off-site', is_all_day: true, color: '#2dd4bf',
+    start_ms: ROW1_START + 4 * 24 * H, end_ms: ROW1_START + 7 * 24 * H,
+  });
+  b.rows[1].pill_events = [offsite];
+  b.rows[1].pills = [
+    { idx: 0, lane: 0, start_col: 4, end_col: 6, cont_left: false, cont_right: false },
+  ];
+
+  b.legend = [
+    { name: 'plamen@excitel.com', color: '#e2a03f', calendar_id: 1 },
+    { name: 'work@excitel.com', color: '#2dd4bf', calendar_id: 2 },
+  ];
+
+  return b;
+};
+
+/** Two legend entries whose `name` is byte-identical, on different calendars.
+ *  Reachable the moment a second account is connected (Plan 1c): two accounts
+ *  subscribed to the same public calendar both report it under the same
+ *  `summary`, and `get_big_year` copies that verbatim into `name`. Keying the
+ *  legend's `{#each}` by `name` makes Svelte 5 throw `each_key_duplicate` —
+ *  which does not degrade to a broken legend, it takes the whole ribbon down
+ *  (`items=0 rows=0`). Same pills as `bigYear2026`, so the spec that reads
+ *  this can assert on rows and pills as well as on the legend itself. */
+const sameNameLegendBigYear = (): BigYearPayload => {
+  const b = bigYear2026();
+  b.legend = [
+    { name: 'Holidays in Bulgaria', color: '#e2a03f', calendar_id: 1 },
+    { name: 'Holidays in Bulgaria', color: '#2dd4bf', calendar_id: 2 },
+  ];
+  return b;
+};
+
+/** A single all-day span straddling the row 0/1 boundary: row 0 carries its
+ *  clipped tail (`cont_right`), row 1 its clipped head (`cont_left`) —
+ *  mirrors the Rust suite's own
+ *  `a_span_crossing_a_row_boundary_splits_and_both_halves_know_it`, and the
+ *  reason `pill_events` is genuinely per-row (the same event appears twice,
+ *  once in each row's own array) rather than shared across rows, same as
+ *  `MonthRow.bar_events`. */
+const crossingBigYear = (): BigYearPayload => {
+  const b = emptyBigYear(2026, RIBBON_START, YEAR_2026_START, YEAR_2027_START);
+
+  const spanEvent = (id: number) => ev({
+    id, title: 'Sun-Tue trip', is_all_day: true, color: '#5b8def',
+    start_ms: RIBBON_START + 25 * 24 * H, end_ms: RIBBON_START + 30 * 24 * H,
+  });
+
+  b.rows[0].pill_events = [spanEvent(910)];
+  b.rows[0].pills = [
+    { idx: 0, lane: 0, start_col: 25, end_col: 27, cont_left: false, cont_right: true },
+  ];
+  b.rows[1].pill_events = [spanEvent(910)];
+  b.rows[1].pills = [
+    { idx: 0, lane: 0, start_col: 0, end_col: 1, cont_left: true, cont_right: false },
+  ];
+
+  b.legend = [{ name: 'plamen@excitel.com', color: '#5b8def', calendar_id: 1 }];
+
+  return b;
+};
+
+/** Two co-existing pills in one row, deliberately with `idx` and `lane`
+ *  diverging for both entries — same shape as `MonthGrid`'s `twoBarsMonth`,
+ *  guarding the same `pill_events[lane.idx]` / `pill_events[lane.lane]`
+ *  mix-up for this component. Neither `bigYear2026` nor `crossingBigYear`
+ *  above ever packs more than one pill per row, where `idx === lane` always
+ *  holds and a mix-up would render the right title by coincidence — this is
+ *  the only fixture built to catch it. `pack_lanes` sorts longest-first:
+ *  Berlin trip (added second, `idx: 1`) is the longer, overlapping span, so
+ *  it claims lane 0 ahead of the shorter Team offsite (added first,
+ *  `idx: 0`), which is pushed to lane 1. */
+const twoPillsBigYear = (): BigYearPayload => {
+  const b = emptyBigYear(2026, RIBBON_START, YEAR_2026_START, YEAR_2027_START);
+
+  const teamOffsite = ev({
+    title: 'Team offsite', is_all_day: true, color: '#2dd4bf',
+    start_ms: RIBBON_START + 4 * 24 * H, end_ms: RIBBON_START + 6 * 24 * H,
+  });
+  const berlinTrip = ev({
+    title: 'Berlin trip', is_all_day: true, color: '#5b8def',
+    start_ms: RIBBON_START + 3 * 24 * H, end_ms: RIBBON_START + 7 * 24 * H,
+  });
+  b.rows[0].pill_events = [teamOffsite, berlinTrip];
+  b.rows[0].pills = [
+    { idx: 1, lane: 0, start_col: 3, end_col: 6, cont_left: false, cont_right: false },
+    { idx: 0, lane: 1, start_col: 4, end_col: 5, cont_left: false, cont_right: false },
+  ];
+
+  return b;
+};
+
+/** Row 0 packed to `pack_lanes`'s full three-lane cap *and* overflowing, next
+ *  to rows with no pills at all. The busiest shape the assembler can produce,
+ *  and the one the pill strip's height has to survive: with `.pills`
+ *  content-sized, this row's strip grew tall enough to squeeze `.rdays` to
+ *  zero height — but each `.rday` inside it kept its own 15px content height
+ *  and painted at `.rdays`'s would-be position anyway, landing inside the
+ *  *next* row rather than vanishing. The weekend stripe was never missing,
+ *  just in the wrong place, overlapping the row below it. Row 1 is left
+ *  empty on purpose, so a spec can compare the two and see the day strip is
+ *  the same height in both regardless — `.rdays` sits at its own protected
+ *  minimum whether or not `.pills` beside it grows past its reservation
+ *  (`RESERVED_PILL_LANES`, `BigYearRibbon.svelte`), which this row's own
+ *  third lane and overflow both do. Also registered so a spec can prove
+ *  `pack_lanes`'s cap and the strip's *reservation* are different numbers on
+ *  purpose: all three packed pills still render even though only two lanes'
+ *  worth of height is reserved for them. */
+const threeLanesBigYear = (): BigYearPayload => {
+  const b = emptyBigYear(2026, RIBBON_START, YEAR_2026_START, YEAR_2027_START);
+
+  const span = (id: number, title: string, color: string, from: number, to: number) => ev({
+    id, title, is_all_day: true, color,
+    start_ms: RIBBON_START + from * 24 * H, end_ms: RIBBON_START + (to + 1) * 24 * H,
+  });
+
+  b.rows[0].pill_events = [
+    span(920, 'Berlin trip', '#5b8def', 2, 12),
+    span(921, 'Rahul on leave', '#e2a03f', 4, 9),
+    span(922, 'Team offsite', '#2dd4bf', 6, 8),
+    span(923, 'Diwali', '#f472b6', 7, 7),
+  ];
+  b.rows[0].pills = [
+    { idx: 0, lane: 0, start_col: 2, end_col: 12, cont_left: false, cont_right: false },
+    { idx: 1, lane: 1, start_col: 4, end_col: 9, cont_left: false, cont_right: false },
+    { idx: 2, lane: 2, start_col: 6, end_col: 8, cont_left: false, cont_right: false },
+  ];
+  // `pack_lanes` caps at three, so the fourth overlapping span is folded away.
+  b.rows[0].overflow = [3];
+
+  return b;
+};
+
+/** The ribbon's §6 case: the first two rows fall before the synced window's
+ *  start, exactly as they do in real use — the window opens 180 days back, so
+ *  a ribbon anchored the previous December always begins outside it. Nothing
+ *  else distinguishes those days from an in-window day with nothing on it, so
+ *  without the hatch an unsynced stretch reads as "free". Mirrors `y2026`'s
+ *  unsynced January for the year grid. */
+const unsyncedBigYear = (): BigYearPayload => {
+  const b = emptyBigYear(2026, RIBBON_START, YEAR_2026_START, YEAR_2027_START);
+  for (const row of b.rows.slice(0, 2)) {
+    for (const d of row.days) d.unsynced = true;
+  }
+  return b;
+};
+
 export const FIXTURES: Record<string, Record<string, any>> = {
   WeekGrid: {
     empty: { week: emptyWeek() },
@@ -534,6 +781,17 @@ export const FIXTURES: Record<string, Record<string, any>> = {
     august: { month: augustMonth() },
     'busy-day': { month: busyDayMonth() },
     'two-bars': { month: twoBarsMonth() },
+  },
+  YearGrid: {
+    y2026: { year: y2026() },
+  },
+  BigYearRibbon: {
+    y2026: { ribbon: bigYear2026() },
+    crossing: { ribbon: crossingBigYear() },
+    'two-pills': { ribbon: twoPillsBigYear() },
+    'same-name-legend': { ribbon: sameNameLegendBigYear() },
+    'three-lanes': { ribbon: threeLanesBigYear() },
+    unsynced: { ribbon: unsyncedBigYear() },
   },
   EventBlock: {
     // The duration ladder.

@@ -51,3 +51,41 @@ export const getDay = (dayStartMs: number) =>
 
 export const getMonth = (year: number, month: number) =>
   invoke<MonthPayload>('get_month', { year, month });
+
+/** One day of the year grid. `has_all_day` is set only by an all-day event —
+ *  a timed meeting does not dot this view. `unsynced` marks a day outside
+ *  the window the app actually keeps fetched (`synced_window` in Rust);
+ *  drawn distinctly from an in-window day with nothing on it, since absence
+ *  of a dot must never read as "free". */
+export type YearDay = { start_ms: number; day: number; has_all_day: boolean; unsynced: boolean };
+/** One month of the year grid: `lead_blanks` empty cells (Monday-first)
+ *  before day 1, so every month's weekday columns line up. */
+export type YearMonth = { month: number; lead_blanks: number; days: YearDay[] };
+export type YearPayload = { year: number; months: YearMonth[] };
+
+export const getYear = (year: number) =>
+  invoke<YearPayload>('get_year', { year });
+
+/** One day of the Big Year ribbon. `in_year` is false for the days a
+ *  Monday-aligned 28-day row spills into the neighbouring year with — the
+ *  ribbon never lines up exactly on 1 Jan or 31 Dec, so this is drawn dimmed
+ *  rather than hidden, same principle as `MonthCell.in_month`. `unsynced`
+ *  mirrors `YearDay.unsynced`. */
+export type RibbonDay = { start_ms: number; in_year: boolean; unsynced: boolean };
+/** One 28-day row of the ribbon: the days themselves, plus the all-day/
+ *  multi-day spans lane-packed across them (`pills: Lane[]`, `pill_events`
+ *  the events `Lane.idx` indexes into) — same shape as `MonthRow.bars`. */
+export type RibbonRow = {
+  days: RibbonDay[]; pills: Lane[]; pill_events: UiEvent[]; overflow: number[];
+};
+/** One calendar with at least one *placed* pill (never one that overflowed
+ *  into "+N more"), for the legend. `calendar_id` is the entry's identity —
+ *  `name` is not unique, since two accounts subscribed to the same public
+ *  calendar ("Holidays in Bulgaria") both report it under that one summary.
+ *  Rust already keys the legend by it (see `LegendEntry` in commands.rs);
+ *  typed here so the UI can key by it too rather than by the display name. */
+export type LegendEntry = { name: string; color: string | null; calendar_id: number };
+export type BigYearPayload = { year: number; rows: RibbonRow[]; legend: LegendEntry[] };
+
+export const getBigYear = (year: number) =>
+  invoke<BigYearPayload>('get_big_year', { year });

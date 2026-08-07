@@ -9,7 +9,7 @@
 // object therefore stubs commands and events together, with no module mocking
 // and no build-time aliasing — the app imports the real `@tauri-apps/api`.
 
-import type { WeekPayload, MonthPayload } from '../../src/lib/api';
+import type { WeekPayload, MonthPayload, YearPayload, BigYearPayload } from '../../src/lib/api';
 import type { AppStatus } from '../../src/lib/status';
 import type { Calendar } from '../../src/lib/calendars';
 import type { EventDetail } from '../../src/lib/eventdetail';
@@ -316,6 +316,35 @@ function getMonth(): MonthPayload {
   return busyDayMonth();
 }
 
+/** Year view's own `get_year` stub: twelve otherwise-empty months, echoing
+ *  back whatever year was actually asked for — same reasoning as `getDay`'s
+ *  `dayStartMs` above. No App spec needs a populated grid, only that it
+ *  carries the year that was actually requested (`YearGrid`'s own `y2026`
+ *  fixture already covers the populated case). */
+function getYearStub(y: number): YearPayload {
+  return {
+    year: y,
+    months: Array.from({ length: 12 }, (_, i) => ({ month: i + 1, lead_blanks: 0, days: [] })),
+  };
+}
+
+/** Big Year view's own `get_big_year` stub: fourteen otherwise-empty 28-day
+ *  rows, echoing back whatever year was actually asked for — same reasoning
+ *  as `getYearStub` above (`BigYearRibbon`'s own `y2026`/`crossing` fixtures
+ *  already cover the populated case). */
+function getBigYearStub(y: number): BigYearPayload {
+  return {
+    year: y,
+    rows: Array.from({ length: 14 }, () => ({
+      days: Array.from({ length: 28 }, () => ({ start_ms: 0, in_year: true, unsynced: false })),
+      pills: [],
+      pill_events: [],
+      overflow: [],
+    })),
+    legend: [],
+  };
+}
+
 /** Installs the stub. Call before mounting anything that talks to Tauri. */
 export function installTauriStub(scenario: string): Harness {
   // Reassigned by `sign_in` for the `sign-in-adds-account` scenario: a real
@@ -350,6 +379,10 @@ export function installTauriStub(scenario: string): Harness {
         return getDay(args.dayStartMs);
       case 'get_month':
         return getMonth();
+      case 'get_year':
+        return getYearStub(args.year);
+      case 'get_big_year':
+        return getBigYearStub(args.year);
       // App's own effect fetches calendars alongside status on mount. None of
       // the App specs exercise the popover, and Header only renders it once
       // `calendars.length > 0`, so an empty list keeps every existing

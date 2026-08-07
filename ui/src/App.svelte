@@ -3,8 +3,8 @@
   import { listen } from '@tauri-apps/api/event';
   import { applyPalette, setPalette, type Palette } from './lib/theme';
   import {
-    getWeek, getDay, getMonth, weekStart,
-    type WeekPayload, type MonthPayload, type UiEvent,
+    getWeek, getDay, getMonth, getYear, getBigYear, weekStart,
+    type WeekPayload, type MonthPayload, type YearPayload, type BigYearPayload, type UiEvent,
   } from './lib/api';
   import { getStatus, signIn, syncNow, type AppStatus } from './lib/status';
   import { getCalendars, type Calendar } from './lib/calendars';
@@ -12,6 +12,8 @@
   import type { Rect } from './lib/position';
   import WeekGrid from './lib/WeekGrid.svelte';
   import MonthGrid from './lib/MonthGrid.svelte';
+  import YearGrid from './lib/YearGrid.svelte';
+  import BigYearRibbon from './lib/BigYearRibbon.svelte';
   import Header from './lib/Header.svelte';
   import EventPopover from './lib/EventPopover.svelte';
   import ViewSwitcher, { type View } from './lib/ViewSwitcher.svelte';
@@ -31,6 +33,33 @@
   let anchorMs = $state(dayStart(Date.now()));
   let view = $state<View>('week');
 
+  // Year and Big Year read a bare calendar year rather than a millisecond
+  // anchor — there is no single day inside them for `anchorMs` to name — so
+  // each gets its own counter instead of borrowing `anchorMs`'s year.
+  // Keeping them off `anchorMs` also protects the invariant above: opening
+  // Big Year must never drag a past `anchorMs` forward to satisfy its own
+  // bound (spec §4). Both start on the real current year, same reasoning as
+  // `anchorMs` starting on today.
+  //
+  // `yearNum` is re-seeded from `anchorMs` on the way into Year view (see
+  // `pick`) — a separate counter is how Year *steps*, not licence for it to
+  // open somewhere other than where you were looking. `bigYearNum` is not,
+  // for the bound above.
+  let yearNum = $state(new Date().getFullYear());
+  let bigYearNum = $state(new Date().getFullYear());
+
+  // `jiff` rejects a civil date outside -9999..=9999, and `yearNum` feeds
+  // `get_year`, which asks for `year + 1` (`commands::year_start_ms` at
+  // `src-tauri/src/lib.rs:131`), so `year_start_ms(10000, ..)` panics rather
+  // than erroring — a stuck `L` key is enough to reach it. The lower bound is
+  // the epoch: nothing below it is reachable through any other view, and
+  // negative millisecond boundaries are untested the whole way down. Year
+  // view is freely navigable in both directions (spec §4), so this is a
+  // guard against a crash, not a policy about which years are interesting —
+  // no year anyone can have data for is on the far side of it.
+  const YEAR_MIN = 1970;
+  const YEAR_MAX = 9998;
+
   // Derived purely for Header's title, and only in Week view: the week of Mon
   // 29 Jan reads "January" even though it runs into February. Day and Month
   // title themselves from `anchorMs` instead — see `Header`'s own `titleMs`.
@@ -38,6 +67,8 @@
 
   let week = $state<WeekPayload | null>(null);
   let month = $state<MonthPayload | null>(null);
+  let year = $state<YearPayload | null>(null);
+  let bigYear = $state<BigYearPayload | null>(null);
   let status = $state<AppStatus | null>(null);
   let calendars = $state<Calendar[]>([]);
   let busy = $state(false);
@@ -77,11 +108,11 @@
 
   // What to fetch for the view currently on screen, at the date currently
   // anchored — the "$derived picks which loader to call" half of this task.
-  // `year`/`bigyear` resolve to `none`: Plan 4's concern, not this one's.
   type FetchPlan =
     | { kind: 'day' | 'week'; target: number }
     | { kind: 'month'; year: number; monthNum: number }
-    | { kind: 'none' };
+    | { kind: 'year'; year: number }
+    | { kind: 'bigyear'; year: number };
 
   const fetchPlan = $derived<FetchPlan>((() => {
     // Day view fetches `anchorMs` itself, not `dayStart(anchorMs)`: `anchorMs`
@@ -98,7 +129,8 @@
       const d = new Date(anchorMs);
       return { kind: 'month', year: d.getFullYear(), monthNum: d.getMonth() + 1 };
     }
-    return { kind: 'none' };
+    if (view === 'year') return { kind: 'year', year: yearNum };
+    return { kind: 'bigyear', year: bigYearNum };
   })());
 
   // Every `week` assignment goes through `loadWeek`, and every `loadWeek`
@@ -111,6 +143,8 @@
   // stamp for the same reason.
   let weekReq = 0;
   let monthReq = 0;
+  let yearReq = 0;
+  let bigYearReq = 0;
 
   async function loadWeek(kind: 'day' | 'week', target: number) {
     const req = ++weekReq;
@@ -138,9 +172,36 @@
     }
   }
 
+  async function loadYear(y: number) {
+    const req = ++yearReq;
+    try {
+      const p = await getYear(y);
+      if (req !== yearReq) return;
+      year = p;
+      error = null;
+    } catch (e) {
+      if (req !== yearReq) return;
+      error = String(e);
+    }
+  }
+
+  async function loadBigYear(y: number) {
+    const req = ++bigYearReq;
+    try {
+      const p = await getBigYear(y);
+      if (req !== bigYearReq) return;
+      bigYear = p;
+      error = null;
+    } catch (e) {
+      if (req !== bigYearReq) return;
+      error = String(e);
+    }
+  }
+
   function runFetchPlan(plan: FetchPlan): Promise<void> {
-    if (plan.kind === 'none') return Promise.resolve();
     if (plan.kind === 'month') return loadMonth(plan.year, plan.monthNum);
+    if (plan.kind === 'year') return loadYear(plan.year);
+    if (plan.kind === 'bigyear') return loadBigYear(plan.year);
     return loadWeek(plan.kind, plan.target);
   }
 
@@ -216,23 +277,30 @@
     anchorMs = dayStart(Date.now());
   }
 
-  // `year`/`bigyear` stay reachable-looking but inert: the switcher's own
-  // buttons are `disabled`, and `pick` — which both the buttons and the
-  // number keys go through — is where that is actually enforced, so neither
-  // path can become a back door around the other. Enabling those buttons
-  // early would otherwise leave `view === 'year'`, `fetchPlan` answering
-  // `{kind:'none'}`, and the markup below quietly rendering the last
-  // `WeekGrid` payload as if it were a year.
-  const DISABLED_VIEWS = new Set<View>(['year', 'bigyear']);
-
+  // The chokepoint both the switcher's buttons and the number keys go
+  // through, so neither path can diverge from the other. All five slots are
+  // live (spec §10) — nothing left to turn away here.
   function pick(v: View) {
-    if (DISABLED_VIEWS.has(v)) return;
+    // Spec §5 and the DoD: the anchor survives every switch, and Year is a
+    // switch like any other. `yearNum` starts on the real current year, so
+    // without this an anchor on 28 Dec 2022 opened Year on the current year
+    // instead — a jump of however long the app had been running against that
+    // anchor. Re-seeded on every entry rather than only the first, so Year
+    // agrees with the Month view the user just came from; Year's own `‹`/`›`
+    // move `yearNum` alone, and that navigation is not meant to outlive a
+    // trip through another view.
+    //
+    // Deliberately not `bigYearNum`: Big Year is bounded to the current year
+    // and the next, so seeding it from a past anchor would have to either
+    // break that bound or drag the anchor forward past it — see its
+    // declaration, and `step` below.
+    if (v === 'year') yearNum = new Date(anchorMs).getFullYear();
     view = v;
   }
 
   // `H`/`L` — and the header's own `‹`/`›`, which are the same motion by
-  // mouse — step by the current view's unit (spec §7.6): a day, a week, or a
-  // calendar month. `year`/`bigyear` have no unit yet — Plan 4's concern.
+  // mouse — step by the current view's unit (spec §7.6): a day, a week, a
+  // calendar month, or a calendar year.
   //
   // `setDate`-based throughout (Fix round 1, finding 5): the raw-millisecond
   // arithmetic this replaced (`anchorMs -= WEEK`) shifts the *wall-clock
@@ -240,6 +308,22 @@
   // can walk `anchorMs` off a day boundary for good — every later step
   // compounds the drift.
   function step(dir: 1 | -1) {
+    // Year and Big Year step `yearNum`/`bigYearNum`, not `anchorMs` — see
+    // their declaration above for why the two are kept apart.
+    if (view === 'year') {
+      yearNum = Math.min(Math.max(yearNum + dir, YEAR_MIN), YEAR_MAX);
+      return;
+    }
+    if (view === 'bigyear') {
+      // Spec §4: Big Year is a planning surface — what is coming, not what
+      // happened — so it is bounded to the real current year and next, and
+      // `‹` does nothing once it is already on the earlier bound. Read off
+      // the real clock rather than `bigYearNum` itself, so the bound holds
+      // even after the tab has sat open across a year rollover.
+      const currentYear = new Date().getFullYear();
+      bigYearNum = Math.min(Math.max(bigYearNum + dir, currentYear), currentYear + 1);
+      return;
+    }
     const d = new Date(anchorMs);
     if (view === 'day') d.setDate(d.getDate() + dir);
     else if (view === 'week') d.setDate(d.getDate() + dir * 7);
@@ -263,55 +347,57 @@
   }
 
   // Asked by Month's `+N more` and its day-number click alike (`MonthGrid`
-  // makes no distinction between the two — see its own `pickDay`). Setting
-  // `anchorMs` here is the entire point of this task (spec §5): without it,
-  // Day view opens on today instead of the day that was actually clicked.
+  // makes no distinction between the two — see its own `pickDay`), and by a
+  // `YearGrid` date the same way. Setting `anchorMs` here is the entire
+  // point of this task (spec §5): without it, Day view opens on today
+  // instead of the day that was actually clicked.
   function handleDayPick(startMs: number) {
     anchorMs = startMs;
     view = 'day';
   }
 
-  // Month's own popover. `WeekGrid` owns this end-to-end for Day/Week, but
-  // `MonthGrid` only ever hands an `{ event, rect }` pair up through `onopen`
-  // (see its own doc comment) — the same contract `EventBlock`/`AllDayBand`
-  // chips use with WeekGrid, one layer further out. No restyle-on-RSVP is
-  // needed here the way `WeekGrid`'s `responseOverrides` provides: nothing in
-  // `MonthGrid` colours a `.timed` line by response status, only by calendar
-  // colour, so `onresponded` below is a deliberate no-op — the write still
-  // reaches Google (`EventPopover` calls `respond_to_event` itself), there is
-  // just nothing on screen that needs to catch up.
+  // Month's and Big Year's shared popover. `WeekGrid` owns this end-to-end
+  // for Day/Week, but `MonthGrid` and `BigYearRibbon` only ever hand an
+  // `{ event, rect }` pair up through `onopen` (see each one's own doc
+  // comment) — the same contract `EventBlock`/`AllDayBand` chips use with
+  // WeekGrid, one layer further out. No restyle-on-RSVP is needed here the
+  // way `WeekGrid`'s `responseOverrides` provides: neither grid colours its
+  // chip by response status, only by calendar colour, so `onresponded` below
+  // is a deliberate no-op — the write still reaches Google (`EventPopover`
+  // calls `respond_to_event` itself), there is just nothing on screen that
+  // needs to catch up.
   //
   // Primitives, not the `UiEvent` object, mirroring `WeekGrid`'s own
   // `selectedId`/`selectedStartMs` — see that component's comment for why
   // (proxy identity of an object reassigned into `$state` is not reliable
   // for a later `===`).
-  let monthSelId = $state<number | null>(null);
-  let monthSelStart = $state<number | null>(null);
-  let monthAnchor = $state<Rect | null>(null);
-  let monthDetail = $state<EventDetail | null>(null);
+  let gridSelId = $state<number | null>(null);
+  let gridSelStart = $state<number | null>(null);
+  let gridAnchor = $state<Rect | null>(null);
+  let gridDetail = $state<EventDetail | null>(null);
 
-  function isMonthSelected(event: UiEvent): boolean {
-    return monthSelId === event.id && monthSelStart === event.start_ms;
+  function isGridSelected(event: UiEvent): boolean {
+    return gridSelId === event.id && gridSelStart === event.start_ms;
   }
 
-  async function openMonthEvent(event: UiEvent, rect: Rect) {
-    monthSelId = event.id;
-    monthSelStart = event.start_ms;
-    monthAnchor = rect;
-    monthDetail = null;
+  async function openGridEvent(event: UiEvent, rect: Rect) {
+    gridSelId = event.id;
+    gridSelStart = event.start_ms;
+    gridAnchor = rect;
+    gridDetail = null;
     try {
       const d = await getEventDetail(event.id);
-      if (isMonthSelected(event)) monthDetail = d;
+      if (isGridSelected(event)) gridDetail = d;
     } catch {
-      if (isMonthSelected(event)) closeMonthEvent();
+      if (isGridSelected(event)) closeGridEvent();
     }
   }
 
-  function closeMonthEvent() {
-    monthSelId = null;
-    monthSelStart = null;
-    monthAnchor = null;
-    monthDetail = null;
+  function closeGridEvent() {
+    gridSelId = null;
+    gridSelStart = null;
+    gridAnchor = null;
+    gridDetail = null;
   }
 
   // Keys are dropped when the user is typing (an `input`/`textarea`) or when
@@ -326,8 +412,7 @@
   }
 
   // Numbers, not initials, because `Y` is wanted for both "year" and "yes,
-  // accept" (spec §7.6). `4`/`5` reach `pick` like any other view and are
-  // turned away there, alongside a click on the same disabled slot.
+  // accept" (spec §7.6). `4`/`5` reach `pick` exactly like any other view.
   const KEY_VIEW: Record<string, View> = {
     '1': 'day', '2': 'week', '3': 'month', '4': 'year', '5': 'bigyear',
   };
@@ -363,20 +448,28 @@
   />
   {#if view === 'month'}
     {#if month}
-      <MonthGrid {month} onopen={openMonthEvent} ondaypick={handleDayPick} />
+      <MonthGrid {month} onopen={openGridEvent} ondaypick={handleDayPick} />
+    {/if}
+  {:else if view === 'year'}
+    {#if year}
+      <YearGrid {year} ondaypick={handleDayPick} />
+    {/if}
+  {:else if view === 'bigyear'}
+    {#if bigYear}
+      <BigYearRibbon ribbon={bigYear} onopen={openGridEvent} />
     {/if}
   {:else if week}
     <WeekGrid {week} />
   {/if}
 </main>
 
-{#if monthSelId !== null && monthSelStart !== null && monthAnchor && monthDetail}
-  {@const startMs = monthSelStart}
+{#if gridSelId !== null && gridSelStart !== null && gridAnchor && gridDetail}
+  {@const startMs = gridSelStart}
   <EventPopover
-    detail={monthDetail}
-    anchor={monthAnchor}
+    detail={gridDetail}
+    anchor={gridAnchor}
     occurrenceStartMs={startMs}
-    onclose={closeMonthEvent}
+    onclose={closeGridEvent}
     onresponded={() => {}}
   />
 {/if}
