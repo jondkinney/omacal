@@ -1346,7 +1346,16 @@ mod tests {
         ev.recurrence = Some("RRULE:FREQ=MONTHLY;BYDAY=-1FR".into());
         let (pool, id) = seeded_pool_with(&ev).await; // its calendar is seeded `owner`
 
+        // The real id `seeded_pool_with` assigned its one calendar — not
+        // assumed to be any particular number, so this cannot pass by
+        // coincidence with `stored`'s own hardcoded `calendar_id: 1`. Task 5
+        // routes writes by this field, so a wrong value here does not fail a
+        // test there — it creates the event on the wrong calendar.
+        let cal_id: i64 =
+            sqlx::query_scalar("SELECT id FROM calendars LIMIT 1").fetch_one(&pool).await.unwrap();
+
         let d = event_detail_impl(&state_with(pool, false), id).await.unwrap();
+        assert_eq!(d.calendar_id, cal_id, "calendar_id must be the event's own, not dropped or hardcoded");
         assert_eq!(d.recurrence.as_deref(), Some("RRULE:FREQ=MONTHLY;BYDAY=-1FR"));
         assert!(d.can_edit);
     }
