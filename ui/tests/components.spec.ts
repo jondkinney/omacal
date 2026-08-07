@@ -33,6 +33,33 @@ test.describe('WeekGrid', () => {
     });
   });
 
+  // The same guard for the current-time line, which is the worse of the two:
+  // it is 1.5px plus a 7px dot, and it crawls down today's column all day, so
+  // the dead band it makes is both bigger and moving.
+  //
+  // I first left this unspec'd on the grounds that reaching `.now` needed a
+  // fixture whose week moves with the calendar. That was wrong, and the fix is
+  // the pattern this suite already uses for `YearGrid`'s today-highlight: the
+  // fixture stays fixed in the past and the *clock* moves to it. Frozen at
+  // 10:20 on `MON` itself, the first column becomes today, `.now` renders at
+  // 10:20 — and the click at 10:00 lands on the hour line while the dot sits
+  // 20 minutes below, so this covers `.rule` and `.now` at once without
+  // needing to know exactly where the dot fell.
+  test('the current-time line does not swallow a click either', async ({ page }) => {
+    await page.clock.setFixedTime(MON + 10 * 3_600_000 + 20 * 60_000);
+    await page.goto(show('WeekGrid', 'empty'));
+    await expect(page.locator('.col.today .now')).toHaveCount(1);
+
+    const col = page.locator('.col').first();
+    const box = (await col.boundingBox())!;
+    // Straight through the dot: it is drawn by `.now::before` at the line's
+    // own left edge, so this is the pixel most likely to be intercepted.
+    await col.click({ position: { x: 3, y: box.height * (10 + 20 / 60) / 24 } });
+    expect(await page.evaluate(() => (window as any).__lastCreate)).toMatchObject({
+      startMs: MON + 10 * 3_600_000,
+    });
+  });
+
   test('renders overlaps side by side', async ({ page }) => {
     await page.goto(show('WeekGrid', 'populated'));
     // Thursday's two identical-time meetings must not sit on top of each other.
@@ -1429,6 +1456,26 @@ test.describe('DeleteConfirm', () => {
     await page.getByRole('button', { name: 'Delete' }).click();
     expect(await confirms(page)).toEqual(['following']);
   });
+
+  // Each radio bound to the scope it actually sends, one spec per option, so
+  // that no option can be silently rewired to another. The two that are not
+  // the default matter most and differ most: "All events" removes a whole
+  // series *including its past*, "This and following" removes nothing at all
+  // and merely shortens the rule. Wiring the first to the second leaves the
+  // panel reading exactly right and is a different, irreversible act — with
+  // mail going out either way. Only an assertion per option catches it.
+  for (const [label, scope] of [
+    ['This event', 'this'],
+    ['This and following', 'following'],
+    ['All events', 'all'],
+  ] as const) {
+    test(`"${label}" sends the scope ${scope}`, async ({ page }) => {
+      await open(page, 'recurring');
+      await page.getByRole('radio', { name: label }).check();
+      await page.getByRole('button', { name: 'Delete' }).click();
+      expect(await confirms(page)).toEqual([scope]);
+    });
+  }
 
   test('an event with nobody on it claims nothing about guests', async ({ page }) => {
     // "0 guests are told by email" is both untrue and alarming. The no-undo

@@ -461,6 +461,33 @@
     return { top: window.innerHeight / 4, left: window.innerWidth / 2 - 170, width: 0, height: 0 };
   }
 
+  /**
+   * The day a new event opens on: `anchorMs`, except in Year and Big Year.
+   *
+   * Those two navigate their own counters and deliberately leave `anchorMs`
+   * alone — see their declarations for why — so the anchor is simply not what
+   * is on screen there. `n` in Year after two `l`s would otherwise open a form
+   * two years behind the grid being read, and `n` is the *only* way to create
+   * from Year, which has no empty grid space left to click.
+   *
+   * The anchor's month and day are kept and moved into the displayed year,
+   * which is the inverse of `pick`'s own re-seeding of `yearNum` from
+   * `anchorMs`. Clamped to the target month's last day for exactly the reason
+   * `step` clamps: 29 February moved into a non-leap year overflows into March
+   * rather than failing.
+   */
+  function createDayMs(): number {
+    const shownYear = view === 'year' ? yearNum : view === 'bigyear' ? bigYearNum : null;
+    if (shownYear === null) return anchorMs;
+    const d = new Date(anchorMs);
+    const dom = d.getDate();
+    d.setDate(1);
+    d.setFullYear(shownYear);
+    const lastDayOfTarget = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+    d.setDate(Math.min(dom, lastDayOfTarget));
+    return d.getTime();
+  }
+
   /** `n`: a new event on the date the user is looking at, at the next half
    *  hour. Not on *today* — the anchor is the whole point (spec §5), and the
    *  two differ the moment anybody navigates. */
@@ -468,7 +495,7 @@
     form = {
       mode: 'create',
       anchor: keyboardAnchor(),
-      initial: blankValue(Date.now(), createCalendarId, anchorMs),
+      initial: blankValue(Date.now(), createCalendarId, createDayMs()),
     };
   }
 

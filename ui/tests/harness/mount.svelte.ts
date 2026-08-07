@@ -10,8 +10,19 @@ import CalendarPopover from '../../src/lib/CalendarPopover.svelte';
 import EventPopover from '../../src/lib/EventPopover.svelte';
 import EventForm from '../../src/lib/EventForm.svelte';
 import DeleteConfirm from '../../src/lib/DeleteConfirm.svelte';
+import * as eventform from '../../src/lib/eventform';
 import { FIXTURES } from '../fixtures';
 import { installTauriStub } from './tauri';
+
+// The form's pure date functions, reachable from a spec.
+//
+// `eventform.spec.ts` exercises these directly in the Node process, which is
+// right for everything that does not depend on a zone. The two characterisation
+// specs at the end of that file *are* about zone transitions, and Playwright's
+// `timezoneId` reaches the browser context, not Node — so those run in the page
+// and reach the module through here. Assigned before the branching below, so a
+// spec can ask for a URL that mounts nothing at all.
+(window as any).__eventform = eventform;
 
 // Palette normally arrives from the Rust get_palette command; the harness
 // applies the same fallback_dark values so snapshots are deterministic.

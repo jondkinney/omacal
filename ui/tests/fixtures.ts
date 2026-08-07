@@ -567,8 +567,22 @@ const APP_MONTH_EVENT_ID = Math.floor((BUSY_DAY_START_MS + 9 * H) / 1000);
 POPOVER_DETAILS[APP_MONTH_EVENT_ID] = detail({
   id: APP_MONTH_EVENT_ID,
   title: 'Standup',
-  start_ms: BUSY_DAY_START_MS + 9 * H,
-  end_ms: BUSY_DAY_START_MS + 9 * H + 30 * 60_000,
+  // A weekly series whose master DTSTART is a **week before** the block
+  // `busyDayMonth` renders, which is the whole point of the fixture (Fix round
+  // 1, finding 1). `App` builds its own `{@const occurrence}` for the Month and
+  // Big Year popover — a second instance of the Plan 2 defect, in code
+  // `WeekGrid`'s specs never touch — and while these two timestamps were equal
+  // it could be handed `gridDetail.start_ms` with the whole suite still green.
+  // Unequal, the Month edit spec's own Date assertion catches it for free.
+  //
+  // Recurring, not a one-off with a mismatched start: only a series master ever
+  // reports a `start_ms` that is not its clicked block's, so a non-recurring
+  // fixture shaped this way would be describing an event that cannot exist.
+  is_recurring: true,
+  recurrence: 'RRULE:FREQ=WEEKLY',
+  repeat: 'weekly',
+  start_ms: BUSY_DAY_START_MS + 9 * H - 7 * 24 * H,
+  end_ms: BUSY_DAY_START_MS + 9 * H - 7 * 24 * H + 30 * 60_000,
   // `can_edit: true` (Task 10), explicitly: `App` renders its *own*
   // `EventPopover` for Month and Big Year rather than `WeekGrid`'s, so the
   // Edit/Delete wiring on that second instance is a separate piece of code

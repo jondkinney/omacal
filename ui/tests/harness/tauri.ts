@@ -343,15 +343,33 @@ function getYearStub(y: number): YearPayload {
   };
 }
 
-/** Big Year view's own `get_big_year` stub: fourteen otherwise-empty 28-day
- *  rows, echoing back whatever year was actually asked for — same reasoning
- *  as `getYearStub` above (`BigYearRibbon`'s own `y2026`/`crossing` fixtures
- *  already cover the populated case). */
+/**
+ * Big Year view's own `get_big_year` stub: fourteen otherwise-empty 28-day
+ * rows, echoing back whatever year was actually asked for — same reasoning as
+ * `getYearStub` above (`BigYearRibbon`'s own `y2026`/`crossing` fixtures
+ * already cover the populated case).
+ *
+ * The days carry **real** `start_ms` values. They used to be `0` throughout,
+ * on the reasoning that no App spec read them; Task 10 made a ribbon day
+ * clickable, and a click through a day whose start is `0` opens an event form
+ * dated 1 January 1970 — a fixture that would have made the create-from-Big-Year
+ * witness assert the epoch and call it a pass. Anchored the way
+ * `assemble_big_year` anchors: the Monday on or before 1 January of the year
+ * asked for, then 28 days per row.
+ */
 function getBigYearStub(y: number): BigYearPayload {
+  const jan1 = new Date(y, 0, 1);
+  // `getDay()` is 0 for Sunday, so Sunday steps back six days, not none.
+  const back = (jan1.getDay() + 6) % 7;
+  const ribbonStart = new Date(y, 0, 1 - back).getTime();
   return {
     year: y,
-    rows: Array.from({ length: 14 }, () => ({
-      days: Array.from({ length: 28 }, () => ({ start_ms: 0, in_year: true, unsynced: false })),
+    rows: Array.from({ length: 14 }, (_, r) => ({
+      days: Array.from({ length: 28 }, (_, c) => ({
+        start_ms: ribbonStart + (r * 28 + c) * DAY_MS,
+        in_year: true,
+        unsynced: false,
+      })),
       pills: [],
       pill_events: [],
       overflow: [],

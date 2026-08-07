@@ -2,6 +2,7 @@ import { test, expect } from '@playwright/test';
 import { offerableCalendarId, type Calendar } from '../src/lib/calendars';
 import {
   blankValue, blankValueAt, endAfterStart, instantsOf, ruleInWords, shiftedEndDate,
+  toEventInput, valueFromDetail,
 } from '../src/lib/eventform';
 
 // Pure functions, exercised directly — same shape as `position.spec.ts` and
@@ -215,5 +216,160 @@ test.describe('blankValueAt', () => {
     const v = blankValueAt(at(2026, 8, 5, 23, 30), 1);
     expect(v.endDate).toBe('2026-08-06');
     expect(endAfterStart(v)).toBe(true);
+  });
+});
+
+// --- The form's civil <-> instant boundary: characterised, not fixed -------
+//
+// Everything below asserts a value that is **wrong**, on purpose, and names the
+// right one at every assertion. They pass today, so the gate stays green and
+// nothing here is a broken test somebody has to work around; fixing the defect
+// must change these tests deliberately, which is the point. Same device Task 9
+// used to pin the all-day edit-zone defect, and for the same reason.
+//
+// One root cause behind all four: `dateOf`/`timeOf`/`toMs` convert between an
+// instant and a civil (date, time) pair, and that conversion is neither
+// injective nor precision-preserving.
+//
+//   - it drops everything below a minute
+//   - a repeated wall-clock hour maps two instants onto one pair, and `toMs`
+//     resolves that pair back to the earlier of them
+//   - a skipped wall-clock hour is a pair naming no instant at all, and
+//     `new Date(y, m, d, h, min)` silently normalises it forward
+//
+// **Why these are pinned rather than fixed.** I looked for a local fix and
+// there isn't an honest one. Deriving `end`/`endDate` civilly instead of from
+// the end instant repairs the fall-back case in `blankValueAt` — but it leaves
+// the event 90 minutes long across the transition, because the *span* is still
+// measured by re-parsing two ambiguous pairs. And it does nothing at all for
+// the skipped-midnight case, where the damage is `toMs` moving the **start**
+// forward by an hour while the end stays put. Both cures live inside
+// `instantsOf`/`toMs`, which the edit path and the all-day path share, and
+// which Plan 6 has to rewrite anyway. A piecemeal fix here would be rewritten
+// by it within the week and would meanwhile give the boundary a second, subtly
+// different set of rules.
+//
+// Probes behind the numbers: `scratchpad/t10rev/dst.mjs` and `anchor.mjs`
+// (the reviewer's), re-run in six zones — Europe/Sofia, America/New_York,
+// America/Santiago, Africa/Cairo, Australia/Lord_Howe, Pacific/Chatham. Every
+// one fails; only the count differs (12, or 13 where a midnight is skipped too).
+
+/** A harness URL that mounts no component at all — `mount.svelte.ts` puts the
+ *  pure module on `window` before it branches, so this is the cheapest page
+ *  that can answer these questions in a zone Playwright controls. */
+const PURE = '/tests/harness/index.html?c=eventform&f=none';
+
+test.describe('the form’s civil↔instant boundary (characterised, not fixed)', () => {
+  test.describe('Europe/Sofia — the repeated hour', () => {
+    // 25 Oct 2026: clocks go back 04:00 -> 03:00, so 03:00-03:59 happens twice.
+    test.use({ timezoneId: 'Europe/Sofia' });
+
+    test('CHARACTERISED: a new event asked for inside the repeated hour cannot be saved', async ({ page }) => {
+      await page.goto(PURE);
+      const v = await page.evaluate(() => {
+        const ef = (window as any).__eventform;
+        // The first pass of 03:00 — what `new Date` resolves an ambiguous
+        // local time to.
+        const now = new Date(2026, 9, 25, 3, 0, 0, 0).getTime();
+        const value = ef.blankValue(now, 1);
+        const [startMs, endMs] = ef.instantsOf(value);
+        return { start: value.start, end: value.end, saveable: ef.endAfterStart(value), span: endMs - startMs };
+      });
+
+      expect(v.start).toBe('03:30');
+      // WRONG. Correct: '04:00'. The end *instant* is half an hour later, but
+      // by then the clocks have gone back, so reading its wall clock gives an
+      // earlier-looking time on the same date.
+      expect(v.end).toBe('03:00');
+      // WRONG. Correct: 30 minutes. Re-parsing '03:30' and '03:00' on the same
+      // date puts the end half an hour *before* the start.
+      expect(v.span).toBe(-30 * 60_000);
+      // WRONG. Correct: true. The form opens already refusing to save, with no
+      // field on it visibly wrong — the same shape as the 23:00-23:30 defect
+      // fixed above, one layer deeper.
+      expect(v.saveable).toBe(false);
+    });
+
+    test('CHARACTERISED: editing an occurrence in the repeated hour moves it an hour earlier', async ({ page }) => {
+      await page.goto(PURE);
+      const r = await page.evaluate(() => {
+        const ef = (window as any).__eventform;
+        // The *second* pass of 03:00: same wall clock, one hour of real time
+        // later than what `new Date(2026, 9, 25, 3, 0)` resolves to.
+        const startMs = new Date(2026, 9, 25, 3, 0, 0, 0).getTime() + 3_600_000;
+        const endMs = startMs + 30 * 60_000;
+        const detail = {
+          id: 1, calendar_id: 1, title: 'Standup', description: null, location: null,
+          conference_uri: null, start_ms: startMs, end_ms: endMs, is_all_day: false,
+          is_recurring: false, recurrence: null, repeat: 'never', color: null,
+          organizer_email: null, self_response: null, can_respond: true, can_edit: true,
+          attendees: [],
+        };
+        // Exactly what `App.openEdit` then `App.saveForm` do, with the user
+        // touching nothing but the title.
+        const value = ef.valueFromDetail(detail, startMs, endMs);
+        const sent = ef.toEventInput(value, value);
+        return { drift: sent.startMs - startMs };
+      });
+
+      // WRONG. Correct: 0 — Task 9's anchoring invariant says an untouched
+      // time makes `fields.startMs` *exactly* `occurrenceStartMs`. It is out by
+      // a full hour for 12 block starts a year in this zone, and the Rust side
+      // reads that difference as a deliberate move: a start/end PATCH dragging
+      // the meeting an hour earlier, with `sendUpdates=all` behind it, for
+      // somebody who only renamed it.
+      expect(r.drift).toBe(-3_600_000);
+    });
+  });
+
+  test.describe('America/Santiago — a midnight that does not exist', () => {
+    // 6 Sep 2026: clocks go forward 00:00 -> 01:00, so that day has no 00:00.
+    test.use({ timezoneId: 'America/Santiago' });
+
+    test('CHARACTERISED: a new event on a day whose midnight is skipped cannot be saved', async ({ page }) => {
+      await page.goto(PURE);
+      const v = await page.evaluate(() => {
+        const ef = (window as any).__eventform;
+        const now = new Date(2026, 5, 15, 0, 0, 0, 0).getTime(); // 15 Jun, 00:00
+        const day = new Date(2026, 8, 6, 0, 0, 0, 0).getTime(); // 6 Sep — normalises to 01:00
+        const value = ef.blankValue(now, 1, day);
+        const [startMs, endMs] = ef.instantsOf(value);
+        return { start: value.start, end: value.end, saveable: ef.endAfterStart(value), span: endMs - startMs };
+      });
+
+      // Reached by pressing `n`, or by clicking that day in Month or Big Year,
+      // while the clock reads just after midnight.
+      expect(v.start).toBe('00:30');
+      expect(v.end).toBe('01:00');
+      // WRONG. Correct: 30 minutes, and `true`. 00:30 does not exist on this
+      // date, so re-parsing it normalises the *start* forward to 01:30 while
+      // the end stays at 01:00 — backwards by half an hour.
+      expect(v.span).toBe(-30 * 60_000);
+      expect(v.saveable).toBe(false);
+    });
+  });
+});
+
+test.describe('the anchor’s precision (characterised, not fixed)', () => {
+  test('CHARACTERISED: a start with seconds on it loses them', async () => {
+    // Zone-independent, so this one needs no page. Google stores a start to the
+    // second and plenty of real events have one; the form's inputs are
+    // minute-granular, so the round trip truncates.
+    const startMs = new Date(2026, 7, 5, 9, 0, 37, 0).getTime();
+    const endMs = startMs + 30 * 60_000;
+    const detail = {
+      id: 1, calendar_id: 1, title: 'Standup', description: null, location: null,
+      conference_uri: null, start_ms: startMs, end_ms: endMs, is_all_day: false,
+      is_recurring: false, recurrence: null, repeat: 'never', color: null,
+      organizer_email: null, self_response: null, can_respond: true, can_edit: true,
+      attendees: [],
+    } as any;
+    const value = valueFromDetail(detail, startMs, endMs);
+    const sent = toEventInput(value, value);
+
+    // WRONG. Correct: 0. Task 9's invariant again — an untouched time must send
+    // an anchor equal to `occurrenceStartMs` exactly, and 37 seconds of
+    // difference is read as a move like any other.
+    expect(sent.startMs - startMs).toBe(-37_000);
   });
 });

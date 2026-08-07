@@ -536,6 +536,67 @@ test.describe('App', () => {
     await expect(newForm(page).getByLabel('End', { exact: true })).toHaveValue('10:30');
   });
 
+  // Year and Big Year keep their own counters and never touch `anchorMs`, so
+  // `n` there used to open a form in the year the user had navigated *away*
+  // from. That matters more in Year than anywhere else: it is the one view
+  // with no empty grid space to click, so `n` is its only way to create, and a
+  // substitute that lands in the wrong year is not a substitute. One spec per
+  // view, because the two read different counters.
+  test('n follows the year on screen in Year view, not the anchor', async ({ page }) => {
+    await writable(page);
+    await page.keyboard.press('4'); // Year, re-seeded from the anchor: 2024
+    await expect(page.locator('.ygrid')).toHaveAttribute('data-year', '2024');
+    await page.keyboard.press('l');
+    await expect(page.locator('.ygrid')).toHaveAttribute('data-year', '2025');
+
+    await page.keyboard.press('n');
+    await expect(newForm(page)).toBeVisible();
+    // The anchor's own month and day — 29 January — moved into the year on
+    // screen, rather than 2024's.
+    await expect(newForm(page).getByLabel('Date', { exact: true })).toHaveValue('2025-01-29');
+  });
+
+  test('n follows the year on screen in Big Year view too', async ({ page }) => {
+    await writable(page);
+    await page.keyboard.press('5');
+    await expect(page.locator('.ribbon')).toHaveAttribute('data-year', '2024');
+    await page.keyboard.press('l'); // its own bound is the real current year and next
+    await expect(page.locator('.ribbon')).toHaveAttribute('data-year', '2025');
+
+    await page.keyboard.press('n');
+    await expect(newForm(page)).toBeVisible();
+    await expect(newForm(page).getByLabel('Date', { exact: true })).toHaveValue('2025-01-29');
+  });
+
+  // Four entry points were delivered; the two above witness Day/Week and the
+  // keyboard. These two are Month and Big Year, whose `oncreate` reaches `App`
+  // through components `WeekGrid`'s specs never touch — `oncreate={() => {}}`
+  // on both left the suite green. Fix round 1's finding 4 was this exact shape
+  // for `onopen`, one control earlier.
+  test('clicking a Month cell opens the form on that day', async ({ page }) => {
+    await writable(page);
+    await page.keyboard.press('3');
+    // The grid's first cell, Mon 27 Jul 2026, which carries only its own
+    // number — so the middle of it is genuinely empty space.
+    await page.locator('.mcell').first().locator('.newhere').click();
+    await expect(newForm(page)).toBeVisible();
+    await expect(newForm(page).getByLabel('Date', { exact: true })).toHaveValue('2026-07-27');
+  });
+
+  test('clicking a Big Year day opens the form on that day', async ({ page }) => {
+    await writable(page);
+    await page.keyboard.press('5');
+    // The ribbon is anchored on the Monday on or before 1 Jan of the year on
+    // screen. The clock is frozen in Jan 2024 and 1 Jan 2024 *is* a Monday, so
+    // the anchor is that day itself and row 0 column 10 is Thu 11 Jan.
+    // Off-centre because a ribbon day is ~45px by ~15px with its own number in
+    // the middle.
+    await page.locator('.rrow').first().locator('.rday .newhere').nth(10)
+      .click({ position: { x: 3, y: 3 } });
+    await expect(newForm(page)).toBeVisible();
+    await expect(newForm(page).getByLabel('Date', { exact: true })).toHaveValue('2024-01-11');
+  });
+
   test('a new event lands on a calendar the user can write to', async ({ page }) => {
     // The list leads with a `reader` (a subscribed holiday calendar, the
     // ordinary case) and then a `writer`, with the user's own primary last, so
@@ -557,6 +618,7 @@ test.describe('App', () => {
   /// block's own start_ms must reach the command, not detail.start_ms.
   test('editing an occurrence sends the clicked block start, not the series start', async ({ page }) => {
     await writable(page);
+    const syncsBefore = (await callsTo(page, 'sync_now')).length;
     await block(page, 'Standup').click();
     await expect(page.getByRole('dialog', { name: 'Standup' })).toBeVisible();
     await page.getByRole('button', { name: 'Edit' }).click();
@@ -577,6 +639,17 @@ test.describe('App', () => {
     // exist together: an untouched time means these two are equal *exactly*,
     // because the Rust side reads any difference between them as a move.
     expect(args.fields.startMs).toBe(args.occurrenceStartMs);
+
+    // And the edit is followed by a sync, not just a local re-read. This is
+    // the *edit* path's own witness: it shares `refreshAfterWrite` with the
+    // delete path, but a shared function is not a shared assertion — replacing
+    // this call site alone with `reload()` left the whole suite green, and the
+    // consequence is the one `updateEvent`'s doc comment names, that a `this`
+    // edit against a bare master is not written back locally and the popover
+    // goes on showing the old title for up to a sync interval.
+    await expect
+      .poll(async () => (await callsTo(page, 'sync_now')).length)
+      .toBeGreaterThan(syncsBefore);
   });
 
   test('delete asks for confirmation and names the event', async ({ page }) => {
@@ -668,11 +741,36 @@ test.describe('App', () => {
     // `BUSY_DAY_START_MS + 9h`, and that constant is carried over verbatim
     // from the Rust suite rather than being this file's own UTC midnight for
     // Mon 10 Aug (see its comment in fixtures.ts) — it is 06:00 UTC, so under
-    // the project's `timezoneId: 'UTC'` the form reads 15:00. Pinned as the
-    // value it actually is: a form that had defaulted the time instead would
-    // show the next half hour and be caught.
+    // the project's `timezoneId: 'UTC'` the form reads 15:00.
+    //
+    // The *date* is what makes this discriminating: this event's detail is a
+    // weekly master whose DTSTART is Mon **3** Aug, so `App` handing the form
+    // `gridDetail.start_ms` — the Plan 2 defect, in its second instance —
+    // shows 2026-08-03 here. The End field binds `gridSelEnd` the same way.
     await expect(editForm(page).getByLabel('Date', { exact: true })).toHaveValue('2026-08-10');
     await expect(editForm(page).getByLabel('Start', { exact: true })).toHaveValue('15:00');
+    await expect(editForm(page).getByLabel('End', { exact: true })).toHaveValue('15:30');
+  });
+
+  test('the views do not move under an open form', async ({ page }) => {
+    // Focus is moved to a control *outside* the panel first, and that is the
+    // whole spec. `isTypingTarget` already drops a view key aimed at an
+    // `<input>` or at anything inside `.pop`, and the form takes focus on its
+    // title field on mount — so a spec that presses `3` straight after opening
+    // the form passes whether or not the modal guard exists. (Written that way
+    // first; removing the guard left it green.)
+    //
+    // Reachable without contrivance: the panel has no focus trap, so tabbing
+    // past its Create button lands on whatever is behind the scrim, and a bare
+    // `3` from there would switch the view under an open form.
+    await writable(page);
+    await page.keyboard.press('n');
+    await expect(newForm(page)).toBeVisible();
+
+    await page.getByRole('button', { name: 'Today' }).focus();
+    await page.keyboard.press('3');
+    await expect(page.locator('.mrow')).toHaveCount(0);
+    await expect(newForm(page)).toBeVisible();
   });
 
   test('edit and delete are hidden when can_edit is false', async ({ page }) => {
