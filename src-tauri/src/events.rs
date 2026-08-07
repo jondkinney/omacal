@@ -4,6 +4,7 @@ use sqlx::SqlitePool;
 #[derive(Debug, serde::Serialize)]
 pub struct EventDetail {
     pub id: i64,
+    pub calendar_id: i64,
     pub title: Option<String>,
     pub description: Option<String>,
     pub location: Option<String>,
@@ -12,10 +13,14 @@ pub struct EventDetail {
     pub end_ms: i64,
     pub is_all_day: bool,
     pub is_recurring: bool,
+    /// The raw `RRULE`, carried through unchanged so the UI can tell a rule it
+    /// can represent from one it cannot.
+    pub recurrence: Option<String>,
     pub color: Option<String>,
     pub organizer_email: Option<String>,
     pub self_response: Option<String>,
     pub can_respond: bool,
+    pub can_edit: bool,
     pub attendees: Vec<omacal_store::Attendee>,
 }
 
@@ -37,6 +42,16 @@ pub struct EventDetail {
 /// answer.
 pub(crate) fn can_respond(demo: bool, access_role: &str, attendees: &[omacal_store::Attendee]) -> bool {
     !demo && matches!(access_role, "owner" | "writer") && attendees.iter().any(|a| a.is_self)
+}
+
+/// Whether the edit and delete controls are shown at all.
+///
+/// Deliberately *not* `can_respond` minus its attendee clause: responding
+/// needs a `self` attendee row to change, editing does not — you can edit an
+/// event nobody else is on. Sharing an implementation would couple two rules
+/// that only look alike.
+pub(crate) fn can_edit(demo: bool, access_role: &str) -> bool {
+    !demo && matches!(access_role, "owner" | "writer")
 }
 
 /// Whether an event belongs to a recurring series: either the series master
@@ -78,6 +93,7 @@ async fn event_detail_impl(state: &AppState, id: i64) -> anyhow::Result<EventDet
 
     Ok(EventDetail {
         id: event.id,
+        calendar_id: event.calendar_id,
         title: event.summary,
         description: event.description,
         location: event.location,
@@ -86,10 +102,12 @@ async fn event_detail_impl(state: &AppState, id: i64) -> anyhow::Result<EventDet
         end_ms: event.end_utc,
         is_all_day: event.is_all_day,
         is_recurring,
+        recurrence: event.recurrence.clone(),
         color: event.color_hex,
         organizer_email: event.organizer_email,
         self_response: event.self_response,
         can_respond,
+        can_edit: can_edit(state.demo, &access_role),
         attendees: event.attendees,
     })
 }
@@ -560,6 +578,23 @@ mod tests {
     fn demo_mode_offers_no_rsvp_however_writable_the_calendar_looks() {
         assert!(!can_respond(true, "owner", &[guest(true)]));
         assert!(!can_respond(true, "writer", &[guest(true)]));
+    }
+
+    #[test]
+    fn only_writable_calendars_are_editable() {
+        assert!(can_edit(false, "owner"));
+        assert!(can_edit(false, "writer"));
+        assert!(!can_edit(false, "reader"));
+        assert!(!can_edit(false, "freeBusyReader"));
+    }
+
+    /// Demo mode may not write, exactly as `can_respond` refuses it — the demo
+    /// calendars are seeded `owner`, so without this the form would offer a Save
+    /// that the write guard can only refuse.
+    #[test]
+    fn demo_mode_is_never_editable() {
+        assert!(!can_edit(true, "owner"));
+        assert!(!can_edit(true, "writer"));
     }
 
     #[test]
@@ -1300,6 +1335,20 @@ mod tests {
             !demo.can_respond,
             "demo mode offered RSVP buttons that `demo_sync_guard` can only refuse"
         );
+    }
+
+    /// The Repeat control needs the real RRULE to decide whether it can represent
+    /// it (see `write::repeat_from_rrule`). Dropping it here would make every
+    /// exotic rule look like "Never" and invite a silent overwrite.
+    #[tokio::test]
+    async fn detail_carries_the_raw_recurrence_rule() {
+        let mut ev = stored(vec![]);
+        ev.recurrence = Some("RRULE:FREQ=MONTHLY;BYDAY=-1FR".into());
+        let (pool, id) = seeded_pool_with(&ev).await; // its calendar is seeded `owner`
+
+        let d = event_detail_impl(&state_with(pool, false), id).await.unwrap();
+        assert_eq!(d.recurrence.as_deref(), Some("RRULE:FREQ=MONTHLY;BYDAY=-1FR"));
+        assert!(d.can_edit);
     }
 
     /// `respond_impl`'s own `can_respond(state.demo, …)` — the second demo

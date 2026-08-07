@@ -195,6 +195,7 @@ const attendee = (o: Partial<Attendee> & { email: string }): Attendee => ({
 });
 
 const detail = (o: Partial<EventDetail> & { id: number }): EventDetail => ({
+  calendar_id: 1,
   title: 'Standup',
   description: null,
   location: null,
@@ -203,10 +204,12 @@ const detail = (o: Partial<EventDetail> & { id: number }): EventDetail => ({
   end_ms: MON + 9 * H + 30 * 60_000,
   is_all_day: false,
   is_recurring: false,
+  recurrence: null,
   color: '#5b8def',
   organizer_email: null,
   self_response: 'needsAction',
   can_respond: true,
+  can_edit: true,
   attendees: [],
   ...o,
 });

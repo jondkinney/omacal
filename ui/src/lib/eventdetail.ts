@@ -10,6 +10,7 @@ export type Attendee = {
 
 export type EventDetail = {
   id: number;
+  calendar_id: number;
   title: string | null;
   description: string | null;
   location: string | null;
@@ -18,10 +19,14 @@ export type EventDetail = {
   end_ms: number;
   is_all_day: boolean;
   is_recurring: boolean;
+  /** The raw `RRULE`, carried through unchanged so the UI can tell a rule it
+   *  can represent from one it cannot. */
+  recurrence: string | null;
   color: string | null;
   organizer_email: string | null;
   self_response: string | null;
   can_respond: boolean;
+  can_edit: boolean;
   attendees: Attendee[];
 };
 
