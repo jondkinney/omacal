@@ -855,3 +855,36 @@ test.describe('MonthGrid', () => {
     expect(await page.evaluate(() => (window as any).__lastDayPick)).toBeFalsy();
   });
 });
+
+test.describe('YearGrid', () => {
+  const show = (f: string) => `/tests/harness/index.html?c=YearGrid&f=${f}`;
+
+  test('renders twelve months', async ({ page }) => {
+    await page.goto(show('y2026'));
+    await expect(page.locator('.ymonth')).toHaveCount(12);
+  });
+
+  test('a day with an all-day event gets a dot', async ({ page }) => {
+    await page.goto(show('y2026'));
+    await expect(page.locator('.yday.dotted')).toHaveCount(1);
+  });
+
+  test('today is a filled disc', async ({ page }) => {
+    await page.goto(show('y2026'));
+    await expect(page.locator('.yday.today')).toHaveCount(1);
+  });
+
+  test('unsynced days are distinct from empty ones', async ({ page }) => {
+    // §6: an empty January must not read as a free January.
+    await page.goto(show('y2026'));
+    const unsynced = page.locator('.yday.unsynced').first();
+    await expect(unsynced).toBeVisible();
+    await expect(unsynced).not.toHaveClass(/dotted/);
+  });
+
+  test('clicking a date asks the parent for that day', async ({ page }) => {
+    await page.goto(show('y2026'));
+    await page.locator('.yday').nth(200).click();
+    expect(await page.evaluate(() => (window as any).__lastDayPick)).toBeTruthy();
+  });
+});

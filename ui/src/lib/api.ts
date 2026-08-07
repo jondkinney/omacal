@@ -51,3 +51,17 @@ export const getDay = (dayStartMs: number) =>
 
 export const getMonth = (year: number, month: number) =>
   invoke<MonthPayload>('get_month', { year, month });
+
+/** One day of the year grid. `has_all_day` is set only by an all-day event —
+ *  a timed meeting does not dot this view. `unsynced` marks a day outside
+ *  the window the app actually keeps fetched (`synced_window` in Rust);
+ *  drawn distinctly from an in-window day with nothing on it, since absence
+ *  of a dot must never read as "free". */
+export type YearDay = { start_ms: number; day: number; has_all_day: boolean; unsynced: boolean };
+/** One month of the year grid: `lead_blanks` empty cells (Monday-first)
+ *  before day 1, so every month's weekday columns line up. */
+export type YearMonth = { month: number; lead_blanks: number; days: YearDay[] };
+export type YearPayload = { year: number; months: YearMonth[] };
+
+export const getYear = (year: number) =>
+  invoke<YearPayload>('get_year', { year });

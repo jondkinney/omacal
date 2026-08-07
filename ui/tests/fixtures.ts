@@ -1,4 +1,6 @@
-import type { UiEvent, Placed, Lane, WeekPayload, MonthPayload, MonthRow } from '../src/lib/api';
+import type {
+  UiEvent, Placed, Lane, WeekPayload, MonthPayload, MonthRow, YearPayload, YearMonth,
+} from '../src/lib/api';
 import type { AppStatus } from '../src/lib/status';
 import type { Calendar } from '../src/lib/calendars';
 import type { Attendee, EventDetail } from '../src/lib/eventdetail';
@@ -520,6 +522,43 @@ POPOVER_DETAILS[APP_MONTH_EVENT_ID] = detail({
   end_ms: BUSY_DAY_START_MS + 9 * H + 30 * 60_000,
 });
 
+// Real 2026 day counts and lead-blank (Monday-first weekday of the 1st)
+// values, cross-checked against the Rust suite's own pinned facts
+// (`commands.rs`'s `a_year_has_twelve_months_with_the_right_day_counts` and
+// `lead_blanks_line_the_first_up_under_its_weekday`: Jan opens on a Thursday
+// — 3 blanks — and Jun opens on a Monday — 0 blanks).
+const YEAR_2026_DAYS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+const YEAR_2026_LEAD_BLANKS = [3, 6, 6, 2, 4, 0, 2, 5, 1, 3, 6, 1];
+
+/** An empty 12-month grid for `year`, every day's `start_ms` its own real UTC
+ *  midnight — real dates, not placeholders, since `YearGrid`'s own
+ *  today-highlight reads the actual wall clock and has nothing else to
+ *  compare it against. */
+function emptyYear(year: number, daysInMonth: number[], leadBlanks: number[]): YearPayload {
+  const months: YearMonth[] = daysInMonth.map((n, mi) => ({
+    month: mi + 1,
+    lead_blanks: leadBlanks[mi],
+    days: Array.from({ length: n }, (_, d) => ({
+      start_ms: Date.UTC(year, mi, d + 1),
+      day: d + 1,
+      has_all_day: false,
+      unsynced: false,
+    })),
+  }));
+  return { year, months };
+}
+
+/** 2026: all of January marked `unsynced` — mirroring §6, where an Aug 2026
+ *  "now" puts the synced window's start in February, so an empty January
+ *  must not read as free — and one all-day event (15 March) dotting the
+ *  grid elsewhere, clear of the unsynced range. */
+const y2026 = (): YearPayload => {
+  const y = emptyYear(2026, YEAR_2026_DAYS, YEAR_2026_LEAD_BLANKS);
+  for (const d of y.months[0].days) d.unsynced = true;
+  y.months[2].days[14].has_all_day = true;
+  return y;
+};
+
 export const FIXTURES: Record<string, Record<string, any>> = {
   WeekGrid: {
     empty: { week: emptyWeek() },
@@ -534,6 +573,9 @@ export const FIXTURES: Record<string, Record<string, any>> = {
     august: { month: augustMonth() },
     'busy-day': { month: busyDayMonth() },
     'two-bars': { month: twoBarsMonth() },
+  },
+  YearGrid: {
+    y2026: { year: y2026() },
   },
   EventBlock: {
     // The duration ladder.

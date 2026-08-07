@@ -413,6 +413,110 @@ pub fn assemble_month(events: &[StoredEvent], year: i32, month: u32, tz: &str) -
     MonthPayload { rows, year, month }
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct YearDay {
+    pub start_ms: i64,
+    pub day: u32, // 1-31
+    /// At least one all-day event landed on this day. A timed event does not
+    /// dot the year grid — this view answers "what is blocked out", not "how
+    /// busy am I".
+    pub has_all_day: bool,
+    /// Outside the synced window (`synced_window`). Drawn distinctly from an
+    /// in-window day with nothing on it — absence of a dot must never be
+    /// confused with "nothing is fetched here".
+    pub unsynced: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct YearMonth {
+    pub month: u32, // 1-12
+    /// Leading blank cells before the 1st, so every month's weekday columns
+    /// line up. Monday-first, so 0..=6.
+    pub lead_blanks: usize,
+    pub days: Vec<YearDay>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct YearPayload {
+    pub year: i32,
+    pub months: Vec<YearMonth>,
+}
+
+/// Local midnight of `year`-01-01, in `tz`.
+///
+/// `pub(crate)`: `get_year` calls it twice — once for this year's start and
+/// once for next year's — to widen its fetch window a day either side, the
+/// same way `get_month` widens its own around `month_grid_start_ms`.
+pub(crate) fn year_start_ms(year: i32, tz: &str) -> i64 {
+    local_midnight_ms(jiff::civil::date(year as i16, 1, 1), tz)
+}
+
+/// The 12-up year grid: every day of `year`, marked with whether it carries
+/// an all-day event and whether it falls outside the window the app actually
+/// keeps synced (`synced_window`).
+///
+/// Each month's days come from that month's own local-midnight boundaries
+/// (`n_day_boundaries`), exactly as `assemble_month` finds a row's — so a
+/// DST transition inside any month still lands every day on its own local
+/// midnight rather than sliding by an hour.
+pub fn assemble_year(events: &[StoredEvent], year: i32, now_ms: i64, tz: &str) -> YearPayload {
+    use jiff::civil::date;
+
+    let suppressed = suppressed_slots(events);
+    let (synced_from, synced_to) = crate::synced_window(now_ms);
+
+    let months = (1..=12u32)
+        .map(|month| {
+            let first = date(year as i16, month as i8, 1);
+            let days_in_month = first.days_in_month() as usize;
+            let month_start_ms = local_midnight_ms(first, tz);
+            let bounds = n_day_boundaries(month_start_ms, days_in_month, tz);
+            let lead_blanks = first.weekday().to_monday_zero_offset() as usize;
+
+            let mut has_all_day = vec![false; days_in_month];
+
+            for src in events {
+                // A cancelled exception exists only to record that an
+                // occurrence was deleted; see `assemble_days`.
+                if src.status == "cancelled" {
+                    continue;
+                }
+                // Only all-day events dot the year grid — a timed meeting is
+                // not "blocked out"; this view answers what *is*.
+                if !src.is_all_day {
+                    continue;
+                }
+                for iv in occurrences(src, bounds[0], bounds[days_in_month]) {
+                    if suppressed.contains(&(src.calendar_id, src.google_id.as_str(), iv.start_ms)) {
+                        continue;
+                    }
+                    for d in 0..days_in_month {
+                        if iv.start_ms < bounds[d + 1] && iv.end_ms > bounds[d] {
+                            has_all_day[d] = true;
+                        }
+                    }
+                }
+            }
+
+            let days = (0..days_in_month)
+                .map(|d| {
+                    let start_ms = bounds[d];
+                    YearDay {
+                        start_ms,
+                        day: (d + 1) as u32,
+                        has_all_day: has_all_day[d],
+                        unsynced: start_ms < synced_from || start_ms >= synced_to,
+                    }
+                })
+                .collect();
+
+            YearMonth { month, lead_blanks, days }
+        })
+        .collect();
+
+    YearPayload { year, months }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -882,5 +986,46 @@ mod tests {
         let cell = &m.rows[2].cells[0];
         assert_eq!(cell.timed.len(), 2);
         assert!(cell.timed[0].start_ms < cell.timed[1].start_ms, "not sorted by start");
+    }
+
+    #[test]
+    fn a_year_has_twelve_months_with_the_right_day_counts() {
+        let y = assemble_year(&[], 2026, 1_786_341_600_000, "Europe/Sofia");
+        assert_eq!(y.months.len(), 12);
+        assert_eq!(y.months[0].days.len(), 31, "January");
+        assert_eq!(y.months[1].days.len(), 28, "February 2026 is not a leap year");
+        assert_eq!(y.months[10].days.len(), 30, "November");
+    }
+
+    #[test]
+    fn a_leap_february_has_twenty_nine_days() {
+        let y = assemble_year(&[], 2028, 1_786_341_600_000, "Europe/Sofia");
+        assert_eq!(y.months[1].days.len(), 29);
+    }
+
+    #[test]
+    fn lead_blanks_line_the_first_up_under_its_weekday() {
+        // 1 Jan 2026 is a Thursday, so Monday-first means three blanks.
+        let y = assemble_year(&[], 2026, 1_786_341_600_000, "Europe/Sofia");
+        assert_eq!(y.months[0].lead_blanks, 3);
+        // 1 Jun 2026 is a Monday — no blanks at all.
+        assert_eq!(y.months[5].lead_blanks, 0);
+    }
+
+    #[test]
+    fn only_all_day_events_dot_the_year_grid() {
+        // A timed meeting is not "blocked out"; this view answers what is.
+        let timed = vec![timed_event(1_786_341_600_000, 1_786_341_600_000 + 3_600_000)];
+        let y = assemble_year(&timed, 2026, 1_786_341_600_000, "Europe/Sofia");
+        assert!(y.months.iter().all(|m| m.days.iter().all(|d| !d.has_all_day)));
+    }
+
+    #[test]
+    fn days_outside_the_synced_window_are_marked_unsynced() {
+        // From Aug 2026 the window starts in Feb, so January of the *current*
+        // year is already outside it — an empty January must not read as free.
+        let y = assemble_year(&[], 2026, 1_786_341_600_000, "Europe/Sofia");
+        assert!(y.months[0].days[0].unsynced, "1 Jan 2026 is before now-180d");
+        assert!(!y.months[7].days[0].unsynced, "1 Aug 2026 is inside the window");
     }
 }
