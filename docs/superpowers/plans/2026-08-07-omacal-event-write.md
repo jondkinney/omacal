@@ -1025,7 +1025,7 @@ The riskiest task in the plan. Its own task so it gets its own reviewer.
 #[test]
 fn until_lands_one_second_before_the_split() {
     let r = truncated_rule("RRULE:FREQ=WEEKLY", 1_785_398_400_000);
-    assert_eq!(r, "RRULE:FREQ=WEEKLY;UNTIL=20260731T075959Z");
+    assert_eq!(r, "RRULE:FREQ=WEEKLY;UNTIL=20260730T075959Z");
 }
 
 /// An existing UNTIL is replaced, not appended — two UNTILs is invalid.
@@ -1033,7 +1033,7 @@ fn until_lands_one_second_before_the_split() {
 fn an_existing_until_is_replaced() {
     let r = truncated_rule("RRULE:FREQ=WEEKLY;UNTIL=20271231T000000Z", 1_785_398_400_000);
     assert_eq!(r.matches("UNTIL").count(), 1);
-    assert!(r.ends_with("UNTIL=20260731T075959Z"));
+    assert!(r.ends_with("UNTIL=20260730T075959Z"));
 }
 
 /// COUNT and UNTIL are mutually exclusive in RFC 5545; a rule carrying COUNT
