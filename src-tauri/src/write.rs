@@ -5,10 +5,6 @@
 //! that matter — "never send a field the user did not touch", "all-day means
 //! `date` not `dateTime`" — are testable without a server.
 
-// The write commands that call these land in a later task; until then
-// they're exercised only by their own tests below.
-#![allow(dead_code)]
-
 use serde_json::{json, Value};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -52,6 +48,11 @@ pub(crate) fn event_time_json(ms: i64, is_all_day: bool, tz: &str) -> Value {
 /// A field absent from a PATCH body means "leave it alone"; a field present
 /// and null means "clear it". Both are needed, and conflating them makes
 /// clearing a location impossible.
+///
+/// `create_event` (Task 5) builds its insert body from `EventFields`
+/// directly instead — a create has no "before" to diff against, so this is
+/// unused outside its own tests until the edit command (Task 6) calls it.
+#[allow(dead_code)]
 pub(crate) fn changed_fields(before: &EventFields, after: &EventFields) -> Value {
     let mut body = serde_json::Map::new();
 
@@ -163,6 +164,11 @@ pub(crate) fn rrule_for(repeat: &str) -> Option<String> {
 /// `BYDAY` we did not write is `custom`, and the UI must then refuse to
 /// overwrite it. Being generous here (parsing `FREQ` and ignoring the rest)
 /// is exactly how "every 2nd Tuesday" becomes "weekly" behind the user's back.
+///
+/// Only the Repeat control's read side (Task 9) will call this, to decide
+/// whether the rule on an existing event can be represented at all — no
+/// write command needs it. Unused outside its own tests until then.
+#[allow(dead_code)]
 pub(crate) fn repeat_from_rrule(rule: Option<&str>) -> String {
     let Some(rule) = rule else {
         return "never".into();

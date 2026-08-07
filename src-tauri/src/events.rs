@@ -520,6 +520,112 @@ async fn refresh_impl(state: &AppState, id: i64) -> anyhow::Result<EventDetail> 
     event_detail_impl(state, id).await
 }
 
+#[tauri::command]
+pub async fn create_event(
+    state: tauri::State<'_, AppState>,
+    calendar_id: i64,
+    fields: crate::write::EventInput,
+) -> Result<EventDetail, String> {
+    create_impl(&state, calendar_id, crate::write::fields_from_input(fields))
+        .await
+        .map_err(|e| crate::errors::user_facing(&e))
+}
+
+/// The body of `create_event`, minus the Tauri `State` wrapper — the same
+/// split `respond_impl` gets, and for the same reason: a test can hand
+/// [`create_via_client`] a client pointed at `wiremock` without this function
+/// touching `load_config` or the Keychain.
+///
+/// Unlike `respond_to_event`/`respond_impl`, there is only one layer here
+/// rather than two: `respond_impl` needs its own inner demo/writability check
+/// (`can_respond`) because `respond_to_event_impl`'s outer one guards a
+/// *different* command (`refresh_event` shares no gate with it), and because
+/// `can_respond` folds in a third condition — a `self` attendee row — that
+/// has nothing to do with demo mode or access role. Creating has no second
+/// caller and no third condition, so both checks live here, in the order
+/// that matters: demo first, before the calendar is even looked up, so a
+/// demo run never touches the database at all; writability second, so a
+/// reader calendar is refused before `load_config`, the Keychain, or Google
+/// ever see the request.
+async fn create_impl(
+    state: &AppState,
+    calendar_id: i64,
+    fields: crate::write::EventFields,
+) -> anyhow::Result<EventDetail> {
+    if state.demo {
+        anyhow::bail!("demo mode — there is nothing to create");
+    }
+
+    let (cal_google_id, access_role, account_email) =
+        omacal_store::calendar_for_write(&state.pool, calendar_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("that calendar is no longer here"))?;
+
+    // Reuses `can_edit`'s own rule for "owner or writer" rather than
+    // repeating the match here — the same rule `EventDetail::can_edit` is
+    // built from, so a calendar that shows an Edit button cannot silently
+    // refuse the create it implies. `demo: false` because that half of
+    // `can_edit` was already handled above, with its own message and before
+    // any database access at all.
+    if !can_edit(false, &access_role) {
+        anyhow::bail!("this calendar is not writable from omacal");
+    }
+
+    let cfg = crate::load_config()?;
+    let token = crate::access_token_for(state, &cfg, &account_email).await?;
+    let client = omacal_google::CalendarClient::new(crate::GOOGLE_CALENDAR_API, &token);
+
+    let id = create_via_client(&state.pool, calendar_id, &cal_google_id, fields, &client).await?;
+
+    event_detail_impl(state, id).await
+}
+
+/// The request-building and local write-back half of [`create_impl`], with
+/// the `CalendarClient` already built — parallel to `respond_via_client`,
+/// and handed a bare pool for the same reason: so a test can drive it
+/// without an `AppState`.
+///
+/// Built from `fields` directly, not [`crate::write::changed_fields`]: that
+/// function's whole point is "only send what changed from a *before*", and a
+/// create has no before — every field on it is new.
+///
+/// Returns the local row id rather than an `EventDetail`: reading the
+/// freshly-written row back needs the `AppState` [`event_detail_impl`] takes,
+/// which this function is deliberately not handed — the same reason
+/// `respond_via_client` returns nothing and leaves that step to its caller.
+async fn create_via_client(
+    pool: &SqlitePool,
+    calendar_id: i64,
+    cal_google_id: &str,
+    fields: crate::write::EventFields,
+    client: &omacal_google::CalendarClient,
+) -> anyhow::Result<i64> {
+    let f = &fields;
+    let mut body = serde_json::json!({
+        "start": crate::write::event_time_json(f.start_ms, f.is_all_day, &f.tz),
+        "end":   crate::write::event_time_json(f.end_ms,   f.is_all_day, &f.tz),
+    });
+    if let Some(s) = &f.summary     { body["summary"]     = s.clone().into(); }
+    if let Some(s) = &f.location    { body["location"]    = s.clone().into(); }
+    if let Some(s) = &f.description { body["description"] = s.clone().into(); }
+    if let Some(Some(rule)) = &f.recurrence {
+        body["recurrence"] = serde_json::json!([rule]);
+    }
+
+    let created = client.insert_event(cal_google_id, &body).await?;
+
+    // The same Google -> StoredEvent mapping `omacal-sync` uses for every
+    // event it writes locally. Reusing it is what keeps a row created here
+    // shaped identically to one that arrived through an ordinary sync,
+    // rather than drifting from it through a second, hand-rolled conversion
+    // — the exact hazard `to_stored` exists to have only one of.
+    let row = omacal_sync::to_stored(&created, calendar_id, &f.tz).ok_or_else(|| {
+        anyhow::anyhow!("Google returned an event omacal could not store")
+    })?;
+
+    omacal_store::upsert_event(pool, &row).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1466,5 +1572,112 @@ mod tests {
         .await
         .unwrap_err();
         assert!(err.to_string().contains("could not find that occurrence"), "{err}");
+    }
+
+    // --- create_event: `create_impl` / `create_via_client`, the first pair
+    // in this file that writes something into existence rather than
+    // changing something that already exists.
+
+    /// One calendar with the given `access_role`, owned by a fresh account —
+    /// everything `create_impl` needs to resolve before it can build a
+    /// request. Returns the calendar's local row id, the same shape
+    /// `seeded_pool_with` returns an event id for.
+    async fn seed_calendar(pool: &SqlitePool, access_role: &str) -> i64 {
+        sqlx::query("INSERT INTO accounts (google_sub, email, created_at) VALUES ('s','e@x',0)")
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO calendars (account_id, google_id, summary, timezone, access_role)
+             VALUES (1, 'cal@x.com', 'Cal', 'UTC', ?1)",
+        )
+        .bind(access_role)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query_scalar("SELECT id FROM calendars WHERE google_id = 'cal@x.com'")
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    /// A plain one-hour timed event, with nothing about its content under
+    /// test — the create tests below care about the demo/writability gates
+    /// and the write-back, not about which fields were set.
+    fn sample_fields() -> crate::write::EventFields {
+        crate::write::EventFields {
+            summary: Some("Lunch".into()),
+            location: None,
+            description: None,
+            start_ms: 1_786_442_400_000,
+            end_ms: 1_786_446_000_000,
+            is_all_day: false,
+            tz: "Europe/Sofia".into(),
+            recurrence: None,
+        }
+    }
+
+    /// Demo mode must reach neither Google nor the real database. Same guard
+    /// shape as `respond`, and asserted the same way: the demo failure must be
+    /// the demo message, not a config or keyring error — and here, not a
+    /// "calendar not found" database error either, since `calendar_id: 1` on
+    /// a bare `connect_memory` pool names no calendar at all. The guard has to
+    /// fire before `calendar_for_write` is ever called, or this would report
+    /// the wrong failure.
+    #[tokio::test]
+    async fn creating_refuses_in_demo_mode_without_touching_config_keyring_or_google() {
+        let pool = omacal_store::connect_memory().await.unwrap();
+        let err = create_impl(&state_with(pool, true), 1, sample_fields())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("demo"), "got: {err}");
+    }
+
+    /// A subscribed holiday calendar, or one shared with you read-only, is
+    /// `reader`. Creating into it must be refused before any request is
+    /// built — not left to Google's own 403 — so this fixture points at no
+    /// mock server at all: a request going out at all would panic on the
+    /// missing `CalendarClient`, not merely fail an assertion.
+    #[tokio::test]
+    async fn creating_into_a_read_only_calendar_is_refused() {
+        let pool = omacal_store::connect_memory().await.unwrap();
+        let cal = seed_calendar(&pool, "reader").await;
+        let err = create_impl(&state_with(pool, false), cal, sample_fields())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("not writable"), "got: {err}");
+    }
+
+    /// The end-to-end write-back: `create_via_client` posts to Google, then
+    /// stores the response through `omacal_sync::to_stored` — the same
+    /// mapping a regular sync uses — via `upsert_event`, and returns the
+    /// local row id it landed on.
+    #[tokio::test]
+    async fn a_created_event_is_stored_locally() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "g-new", "status": "confirmed", "etag": "\"e1\"",
+                "summary": "Lunch",
+                "start": {"dateTime": "2026-08-10T12:00:00+03:00"},
+                "end":   {"dateTime": "2026-08-10T13:00:00+03:00"}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let pool = omacal_store::connect_memory().await.unwrap();
+        let cal = seed_calendar(&pool, "owner").await;
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+
+        let id = create_via_client(&pool, cal, "cal@x.com", sample_fields(), &client)
+            .await
+            .unwrap();
+
+        let (row, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
+        assert_eq!(row.google_id, "g-new");
+        assert_eq!(row.calendar_id, cal, "the row must land on the calendar that was asked for");
     }
 }

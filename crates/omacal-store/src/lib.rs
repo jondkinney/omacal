@@ -4,7 +4,7 @@ use std::str::FromStr;
 
 pub mod calendars;
 pub mod events;
-pub use calendars::{list_calendars, set_selected, set_sync_enabled, CalendarRow};
+pub use calendars::{calendar_for_write, list_calendars, set_selected, set_sync_enabled, CalendarRow};
 pub use events::{
     delete_event, event_by_id, event_for_write, events_in_window, upsert_event, Attendee,
     StoredEvent,

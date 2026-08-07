@@ -658,7 +658,8 @@ pub fn run() {
             calendars::set_calendar_sync,
             events::event_detail,
             events::respond_to_event,
-            events::refresh_event
+            events::refresh_event,
+            events::create_event
         ])
         .run(tauri::generate_context!())
         .expect("error while running omacal");

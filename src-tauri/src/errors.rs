@@ -58,6 +58,14 @@ const SAFE_EXACT: &[&str] = &[
     "that event is no longer here",
     "this calendar cannot be answered from omacal",
     "you are not a guest on this event",
+    // src-tauri/src/events.rs — `create_impl`'s three guards: the missing-
+    // calendar branch (a calendar removed between the picker and the save),
+    // the demo gate, and the writability check. Reached only through
+    // `create_event`'s `.map_err(|e| crate::errors::user_facing(&e))` with no
+    // `.context(..)` added on the way, so each is byte-identical here too.
+    "that calendar is no longer here",
+    "demo mode — there is nothing to create",
+    "this calendar is not writable from omacal",
     // src-tauri/src/events.rs — `resolve_instance_id`'s empty-lookup branch on
     // a bare series master (reached from `respond_via_client`, called by
     // `respond_to_event`). Fixed literal, no interpolation, and reached via a
@@ -212,6 +220,9 @@ mod tests {
             "this calendar cannot be answered from omacal",
             "you are not a guest on this event",
             "could not find that occurrence on the calendar",
+            "that calendar is no longer here",
+            "demo mode — there is nothing to create",
+            "this calendar is not writable from omacal",
         ];
         for expected in EXPECTED {
             assert!(

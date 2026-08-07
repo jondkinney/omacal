@@ -43,6 +43,30 @@ pub async fn list_calendars(pool: &SqlitePool) -> anyhow::Result<Vec<CalendarRow
         .collect())
 }
 
+/// One calendar's `google_id`, `access_role`, and owning account's email, by
+/// the calendar's own row id.
+///
+/// The counterpart to [`crate::events::event_for_write`] for a write that
+/// creates an event rather than changing one that already exists: there is no
+/// event row yet to key a lookup on, only the calendar it will be created on,
+/// so this starts from `calendars` instead of `events` and skips straight to
+/// the two joins that query already does.
+pub async fn calendar_for_write(
+    pool: &SqlitePool,
+    id: i64,
+) -> anyhow::Result<Option<(String, String, String)>> {
+    let row = sqlx::query(
+        "SELECT c.google_id, c.access_role, a.email AS account_email
+         FROM calendars c
+         JOIN accounts a ON a.id = c.account_id
+         WHERE c.id = ?1",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| (r.get("google_id"), r.get("access_role"), r.get("account_email"))))
+}
+
 /// Show or hide a calendar. Pure display — no data is fetched or discarded.
 pub async fn set_selected(pool: &SqlitePool, id: i64, on: bool) -> anyhow::Result<()> {
     sqlx::query("UPDATE calendars SET selected = ?2 WHERE id = ?1")
@@ -116,6 +140,23 @@ mod tests {
             description: None, etag: None, sequence: 0, organizer_email: None,
             attendees: Vec::new(),
         }
+    }
+
+    #[tokio::test]
+    async fn calendar_for_write_returns_the_calendars_google_id_role_and_owning_accounts_email() {
+        let pool = connect_memory().await.unwrap();
+        seed(&pool).await;
+        let (google_id, access_role, account_email) =
+            calendar_for_write(&pool, 1).await.unwrap().expect("calendar exists");
+        assert_eq!(google_id, "primary");
+        assert_eq!(access_role, "owner");
+        assert_eq!(account_email, "me@x.com");
+    }
+
+    #[tokio::test]
+    async fn calendar_for_write_returns_none_for_an_unknown_id() {
+        let pool = connect_memory().await.unwrap();
+        assert!(calendar_for_write(&pool, 999).await.unwrap().is_none());
     }
 
     #[tokio::test]
