@@ -220,6 +220,17 @@ const detail = (o: Partial<EventDetail> & { id: number }): EventDetail => ({
   conference_uri: null,
   start_ms: MON + 9 * H,
   end_ms: MON + 9 * H + 30 * 60_000,
+  // `null` on both, matching `is_all_day: false` below — the Rust side sends
+  // dates only for an all-day event.
+  //
+  // The all-day fixtures further down keep these defaults, and for a real
+  // event that pairing is a shape `event_detail_impl` cannot produce. Nothing
+  // reads either field yet: `valueFromDetail` still derives its dates from
+  // `start_ms` in the browser's zone, which is the half of the defect Task 4
+  // closes. That is the task that gives the all-day fixtures their real dates,
+  // and inverts the spec that currently pins the wrong ones.
+  start_date: null,
+  end_date: null,
   is_all_day: false,
   is_recurring: false,
   recurrence: null,

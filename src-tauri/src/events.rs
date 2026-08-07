@@ -11,6 +11,29 @@ pub struct EventDetail {
     pub conference_uri: Option<String>,
     pub start_ms: i64,
     pub end_ms: i64,
+    /// The first day an all-day event covers, `yyyy-mm-dd`, read in the
+    /// **calendar's** zone. `None` for a timed event, which has no date of its
+    /// own — it has an instant, and which day that falls on is a question about
+    /// the reader, not about the event.
+    ///
+    /// Here rather than derived in the UI because the UI cannot derive it. The
+    /// store holds an instant for an all-day event too, and it is midnight in
+    /// the calendar's zone — Google sends a bare `date` and `omacal_sync`
+    /// resolves it against `calendars.timezone`. Read back in that zone it is
+    /// the date sync put in; read in the browser's it is the previous day for
+    /// any user east of the calendar, and the form then shows a trip on the
+    /// 10th as starting the 9th before anybody presses Save.
+    pub start_date: Option<String>,
+    /// The **last** day an all-day event covers — the day a user would point at
+    /// — `yyyy-mm-dd`, in the same zone as [`Self::start_date`], and `None` on
+    /// the same condition.
+    ///
+    /// Inclusive, unlike [`Self::end_ms`] and unlike the `endDate` a write
+    /// sends, both of which are the exclusive midnight *after* the last day.
+    /// The one conversion between the two happens here, so a single-day event
+    /// reports the same date twice rather than two different ones the form
+    /// would have to reconcile.
+    pub end_date: Option<String>,
     pub is_all_day: bool,
     pub is_recurring: bool,
     /// The raw `RRULE`, carried through unchanged so the UI can show a rule it
@@ -78,6 +101,37 @@ pub(crate) fn is_recurring(recurrence: &Option<String>, recurring_event_id: &Opt
     recurrence.is_some() || recurring_event_id.is_some()
 }
 
+/// The two dates an all-day event covers, read in the **calendar's** zone
+/// `cal_tz`: the first day it covers and the **inclusive** last one, both
+/// `yyyy-mm-dd`. `None` for a timed event, which has no dates — see
+/// [`EventDetail::start_date`].
+///
+/// The last day is one civil day back from `end_utc`'s date, because `end_utc`
+/// is the exclusive end: midnight *after* the last day, as on Google's wire.
+/// Deliberately not the date of `end_utc` minus some slack — `valueFromDetail`
+/// steps back half a day, and half a day of slack silently absorbs a wrong
+/// zone, which is how the end came out right by accident while the start was a
+/// day early. A civil day back from the exclusive date is the same answer in
+/// every zone and across every daylight-saving transition, since a date carries
+/// no time of day for a transition to move.
+///
+/// A date that will not parse or has no yesterday falls through to `start`
+/// rather than panicking, the same fallback philosophy as
+/// [`crate::write::date_in_zone`], which cannot produce one anyway: it answers
+/// a real date for every input, valid or not.
+fn all_day_dates(event: &omacal_store::StoredEvent, cal_tz: &str) -> Option<(String, String)> {
+    if !event.is_all_day {
+        return None;
+    }
+    let start = crate::write::date_in_zone(event.start_utc, cal_tz);
+    let last = crate::write::date_in_zone(event.end_utc, cal_tz)
+        .parse::<jiff::civil::Date>()
+        .ok()
+        .and_then(|exclusive| exclusive.yesterday().ok())
+        .map_or_else(|| start.clone(), |d| d.to_string());
+    Some((start, last))
+}
+
 #[tauri::command]
 pub async fn event_detail(
     state: tauri::State<'_, AppState>,
@@ -98,12 +152,16 @@ pub async fn event_detail(
 /// at 240 passing tests — while the demo popover started offering three RSVP
 /// buttons again, the exact thing the gate inside exists to prevent.
 async fn event_detail_impl(state: &AppState, id: i64) -> anyhow::Result<EventDetail> {
-    let (event, access_role) = omacal_store::event_by_id(&state.pool, id)
+    let (event, access_role, cal_tz) = omacal_store::event_by_id(&state.pool, id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("that event is no longer here"))?;
 
     let can_respond = can_respond(state.demo, &access_role, &event.attendees);
     let is_recurring = is_recurring(&event.recurrence, &event.recurring_event_id);
+    let (start_date, end_date) = match all_day_dates(&event, &cal_tz) {
+        Some((start, end)) => (Some(start), Some(end)),
+        None => (None, None),
+    };
 
     Ok(EventDetail {
         id: event.id,
@@ -114,6 +172,8 @@ async fn event_detail_impl(state: &AppState, id: i64) -> anyhow::Result<EventDet
         conference_uri: event.conference_uri,
         start_ms: event.start_utc,
         end_ms: event.end_utc,
+        start_date,
+        end_date,
         is_all_day: event.is_all_day,
         is_recurring,
         repeat: crate::write::repeat_from_rrule(event.recurrence.as_deref()),
@@ -2322,7 +2382,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (row, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
+        let (row, _, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
         assert_eq!(row.etag.as_deref(), Some("\"new\""), "the write-back did not happen");
         assert_eq!(row.sequence, 4);
         assert_eq!(row.self_response.as_deref(), Some("declined"));
@@ -2472,7 +2532,7 @@ mod tests {
         // *local master row* must be untouched: `master1_20260807T000000Z` is
         // a different Google id than `master1`, and stamping the instance's
         // response onto the master's row would corrupt it.
-        let (row, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
+        let (row, _, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
         assert_eq!(row.etag.as_deref(), Some("\"master-etag\""),
             "the instance's etag must not be stamped onto the master's own row");
         assert_eq!(row.self_response.as_deref(), Some("needsAction"),
@@ -2676,7 +2736,7 @@ mod tests {
         // allowed but required — the complement of
         // `answering_a_non_first_occurrence_...`, which asserts the opposite
         // for a patch that landed elsewhere.
-        let (row, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
+        let (row, _, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
         assert_eq!(row.etag.as_deref(), Some("\"exception-2\""), "the write-back did not happen");
         assert_eq!(row.sequence, 3);
         assert_eq!(row.self_response.as_deref(), Some("declined"));
@@ -2759,7 +2819,7 @@ mod tests {
         // `master1` is a different Google id than `exception1`, so the local
         // exception row is left for the next sync rather than stamped with
         // the master's response.
-        let (row, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
+        let (row, _, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
         assert_eq!(row.etag.as_deref(), Some("\"exception-etag\""),
             "the master's etag must not be stamped onto the exception's own row");
     }
@@ -2840,6 +2900,90 @@ mod tests {
         assert_eq!(detail_for(None).await.repeat, "never");
     }
 
+    /// **The display half of the boundary defect.** An all-day event has a
+    /// *date*, and the store holds it as midnight in the **calendar's** zone —
+    /// Google sends a bare `date` and `omacal_sync::resolve` falls back to
+    /// `calendars.timezone`. Only that zone reads the date back unchanged. The
+    /// UI derives one from `start_ms` in the *browser's* zone today, which for
+    /// any user east of the calendar is the previous day, so a trip on the 10th
+    /// opens the form showing the 9th and saves as a two-day event starting the
+    /// 9th with `sendUpdates=all`. These fields are what let it stop.
+    ///
+    /// **`Europe/Lisbon`, and the brief's `America/New_York` would have proved
+    /// nothing.** The mutation this must catch is deriving the dates in UTC, and
+    /// that only shows when the calendar's midnight falls on a *different UTC
+    /// date*. New York is UTC-4 in August: midnight there is 04:00 UTC the same
+    /// morning, so UTC answers `2026-08-10` too and the wrong zone passes
+    /// unnoticed — on both dates. Lisbon is UTC+1 in August, so each of these
+    /// instants sits on the previous UTC date, which the fixture checks below
+    /// pin: if either stops straddling midnight this test goes on passing while
+    /// proving nothing.
+    ///
+    /// The event's own `start_tz` is `UTC` here (`stored`'s), and deliberately
+    /// not the calendar's: reading `e.start_tz` instead of `c.timezone` is the
+    /// other way to get this wrong, and it fails here rather than shipping.
+    #[tokio::test]
+    async fn an_all_day_detail_reports_dates_in_the_calendars_zone() {
+        const CAL_TZ: &str = "Europe/Lisbon";
+        let iso = |ms: i64| jiff::Timestamp::from_millisecond(ms).unwrap().to_string();
+
+        // One day, and a three-day trip. The single-day case is the one the
+        // form shows most often and the one where both dates are the same, so
+        // it cannot tell an inclusive end from a copy of the start — the trip
+        // is what does, and what catches an exclusive end shipped verbatim.
+        let mut one_day = all_day_row("2026-08-10", "2026-08-11", CAL_TZ);
+        let mut trip = all_day_row("2026-08-10", "2026-08-13", CAL_TZ);
+
+        assert_eq!(iso(one_day.start_utc), "2026-08-09T23:00:00Z",
+            "fixture check: midnight in the calendar's zone must fall on the *previous* \
+             UTC date, or a UTC derivation answers the same date and passes unnoticed");
+        assert_eq!(iso(one_day.end_utc), "2026-08-10T23:00:00Z", "fixture check: as above");
+        assert_eq!(iso(trip.end_utc), "2026-08-12T23:00:00Z", "fixture check: as above");
+        assert_eq!(one_day.start_tz, "UTC",
+            "fixture check: the event's own zone must differ from its calendar's, or \
+             reading `start_tz` instead of the calendar's zone passes unnoticed");
+
+        let (pool, id) = seeded_pool_on_cal(&mut one_day, CAL_TZ).await;
+        let d = event_detail_impl(&state_with(pool, false), id).await.unwrap();
+        assert_eq!(d.start_date.as_deref(), Some("2026-08-10"),
+            "a trip on the 10th must not be reported as starting on the 9th");
+        assert_eq!(d.end_date.as_deref(), Some("2026-08-10"),
+            "a one-day event's inclusive last day is its first day, not the exclusive \
+             midnight after it");
+
+        let (pool, id) = seeded_pool_on_cal(&mut trip, CAL_TZ).await;
+        let d = event_detail_impl(&state_with(pool, false), id).await.unwrap();
+        assert_eq!(d.start_date.as_deref(), Some("2026-08-10"));
+        assert_eq!(d.end_date.as_deref(), Some("2026-08-12"),
+            "the inclusive last day is the day the user would point at — one day back \
+             from the exclusive end the store holds, never the exclusive date itself");
+    }
+
+    /// The other arm, and not a formality: a timed event has no date of its own
+    /// — which day its instant falls on is a question about the reader — so
+    /// answering one here would hand the form a date to save back as an all-day
+    /// event.
+    ///
+    /// The fixture is [`an_all_day_detail_reports_dates_in_the_calendars_zone`]'s
+    /// own row with the flag turned off, so the two tests differ in exactly
+    /// that flag and nothing else. The same instants report dates there and
+    /// none here, which is what makes this test about `is_all_day` rather than
+    /// about the times.
+    #[tokio::test]
+    async fn a_timed_detail_reports_no_dates() {
+        const CAL_TZ: &str = "Europe/Lisbon";
+
+        let mut ev = all_day_row("2026-08-10", "2026-08-11", CAL_TZ);
+        ev.is_all_day = false;
+
+        let (pool, id) = seeded_pool_on_cal(&mut ev, CAL_TZ).await;
+        let d = event_detail_impl(&state_with(pool, false), id).await.unwrap();
+
+        assert!(!d.is_all_day, "fixture check: this row is the timed arm");
+        assert_eq!(d.start_date, None, "a timed event has no date of its own");
+        assert_eq!(d.end_date, None, "a timed event has no date of its own");
+    }
+
     /// `respond_impl`'s own `can_respond(state.demo, …)` — the second demo
     /// gate on the write path, behind [`respond_to_event_impl`]'s. Nothing
     /// reached it before this test, because the guard in front always fired
@@ -2896,7 +3040,7 @@ mod tests {
         // Past the guard this would have folded Google's answer back onto the
         // row — or failed with a config/keyring error, which is not this
         // message either.
-        let (row, _) = omacal_store::event_by_id(&state.pool, id).await.unwrap().unwrap();
+        let (row, _, _) = omacal_store::event_by_id(&state.pool, id).await.unwrap().unwrap();
         assert_eq!(row.etag.as_deref(), Some("\"old\""), "demo mode wrote to the store");
         assert_eq!(row.self_response.as_deref(), Some("needsAction"));
     }
@@ -2914,7 +3058,7 @@ mod tests {
         let err = refresh_event_impl(&state, id).await.unwrap_err();
         assert_eq!(err, crate::DEMO_SYNC_MESSAGE);
 
-        let (row, _) = omacal_store::event_by_id(&state.pool, id).await.unwrap().unwrap();
+        let (row, _, _) = omacal_store::event_by_id(&state.pool, id).await.unwrap().unwrap();
         assert_eq!(row.etag.as_deref(), Some("\"old\""), "demo mode wrote to the store");
     }
 
@@ -3092,7 +3236,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (row, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
+        let (row, _, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
         assert_eq!(row.google_id, "g-new");
         assert_eq!(row.calendar_id, cal, "the row must land on the calendar that was asked for");
     }
@@ -3143,7 +3287,7 @@ mod tests {
             .await
             .unwrap();
 
-        let (row, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
+        let (row, _, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
         let expected_start_utc = "2026-08-10"
             .parse::<jiff::civil::Date>()
             .unwrap()
@@ -3371,7 +3515,7 @@ mod tests {
         // loaded, so nothing may be folded back onto that row — the same rule
         // `respond_via_client` follows, and here it would put one occurrence's
         // new title on the whole series.
-        let (row, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
+        let (row, _, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
         assert_eq!(
             row.etag.as_deref(),
             Some("\"master-etag\""),
@@ -3476,7 +3620,7 @@ mod tests {
         // Same Google resource as the row that was loaded, so the patch
         // response is folded back in — otherwise the popover shows the old
         // title until the next sync.
-        let (row, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
+        let (row, _, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
         assert_eq!(row.summary.as_deref(), Some("Standup (moved)"), "the write-back did not happen");
         assert_eq!(row.etag.as_deref(), Some("\"master-2\""));
         assert_eq!(row.sequence, 4);
@@ -3740,7 +3884,7 @@ mod tests {
             .unwrap();
 
         // Both halves of the outcome: our change landed, and theirs survived.
-        let (row, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
+        let (row, _, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
         assert_eq!(row.location.as_deref(), Some("Room 5"));
         assert_eq!(row.summary.as_deref(), Some("Lunch with Ana"));
     }
@@ -4228,7 +4372,7 @@ mod tests {
         // cannot drift apart while the user quietly starts reading OPAQUE.
         assert_eq!(crate::errors::user_facing(&err), "demo mode — there is nothing to save");
 
-        let (row, _) = omacal_store::event_by_id(&state.pool, id).await.unwrap().unwrap();
+        let (row, _, _) = omacal_store::event_by_id(&state.pool, id).await.unwrap().unwrap();
         assert_eq!(row.summary.as_deref(), Some("Standup"), "demo mode wrote to the store");
     }
 
@@ -4438,7 +4582,7 @@ mod tests {
         // `master1` is a different Google id than `exception1`, so the local
         // exception row is left for the next sync rather than stamped with the
         // master's state.
-        let (row, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
+        let (row, _, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
         assert_eq!(
             row.etag.as_deref(),
             Some("\"exception-etag\""),
@@ -4891,7 +5035,7 @@ mod tests {
 
         // Both halves reached the store, and neither wrote over the other:
         // `upsert_event` is keyed on `(calendar_id, google_id)`.
-        let (row, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
+        let (row, _, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
         assert_eq!(
             row.recurrence.as_deref(),
             Some(UNTIL_BEFORE_OCCURRENCE),
@@ -5123,7 +5267,7 @@ mod tests {
              you now have two overlapping series and should delete one"
         );
 
-        let (row, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
+        let (row, _, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
         assert_eq!(
             row.recurrence.as_deref(),
             Some("RRULE:FREQ=WEEKLY"),
@@ -5472,7 +5616,7 @@ mod tests {
             "omacal cannot split a series that ends after a set number of times — \
              edit all events instead"
         );
-        let (row, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
+        let (row, _, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
         assert_eq!(row.recurrence.as_deref(), Some("RRULE:FREQ=WEEKLY;COUNT=10"));
     }
 
@@ -5569,7 +5713,7 @@ mod tests {
              split cannot carry them across — edit all events instead, or re-create them \
              afterwards. Occurrences affected: 2"
         );
-        let (row, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
+        let (row, _, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
         assert_eq!(row.recurrence.as_deref(), Some("RRULE:FREQ=WEEKLY"));
     }
 
@@ -6020,7 +6164,7 @@ mod tests {
         .await
         .unwrap();
 
-        let (row, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
+        let (row, _, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
         assert_eq!(row.google_id, "master1_20260810T090000Z");
         assert_eq!(
             row.etag.as_deref(),
@@ -6210,7 +6354,7 @@ mod tests {
         .await
         .expect("both writes landed, so this must not report a failure");
 
-        let (row, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
+        let (row, _, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
         assert_eq!(
             row.etag.as_deref(),
             Some("\"master-etag\""),
@@ -6480,7 +6624,7 @@ mod tests {
         // The master's row stays exactly as it was: only Google knows that one
         // occurrence is gone, and this store has no row for the cancelled
         // exception it has just materialised.
-        let (row, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
+        let (row, _, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
         assert_eq!(row.recurrence.as_deref(), Some("RRULE:FREQ=WEEKLY"));
         assert_eq!(row.status, "confirmed");
         assert_eq!(row.etag.as_deref(), Some("\"master-etag\""));
@@ -6582,7 +6726,7 @@ mod tests {
         );
         outcome.unwrap();
 
-        let (row, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
+        let (row, _, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
         assert_eq!(
             row.recurrence.as_deref(),
             Some(UNTIL_BEFORE_OCCURRENCE),
@@ -6750,7 +6894,7 @@ mod tests {
         );
         outcome.unwrap();
 
-        let (row, _) = omacal_store::event_by_id(&pool, id)
+        let (row, _, _) = omacal_store::event_by_id(&pool, id)
             .await
             .unwrap()
             .expect("the exception's row was removed, so the master expands into its slot again");
@@ -6811,7 +6955,7 @@ mod tests {
         );
         outcome.unwrap();
 
-        let (row, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
+        let (row, _, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
         assert_eq!(
             row.status, "confirmed",
             "the clicked row was cancelled for a deletion that landed on a different event, so \
