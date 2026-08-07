@@ -1,6 +1,8 @@
 import { test, expect } from '@playwright/test';
 import { offerableCalendarId, type Calendar } from '../src/lib/calendars';
-import { ruleInWords, shiftedEndDate } from '../src/lib/eventform';
+import {
+  blankValue, blankValueAt, endAfterStart, instantsOf, ruleInWords, shiftedEndDate,
+} from '../src/lib/eventform';
 
 // Pure functions, exercised directly — same shape as `position.spec.ts` and
 // `sanitize.spec.ts`. Driving these through a mounted form would need a
@@ -139,5 +141,79 @@ test.describe('shiftedEndDate', () => {
     expect(shiftedEndDate('2026-08-10', '2026-08-17', '2026-08-09')).toBe('2026-08-09');
     expect(shiftedEndDate('2026-08-10', '', '2026-08-12')).toBe('2026-08-12');
     expect(shiftedEndDate('', '2026-08-17', '2026-08-12')).toBe('2026-08-12');
+  });
+});
+
+test.describe('blankValue', () => {
+  // Built in the *host's* own zone rather than through `Date.UTC`, and every
+  // assertion below is a property that holds in any zone: these run in the
+  // Node process, not in the page, so Playwright's `timezoneId: 'UTC'` does
+  // not reach them. `dateOf`/`timeOf` read local time, so a local instant
+  // round-trips exactly wherever this is run.
+  const at = (y: number, m: number, d: number, h = 0, min = 0) =>
+    new Date(y, m - 1, d, h, min, 0, 0).getTime();
+
+  const MINUTES = 60_000;
+
+  test('a late-evening create is savable', async () => {
+    // The defect this exists for. `nextHalfHour` lands on the last half hour of
+    // the day, whose end is midnight *tomorrow*; the version that assigned both
+    // dates the start's own day made that an end twenty-three and a half hours
+    // before the start, so the form opened already refusing to save and no
+    // field on it looked wrong. Reachable for half an hour every evening.
+    const v = blankValue(at(2026, 8, 5, 23, 15), 1);
+    expect(v.date).toBe('2026-08-05');
+    expect(v.endDate).toBe('2026-08-06');
+    expect(endAfterStart(v)).toBe(true);
+    const [startMs, endMs] = instantsOf(v);
+    expect(endMs - startMs).toBe(30 * MINUTES);
+  });
+
+  test('a chosen day keeps the time and takes the end date with it', async () => {
+    // Pressing `n` on a day that is not today: the time is still the next half
+    // hour, and the span survives the move — including across the midnight the
+    // case above lands on.
+    const v = blankValue(at(2026, 8, 5, 23, 15), 1, at(2026, 8, 12));
+    expect(v.date).toBe('2026-08-12');
+    expect(v.endDate).toBe('2026-08-13');
+    expect(endAfterStart(v)).toBe(true);
+    expect(instantsOf(v)[1] - instantsOf(v)[0]).toBe(30 * MINUTES);
+  });
+
+  test('an ordinary daytime create keeps both dates on the same day', async () => {
+    // The other side of the fix: rolling the end date forward is for the events
+    // that actually cross midnight, not for all of them. The clock times are
+    // deliberately not pinned here — `nextHalfHour` rounds the *instant*, so
+    // "09:30" is only the answer in a zone whose offset is a whole half hour.
+    // What the form actually shows at 09:12 is pinned under a frozen UTC clock
+    // by `EventForm`'s own "a new event opens at the next half hour".
+    const v = blankValue(at(2026, 8, 5, 9, 12), 1);
+    expect(v.date).toBe('2026-08-05');
+    expect(v.endDate).toBe('2026-08-05');
+    expect(instantsOf(v)[1] - instantsOf(v)[0]).toBe(30 * MINUTES);
+  });
+});
+
+test.describe('blankValueAt', () => {
+  const at = (y: number, m: number, d: number, h = 0, min = 0) =>
+    new Date(y, m - 1, d, h, min, 0, 0).getTime();
+
+  test('takes the time the grid gave it, not the next half hour', async () => {
+    // A click on empty grid space already knows which instant it landed on.
+    // Substituting the clock's own "next half hour" would move the event away
+    // from where the user pointed.
+    const v = blankValueAt(at(2026, 8, 5, 10, 0), 1);
+    expect(v.date).toBe('2026-08-05');
+    expect(v.start).toBe('10:00');
+    expect(v.end).toBe('10:30');
+    expect(v.endDate).toBe('2026-08-05');
+    expect(v.isEdit).toBe(false);
+    expect(v.calendarId).toBe(1);
+  });
+
+  test('an event starting in the last half hour of the day still ends tomorrow', async () => {
+    const v = blankValueAt(at(2026, 8, 5, 23, 30), 1);
+    expect(v.endDate).toBe('2026-08-06');
+    expect(endAfterStart(v)).toBe(true);
   });
 });

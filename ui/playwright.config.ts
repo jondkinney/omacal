@@ -39,6 +39,16 @@ export default defineConfig({
   // than a second of wall time. The peak scales with the project's test
   // count, so revisit the number as it approaches ~250.
   //
+  // Re-measured at Task 10 (Plan 5), because the suite had grown well past
+  // what the paragraph above was written against. Worker indices are per
+  // project — webkit takes 0-5 and chromium 6-11 — so contexts do not carry
+  // across the two, and the number that matters is the peak within one
+  // project. At 187 tests per project the peak was 39; at 212 it is 47. That
+  // is roughly a third of a context per test added, so the ~63 ceiling is
+  // about 260 tests per project away — call it fifty more tests. Still clear,
+  // but by 1.4x rather than 2.7x: the "revisit near 250" note above is the
+  // right instruction and it is now one plan off, not a distant one.
+  //
   // PWDEBUG already forces a single worker inside Playwright, so this cannot
   // rescue a debug run of the whole suite — debug one test, not 106.
   workers: process.env.PWDEBUG ? 1 : 6,

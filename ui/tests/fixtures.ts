@@ -61,12 +61,23 @@ const day = (offset: number, events: UiEvent[], p: Placed[]) => ({
   placed: p,
 });
 
-const emptyWeek = (): WeekPayload => ({
-  days: Array.from({ length: 7 }, (_, i) => day(i, [], [])),
+/** An empty week anchored anywhere — `emptyWeek` below is this at `MON`, which
+ *  is what every component fixture in this file wants. The App-level write
+ *  fixtures need one at `APP_MON` instead, so that a click on empty grid space
+ *  lands on the same date the app actually opened on. */
+const emptyWeekAt = (weekStartMs: number): WeekPayload => ({
+  days: Array.from({ length: 7 }, (_, i) => ({
+    start_ms: weekStartMs + i * 24 * H,
+    end_ms: weekStartMs + (i + 1) * 24 * H,
+    events: [] as UiEvent[],
+    placed: [] as Placed[],
+  })),
   all_day: [],
   all_day_events: [],
   overflow: [],
 });
+
+const emptyWeek = (): WeekPayload => emptyWeekAt(MON);
 
 const populatedWeek = (): WeekPayload => {
   const w = emptyWeek();
@@ -290,6 +301,13 @@ export const POPOVER_DETAILS: Record<number, EventDetail> = {
     id: 42, title: 'Standup', is_recurring: true,
     start_ms: SERIES_DTSTART, end_ms: SERIES_DTSTART + 30 * 60_000,
     self_response: 'needsAction',
+    // `can_edit: true`, explicitly and for the same reason the RSVP trap above
+    // exists: Task 10's Edit and Delete carry the *same* occurrence-identity
+    // rule as the RSVP, through a different code path, and this is the one
+    // fixture whose block start and detail start already disagree. Without it
+    // the controls never render and `WeekGrid`'s relay cannot be exercised at
+    // all.
+    can_edit: true,
     attendees: [attendee({ email: 'me@x.com', is_self: true, response_status: 'needsAction' })],
   }),
   50: detail({ id: 50, title: 'Sync', location: 'Room A' }),
@@ -551,6 +569,12 @@ POPOVER_DETAILS[APP_MONTH_EVENT_ID] = detail({
   title: 'Standup',
   start_ms: BUSY_DAY_START_MS + 9 * H,
   end_ms: BUSY_DAY_START_MS + 9 * H + 30 * 60_000,
+  // `can_edit: true` (Task 10), explicitly: `App` renders its *own*
+  // `EventPopover` for Month and Big Year rather than `WeekGrid`'s, so the
+  // Edit/Delete wiring on that second instance is a separate piece of code
+  // with its own way of being missed — the same gap Fix round 1's finding 4
+  // found for `onopen` on exactly this popover.
+  can_edit: true,
 });
 
 // Real 2026 day counts and lead-blank (Monday-first weekday of the 1st)
@@ -851,6 +875,101 @@ export const TRIP_LAST_DAY = '2026-08-12';
 export const TRIP_FIRST_DAY = '2026-08-10';
 export const TRIP_END_MS = TRIP_END_EXCLUSIVE;
 
+// --- App-level create, edit and delete ------------------------------------
+//
+// The `writable` App scenario. Every other scenario keeps `labelledWeek`'s
+// single event, whose detail carries the `detail()` default of
+// `can_edit: false` — which is what keeps the "Edit and Delete are hidden"
+// half of that pair honest. Nothing here changes that; this adds a second
+// scenario whose events can actually be edited, so the other half has
+// something real to appear on.
+
+/** Monday 29 Jan 2024 09:00 UTC — the recurring series' own DTSTART, and what
+ *  `event_detail` reports as its master row's `start_ms`. The value every
+ *  write command below must *not* be given. */
+export const APP_SERIES_DTSTART = APP_MON + 9 * H;
+/** Thursday 1 Feb 2024 09:00 UTC — the clicked block's own `start_ms`, three
+ *  days and a month boundary away from the DTSTART so a command handed the
+ *  wrong one cannot look plausible. */
+export const APP_SERIES_OCCURRENCE = APP_MON + 3 * 24 * H + 9 * H;
+export const APP_SERIES_ID = 4242;
+export const APP_ONE_OFF_ID = 4243;
+const APP_ONE_OFF_START = APP_MON + 14 * H;
+
+/** The calendar a create must land on: the user's own primary. Third in the
+ *  list below on purpose — a seed that took `calendars[0]` would pick the
+ *  holiday calendar and a seed that took the first *writable* one would pick
+ *  Team, so this id rejects both. */
+export const APP_PRIMARY_CALENDAR_ID = 9;
+/** The `reader` in that list, which a create may never land on. */
+export const APP_READER_CALENDAR_ID = 7;
+
+/** One account, three roles, the two unwritable-then-writable ordering above.
+ *  A subscribed holiday calendar really is a `reader`; this is what a real
+ *  `get_calendars` looks like. */
+export const APP_WRITE_CALENDARS: Calendar[] = [
+  cal({ id: APP_READER_CALENDAR_ID, account_email: 'me@x.com',
+        summary: 'Holidays in Bulgaria', access_role: 'reader' }),
+  cal({ id: 8, account_email: 'me@x.com', summary: 'Team', access_role: 'writer' }),
+  cal({ id: APP_PRIMARY_CALENDAR_ID, account_email: 'me@x.com', summary: 'Personal',
+        is_primary: true, access_role: 'owner' }),
+];
+
+const APP_SERIES_BLOCK: UiEvent = ev({
+  id: APP_SERIES_ID, title: 'Standup',
+  start_ms: APP_SERIES_OCCURRENCE, end_ms: APP_SERIES_OCCURRENCE + 30 * 60_000,
+});
+const APP_ONE_OFF_BLOCK: UiEvent = ev({
+  id: APP_ONE_OFF_ID, title: 'Board prep',
+  start_ms: APP_ONE_OFF_START, end_ms: APP_ONE_OFF_START + 60 * 60_000,
+});
+
+POPOVER_DETAILS[APP_SERIES_ID] = detail({
+  id: APP_SERIES_ID, title: 'Standup', can_edit: true,
+  calendar_id: APP_PRIMARY_CALENDAR_ID,
+  is_recurring: true, recurrence: 'RRULE:FREQ=WEEKLY', repeat: 'weekly',
+  // The series start, deliberately not the block's — the trap the whole task
+  // is built around, set here so an App-level spec can prove the value that
+  // reaches `update_event`/`delete_event_cmd` is the block's.
+  start_ms: APP_SERIES_DTSTART, end_ms: APP_SERIES_DTSTART + 30 * 60_000,
+  attendees: [
+    attendee({ email: 'ana@x.com', display_name: 'Ana', response_status: 'accepted' }),
+    attendee({ email: 'petya@x.com' }),
+    attendee({ email: 'me@x.com', is_self: true }),
+  ],
+});
+/** Two guests, not three: the delete confirmation must not count the person
+ *  doing the deleting. */
+export const APP_SERIES_GUESTS = 2;
+
+POPOVER_DETAILS[APP_ONE_OFF_ID] = detail({
+  id: APP_ONE_OFF_ID, title: 'Board prep', can_edit: true,
+  calendar_id: APP_PRIMARY_CALENDAR_ID,
+  start_ms: APP_ONE_OFF_START, end_ms: APP_ONE_OFF_START + 60 * 60_000,
+});
+
+/** The `writable` scenario's week: both events on Monday's column and inside
+ *  its top tenth, so a spec can click empty grid space further down without
+ *  hitting either. Their on-screen positions come from `Placed`, not from
+ *  their own timestamps, which is what lets the recurring one keep a Thursday
+ *  `start_ms` while rendering in Monday's column. */
+export const appWritableWeek = (): WeekPayload => {
+  const w = emptyWeekAt(APP_MON);
+  const events = [APP_SERIES_BLOCK, APP_ONE_OFF_BLOCK];
+  w.days[0] = {
+    start_ms: APP_MON,
+    end_ms: APP_MON + 24 * H,
+    events,
+    placed: [placed(0.02, 0.02, 0, 1, 0), placed(0.06, 0.02, 0, 1, 1)],
+  };
+  return w;
+};
+
+/** What the `create_event` stub resolves with. Never read by anything under
+ *  test — `App` reloads the grid rather than rendering the returned detail —
+ *  but it has to be a well-shaped `EventDetail` to satisfy the command's type. */
+export const CREATED_DETAIL: EventDetail = detail({ id: 9001, title: 'Lunch' });
+
 export const FIXTURES: Record<string, Record<string, any>> = {
   WeekGrid: {
     empty: { week: emptyWeek() },
@@ -997,7 +1116,7 @@ export const FIXTURES: Record<string, Record<string, any>> = {
           attendee({ email: 'petya@x.com', response_status: 'declined' }),
         ],
       }),
-      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop,
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
     },
     // The raw description is already entity-encoded, as a hostile calendar
     // invite's would be — `descriptionSegments` decodes it back to the
@@ -1007,7 +1126,7 @@ export const FIXTURES: Record<string, Record<string, any>> = {
     // `<script>` element — exactly the regression Step 7 breaks on purpose.
     'nasty-description': {
       detail: detail({ id: 2, description: '&lt;script&gt;alert(1)&lt;/script&gt;' }),
-      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop,
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
     },
     recurring: {
       detail: detail({
@@ -1015,7 +1134,7 @@ export const FIXTURES: Record<string, Record<string, any>> = {
         is_recurring: true,
         attendees: [attendee({ email: 'me@x.com', is_self: true })],
       }),
-      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop,
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
     },
     readonly: {
       detail: detail({
@@ -1027,13 +1146,13 @@ export const FIXTURES: Record<string, Record<string, any>> = {
           attendee({ email: 'petya@x.com', response_status: 'declined' }),
         ],
       }),
-      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop,
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
     },
     // The harness's `respond_to_event` stub rejects for this scenario name —
     // see tests/harness/tauri.ts.
     'respond-fails': {
       detail: detail({ id: 5, attendees: [attendee({ email: 'me@x.com', is_self: true })] }),
-      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop,
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
     },
     // `detail.start_ms` is the series DTSTART (Monday); the block actually
     // clicked is the fourth occurrence (Thursday) — the trap named in the
@@ -1047,7 +1166,7 @@ export const FIXTURES: Record<string, Record<string, any>> = {
         start_ms: SERIES_DTSTART,
         attendees: [attendee({ email: 'me@x.com', is_self: true })],
       }),
-      anchor: ANCHOR, occurrenceStartMs: FOURTH_OCCURRENCE, onclose: noop, onresponded: noop,
+      anchor: ANCHOR, occurrenceStartMs: FOURTH_OCCURRENCE, onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
     },
     // Non-recurring, so the backend really does write back (unlike the
     // bare-master "this one" case above) — the harness's `respond_to_event`
@@ -1059,7 +1178,49 @@ export const FIXTURES: Record<string, Record<string, any>> = {
         id: 7,
         attendees: [attendee({ email: 'me@x.com', is_self: true, response_status: 'needsAction' })],
       }),
-      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop,
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
+    },
+    // `can_edit: true` *explicitly*: `detail()`'s own default is `false`, and
+    // it is false so that a spec asserting the controls are shown fails until
+    // its fixture opts in, rather than passing because every fixture happens
+    // to be editable. Its pair is `standup` above, which takes the default —
+    // between them the two discriminate in both directions.
+    editable: {
+      detail: detail({ id: 8, title: 'Board prep', can_edit: true }),
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
+    },
+  },
+  DeleteConfirm: {
+    // Three attendees, one of them the signed-in user, so the notice must say
+    // two. A panel whose guests were all strangers would pass whether or not
+    // the count excluded the person doing the deleting.
+    'one-off': {
+      detail: detail({
+        id: 20, title: 'Board prep', can_edit: true,
+        attendees: [
+          attendee({ email: 'ana@x.com', display_name: 'Ana' }),
+          attendee({ email: 'petya@x.com' }),
+          attendee({ email: 'me@x.com', is_self: true }),
+        ],
+      }),
+      anchor: ANCHOR, onconfirm: noop, oncancel: noop,
+    },
+    recurring: {
+      detail: detail({
+        id: 21, title: 'Standup', can_edit: true, is_recurring: true,
+        recurrence: 'RRULE:FREQ=WEEKLY', repeat: 'weekly',
+        attendees: [
+          attendee({ email: 'ana@x.com', display_name: 'Ana' }),
+          attendee({ email: 'me@x.com', is_self: true }),
+        ],
+      }),
+      anchor: ANCHOR, onconfirm: noop, oncancel: noop,
+    },
+    // Nobody to tell. The guest notice must be absent rather than read
+    // "0 guests are told by email", which is both untrue and alarming.
+    'no-guests': {
+      detail: detail({ id: 22, title: 'Focus time', can_edit: true }),
+      anchor: ANCHOR, onconfirm: noop, oncancel: noop,
     },
   },
   // `onsave`/`oncancel` are supplied by the harness, not here: they are

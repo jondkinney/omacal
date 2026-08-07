@@ -191,27 +191,28 @@ export const nextHalfHour = (nowMs: number): number =>
   Math.floor(nowMs / HALF_HOUR_MS) * HALF_HOUR_MS + HALF_HOUR_MS;
 
 /**
- * A form value for a brand-new event: the next half hour, half an hour long,
+ * A form value for a brand-new event starting at `startMs`, half an hour long,
  * on `calendarId`.
  *
- * `dayStartMs` is the day the user was looking at when they asked for a new
- * event. Passing one that is not today keeps the *time* — the next half hour —
- * and moves it to that day, which is what clicking on next Tuesday and getting
- * "next Tuesday at the next half hour" means.
+ * The counterpart to `blankValue`: there the *clock* names the time, here the
+ * *grid* does. A click on empty space in Day or Week view already knows which
+ * instant it landed on, and substituting "the next half hour" for it would move
+ * the event away from where the user pointed.
+ *
+ * `endDate` is read off the end instant rather than copied from the start date,
+ * which is the whole reason this is one function and not two lines at each call
+ * site: a 23:30 event ends at 00:00 the following morning, and an `endDate` left
+ * on the start's own day makes `endAfterStart` refuse a form the user never got
+ * wrong.
  */
-export function blankValue(
-  nowMs: number,
-  calendarId: number | null,
-  dayStartMs?: number,
-): EventFormValue {
-  const startMs = nextHalfHour(nowMs);
-  const date = dateOf(dayStartMs ?? startMs);
+export function blankValueAt(startMs: number, calendarId: number | null): EventFormValue {
+  const endMs = startMs + HALF_HOUR_MS;
   return {
     title: '',
-    date,
-    endDate: date,
+    date: dateOf(startMs),
+    endDate: dateOf(endMs),
     start: timeOf(startMs),
-    end: timeOf(startMs + HALF_HOUR_MS),
+    end: timeOf(endMs),
     isAllDay: false,
     location: '',
     description: '',
@@ -222,6 +223,34 @@ export function blankValue(
     isEdit: false,
     isRecurring: false,
   };
+}
+
+/**
+ * A form value for a brand-new event: the next half hour, half an hour long,
+ * on `calendarId`.
+ *
+ * `dayStartMs` is the day the user was looking at when they asked for a new
+ * event. Passing one that is not today keeps the *time* — the next half hour —
+ * and moves it to that day, which is what pressing `n` on next Tuesday and
+ * getting "next Tuesday at the next half hour" means.
+ *
+ * The move goes through `shiftedEndDate` rather than assigning both dates the
+ * same value, so the day the end lands on is preserved along with the time. The
+ * version that wrote `endDate: date` was wrong for half an hour every evening:
+ * asked for a new event between 23:00 and 23:30 it offered 23:30–00:00 with
+ * both dates on today, which `endAfterStart` reads as an end twenty-three and a
+ * half hours *before* the start — a form that opens already refusing to save,
+ * and no field on it visibly wrong.
+ */
+export function blankValue(
+  nowMs: number,
+  calendarId: number | null,
+  dayStartMs?: number,
+): EventFormValue {
+  const at = blankValueAt(nextHalfHour(nowMs), calendarId);
+  if (dayStartMs === undefined) return at;
+  const date = dateOf(dayStartMs);
+  return { ...at, date, endDate: shiftedEndDate(at.date, date, at.endDate) };
 }
 
 /**

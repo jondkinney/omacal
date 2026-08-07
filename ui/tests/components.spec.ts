@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import {
   FIXED_NOW, FORM_FALLBACK_ID, FORM_NOW, FORM_UNWRITABLE_ID, FORM_UNWRITABLE_NAMES,
-  POPOVER_DETAILS, POPOVER_REFRESHED_DETAIL,
+  MON, POPOVER_DETAILS, POPOVER_REFRESHED_DETAIL,
   TRIP_END_MS, TRIP_FIRST_DAY, TRIP_LAST_DAY, popoverWeekWithResponse, YEAR_2026_NOW,
 } from './fixtures';
 import { CALENDAR_SYNC_REMOVED } from './harness/tauri';
@@ -13,6 +13,24 @@ test.describe('WeekGrid', () => {
     await page.goto(show('WeekGrid', 'empty'));
     await expect(page.locator('.col')).toHaveCount(7);
     await expect(page).toHaveScreenshot('weekgrid-empty.png');
+  });
+
+  // Task 10. Exactly on the 10:00 line, which is where somebody aims to make a
+  // 10:00 meeting — and the one place the empty-space target does not receive
+  // the click unless the hour rules are made transparent to the pointer. They
+  // are positioned after it in the column, so a point within half a pixel of a
+  // line returns `.rule` from `elementFromPoint` without
+  // `pointer-events: none`; measured in both engines. A 1px dead band every
+  // two hours is not something a user would ever report as a bug, only as the
+  // app "sometimes not doing anything".
+  test('clicking exactly on an hour line still asks for a new event there', async ({ page }) => {
+    await page.goto(show('WeekGrid', 'empty'));
+    const col = page.locator('.col').first();
+    const box = (await col.boundingBox())!;
+    await col.click({ position: { x: box.width / 2, y: box.height * (10 / 24) } });
+    expect(await page.evaluate(() => (window as any).__lastCreate)).toMatchObject({
+      startMs: MON + 10 * 3_600_000,
+    });
   });
 
   test('renders overlaps side by side', async ({ page }) => {
@@ -84,6 +102,35 @@ test.describe('WeekGrid popover flow', () => {
     // start_ms (POPOVER_RECURRING's, the fourth occurrence) — see fixtures.ts.
     expect(call.occurrenceStartMs).toBe(POPOVER_DETAILS[42].start_ms + 3 * 24 * 3_600_000);
     expect(call.occurrenceStartMs).not.toBe(POPOVER_DETAILS[42].start_ms);
+  });
+
+  // Task 10, and the same property as the spec above through a different code
+  // path: Edit and Delete hand the caller an `Occurrence`, and its `startMs`
+  // must be the clicked block's, never `detail.start_ms`. Both controls in one
+  // spec, because they are the same relay called twice — and the popover has
+  // to be gone by the time either lands, or the form would open behind a scrim
+  // that is still there.
+  test('edit and delete hand up the clicked block, and close the popover', async ({ page }) => {
+    const seriesStart = POPOVER_DETAILS[42].start_ms;
+    const blockStart = seriesStart + 3 * 24 * 3_600_000;
+
+    await page.goto(show('popover'));
+    await page.getByRole('button', { name: 'Standup' }).click();
+    await expect(page.locator('.pop')).toBeVisible();
+    await page.getByRole('button', { name: 'Edit' }).click();
+    await expect(page.locator('.pop')).toHaveCount(0);
+    const edit = await page.evaluate(() => (window as any).__lastEdit);
+    expect(edit.occurrence.startMs).toBe(blockStart);
+    expect(edit.occurrence.startMs).not.toBe(seriesStart);
+    expect(edit.occurrence.endMs).toBe(blockStart + 30 * 60_000);
+
+    await page.getByRole('button', { name: 'Standup' }).click();
+    await expect(page.locator('.pop')).toBeVisible();
+    await page.getByRole('button', { name: 'Delete' }).click();
+    await expect(page.locator('.pop')).toHaveCount(0);
+    const del = await page.evaluate(() => (window as any).__lastDelete);
+    expect(del.occurrence.startMs).toBe(blockStart);
+    expect(del.occurrence.startMs).not.toBe(seriesStart);
   });
 
   test('a successful response restyles the clicked block without a refetch', async ({ page }) => {
@@ -797,6 +844,28 @@ test.describe('EventPopover', () => {
     await expect(page.locator('.pop')).toHaveCount(0);
   });
 
+  // Task 10. A pair, deliberately: `detail()`'s own default is
+  // `can_edit: false`, so the "shown" half fails until its fixture opts in
+  // explicitly, and the "hidden" half is the one that could pass vacuously —
+  // which is the safe way round, since an absent control ships nothing to
+  // somebody who may not use it. Together they discriminate both ways.
+  test('an event the user can write to offers Edit and Delete', async ({ page }) => {
+    await page.goto(show('editable'));
+    await expect(page.getByRole('button', { name: 'Edit' })).toHaveCount(1);
+    await expect(page.getByRole('button', { name: 'Delete' })).toHaveCount(1);
+  });
+
+  test('an event the user cannot write to offers neither', async ({ page }) => {
+    // Offering either on a calendar this account only reads would produce a
+    // Save — or a Delete confirmation with no undo behind it — that
+    // `update_impl`'s own writability check could only refuse, after the user
+    // had already decided to go through with it.
+    await page.goto(show('standup'));
+    await expect(page.locator('.pop')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Edit' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Delete' })).toHaveCount(0);
+  });
+
   test('clicking a guest list does not close it', async ({ page }) => {
     // The scrim must sit behind the panel, not over it.
     await page.goto(show('standup'));
@@ -850,6 +919,28 @@ test.describe('MonthGrid', () => {
     await page.goto(show('august'));
     await page.locator('.mcell .num').nth(14).click();
     expect(await page.evaluate(() => (window as any).__lastDayPick)).toBeTruthy();
+  });
+
+  // Task 10. Both halves in one spec, because the risk is precisely that they
+  // become the same click: the empty-space target covers the whole cell, and
+  // the day number keeps its own click only by sitting above it. Invert the
+  // `z-index` pair in `MonthGrid`'s styles and the second half fails — the
+  // target swallows the number.
+  test('empty cell space asks for a new event on that day, and the day number still does not', async ({ page }) => {
+    // The grid's first cell, Mon 27 Jul, which carries nothing but its own
+    // number — so a click on the middle of it is genuinely empty space and
+    // nothing else could have answered.
+    await page.goto(show('august'));
+    const cell = page.locator('.mcell').first();
+
+    await cell.locator('.newhere').click();
+    expect(await page.evaluate(() => (window as any).__lastCreate)).toMatchObject({
+      startMs: Date.UTC(2026, 6, 27),
+    });
+    expect(await page.evaluate(() => (window as any).__lastDayPick)).toBeFalsy();
+
+    await cell.locator('.num').click();
+    expect(await page.evaluate(() => (window as any).__lastDayPick)).toBe(Date.UTC(2026, 6, 27));
   });
 
   test('clicking an event opens the popover, not the day', async ({ page }) => {
@@ -969,6 +1060,28 @@ test.describe('BigYearRibbon', () => {
     await page.goto(show('y2026'));
     await page.locator('.pill').first().click();
     expect(await page.evaluate(() => (window as any).__lastOpen)).toBeTruthy();
+  });
+
+  // Task 10. The ribbon's day strip carried no click handler at all before
+  // this, so it is the one grid where "empty space" is the whole day cell —
+  // and the `z-index` pair that keeps the day number above the target is the
+  // same shape `MonthGrid` needs, for the same reason.
+  test('clicking a day asks the parent for a new event on it', async ({ page }) => {
+    await page.goto(show('y2026'));
+    // Row 0, column 4: four days after the ribbon's own anchor of Mon 29 Dec
+    // 2025, so Fri 2 Jan 2026. No pill on it (row 0's runs 8-10) and not a
+    // first-of-month (which would put a `.mchip` in the way), so nothing else
+    // could have answered.
+    //
+    // Off-centre on purpose: a ribbon day is about 45px wide and 15px tall,
+    // and its own number sits in the middle of it — the click has to land on
+    // the part that is actually empty, which is also what proves the day
+    // number is still on top rather than buried under the target.
+    await page.locator('.rrow').first().locator('.rday .newhere').nth(4)
+      .click({ position: { x: 3, y: 3 } });
+    expect(await page.evaluate(() => (window as any).__lastCreate)).toMatchObject({
+      startMs: Date.UTC(2026, 0, 2),
+    });
   });
 
   test('a fully packed row keeps its day strip, and its weekend stripes with it', async ({ page }) => {
@@ -1260,5 +1373,68 @@ test.describe('EventForm', () => {
     await page.getByRole('button', { name: 'Save' }).click();
     const [saved] = await saves(page);
     expect(saved.fields.repeat).toBe('weekly');
+  });
+});
+
+test.describe('DeleteConfirm', () => {
+  const show = (f: string) => `/tests/harness/index.html?c=DeleteConfirm&f=${f}`;
+
+  const open = async (page: import('@playwright/test').Page, fixture: string) => {
+    await page.goto(show(fixture));
+    await expect(page.locator('.pop')).toBeVisible();
+  };
+
+  /** Every scope the panel handed `onconfirm`, in order — `[]` when it asked
+   *  and nothing was confirmed. An array, not a slot, for the reason
+   *  `EventForm`'s `__saves` is one: half of what these assert is that nothing
+   *  happened at all. */
+  const confirms = (page: import('@playwright/test').Page) =>
+    page.evaluate(() => (window as any).__confirms as any[]);
+
+  test('names the event, says who gets emailed, and warns there is no undo', async ({ page }) => {
+    // Three things a confirmation with no undo behind it has to be honest
+    // about, and one it must not be: the fixture has three attendees, one of
+    // them the signed-in user, so the count is two. Telling somebody they are
+    // about to email themselves is just wrong.
+    await open(page, 'one-off');
+    await expect(page.locator('h2')).toContainText('Board prep');
+    await expect(page.getByTestId('delete-guest-notice')).toContainText('2 guests are told by email');
+    await expect(page.getByTestId('delete-no-undo')).toContainText('cannot be undone');
+    // A one-off has one deletion, so naming it three ways would be three
+    // different words for the same act.
+    await expect(page.getByRole('radio')).toHaveCount(0);
+    expect(await confirms(page)).toEqual([]);
+  });
+
+  test('the three scopes are three different operations, and each says which', async ({ page }) => {
+    // Not three sizes of one deletion. "This and following" deletes nothing at
+    // all — it patches the series' rule so it stops earlier, which is the only
+    // way to lose the tail without also losing the occurrences before the
+    // clicked one, since they are all the same Google event. "All events" takes
+    // the past with it. Neither is inferable from a three-item radio list.
+    await open(page, 'recurring');
+    const scopes = page.locator('.scope label');
+    await expect(scopes).toHaveCount(3);
+    await expect(scopes.nth(1)).toContainText('deletes nothing');
+    await expect(scopes.nth(1)).toContainText('shortens the series');
+    await expect(scopes.nth(2)).toContainText('already happened');
+    // Every scope notifies: `sendUpdates=all` is unconditional on the DELETE
+    // and on the "this and following" PATCH alike, so the notice may not read
+    // as if it applied to only one of the three.
+    await expect(page.getByTestId('delete-guest-notice')).toContainText('Whichever you choose');
+
+    // And the chosen scope is the one that comes back — a panel that always
+    // confirmed `'this'` would satisfy every assertion above.
+    await page.getByRole('radio', { name: 'This and following' }).check();
+    await page.getByRole('button', { name: 'Delete' }).click();
+    expect(await confirms(page)).toEqual(['following']);
+  });
+
+  test('an event with nobody on it claims nothing about guests', async ({ page }) => {
+    // "0 guests are told by email" is both untrue and alarming. The no-undo
+    // line stays either way: that one is about the event, not the guest list.
+    await open(page, 'no-guests');
+    await expect(page.getByTestId('delete-guest-notice')).toHaveCount(0);
+    await expect(page.getByTestId('delete-no-undo')).toBeVisible();
   });
 });

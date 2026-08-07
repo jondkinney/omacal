@@ -13,7 +13,10 @@ import type { WeekPayload, MonthPayload, YearPayload, BigYearPayload } from '../
 import type { AppStatus } from '../../src/lib/status';
 import type { Calendar } from '../../src/lib/calendars';
 import type { EventDetail } from '../../src/lib/eventdetail';
-import { labelledWeek, weekLabel, APP_FIVE_MIN_AGO, POPOVER_DETAILS, busyDayMonth } from '../fixtures';
+import {
+  labelledWeek, weekLabel, APP_FIVE_MIN_AGO, POPOVER_DETAILS, busyDayMonth,
+  appWritableWeek, APP_WRITE_CALENDARS, CREATED_DETAIL,
+} from '../fixtures';
 
 /** What the real `get_palette` returns; the same fallback_dark values. */
 const PALETTE = {
@@ -281,7 +284,7 @@ const SIGNED_IN_CALENDARS: Calendar[] = [
     access_role: 'reader' },
 ];
 
-function getWeek(weekStartMs: number): Promise<WeekPayload> {
+function getWeek(scenario: string, weekStartMs: number): Promise<WeekPayload> {
   if (failWeekOnce !== null) {
     const message = failWeekOnce;
     failWeekOnce = null;
@@ -293,6 +296,11 @@ function getWeek(weekStartMs: number): Promise<WeekPayload> {
       parked.set(weekStartMs, { resolve, reject });
     });
   }
+  // The `writable` scenario answers with the same two editable events whatever
+  // week is asked for — same shortcut, and the same reasoning, as `getMonth`
+  // below: its specs pin literal instants, and none of them needs the payload
+  // to match the week it requested.
+  if (scenario === 'writable') return Promise.resolve(appWritableWeek());
   return Promise.resolve(labelledWeek(weekStartMs));
 }
 
@@ -381,7 +389,7 @@ export function installTauriStub(scenario: string): Harness {
       case 'get_status':
         return status;
       case 'get_week':
-        return getWeek(args.weekStartMs);
+        return getWeek(scenario, args.weekStartMs);
       case 'get_day':
         return getDay(args.dayStartMs);
       case 'get_month':
@@ -396,6 +404,7 @@ export function installTauriStub(scenario: string): Harness {
       // assertion undisturbed. CalendarPopover specs never take this path —
       // they mount the component directly with fixture props instead.
       case 'get_calendars':
+        if (scenario === 'writable') return APP_WRITE_CALENDARS;
         return scenario === 'sign-in-adds-account' && signedIn
           ? SIGNED_IN_CALENDARS
           : ([] as Calendar[]);
@@ -442,6 +451,25 @@ export function installTauriStub(scenario: string): Harness {
         // return value. Any well-shaped stand-in satisfies its type.
         return RESPOND_STUB_DETAIL;
       }
+      // The three write commands. None of them needs a hold, a forced failure
+      // or a per-scenario answer: what every spec asserts on is the *arguments*
+      // they were given — above all `occurrenceStartMs`, which must be the
+      // clicked block's own `start_ms` and never `detail.start_ms` — and
+      // `harness.calls` above already records those for every command, in
+      // order. A second capture on `window` would be a second thing to keep in
+      // step with it.
+      case 'create_event':
+        return CREATED_DETAIL;
+      case 'update_event':
+        // What the real command answers with: the freshly written detail. `App`
+        // never reads it (it reloads the grid instead), so the unchanged
+        // fixture is a truthful enough stand-in.
+        return POPOVER_DETAILS[args.id] ?? CREATED_DETAIL;
+      case 'delete_event_cmd':
+        // Returns nothing, exactly as the Rust command does: the event the
+        // popover was showing is gone, and reading it back would fail on the
+        // runs that succeeded.
+        return null;
       case 'sign_in':
         // Tauri rejects a `Result<_, String>` with the bare string, so the
         // app sees exactly the sentence Rust produced.

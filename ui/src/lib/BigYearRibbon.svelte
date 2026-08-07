@@ -3,11 +3,15 @@
   import type { BigYearPayload, UiEvent } from './api';
   import type { Rect } from './position';
 
-  let { ribbon, onopen }: {
+  let { ribbon, onopen, oncreate }: {
     ribbon: BigYearPayload;
     /** Same contract as `WeekGrid`/`MonthGrid`: an anchor rect plus the
      *  clicked event, handed straight to `EventPopover` via `placePopover`. */
     onopen: (event: UiEvent, rect: Rect) => void;
+    /** A click on a day in the strip. Same contract as `MonthGrid`'s: a ribbon
+     *  day carries a date and no time, so the parent applies the app's default
+     *  hour to it. */
+    oncreate: (dayStartMs: number, rect: Rect) => void;
   } = $props();
 
   // The data cap: `pack_lanes(&segments, 28, 3)` (commands.rs) never packs a
@@ -60,6 +64,11 @@
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
     onopen(event, { top: r.top, left: r.left, width: r.width, height: r.height });
   }
+
+  function createOn(dayStartMs: number, e: MouseEvent) {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    oncreate(dayStartMs, { top: r.top, left: r.left, width: r.width, height: r.height });
+  }
 </script>
 
 <div class="ribbon" data-year={ribbon.year}>
@@ -102,6 +111,15 @@
               class:out={!d.in_year}
               class:unsynced={d.unsynced}
             >
+              <!-- Empty grid space, same contract and same `tabindex="-1"` as
+                   `WeekGrid`'s and `MonthGrid`'s: 392 invisible tab stops is
+                   not a keyboard route to anything, and `n` already is one. -->
+              <button
+                class="newhere"
+                aria-label="New event"
+                tabindex="-1"
+                onclick={(e) => createOn(d.start_ms, e)}
+              ></button>
               {#if date.getDate() === 1}
                 <span class="mchip">{MONTH_NAMES[date.getMonth()]}</span>
               {/if}
@@ -184,9 +202,18 @@
     );
   }
 
+  /* Covers the day, paints nothing, and is held under the day's own two labels
+     by the `z-index` pair below — stated rather than inherited, for the reason
+     `MonthGrid`'s own `.newhere` comment sets out at length: both engines
+     already paint a flex item above an absolutely positioned sibling, and that
+     is not a fact to rest a hit target on. */
+  .newhere { appearance: none; -webkit-appearance: none; position: absolute; inset: 0;
+             background: none; border: 0; padding: 0; margin: 0; font: inherit;
+             cursor: cell; z-index: 0; }
+
   .mchip { position: absolute; top: 1px; font-size: 6.5px; font-weight: 600;
-           color: var(--accent); letter-spacing: .02em; }
-  .dnum { margin-top: 6px; }
+           color: var(--accent); letter-spacing: .02em; z-index: 1; }
+  .dnum { margin-top: 6px; position: relative; z-index: 1; }
 
   .legend { display: flex; flex-wrap: wrap; gap: 10px 16px; padding: 4px; }
   .legend .item { display: flex; align-items: center; gap: 5px; font-size: 10px; color: var(--muted); }

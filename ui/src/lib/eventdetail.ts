@@ -46,6 +46,29 @@ export type EventDetail = {
 export const getEventDetail = (id: number) => invoke<EventDetail>('event_detail', { id });
 
 /**
+ * An `EventDetail` together with the one thing it cannot supply: which
+ * occurrence of it the user actually clicked.
+ *
+ * Every write command below takes an `occurrenceStartMs`, and for a recurring
+ * series the detail's own `start_ms` is the wrong answer to that question every
+ * single time (see `respondToEvent` and `updateEvent` below). Carrying the two
+ * together, from the grid that had the `UiEvent` in its hand, is what stops a
+ * caller further up the stack having to remember which of two plausible numbers
+ * is the safe one.
+ *
+ * `startMs` and `endMs` are the clicked block's own, taken from the `UiEvent` —
+ * `endMs` for the same reason as `startMs`: `valueFromDetail` needs the
+ * occurrence's real span, and deriving it from the master's would be wrong for
+ * any occurrence whose duration crosses a daylight-saving transition the
+ * master's does not.
+ */
+export type Occurrence = {
+  detail: EventDetail;
+  startMs: number;
+  endMs: number;
+};
+
+/**
  * What `create_event` takes on the Rust side (`write::EventInput`) — the
  * UI's own vocabulary, not an RRULE: `repeat` is one of `'never'`,
  * `'daily'`, `'weekdays'`, `'weekly'`, `'monthly'`, `'yearly'`, mapped to an

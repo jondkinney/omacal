@@ -6,9 +6,23 @@
   import EventBlock from './EventBlock.svelte';
   import AllDayBand from './AllDayBand.svelte';
   import EventPopover from './EventPopover.svelte';
-  import { getEventDetail, refreshEvent, type EventDetail } from './eventdetail';
+  import { getEventDetail, refreshEvent, type EventDetail, type Occurrence } from './eventdetail';
 
-  let { week }: { week: WeekPayload } = $props();
+  let { week, oncreate, onedit, ondelete }: {
+    week: WeekPayload;
+    /** A click on empty space in a day column, at the half hour it landed in.
+     *  `rect` is the anchor to put the form beside — the column at the height
+     *  of the click, so the form appears next to where the user pointed. */
+    oncreate: (startMs: number, rect: Rect) => void;
+    /** Edit was clicked in this grid's own popover. The `Occurrence` carries
+     *  the *clicked block's* own `start_ms`/`end_ms` alongside the detail —
+     *  never `detail.start_ms`, which for a series is the master's DTSTART.
+     *  See `eventdetail.ts`'s `updateEvent`. */
+    onedit: (occurrence: Occurrence, rect: Rect) => void;
+    /** Delete was clicked there, carrying the same `Occurrence` for the same
+     *  reason. Nothing is deleted by this: the caller confirms first. */
+    ondelete: (occurrence: Occurrence, rect: Rect) => void;
+  } = $props();
 
   const HOURS = [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22];
   const DOW = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
@@ -82,6 +96,14 @@
   // reads of a number never depends on which proxy either passed through.
   let selectedId = $state<number | null>(null);
   let selectedStartMs = $state<number | null>(null);
+  // Carried for the same reason `selectedStartMs` is, one step further: the
+  // event form needs the clicked occurrence's whole span, and deriving its end
+  // from the master's duration is wrong for any occurrence whose own length
+  // crosses a daylight-saving transition the master's does not. Deliberately
+  // *not* part of `isSelected` — `id` + `start_ms` already name an occurrence
+  // uniquely, and a third term could only ever make two reads of the same
+  // block disagree.
+  let selectedEndMs = $state<number | null>(null);
   let anchor = $state<Rect | null>(null);
   let detail = $state<EventDetail | null>(null);
 
@@ -175,6 +197,7 @@
   async function openPopover(event: UiEvent, rect: Rect) {
     selectedId = event.id;
     selectedStartMs = event.start_ms;
+    selectedEndMs = event.end_ms;
     anchor = rect;
     detail = null;
 
@@ -209,8 +232,55 @@
   function closePopover() {
     selectedId = null;
     selectedStartMs = null;
+    selectedEndMs = null;
     anchor = null;
     detail = null;
+  }
+
+  /**
+   * The half hour a click landed in, in the day it landed on.
+   *
+   * Read as a fraction of the column's own height and applied to that column's
+   * own span, both halves for the reason `hourFrac` above documents: a DST day
+   * is 23 or 25 hours long, and dividing by a fixed 24 puts every click after
+   * the transition an hour out.
+   *
+   * Snapped in *local* wall-clock minutes rather than by flooring the instant
+   * to a multiple of thirty minutes: a zone offset at :45 (Kathmandu, Chatham)
+   * has no half hour on a whole-half-hour UTC boundary at all, and the arrival
+   * of one would be a form offering 09:15 for a click on the 09:30 line.
+   */
+  function slotAt(day: { start_ms: number; end_ms: number }, e: MouseEvent): number {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const frac = Math.min(Math.max((e.clientY - r.top) / r.height, 0), 1);
+    const at = new Date(day.start_ms + frac * (day.end_ms - day.start_ms));
+    at.setMinutes(at.getMinutes() < 30 ? 0 : 30, 0, 0);
+    return at.getTime();
+  }
+
+  function startCreate(day: { start_ms: number; end_ms: number }, e: MouseEvent) {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    // Anchored at the click's own height rather than the column's top: the
+    // column is 1200px tall inside a scrolling body, and a form placed against
+    // its top edge would open somewhere off-screen above the click.
+    oncreate(slotAt(day, e), { top: e.clientY, left: r.left, width: r.width, height: 0 });
+  }
+
+  /**
+   * Hands the caller the clicked occurrence and closes this popover.
+   *
+   * `occ` and `rect` are captured by the *caller of this function* at render
+   * time (see the `{@const}`s below), never read back off the module state
+   * here: `closePopover` clears all of it on the next line, and both handlers
+   * need values that survive that.
+   */
+  function relay(
+    to: (occurrence: Occurrence, rect: Rect) => void,
+    occurrence: Occurrence,
+    rect: Rect,
+  ) {
+    closePopover();
+    to(occurrence, rect);
   }
 
   // A successful "this one" RSVP against a bare master leaves `detail`
@@ -288,6 +358,19 @@
   {#each effectiveDays as day}
     {@const isToday = day.start_ms === todayStart}
     <div class="col" class:today={isToday} data-start-ms={day.start_ms}>
+      <!-- Empty grid space, as a real control rather than a click handler on
+           the column div: the role, the pointer target and the accessible name
+           come with the element. First in the column so every block, rule and
+           now-line paints over it, and `tabindex="-1"` because seven identical
+           invisible tab stops per week would be noise — the keyboard route to
+           the same form is `n`, which needs no target at all. -->
+      <button
+        class="newhere"
+        aria-label="New event"
+        tabindex="-1"
+        onclick={(e) => startCreate(day, e)}
+      ></button>
+
       {#each HOURS as h}
         <div class="rule" style="top:{hourFrac(day, h) * 100}%"></div>
       {/each}
@@ -318,12 +401,22 @@
        regardless of what has since been clicked. -->
   {@const id = selectedId}
   {@const startMs = selectedStartMs}
+  <!-- `endMs` falls back to `startMs` only to satisfy the type: the `{#if}`
+       above already proves a block is selected, and `selectedEndMs` is
+       assigned and cleared in lockstep with `selectedStartMs`, so the
+       fallback is unreachable. Written this way rather than added to the
+       `{#if}` because a fourth condition there would suggest the three
+       states can disagree. -->
+  {@const occurrence = { detail, startMs, endMs: selectedEndMs ?? startMs }}
+  {@const rect = anchor}
   <EventPopover
     {detail}
     {anchor}
     occurrenceStartMs={startMs}
     onclose={closePopover}
     onresponded={(r) => handleResponded(id, startMs, r)}
+    onedit={() => relay(onedit, occurrence, rect)}
+    ondelete={() => relay(ondelete, occurrence, rect)}
   />
 {/if}
 
@@ -346,10 +439,35 @@
   .gutter span { position: absolute; right: 8px; font-size: 9.5px; color: var(--muted);
                  opacity: .7; transform: translateY(-50%); font-variant-numeric: tabular-nums; }
 
-  .rule { position: absolute; left: 0; right: 0; border-top: 1px solid var(--hour-rule); }
+  /* Fills the column, paints nothing, and sits under everything else in it —
+     it is first in the DOM and every sibling that could cover it is either
+     positioned later or explicitly transparent to the pointer below. */
+  .newhere { appearance: none; -webkit-appearance: none; position: absolute; inset: 0;
+             background: none; border: 0; padding: 0; margin: 0; font: inherit;
+             cursor: cell; }
+
+  /* `pointer-events: none` on both, and load-bearing — measured, not assumed.
+     They are positioned *after* `.newhere` in the column, so without this the
+     hour lines and the current-time line swallow the click instead: probed in
+     both engines, a point within half a pixel of an hour line returns `.rule`
+     from `elementFromPoint`, and further away returns `.newhere`. That is a
+     1px dead band every two hours, sitting exactly on the line somebody aims
+     at to make a 10:00 meeting. `WeekGrid`'s "clicking exactly on an hour
+     line" spec fails the moment the declaration on `.rule` goes.
+
+     `.now` is the same geometry — plus a 7px dot — and gets the same treatment
+     for the same reason, but has no spec of its own: it renders only in
+     today's column, and every fixture here is anchored on a Monday fixed in
+     the past precisely so that nothing driven by the real wall clock can
+     appear (see `MON` in fixtures.ts). Reaching it would mean a fixture whose
+     week moves with the calendar, which is a worse trade than an unspec'd
+     one-line declaration. */
+  .rule { position: absolute; left: 0; right: 0; border-top: 1px solid var(--hour-rule);
+          pointer-events: none; }
 
   /* The loudest thing on screen, deliberately. */
-  .now { position: absolute; left: 0; right: 0; border-top: 1.5px solid #e2564a; z-index: 5; }
+  .now { position: absolute; left: 0; right: 0; border-top: 1.5px solid #e2564a; z-index: 5;
+         pointer-events: none; }
   .now::before { content: ''; position: absolute; left: -3px; top: -3.5px;
                  width: 7px; height: 7px; border-radius: 50%; background: #e2564a; }
 </style>
