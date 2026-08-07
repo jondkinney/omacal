@@ -671,7 +671,8 @@ pub fn run() {
             events::respond_to_event,
             events::refresh_event,
             events::create_event,
-            events::update_event
+            events::update_event,
+            events::delete_event_cmd
         ])
         .run(tauri::generate_context!())
         .expect("error while running omacal");

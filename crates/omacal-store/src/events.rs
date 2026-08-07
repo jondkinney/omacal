@@ -183,6 +183,45 @@ where
     Ok(())
 }
 
+/// Every local row of one series: the master, and every exception pointing
+/// back at it.
+///
+/// For "delete all events", where Google removes the master *and* every
+/// materialised exception of it — an occurrence somebody moved or deleted on
+/// its own is a separate event whose only reason to exist is the series that is
+/// going. [`delete_event`] on the master alone is not enough: an exception left
+/// behind carries no `recurrence` of its own, so [`events_in_window`] goes on
+/// returning it and the grid goes on rendering a meeting that is no longer on
+/// anybody's calendar — with the series it belonged to gone from the screen, so
+/// there is nothing left to delete it from either.
+///
+/// `master_google_id` is matched against both columns deliberately: by
+/// `recurring_event_id` alone this would leave the master, and by `google_id`
+/// alone it is [`delete_event`], which is what a single tombstone from sync
+/// still wants.
+///
+/// Deliberately **not** used for "this and following". Which materialised
+/// exceptions Google drops when a rule is truncated is an inference about
+/// `UNTIL`, not something this app observes, and rows are not deleted here on an
+/// inference — see `events::truncate_series`.
+pub async fn delete_series(
+    pool: &SqlitePool,
+    calendar_id: i64,
+    master_google_id: &str,
+) -> anyhow::Result<()> {
+    // The first clause hits the `(calendar_id, google_id)` unique index, the
+    // second `idx_events_recurring (calendar_id, recurring_event_id)`.
+    sqlx::query(
+        "DELETE FROM events
+          WHERE calendar_id = ?1 AND (google_id = ?2 OR recurring_event_id = ?2)",
+    )
+    .bind(calendar_id)
+    .bind(master_google_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// The query behind both [`event_by_id`] and [`event_for_write`]: one event
 /// row, its calendar's `access_role`, the calendar's own `google_id`, and the
 /// email of the account that owns it. The last two need a second join beyond
@@ -538,6 +577,66 @@ mod tests {
         upsert_event(&pool, &ev(cal, "a", 1000, 2000)).await.unwrap();
         delete_event(&pool, cal, "a").await.unwrap();
         assert!(events_in_window(&pool, 0, 5000).await.unwrap().is_empty());
+    }
+
+    /// Both clauses of `delete_series`, and both ways of getting it wrong.
+    ///
+    /// Matching only `recurring_event_id` leaves the master, so the whole series
+    /// goes on expanding; matching only `google_id` leaves every exception, and
+    /// an exception carries no rule of its own, so it renders as a standalone
+    /// meeting that no longer exists anywhere.
+    ///
+    /// The negative half is what stops it reaching too far: another series on
+    /// the same calendar, the same series on another calendar, and a one-off
+    /// that merely sorts nearby all have to survive.
+    #[tokio::test]
+    async fn deleting_a_series_takes_its_master_and_its_exceptions_and_nothing_else() {
+        let pool = connect_memory().await.unwrap();
+        let cal = seed(&pool).await;
+        let other_cal = {
+            sqlx::query(
+                "INSERT INTO calendars (account_id, google_id, summary, timezone, access_role)
+                 VALUES (1, 'second', 'Home', 'Europe/Sofia', 'owner')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            2
+        };
+
+        let exception = |cal: i64, gid: &str, master: &str, slot: i64, status: &str| {
+            let mut e = ev(cal, gid, slot, slot + 1000);
+            e.recurring_event_id = Some(master.into());
+            e.original_start_utc = Some(slot);
+            e.status = status.into();
+            e
+        };
+
+        let mut master = ev(cal, "m1", 1_000, 2_000);
+        master.recurrence = Some("RRULE:FREQ=WEEKLY".into());
+        for row in [
+            master,
+            exception(cal, "m1_moved", "m1", 3_000, "confirmed"),
+            exception(cal, "m1_gone", "m1", 4_000, "cancelled"),
+            // Must survive: another series, the same series elsewhere, and an
+            // event that belongs to no series at all.
+            exception(cal, "m2_moved", "m2", 3_000, "confirmed"),
+            exception(other_cal, "m1_elsewhere", "m1", 3_000, "confirmed"),
+            ev(cal, "one-off", 1_000, 2_000),
+        ] {
+            upsert_event(&pool, &row).await.unwrap();
+        }
+
+        delete_series(&pool, cal, "m1").await.unwrap();
+
+        // Read straight off the table rather than through `events_in_window`:
+        // that query hides cancelled rows unless they are exceptions, and the
+        // cancelled exception above is one of the rows this must remove.
+        let left: Vec<String> = sqlx::query_scalar("SELECT google_id FROM events ORDER BY google_id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(left, vec!["m1_elsewhere", "m2_moved", "one-off"]);
     }
 
     /// Every column written is read back with the value it went in with. This is

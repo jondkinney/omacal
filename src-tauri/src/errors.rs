@@ -92,6 +92,13 @@ const SAFE_EXACT: &[&str] = &[
     // added on the way, so it is byte-identical here too. `update_impl`'s
     // other three refusals reuse literals already listed above.
     "demo mode — there is nothing to save",
+    // src-tauri/src/events.rs — `delete_impl`'s demo gate. A fourth fixed
+    // literal for a fourth verb, on the same reasoning as the third above.
+    // Reached only through `delete_event_cmd`'s `.map_err(|e|
+    // crate::errors::user_facing(&e))` with no `.context(..)` added on the way,
+    // so it is byte-identical here too. `delete_impl`'s other three refusals
+    // reuse literals already listed above.
+    "demo mode — there is nothing to delete",
     // src-tauri/src/events.rs — `resolve_instance_id`'s empty-lookup branch on
     // a bare series master (reached from `respond_via_client`, called by
     // `respond_to_event`). Fixed literal, no interpolation, and reached via a
@@ -278,6 +285,7 @@ mod tests {
             "demo mode — there is nothing to create",
             "this calendar is not writable from omacal",
             "demo mode — there is nothing to save",
+            "demo mode — there is nothing to delete",
             "that occurrence is no longer on the calendar",
             "omacal cannot split a series that ends after a set number of times — \
              edit all events instead",

@@ -1398,6 +1398,381 @@ async fn split_series(
     Ok(())
 }
 
+/// `occurrence_start_ms` is the `start_ms` of the block the user actually
+/// clicked — see [`instance_lookup_window`] for why this cannot be derived from
+/// the stored row instead. `scope` is `"this"`, `"all"` or `"following"`.
+///
+/// Named `delete_event_cmd` and not `delete_event` because this file already
+/// calls [`omacal_store::delete_event`], and two functions of that name in one
+/// module — one removing a database row, one removing everybody's meeting and
+/// mailing them about it — is a mistake waiting to be made by autocomplete.
+///
+/// Returns nothing. The other three write commands answer with the freshly
+/// written [`EventDetail`], which is what the popover re-renders from; here the
+/// event the popover was showing is gone, and reading it back would fail on
+/// exactly the runs that succeeded.
+#[tauri::command]
+pub async fn delete_event_cmd(
+    state: tauri::State<'_, AppState>,
+    id: i64,
+    scope: String,
+    occurrence_start_ms: i64,
+) -> Result<(), String> {
+    delete_impl(&state, id, &scope, occurrence_start_ms)
+        .await
+        .map_err(|e| crate::errors::user_facing(&e))
+}
+
+/// The body of `delete_event_cmd`, minus the Tauri `State` wrapper — the same
+/// split, and for the same reason, as [`update_impl`]: a test can drive
+/// [`delete_via_client`] against `wiremock` without this function touching
+/// `load_config` or the Keychain, and the guards above it stay reachable
+/// without a running app.
+///
+/// The order of the four checks is [`update_impl`]'s exactly, and matters more
+/// here than anywhere else in this file: every request below goes out with
+/// `sendUpdates=all` and the resource it names stops existing. Demo mode first,
+/// before any database access at all. Then `scope`, because it is a pure
+/// function of an argument and [`target_event_id`] reads *every* scope that is
+/// not `"all"` as "this one" — an unrecognised scope arriving from a future UI
+/// would delete one occurrence of a series the user asked to do something else
+/// with. Then the row, then writability, so a reader calendar is refused before
+/// `load_config`, the Keychain or Google ever see the request.
+async fn delete_impl(
+    state: &AppState,
+    id: i64,
+    scope: &str,
+    occurrence_start_ms: i64,
+) -> anyhow::Result<()> {
+    if state.demo {
+        anyhow::bail!("demo mode — there is nothing to delete");
+    }
+
+    // Deliberately not in `errors.rs`'s allowlist, exactly as `update_impl`'s
+    // is not: a scope the shipped UI cannot send is a bug, not something to
+    // explain to a user.
+    if !matches!(scope, "this" | "all" | "following") {
+        anyhow::bail!("that delete scope is not available yet");
+    }
+
+    let (ev, access_role, cal_google_id, account_email) =
+        omacal_store::event_for_write(&state.pool, id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("that event is no longer here"))?;
+
+    // The same rule `EventDetail::can_edit` is built from, so a calendar that
+    // shows a Delete control cannot silently refuse the delete it implies.
+    // `demo: false` because that half is already handled above, with its own
+    // message and before any database access.
+    if !can_edit(false, &access_role) {
+        anyhow::bail!("this calendar is not writable from omacal");
+    }
+
+    // The calendar's own zone, for the all-day half of [`edit_zone`] and for
+    // `row_from_wire`. Only the `"following"` arm reads it, but it is read here
+    // rather than inside so that a missing calendar is reported by the same
+    // message on every scope.
+    let (_, _, _, cal_tz) = omacal_store::calendar_for_write(&state.pool, ev.calendar_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("that calendar is no longer here"))?;
+
+    let cfg = crate::load_config()?;
+    let token = crate::access_token_for(state, &cfg, &account_email).await?;
+    let client = omacal_google::CalendarClient::new(crate::GOOGLE_CALENDAR_API, &token);
+
+    delete_via_client(
+        &state.pool,
+        scope,
+        occurrence_start_ms,
+        ev,
+        &cal_google_id,
+        &cal_tz,
+        &client,
+    )
+    .await
+}
+
+/// The network exchange and local write-back half of [`delete_impl`], with the
+/// `CalendarClient` already built — handed a bare pool for the same reason
+/// [`respond_via_client`], [`create_via_client`] and [`update_via_client`] are.
+///
+/// The resolution machinery is [`update_via_client`]'s and is not re-derived:
+/// series id → [`target_event_id`] → for `"this"`, [`instance_lookup_window`] +
+/// [`resolve_instance_id`]. Two things about it are worth restating here,
+/// because a delete is where getting them wrong is unrecoverable.
+///
+/// **`"this"` on a series master must resolve to the instance.** Deleting
+/// `ev.google_id` there is deleting the *series*: every occurrence, past ones
+/// included, with a cancellation mailed to the whole guest list. That is not a
+/// worse version of what the user asked for, it is a different operation.
+///
+/// **An empty lookup on a bare master fails rather than falling back**, which
+/// is [`resolve_instance_id`]'s own rule, and the reason it exists. `404` is
+/// success to [`omacal_google::CalendarClient::delete_event`] — an event that
+/// is already gone is the caller's desired end state — so a delete aimed at the
+/// wrong id has no failure of its own to report.
+///
+/// # `"following"` is a truncation and never a delete
+///
+/// Deleting the master would take the *past* occurrences with it, which is the
+/// one thing the user chose this scope in order not to do. It leaves through
+/// [`truncate_series`] instead, and the two ways it does not leave here are
+/// [`update_via_client`]'s: a row belonging to no series has no "following", and
+/// the series' own first occurrence means the whole series. Both read as
+/// `"all"`, which for a delete is what the user meant either way — an empty rule
+/// would otherwise leave a master that expands to nothing, which renders in no
+/// grid and so cannot be deleted from one.
+///
+/// # No `If-Match` on the DELETE, and that is a decision rather than an omission
+///
+/// Every other write in this file conditions on an etag, because every other
+/// write *replaces* something: a stale version means somebody else's change is
+/// about to be overwritten, and the retry re-reads and re-applies. A delete
+/// replaces nothing. The resource ends up gone, which is what was asked, and it
+/// is asked of an id — an id a concurrent rename or reschedule does not change.
+///
+/// A `412` here would also have no answer. Retrying unconditionally is "delete
+/// anyway", which is what sending no `If-Match` already does in one request
+/// instead of two; failing tells the user their delete was refused because
+/// somebody edited the title, which they can do nothing about but try again.
+/// And the freshness that actually matters on the dangerous scope is not an
+/// etag at all: `"this"` resolves through a *live* `events.instances` lookup, so
+/// an occurrence somebody moved out from under the click is not found and the
+/// delete is refused by [`resolve_instance_id`] rather than landing on the wrong
+/// day.
+///
+/// The truncation in [`truncate_series`] does send one, for the opposite reason:
+/// it is a `PATCH` that replaces a rule.
+///
+/// # What is repaired locally, and what is left to sync
+///
+/// The rule is that this repairs only what it can name with certainty — the
+/// resources it has itself just deleted — and leaves everything that would need
+/// an inference to the next sync, which is minutes away.
+///
+/// * `"all"`: the master's row *and* every exception of it
+///   ([`omacal_store::delete_series`]). Google deletes the series entire; a
+///   local exception left behind carries no rule of its own and renders as a
+///   meeting nobody can find any more.
+/// * `"this"` on a one-off: the row goes. There was one event and it is gone.
+/// * `"this"` on an exception row: the row is marked **cancelled**, not
+///   removed. A cancelled exception is the only record that a slot of the series
+///   is empty (`commands::suppressed_slots`), so deleting the row instead would
+///   let the master expand straight back into it and the occurrence the user
+///   just deleted would reappear. It is also exactly what sync writes for this
+///   event — see `omacal_sync::to_cancelled_exception`.
+/// * `"this"` resolving to an instance this store has no row for: nothing. The
+///   master row stays, because only Google knows that occurrence is gone, and
+///   the cancelled exception it has just materialised is left for sync exactly
+///   as `respond_via_client` leaves the one *it* causes. Until then the grid
+///   still draws the occurrence, so the UI wants a sync after this returns.
+async fn delete_via_client(
+    pool: &SqlitePool,
+    scope: &str,
+    occurrence_start_ms: i64,
+    ev: omacal_store::StoredEvent,
+    cal_google_id: &str,
+    cal_tz: &str,
+    client: &omacal_google::CalendarClient,
+) -> anyhow::Result<()> {
+    // A row carrying `recurrence` is a series master; scope "this" must still
+    // go through instance resolution for it, which is why `own_id` is offered
+    // as the master when there is no `recurring_event_id`.
+    let series = ev
+        .recurring_event_id
+        .as_deref()
+        .or_else(|| ev.recurrence.as_ref().map(|_| ev.google_id.as_str()));
+
+    // The clicked occurrence's slot **on the rule's own grid**, which is what a
+    // truncation has to be aimed at: `UNTIL` is compared against the instants
+    // the rule generates, not against where a block is drawn. For a master row
+    // the two are the same instant; for an exception — an occurrence somebody
+    // has already dragged — they are not, and aiming at the rendered position
+    // either keeps an occurrence the user meant to delete or deletes one they
+    // meant to keep. It is also what makes "the first occurrence, dragged
+    // later, is still the first occurrence" come out right.
+    let split_at_ms = ev.original_start_utc.unwrap_or(occurrence_start_ms);
+
+    let scope = if scope == "following" {
+        match series {
+            None => "all",
+            Some(master_id) => {
+                let master = client.get_event(cal_google_id, master_id).await?;
+                let master_row = row_from_wire(&master, ev.calendar_id, cal_tz)?;
+                if split_at_ms > master_row.start_utc {
+                    return truncate_series(
+                        pool,
+                        split_at_ms,
+                        &master,
+                        &master_row,
+                        cal_google_id,
+                        cal_tz,
+                        client,
+                    )
+                    .await;
+                }
+                // Deliberately not carried forward the way `update_via_client`
+                // carries its `prefetched` master: the `"all"` arm below is a
+                // DELETE, which needs no version and no body, so there is
+                // nothing left for this response to save.
+                "all"
+            }
+        }
+    } else {
+        scope
+    };
+
+    let target = target_event_id(scope, series, &ev.google_id);
+    let event_id = match &target {
+        Target::Master(master_id) => master_id.clone(),
+        Target::Instance { master, fallback } => {
+            let (time_min, time_max) = instance_lookup_window(occurrence_start_ms);
+            let found = client.event_instances(cal_google_id, master, &time_min, &time_max).await?;
+            resolve_instance_id(&found, master, fallback)?
+        }
+    };
+
+    client.delete_event(cal_google_id, &event_id, None).await?;
+
+    // See the doc comment for why each arm does what it does. The one that
+    // looks wrong and is not is `status = "cancelled"`: a deleted occurrence of
+    // a series is *stored*, not removed, because that row is the only record
+    // that the slot is empty.
+    if scope == "all" {
+        omacal_store::delete_series(pool, ev.calendar_id, &event_id).await?;
+    } else if event_id == ev.google_id {
+        if ev.recurring_event_id.is_some() {
+            let mut row = ev;
+            row.status = "cancelled".into();
+            omacal_store::upsert_event(pool, &row).await?;
+        } else if ev.recurrence.is_none() {
+            omacal_store::delete_event(pool, ev.calendar_id, &ev.google_id).await?;
+        }
+        // A bare series master cannot reach here — `resolve_instance_id` bails
+        // rather than answering with `ev.google_id` — and if it ever did, its
+        // row is the whole series and must not be removed for one occurrence.
+    }
+
+    Ok(())
+}
+
+/// "Delete this and following": the series stops just before the clicked
+/// occurrence, and nothing else about it changes.
+///
+/// One `PATCH` of `{"recurrence": [...]}`, and no `DELETE` anywhere — the
+/// distinction the whole scope turns on. The master is the event the *past*
+/// occurrences live in, so deleting it deletes them too, silently and with a
+/// cancellation mailed to everybody; truncating its rule ends the series where
+/// the user pointed and leaves everything before that untouched.
+///
+/// **It is not [`split_series`] minus the insert.** Two of that function's rules
+/// invert here, and reusing it would have carried both across:
+///
+/// * A rule ending in `COUNT` is **fine to truncate and is not refused.** The
+///   split refuses it because the *tail* would need `COUNT` less however many
+///   occurrences the first half consumed, which only a full expansion knows.
+///   There is no tail. [`crate::write::truncated_rule`] drops `COUNT` and adds
+///   `UNTIL`, which is the complete and correct answer for a series that now
+///   ends on a date.
+/// * Materialised exceptions in the tail are **not refused either**, and that
+///   is argued rather than overlooked. The split refuses them because it
+///   re-creates the tail as a new series that cannot carry them, so a move
+///   would be silently undone and a deletion silently reversed — information
+///   destroyed with nothing put in its place. Here the user has asked for those
+///   occurrences to go. Refusing would leave them only "delete all events",
+///   which also takes the past occurrences the scope exists to protect: a
+///   refusal that pushes the user onto the more destructive button is worse than
+///   the imprecision it prevents.
+///
+/// `master_row` is the only place the value type comes from, and the clicked row
+/// is deliberately **not** a parameter of this function so that it cannot be
+/// read from by accident. RFC 5545 requires `UNTIL` to carry the same value type
+/// as the `DTSTART` of the rule it belongs to, and this body is `recurrence`
+/// alone — the master keeps whatever `start` it already had, so the rule has to
+/// agree with *that* and with nothing else. The zone is inert and passed for
+/// shape: [`edit_zone`]'s all-day arm returns `cal_tz` whatever it is handed and
+/// the timed form of `UNTIL` never reads a zone. Only the flag is load-bearing.
+///
+/// The `412` is not retried, for [`split_series`]' reason minus its
+/// complication: the master was read moments ago, so a `412` means somebody
+/// changed the series *during* this, and a retry would re-derive a truncation
+/// from a rule this function has not looked at. Nothing has been written by
+/// then, so unlike a split there is no leftover state — the operation simply did
+/// not happen, and repeating it after a sync is safe.
+async fn truncate_series(
+    pool: &SqlitePool,
+    split_at_ms: i64,
+    master: &omacal_google::model::Event,
+    master_row: &omacal_store::StoredEvent,
+    cal_google_id: &str,
+    cal_tz: &str,
+    client: &omacal_google::CalendarClient,
+) -> anyhow::Result<()> {
+    let lines: Vec<String> = master.recurrence.clone().unwrap_or_default();
+    // Somebody removed the rule between the popover opening and the delete.
+    // Deliberately not allowlisted in `errors.rs`: it is a state nobody has
+    // seen, and this stops rather than guessing that "all events" was meant —
+    // which on this verb would delete the very occurrences the user chose this
+    // scope to keep.
+    if !lines.iter().any(|l| crate::write::is_rrule(l)) {
+        anyhow::bail!("that event no longer repeats, so there is nothing to delete from here");
+    }
+
+    let shortened: Vec<String> = lines
+        .iter()
+        .map(|l| {
+            if crate::write::is_rrule(l) {
+                crate::write::truncated_rule(
+                    l,
+                    split_at_ms,
+                    master_row.is_all_day,
+                    edit_zone(master_row.is_all_day, cal_tz, &master_row.start_tz),
+                )
+            } else {
+                // `EXDATE`/`RDATE` travel untouched. An `EXDATE` before the cut
+                // names an occurrence somebody deleted, and dropping it here
+                // would bring a cancelled meeting back into the half the user
+                // is keeping.
+                l.clone()
+            }
+        })
+        .collect();
+
+    let patched = client
+        .patch_event(
+            cal_google_id,
+            &master.id,
+            &serde_json::json!({ "recurrence": shortened }),
+            master.etag.as_deref(),
+        )
+        .await?;
+
+    // Written back unconditionally, unlike [`split_series`]' guarded fold-back,
+    // and the divergence is deliberate. `to_stored` names the *patched* event's
+    // own `google_id` and `upsert_event` is keyed on `(calendar_id, google_id)`,
+    // so this lands on the master's row however the popover was opened —
+    // including from an exception row, where `split_series` conservatively left
+    // it to sync. It is worth doing here because the truncated rule is the
+    // entire visible effect of the command: without it the grid goes on drawing
+    // the occurrences the user has just deleted, which for a delete is the whole
+    // thing they asked for.
+    //
+    // No [`merge_patched`] fallback, for `split_series`' reason: it does not
+    // carry `recurrence`, which is this write's only payload, so it would stamp
+    // the new version onto a row still holding the untruncated rule — the grid
+    // expanding past the cut while the store claimed to be current.
+    match omacal_sync::to_stored(&patched, master_row.calendar_id, cal_tz) {
+        Some(row) => {
+            omacal_store::upsert_event(pool, &row).await?;
+        }
+        None => tracing::warn!(master = %master.id,
+            "the series was shortened but the result could not be stored locally; \
+             sync will pick it up"),
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -5049,5 +5424,779 @@ mod tests {
             ]),
             "a copied guest list must round-trip every writable field and change no answers"
         );
+    }
+
+    // --- delete_event_cmd: `delete_impl` / `delete_via_client`. The one verb
+    // whose mistakes cannot be undone — there is no copy of a deleted series
+    // this app can reach, and every request below goes out with
+    // `sendUpdates=all`.
+    //
+    // **Every mock here carries `.expect(1)`, and that is not decoration.**
+    // `CalendarClient::delete_event` treats `404` as success, correctly: an
+    // event that is already gone is what the caller asked for. `wiremock`
+    // answers every *unmatched* request with `404` as well. So a delete aimed at
+    // the wrong path, or with `sendUpdates` dropped, returns `Ok` and leaves
+    // every assertion about the outcome intact — an expectation, or
+    // `received_requests`, is the only thing that can see it happen.
+
+    /// A `DELETE` on one event path, matching `sendUpdates=all`.
+    ///
+    /// The query parameter is matched rather than assumed: it is what tells the
+    /// guest list their meeting is cancelled, and a delete that quietly stopped
+    /// sending it would leave a room full of people with a calendar entry for a
+    /// meeting nobody is coming to.
+    async fn mount_delete(server: &wiremock::MockServer, path: &str) {
+        wiremock::Mock::given(wiremock::matchers::method("DELETE"))
+            .and(wiremock::matchers::path(path))
+            .and(wiremock::matchers::query_param("sendUpdates", "all"))
+            .respond_with(wiremock::ResponseTemplate::new(204))
+            .expect(1)
+            .mount(server)
+            .await;
+    }
+
+    /// The shortened master as Google answers the truncating `PATCH`, with a
+    /// version (`"m2"`) `wire_master`'s `"m1"` can be told from — so a
+    /// write-back that never happened shows up in the local row's etag as well
+    /// as in its rule.
+    fn wire_shortened_master(rules: &[&str]) -> serde_json::Value {
+        serde_json::json!({
+            "id": "master1", "status": "confirmed", "etag": "\"m2\"",
+            "summary": "Standup",
+            "recurrence": rules,
+            "attendees": wire_guests(),
+            "start": {"dateTime": omacal_sync::to_rfc3339(DTSTART)},
+            "end":   {"dateTime": omacal_sync::to_rfc3339(DTSTART + HOUR)}
+        })
+    }
+
+    /// Whether one `METHOD /path` was among the requests the server saw. For
+    /// the assertions that are about a request which must **never** have been
+    /// sent, where `.expect(0)` cannot help: an unmounted path is answered with
+    /// a bare `404`, which this app reads as a successful delete.
+    fn was_sent(sent: &[wiremock::Request], method_and_path: &str) -> bool {
+        methods_and_paths(sent).iter().any(|r| r == method_and_path)
+    }
+
+    /// The body of the truncating `PATCH`, as JSON.
+    ///
+    /// The mocks below match on the body as well as the path, which is what
+    /// keeps a wrong rule from being answered `200` — and which makes their
+    /// failures unreadable on its own: the call comes back `http error: 404 Not
+    /// Found` and never says which rule went out. Every truncation test
+    /// therefore asserts this *before* unwrapping the call's own result, so a
+    /// regression reports the two rules side by side.
+    fn the_patch(sent: &[wiremock::Request]) -> &wiremock::Request {
+        sent.iter()
+            .find(|r| r.method.as_str() == "PATCH")
+            .unwrap_or_else(|| panic!("no truncation was sent: {:?}", methods_and_paths(sent)))
+    }
+
+    fn patch_body(sent: &[wiremock::Request]) -> serde_json::Value {
+        serde_json::from_slice(&the_patch(sent).body).expect("the truncation's body was not JSON")
+    }
+
+    /// One request header as a string, for the same diagnostic reason as
+    /// [`patch_body`]: the mock matches `If-Match`, so a truncation conditioned
+    /// on the wrong version is answered `404` and reports only that.
+    fn header_of(req: &wiremock::Request, name: &str) -> Option<String> {
+        req.headers.get(name).and_then(|v| v.to_str().ok()).map(str::to_string)
+    }
+
+    const MASTER_PATH: &str = "/calendars/cal%40x.com/events/master1";
+    const INSTANCE_ID: &str = "master1_20260810T090000Z";
+
+    /// The defect the whole resolution path exists to prevent, on the verb
+    /// where it is unrecoverable. "This one" must delete the instance id Google
+    /// returns; deleting `master1` instead is not a larger version of the same
+    /// thing, it removes **every occurrence of the series, past ones included**,
+    /// and mails a cancellation to the whole guest list.
+    ///
+    /// No `DELETE` is mounted on the master, and that alone would prove nothing:
+    /// an unmatched request is answered `404`, which `delete_event` reports as
+    /// success. `received_requests` is what sees it.
+    #[tokio::test]
+    async fn deleting_one_occurrence_deletes_the_instance_not_the_master() {
+        let mut ev = weekly_master("RRULE:FREQ=WEEKLY");
+        let (pool, id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+
+        let server = wiremock::MockServer::start().await;
+        // Bracketed by the *clicked* occurrence, never by `ev.start_utc`: the
+        // query params are matched, so a window derived from the master's own
+        // start misses this mock, and the empty answer that follows would
+        // resolve to nothing at all.
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/master1/instances"))
+            .and(wiremock::matchers::query_param("timeMin", omacal_sync::to_rfc3339(OCCURRENCE)))
+            .and(wiremock::matchers::query_param(
+                "timeMax",
+                omacal_sync::to_rfc3339(OCCURRENCE + 1000),
+            ))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [wire_occurrence(INSTANCE_ID, OCCURRENCE, OCCURRENCE + HOUR, "\"i1\"")]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        mount_delete(&server, &format!("/calendars/cal%40x.com/events/{INSTANCE_ID}")).await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        delete_via_client(&pool, "this", OCCURRENCE, ev, "cal@x.com", "UTC", &client)
+            .await
+            .unwrap();
+
+        let sent = requests(&server).await;
+        assert!(
+            !was_sent(&sent, &format!("DELETE {MASTER_PATH}")),
+            "one occurrence was deleted by deleting the whole series: {:?}",
+            methods_and_paths(&sent)
+        );
+
+        // The master's row stays exactly as it was: only Google knows that one
+        // occurrence is gone, and this store has no row for the cancelled
+        // exception it has just materialised.
+        let (row, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
+        assert_eq!(row.recurrence.as_deref(), Some("RRULE:FREQ=WEEKLY"));
+        assert_eq!(row.status, "confirmed");
+        assert_eq!(row.etag.as_deref(), Some("\"master-etag\""));
+    }
+
+    /// "All events" targets the master directly and asks Google nothing first —
+    /// there is no occurrence to resolve, and an instances lookup here would be
+    /// a request spent to answer a question nobody asked.
+    ///
+    /// The local row goes with it. Unlike the occurrence above, nothing is left
+    /// for sync to discover: this store knows the series is gone because it is
+    /// the thing that deleted it.
+    #[tokio::test]
+    async fn deleting_all_deletes_the_master() {
+        let mut ev = weekly_master("RRULE:FREQ=WEEKLY");
+        let (pool, id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+
+        let server = wiremock::MockServer::start().await;
+        mount_delete(&server, MASTER_PATH).await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        delete_via_client(&pool, "all", OCCURRENCE, ev, "cal@x.com", "UTC", &client)
+            .await
+            .unwrap();
+
+        let sent = requests(&server).await;
+        assert_eq!(
+            methods_and_paths(&sent),
+            vec![format!("DELETE {MASTER_PATH}")],
+            "deleting a whole series resolved an occurrence it had no use for"
+        );
+        assert!(
+            omacal_store::event_by_id(&pool, id).await.unwrap().is_none(),
+            "the series was deleted on Google and the local row was left behind, so the grid \
+             goes on expanding a series that no longer exists"
+        );
+    }
+
+    /// "This and following" is a **truncation, never a delete**, and this is the
+    /// test that says so.
+    ///
+    /// The occurrences before the split live in the same Google event as the
+    /// ones after it. Deleting the master to remove the tail therefore also
+    /// removes every meeting that already happened — the one outcome the user
+    /// chose this scope in order to avoid — and mails a cancellation for all of
+    /// them.
+    ///
+    /// No `DELETE` is mounted anywhere, which on its own proves nothing:
+    /// `wiremock` answers an unmatched request with `404` and `delete_event`
+    /// reads `404` as success, so a regression to a delete would pass every
+    /// other assertion here. The `received_requests` check is the one that
+    /// catches it, and the `PATCH` expectation is what catches the mirror image
+    /// — a truncation that never went out at all.
+    #[tokio::test]
+    async fn deleting_following_truncates_and_never_issues_a_delete() {
+        let mut ev = weekly_master("RRULE:FREQ=WEEKLY");
+        let (pool, id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+
+        let server = wiremock::MockServer::start().await;
+        mount_master(&server, &["RRULE:FREQ=WEEKLY"]).await;
+        // Body *and* `If-Match` matched: the version comes from the master
+        // Google just described, not from the local row (`"master-etag"`), and
+        // the body is the shortened rule and nothing else — a stray `start`,
+        // `summary` or `attendees` fails here rather than quietly rewriting the
+        // half of the series the user is keeping.
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path(MASTER_PATH))
+            .and(wiremock::matchers::header("if-match", "\"m1\""))
+            .and(wiremock::matchers::body_json(serde_json::json!({
+                "recurrence": [UNTIL_BEFORE_OCCURRENCE],
+            })))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(wire_shortened_master(&[UNTIL_BEFORE_OCCURRENCE])),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        let outcome =
+            delete_via_client(&pool, "following", OCCURRENCE, ev, "cal@x.com", "UTC", &client)
+                .await;
+
+        let sent = requests(&server).await;
+        assert!(
+            !sent.iter().any(|r| r.method.as_str() == "DELETE"),
+            "deleting from one occurrence onwards deleted the event the earlier occurrences \
+             live in: {:?}",
+            methods_and_paths(&sent)
+        );
+        assert_eq!(patch_body(&sent), serde_json::json!({ "recurrence": [UNTIL_BEFORE_OCCURRENCE] }));
+        assert_eq!(
+            header_of(the_patch(&sent), "if-match").as_deref(),
+            Some("\"m1\""),
+            "the truncation was conditioned on the local row's version (\"master-etag\") rather \
+             than on the master Google had just described, so a concurrent edit either goes \
+             unnoticed or rejects a write that was fine"
+        );
+        outcome.unwrap();
+
+        let (row, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
+        assert_eq!(
+            row.recurrence.as_deref(),
+            Some(UNTIL_BEFORE_OCCURRENCE),
+            "the local master still expands past the point the user deleted from"
+        );
+        assert_eq!(row.etag.as_deref(), Some("\"m2\""));
+    }
+
+    /// A one-off has one Google event and one local row, and both go.
+    ///
+    /// The `.expect(1)` on the mock is the whole test on the wire side: with a
+    /// `404` reading as success there is no other way to tell a delete that
+    /// happened from one that never left.
+    #[tokio::test]
+    async fn deleting_removes_the_local_row() {
+        let mut ev = stored(vec![]);
+        ev.summary = Some("Lunch".into());
+        ev.start_utc = OCCURRENCE;
+        ev.end_utc = OCCURRENCE + HOUR;
+        let (pool, id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+
+        let server = wiremock::MockServer::start().await;
+        mount_delete(&server, "/calendars/cal%40x.com/events/ev1").await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        delete_via_client(&pool, "this", OCCURRENCE, ev, "cal@x.com", "UTC", &client)
+            .await
+            .unwrap();
+
+        let sent = requests(&server).await;
+        assert_eq!(
+            sent.len(),
+            1,
+            "a one-off delete resolved instances it has none of: {:?}",
+            methods_and_paths(&sent)
+        );
+        assert!(
+            omacal_store::event_by_id(&pool, id).await.unwrap().is_none(),
+            "the event was deleted on Google but its row stayed, so it goes on rendering"
+        );
+    }
+
+    /// Demo mode must reach neither Google nor the real database, on this verb
+    /// most of all: past the gate this reads the real
+    /// `~/.config/omacal/config.toml`, then the Keychain, and then **deletes
+    /// from a real calendar with `sendUpdates=all`**, against whatever account
+    /// the demo database happens to name.
+    ///
+    /// Asserted in both directions. On a bare pool `id: 1` names no row at all,
+    /// so a gate that ran after the lookup would report "that event is no longer
+    /// here" instead — that is the ordering. With a real row present, the row is
+    /// still there afterwards — that is the effect.
+    #[tokio::test]
+    async fn deleting_refuses_in_demo_mode() {
+        let bare = omacal_store::connect_memory().await.unwrap();
+        let err = delete_impl(&state_with(bare, true), 1, "all", OCCURRENCE).await.unwrap_err();
+        assert!(err.to_string().contains("demo"), "got: {err}");
+        // Binds the emitter to `errors.rs`'s allowlist, so the two literals
+        // cannot drift apart while the user quietly starts reading OPAQUE.
+        assert_eq!(crate::errors::user_facing(&err), "demo mode — there is nothing to delete");
+
+        let mut ev = weekly_master("RRULE:FREQ=WEEKLY");
+        let (pool, id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+        let err = delete_impl(&state_with(pool.clone(), true), id, "all", OCCURRENCE)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("demo"), "got: {err}");
+        assert!(
+            omacal_store::event_by_id(&pool, id).await.unwrap().is_some(),
+            "demo mode deleted a row"
+        );
+    }
+
+    /// The empty-lookup rule, on the verb that makes it matter most.
+    ///
+    /// `master == fallback` is the shape produced when the clicked row *is* the
+    /// series master. Falling back to it there does not delete "one occurrence,
+    /// approximately" — it deletes the entire series. And nothing downstream
+    /// would notice: a `404` from a delete is success, so the widening would be
+    /// reported as a job well done.
+    ///
+    /// No `DELETE` is mounted, so a regression is caught by
+    /// `received_requests` rather than by a failing request.
+    #[tokio::test]
+    async fn an_empty_lookup_on_a_bare_master_is_refused_rather_than_deleting_the_series() {
+        let mut ev = weekly_master("RRULE:FREQ=WEEKLY");
+        let (pool, id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/master1/instances"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"items": []})),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        let outcome =
+            delete_via_client(&pool, "this", OCCURRENCE, ev, "cal@x.com", "UTC", &client).await;
+
+        // Asserted before the error, and the order is the diagnostic. Under a
+        // regression to the fallback the delete *succeeds* — a `404` on an
+        // unmounted path is success to `delete_event` — so reading the `Err`
+        // first reports only "unwrap_err on an Ok value" and never names the
+        // request that should not have been sent.
+        let sent = requests(&server).await;
+        assert!(
+            !sent.iter().any(|r| r.method.as_str() == "DELETE"),
+            "an unresolvable occurrence was widened into a delete: {:?}",
+            methods_and_paths(&sent)
+        );
+        let err = outcome.unwrap_err();
+        assert_eq!(
+            crate::errors::user_facing(&err),
+            "could not find that occurrence on the calendar"
+        );
+        assert!(omacal_store::event_by_id(&pool, id).await.unwrap().is_some());
+    }
+
+    /// Deleting an occurrence somebody had already moved, where the local row
+    /// **is** the resource being deleted.
+    ///
+    /// The row must be marked cancelled and *not* removed, and the difference is
+    /// visible rather than bookkeeping: a cancelled exception is the only record
+    /// that a slot of the series is empty (`commands::suppressed_slots`).
+    /// Deleting the row instead lets the master expand straight back into that
+    /// slot, so the occurrence the user just deleted reappears on the grid — and
+    /// it is the one thing a delete may never do.
+    #[tokio::test]
+    async fn deleting_a_moved_occurrence_cancels_its_row_rather_than_removing_it() {
+        let mut ev = exception_row(INSTANCE_ID, OCCURRENCE, "confirmed");
+        ev.start_utc = OCCURRENCE + 5 * HOUR; // dragged, and the block clicked
+        ev.end_utc = OCCURRENCE + 6 * HOUR;
+        let clicked = ev.start_utc;
+        let (pool, id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/master1/instances"))
+            .and(wiremock::matchers::query_param("timeMin", omacal_sync::to_rfc3339(clicked)))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [wire_occurrence(INSTANCE_ID, clicked, clicked + HOUR, "\"i1\"")]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        mount_delete(&server, &format!("/calendars/cal%40x.com/events/{INSTANCE_ID}")).await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        delete_via_client(&pool, "this", clicked, ev, "cal@x.com", "UTC", &client)
+            .await
+            .unwrap();
+
+        let (row, _) = omacal_store::event_by_id(&pool, id)
+            .await
+            .unwrap()
+            .expect("the exception's row was removed, so the master expands into its slot again");
+        assert_eq!(row.status, "cancelled");
+        assert_eq!(
+            row.original_start_utc,
+            Some(OCCURRENCE),
+            "the slot the row suppresses was lost, which is the whole reason to keep it"
+        );
+        assert_eq!(row.recurring_event_id.as_deref(), Some("master1"));
+    }
+
+    /// The provenance rule applied to the *local* half: a row is touched only
+    /// when it is the resource that was deleted.
+    ///
+    /// The lookup is bracketed by where the clicked block is drawn, and an
+    /// occurrence somebody dragged can land on another occurrence's slot — so
+    /// what comes back, and what is then deleted, is a different event from the
+    /// one that was clicked. Marking the clicked row cancelled there suppresses
+    /// a slot that is still occupied, while the occurrence that really went goes
+    /// on rendering until the next sync: two wrong days for the price of one.
+    ///
+    /// Written because a mutation that dropped the `event_id == ev.google_id`
+    /// test survived the whole suite: every other fixture here has the clicked
+    /// row either being the deleted resource or carrying `recurrence` (which the
+    /// inner arms skip anyway), so nothing else could tell the guard was there.
+    #[tokio::test]
+    async fn deleting_an_occurrence_that_resolves_to_another_event_leaves_the_clicked_row_alone() {
+        let mut ev = exception_row(INSTANCE_ID, OCCURRENCE, "confirmed");
+        ev.start_utc = OCCURRENCE + 7 * 24 * HOUR; // dragged onto a later occurrence's slot
+        ev.end_utc = ev.start_utc + HOUR;
+        let clicked = ev.start_utc;
+        let (pool, id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/master1/instances"))
+            .and(wiremock::matchers::query_param("timeMin", omacal_sync::to_rfc3339(clicked)))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [wire_occurrence(
+                    "master1_20260817T090000Z", clicked, clicked + HOUR, "\"i2\"")]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        mount_delete(&server, "/calendars/cal%40x.com/events/master1_20260817T090000Z").await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        delete_via_client(&pool, "this", clicked, ev, "cal@x.com", "UTC", &client)
+            .await
+            .unwrap();
+
+        let (row, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
+        assert_eq!(
+            row.status, "confirmed",
+            "the clicked row was cancelled for a deletion that landed on a different event, so \
+             its slot is now suppressed while the occurrence that was really deleted still renders"
+        );
+        assert_eq!(row.original_start_utc, Some(OCCURRENCE));
+    }
+
+    /// "All events" from an exception row: the master is the target, and every
+    /// local row of the series goes — the master's and the exceptions'.
+    ///
+    /// Google removes the series entire, materialised exceptions included, so a
+    /// local exception left behind names an event that exists nowhere. It
+    /// carries no rule of its own, so `events_in_window` returns it and the grid
+    /// draws it as an ordinary meeting: the series vanishes and the occurrence
+    /// somebody once dragged stays, with nothing left on screen to delete it
+    /// from.
+    #[tokio::test]
+    async fn deleting_all_from_an_exception_row_takes_the_master_and_the_whole_local_series() {
+        let mut ev = exception_row(INSTANCE_ID, OCCURRENCE, "confirmed");
+        let (pool, _id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+
+        let mut master = weekly_master("RRULE:FREQ=WEEKLY");
+        master.calendar_id = ev.calendar_id;
+        omacal_store::upsert_event(&pool, &master).await.unwrap();
+        let mut other = exception_row("master1_20260824T090000Z", OCCURRENCE + 14 * 24 * HOUR, "cancelled");
+        other.calendar_id = ev.calendar_id;
+        omacal_store::upsert_event(&pool, &other).await.unwrap();
+
+        let server = wiremock::MockServer::start().await;
+        mount_delete(&server, MASTER_PATH).await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        delete_via_client(&pool, "all", OCCURRENCE, ev, "cal@x.com", "UTC", &client)
+            .await
+            .unwrap();
+
+        // Straight off the table: `events_in_window` hides cancelled rows unless
+        // they are exceptions, and one of the rows that has to go is exactly
+        // that.
+        let left: Vec<String> = sqlx::query_scalar("SELECT google_id FROM events")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert!(left.is_empty(), "rows of a deleted series survived it: {left:?}");
+    }
+
+    /// A series that ends after a fixed number of times **is** deletable from
+    /// one occurrence onwards, and this is where this scope parts company with
+    /// the split it otherwise resembles.
+    ///
+    /// `split_series` refuses `COUNT` because the *tail* it creates would need
+    /// `COUNT` less however many occurrences the first half consumed — a number
+    /// only a full expansion knows. There is no tail here. `truncated_rule`
+    /// drops `COUNT` and adds `UNTIL`, which is the whole and correct answer for
+    /// a series that now ends on a date; reusing the split's refusal would have
+    /// turned an ordinary delete into "edit all events instead", which deletes
+    /// the occurrences the user asked to keep.
+    #[tokio::test]
+    async fn deleting_following_from_a_count_series_truncates_rather_than_refusing() {
+        let mut ev = weekly_master("RRULE:FREQ=WEEKLY;COUNT=10");
+        let (pool, _id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+
+        let server = wiremock::MockServer::start().await;
+        mount_master(&server, &["RRULE:FREQ=WEEKLY;COUNT=10"]).await;
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path(MASTER_PATH))
+            .and(wiremock::matchers::body_json(serde_json::json!({
+                "recurrence": [UNTIL_BEFORE_OCCURRENCE],
+            })))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(wire_shortened_master(&[UNTIL_BEFORE_OCCURRENCE])),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        let outcome =
+            delete_via_client(&pool, "following", OCCURRENCE, ev, "cal@x.com", "UTC", &client)
+                .await;
+
+        let sent = requests(&server).await;
+        assert_eq!(
+            patch_body(&sent),
+            serde_json::json!({ "recurrence": [UNTIL_BEFORE_OCCURRENCE] }),
+            "COUNT and UNTIL are mutually exclusive in RFC 5545, so a truncation has to drop it"
+        );
+        outcome.expect("a COUNT series has no tail to re-count, so there is nothing to refuse");
+    }
+
+    /// Deleting from the series' own first occurrence onwards is deleting the
+    /// series, and it has to become that rather than a truncation.
+    ///
+    /// A master truncated to end before its own `DTSTART` expands to nothing: an
+    /// event Google still holds, that renders in no grid, that the user cannot
+    /// see and therefore cannot delete — one more every time they do it. There
+    /// is nothing before the first occurrence to keep, so "this and following"
+    /// there is "all events".
+    #[tokio::test]
+    async fn deleting_following_at_the_first_occurrence_deletes_the_whole_series() {
+        let mut ev = weekly_master("RRULE:FREQ=WEEKLY");
+        let (pool, id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+
+        let server = wiremock::MockServer::start().await;
+        mount_master(&server, &["RRULE:FREQ=WEEKLY"]).await;
+        mount_delete(&server, MASTER_PATH).await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        let outcome =
+            delete_via_client(&pool, "following", DTSTART, ev, "cal@x.com", "UTC", &client).await;
+
+        // Before the result, for the usual reason: no `PATCH` is mounted, so a
+        // regression reports `http error: 404 Not Found` and never names the
+        // truncation that should not have been attempted.
+        let sent = requests(&server).await;
+        assert!(
+            !sent.iter().any(|r| r.method.as_str() == "PATCH"),
+            "the series was truncated to end before its own start, leaving a master that \
+             expands to nothing: {:?}",
+            methods_and_paths(&sent)
+        );
+        outcome.unwrap();
+        assert!(omacal_store::event_by_id(&pool, id).await.unwrap().is_none());
+    }
+
+    /// A row belonging to no series has no "following": there is one event, and
+    /// deleting it and everything after it is deleting it. It must not become an
+    /// instances lookup — `target_event_id` reads every scope that is not
+    /// `"all"` as "this one" — and it must not try to truncate anything.
+    #[tokio::test]
+    async fn deleting_following_on_a_one_off_deletes_that_event_and_looks_up_nothing() {
+        let mut ev = stored(vec![]);
+        ev.summary = Some("Lunch".into());
+        ev.start_utc = OCCURRENCE;
+        ev.end_utc = OCCURRENCE + HOUR;
+        let (pool, id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+
+        let server = wiremock::MockServer::start().await;
+        mount_delete(&server, "/calendars/cal%40x.com/events/ev1").await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        delete_via_client(&pool, "following", OCCURRENCE, ev, "cal@x.com", "UTC", &client)
+            .await
+            .unwrap();
+
+        let sent = requests(&server).await;
+        assert_eq!(
+            methods_and_paths(&sent),
+            vec!["DELETE /calendars/cal%40x.com/events/ev1".to_string()],
+            "a one-off delete fetched or truncated something"
+        );
+        assert!(omacal_store::event_by_id(&pool, id).await.unwrap().is_none());
+    }
+
+    /// The truncation is aimed at the occurrence's slot **on the rule's grid**,
+    /// not at where its block is drawn.
+    ///
+    /// `UNTIL` is compared against the instants the rule generates. This fixture
+    /// dragged the 09:00 occurrence five hours later; ending the series where it
+    /// now sits leaves `UNTIL` after the 09:00 slot the rule still produces, so
+    /// an occurrence the user deleted comes back. Dragged the other way it is
+    /// the mirror image, and one they meant to keep disappears.
+    #[tokio::test]
+    async fn deleting_following_truncates_at_the_slot_not_where_the_occurrence_was_dragged() {
+        let mut ev = exception_row(INSTANCE_ID, OCCURRENCE, "confirmed");
+        ev.start_utc = OCCURRENCE + 5 * HOUR;
+        ev.end_utc = OCCURRENCE + 6 * HOUR;
+        let clicked = ev.start_utc;
+        let (pool, _id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+
+        let server = wiremock::MockServer::start().await;
+        mount_master(&server, &["RRULE:FREQ=WEEKLY"]).await;
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path(MASTER_PATH))
+            .and(wiremock::matchers::body_json(serde_json::json!({
+                "recurrence": [UNTIL_BEFORE_OCCURRENCE],
+            })))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(wire_shortened_master(&[UNTIL_BEFORE_OCCURRENCE])),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        let outcome =
+            delete_via_client(&pool, "following", clicked, ev, "cal@x.com", "UTC", &client).await;
+
+        let sent = requests(&server).await;
+        assert_eq!(
+            patch_body(&sent),
+            serde_json::json!({ "recurrence": [UNTIL_BEFORE_OCCURRENCE] }),
+            "the truncation was aimed at where the occurrence was dragged to, so the rule still \
+             generates the slot it came from and the occurrence comes back"
+        );
+        outcome.unwrap();
+    }
+
+    /// RFC 5545 §3.3.10: `UNTIL` carries the same value type as the `DTSTART` of
+    /// the rule it belongs to. The body is `recurrence` alone, so the master
+    /// keeps the bare-date `start` it already had and its `UNTIL` has to be a
+    /// bare date — and a date-valued `UNTIL` is inclusive of the day it names,
+    /// so the ending is the *previous* date, not the previous second.
+    ///
+    /// `Pacific/Auckland` is UTC+12, so its midnight falls on the previous date
+    /// in UTC: read in UTC this would end the series a day early and delete an
+    /// occurrence the user asked to keep.
+    ///
+    /// Unlike the split, there is no second event here whose flag could be taken
+    /// by mistake — `truncate_series` is not handed the clicked row at all — so
+    /// what this pins is that the value type is read from the master rather than
+    /// assumed.
+    #[tokio::test]
+    async fn deleting_following_on_an_all_day_series_ends_it_on_the_previous_date() {
+        let midnight = |wall: &str| {
+            wall.parse::<jiff::civil::DateTime>()
+                .unwrap()
+                .in_tz("Pacific/Auckland")
+                .unwrap()
+                .timestamp()
+                .as_millisecond()
+        };
+        let dtstart = midnight("2026-07-27T00:00:00");
+        let occurrence = midnight("2026-08-10T00:00:00");
+        assert_eq!(
+            jiff::Timestamp::from_millisecond(occurrence).unwrap().to_string(),
+            "2026-08-09T12:00:00Z",
+            "fixture check: this instant must fall on the previous date in UTC, or the \
+             assertion below proves nothing"
+        );
+
+        let mut ev = weekly_master("RRULE:FREQ=WEEKLY");
+        ev.is_all_day = true;
+        ev.start_utc = dtstart;
+        ev.end_utc = dtstart + 24 * HOUR;
+        ev.start_tz = "Pacific/Auckland".into();
+        ev.end_tz = "Pacific/Auckland".into();
+        let (pool, _id) = seeded_pool_on_cal(&mut ev, "Pacific/Auckland").await;
+
+        let all_day_master = serde_json::json!({
+            "id": "master1", "status": "confirmed", "etag": "\"m1\"",
+            "summary": "On call",
+            "recurrence": ["RRULE:FREQ=WEEKLY"],
+            "start": {"date": "2026-07-27"},
+            "end":   {"date": "2026-07-28"}
+        });
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path(MASTER_PATH))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(all_day_master.clone()),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path(MASTER_PATH))
+            .and(wiremock::matchers::body_json(serde_json::json!({
+                "recurrence": ["RRULE:FREQ=WEEKLY;UNTIL=20260809"],
+            })))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(all_day_master))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        let outcome = delete_via_client(
+            &pool,
+            "following",
+            occurrence,
+            ev,
+            "cal@x.com",
+            "Pacific/Auckland",
+            &client,
+        )
+        .await;
+
+        let sent = requests(&server).await;
+        assert_eq!(
+            patch_body(&sent),
+            serde_json::json!({ "recurrence": ["RRULE:FREQ=WEEKLY;UNTIL=20260809"] }),
+            "an all-day series was ended with a date-time UNTIL, on the wrong day, or both"
+        );
+        outcome.unwrap();
+    }
+
+    /// A subscribed holiday calendar, or one shared with you read-only, is
+    /// `reader`. The refusal happens before `load_config`, the Keychain or
+    /// Google see the request — the same shape the other three verbs have, and
+    /// the reason no mock server is needed here.
+    #[tokio::test]
+    async fn deleting_an_event_on_a_read_only_calendar_is_refused() {
+        let pool = omacal_store::connect_memory().await.unwrap();
+        let cal = seed_calendar_with_tz(&pool, "reader", "UTC").await;
+        let mut ev = weekly_master("RRULE:FREQ=WEEKLY");
+        ev.calendar_id = cal;
+        let id = omacal_store::upsert_event(&pool, &ev).await.unwrap();
+
+        let err = delete_impl(&state_with(pool.clone(), false), id, "all", OCCURRENCE)
+            .await
+            .unwrap_err();
+        assert_eq!(crate::errors::user_facing(&err), "this calendar is not writable from omacal");
+        assert!(omacal_store::event_by_id(&pool, id).await.unwrap().is_some());
+    }
+
+    /// A scope this command does not implement must be refused, not read as
+    /// "this occurrence" — [`target_event_id`] reads every scope that is not
+    /// `"all"` that way, so an unrecognised one arriving from a future UI would
+    /// silently delete a single occurrence of a series the user asked to do
+    /// something else with.
+    ///
+    /// `"thisAndPrevious"` is Google's own vocabulary for a scope this app has
+    /// no plans for, and it is chosen for the reason recorded on
+    /// `an_unimplemented_scope_is_refused_rather_than_treated_as_this_occurrence`:
+    /// the scope named here must be one **nothing is going to implement**. That
+    /// test used `"following"` as its stand-in, and the moment Task 7 shipped
+    /// the scope it ran past the gate and read the real
+    /// `~/.config/omacal/config.toml`, which no test may do.
+    #[tokio::test]
+    async fn an_unimplemented_delete_scope_is_refused_rather_than_treated_as_this_occurrence() {
+        let mut ev = weekly_master("RRULE:FREQ=WEEKLY");
+        let (pool, id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+
+        let err = delete_impl(&state_with(pool, false), id, "thisAndPrevious", OCCURRENCE)
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("not available yet"), "got: {err}");
     }
 }

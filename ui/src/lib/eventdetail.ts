@@ -129,3 +129,43 @@ export const updateEvent = (
   occurrenceStartMs: number,
   fields: EventInput,
 ) => invoke<EventDetail>('update_event', { id, scope, occurrenceStartMs, fields });
+
+/**
+ * Deletes an event, or part of a recurring series, and resolves with nothing.
+ *
+ * `occurrenceStartMs` carries the same rule as `respondToEvent`'s and
+ * `updateEvent`'s, and carries it hardest of the three: it is the clicked
+ * block's own `start_ms`, never `detail.start_ms`. For a recurring series that
+ * second value is the master row's DTSTART, so a `'this'` delete aimed at it
+ * removes the series' *first* occurrence rather than the one on screen.
+ *
+ * The three scopes are three different operations, not three sizes of the same
+ * one:
+ *
+ * - `'this'` removes the clicked occurrence only. The rest of the series stays.
+ * - `'all'` removes the whole series, past occurrences included.
+ * - `'following'` shortens the series to end just before the clicked
+ *   occurrence. Nothing is deleted: the occurrences before it are in the same
+ *   Google event, so deleting it would take them too.
+ *
+ * **Every one of them notifies the guest list** — the delete goes out with
+ * `sendUpdates=all`, because a meeting that vanishes for the organiser alone is
+ * worse than an email. A confirmation shown before calling this should say so,
+ * and can say how many people from `detail.attendees`.
+ *
+ * There is no undo. Google keeps no copy this app can reach, and for `'all'` the
+ * past occurrences go with the series.
+ *
+ * Nothing is returned, so the caller reloads the grid itself. For `'this'` on a
+ * series that reload has to be a *sync* rather than a re-read: the local store
+ * cannot know an occurrence is gone until Google says so, so the block stays on
+ * screen until the next sync picks up the cancellation.
+ *
+ * A scope this command does not implement is refused outright rather than
+ * treated as "this occurrence".
+ */
+export const deleteEvent = (
+  id: number,
+  scope: 'this' | 'all' | 'following',
+  occurrenceStartMs: number,
+) => invoke<void>('delete_event_cmd', { id, scope, occurrenceStartMs });
