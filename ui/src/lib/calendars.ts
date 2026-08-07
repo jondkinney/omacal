@@ -11,7 +11,18 @@ export type Calendar = {
   /** Fetched from Google at all. */
   sync_enabled: boolean;
   is_primary: boolean;
+  /** Google's own word for what this account may do here: `owner`, `writer`,
+   *  `reader`, `freeBusyReader`. Only the first two can be written to — see
+   *  `writableCalendars` below, the one place that decides it. */
+  access_role: string;
 };
+
+/** The two roles a create can land on. Google's `calendarList` reports two more
+ *  — `reader` and `freeBusyReader` — and a subscribed holiday calendar is a
+ *  `reader`, so a list that is not filtered offers Save buttons the backend can
+ *  only refuse (`create_impl`'s own `can_edit` check, against the same column). */
+export const writableCalendars = (cals: Calendar[]) =>
+  cals.filter((c) => c.access_role === 'owner' || c.access_role === 'writer');
 
 export const getCalendars = () => invoke<Calendar[]>('get_calendars');
 export const setCalendarSelected = (id: number, on: boolean) =>

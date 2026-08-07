@@ -6,6 +6,7 @@ import type { AppStatus } from '../src/lib/status';
 import type { Calendar } from '../src/lib/calendars';
 import type { Attendee, EventDetail } from '../src/lib/eventdetail';
 import type { Rect } from '../src/lib/position';
+import { blankValue, valueFromDetail, type EventFormValue } from '../src/lib/eventform';
 
 // `ViewSwitcher`'s own `View` union isn't imported here: it lives in a
 // `<script module>` block, which plain `tsc` (this file's own
@@ -183,6 +184,12 @@ const cal = (o: Partial<Calendar> & { id: number; account_email: string; summary
   selected: true,
   sync_enabled: true,
   is_primary: false,
+  // Every CalendarPopover fixture below predates this field and shows every
+  // calendar regardless of role, which is right — you can hide a holiday
+  // calendar you cannot write to. `owner` keeps their DOM exactly as it was.
+  // `EventForm`'s own fixtures name the role explicitly, because for that
+  // component it is the thing under test.
+  access_role: 'owner',
   ...o,
 });
 
@@ -205,11 +212,21 @@ const detail = (o: Partial<EventDetail> & { id: number }): EventDetail => ({
   is_all_day: false,
   is_recurring: false,
   recurrence: null,
+  // What `write::repeat_from_rrule` answers for `recurrence: null`, so the two
+  // defaults agree. A fixture that sets one must set the other.
+  repeat: 'never',
   color: '#5b8def',
   organizer_email: null,
   self_response: 'needsAction',
   can_respond: true,
-  can_edit: true,
+  // `false`, deliberately, and not because any fixture here wants it: nothing
+  // reads this field yet, and Task 10 ships the Edit and Delete controls that
+  // will. Defaulting it to `true` would make every popover fixture implicitly
+  // editable, so a spec asserting those controls are *hidden* would pass
+  // whether or not the code checked anything — a fixture identical under
+  // right and wrong code proves nothing. This way round the failure is loud
+  // instead: a fixture that means to show them has to say so.
+  can_edit: false,
   attendees: [],
   ...o,
 });
@@ -770,6 +787,56 @@ const unsyncedBigYear = (): BigYearPayload => {
   return b;
 };
 
+// --- The event form -------------------------------------------------------
+
+/** Wed 5 Aug 2026 09:12 UTC — what every `EventForm` spec freezes the page
+ *  clock to. Deliberately *not* on a half-hour boundary: "the next half hour"
+ *  is then 09:30, a value no fixture could have handed the form by accident. */
+export const FORM_NOW = Date.UTC(2026, 7, 5, 9, 12);
+/** 09:00 that same morning — the clicked occurrence's own start for the edit
+ *  fixtures below, and clear of `FORM_NOW` so a form that ignored `initial`
+ *  and defaulted everything would show 09:30 instead and be caught. */
+const FORM_START = Date.UTC(2026, 7, 5, 9, 0);
+const FORM_END = FORM_START + 30 * 60_000;
+
+/**
+ * Four calendars, one per access role Google reports.
+ *
+ * Two writable, two not. The `freeBusyReader` is not decoration: with only a
+ * `reader` in the list, a filter written as "anything but reader" would pass
+ * the same assertions as the whitelist the backend actually applies, and the
+ * two differ on exactly this row. One account throughout, so an option's label
+ * is the plain calendar name and "none of them is the reader's" is a
+ * straightforward text assertion.
+ */
+const FORM_CALENDARS: Calendar[] = [
+  cal({ id: 1, account_email: 'me@x.com', summary: 'Personal', is_primary: true, access_role: 'owner' }),
+  cal({ id: 2, account_email: 'me@x.com', summary: 'Team', access_role: 'writer' }),
+  cal({ id: 3, account_email: 'me@x.com', summary: 'Holidays in Bulgaria', access_role: 'reader' }),
+  cal({ id: 4, account_email: 'me@x.com', summary: 'Meeting rooms', access_role: 'freeBusyReader' }),
+];
+
+/** The names of the two calendars a create must never be offered — exported so
+ *  the spec asserts against the same strings the fixture is built from. */
+export const FORM_UNWRITABLE_NAMES = ['Holidays in Bulgaria', 'Meeting rooms'];
+
+/** A form value for editing `d`, anchored on the 09:00 occurrence above.
+ *  Routed through the real `valueFromDetail` rather than hand-written, so the
+ *  mapping the app will actually use in Task 10 is the one under test here. */
+const editing = (d: EventDetail, startMs = FORM_START, endMs = FORM_END): EventFormValue =>
+  valueFromDetail(d, startMs, endMs);
+
+/** Monday 10 Aug 2026, all day, for three days: Mon, Tue, Wed. `end_ms` is the
+ *  *exclusive* midnight Google and the store both use — Thursday — so a form
+ *  that showed it unchanged would read a day long, and one that sent back what
+ *  it showed would shorten the trip by a day and mail everyone about it. */
+const TRIP_START = Date.UTC(2026, 7, 10);
+const TRIP_END_EXCLUSIVE = TRIP_START + 3 * 24 * H;
+/** The last day a person would name: Wednesday 12 Aug. */
+export const TRIP_LAST_DAY = '2026-08-12';
+export const TRIP_FIRST_DAY = '2026-08-10';
+export const TRIP_END_MS = TRIP_END_EXCLUSIVE;
+
 export const FIXTURES: Record<string, Record<string, any>> = {
   WeekGrid: {
     empty: { week: emptyWeek() },
@@ -979,6 +1046,87 @@ export const FIXTURES: Record<string, Record<string, any>> = {
         attendees: [attendee({ email: 'me@x.com', is_self: true, response_status: 'needsAction' })],
       }),
       anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop,
+    },
+  },
+  // `onsave`/`oncancel` are supplied by the harness, not here: they are
+  // callback props rather than Tauri commands, so they are captured on the
+  // window exactly as `MonthGrid`'s `onopen` is (see harness/mount.svelte.ts).
+  EventForm: {
+    // Built from `Date.now()` on purpose. The "next half hour" default belongs
+    // to `blankValue`, and a fixture that pinned the instant itself could not
+    // tell a form that applies the default from one that was handed the answer.
+    // Every spec freezes the clock to `FORM_NOW` before navigating; without
+    // that this fixture is the dated time bomb the task brief warns about.
+    create: { anchor: ANCHOR, initial: blankValue(Date.now(), null), calendars: FORM_CALENDARS },
+    // 14:00 to 13:00 on the same day — backwards by an hour, not by a minute,
+    // so no rounding anywhere could make the two ends agree.
+    'end-before-start': {
+      anchor: ANCHOR,
+      initial: { ...blankValue(FORM_NOW, 1), start: '14:00', end: '13:00' },
+      calendars: FORM_CALENDARS,
+    },
+    // Spec §6's UI half: a fortnightly rule, which `write::rrule_for` has no
+    // way to author, so `write::repeat_from_rrule` answers `custom` and the
+    // form must refuse to overwrite it by accident. `repeat` and `recurrence`
+    // are set together — the backend derives one from the other, and a fixture
+    // where they disagreed would be describing an event that cannot exist.
+    'custom-repeat': {
+      anchor: ANCHOR,
+      initial: editing(detail({
+        id: 10, title: 'Sprint review', is_recurring: true,
+        recurrence: 'RRULE:FREQ=WEEKLY;INTERVAL=2', repeat: 'custom', can_edit: true,
+      })),
+      calendars: FORM_CALENDARS,
+    },
+    // Five attendees, one of them the signed-in user: the notice must say
+    // four. A fixture whose guests were all strangers would pass whether or
+    // not the count excluded the person doing the saving.
+    'with-guests': {
+      anchor: ANCHOR,
+      initial: editing(detail({
+        id: 11, title: 'Board prep', can_edit: true,
+        attendees: [
+          attendee({ email: 'ana@x.com', display_name: 'Ana' }),
+          attendee({ email: 'petya@x.com' }),
+          attendee({ email: 'rahul@x.com' }),
+          attendee({ email: 'ivan@x.com' }),
+          attendee({ email: 'me@x.com', is_self: true }),
+        ],
+      })),
+      calendars: FORM_CALENDARS,
+    },
+    // A description that is live markup if anything ever renders it, and that
+    // must survive the round trip through the form byte for byte — sanitising
+    // it on the way *in* would silently rewrite what its author typed and then
+    // save the rewrite back over the real event.
+    'nasty-description': {
+      anchor: ANCHOR,
+      initial: editing(detail({
+        id: 12, title: 'Notes', can_edit: true,
+        description: '<img src=x onerror=alert(1)>',
+      })),
+      calendars: FORM_CALENDARS,
+    },
+    // An ordinary weekly series, for the scope chooser and what it says about
+    // "All events".
+    'recurring-edit': {
+      anchor: ANCHOR,
+      initial: editing(detail({
+        id: 13, title: 'Standup', is_recurring: true,
+        recurrence: 'RRULE:FREQ=WEEKLY', repeat: 'weekly', can_edit: true,
+      })),
+      calendars: FORM_CALENDARS,
+    },
+    // Three days, all day. See TRIP_START above for why the exclusive end is
+    // the whole point of this one.
+    'multi-day-all-day': {
+      anchor: ANCHOR,
+      initial: editing(
+        detail({ id: 14, title: 'Berlin trip', is_all_day: true, can_edit: true,
+                 start_ms: TRIP_START, end_ms: TRIP_END_EXCLUSIVE }),
+        TRIP_START, TRIP_END_EXCLUSIVE,
+      ),
+      calendars: FORM_CALENDARS,
     },
   },
 };

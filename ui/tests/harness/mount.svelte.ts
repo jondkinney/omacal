@@ -8,6 +8,7 @@ import AllDayBand from '../../src/lib/AllDayBand.svelte';
 import Header from '../../src/lib/Header.svelte';
 import CalendarPopover from '../../src/lib/CalendarPopover.svelte';
 import EventPopover from '../../src/lib/EventPopover.svelte';
+import EventForm from '../../src/lib/EventForm.svelte';
 import { FIXTURES } from '../fixtures';
 import { installTauriStub } from './tauri';
 
@@ -32,7 +33,7 @@ const fixture = params.get('f') ?? 'default';
 
 const COMPONENTS: Record<string, any> = {
   WeekGrid, MonthGrid, YearGrid, BigYearRibbon, EventBlock, AllDayBand, Header, CalendarPopover,
-  EventPopover,
+  EventPopover, EventForm,
 };
 const target = document.getElementById('app')!;
 
@@ -135,6 +136,30 @@ if (name === 'App') {
       // `onclose` is a no-op, since it can't know about this harness.
       let app: object;
       app = mount(EventPopover, { target, props: { ...props, onclose: () => unmount(app) } });
+    } else if (name === 'EventForm') {
+      // `onsave`/`oncancel` are callback props, not Tauri commands — the form
+      // itself never calls `invoke`, since which write command a save becomes
+      // (create or update, and at which scope) is the caller's decision, not
+      // its own. Captured on the window exactly as `MonthGrid`'s `onopen` is.
+      //
+      // `__saves` is an array rather than a single value: half of what these
+      // specs assert is that a *refused* save called nothing at all, and a
+      // single slot cannot tell "never called" from "called and overwritten".
+      (window as any).__saves = [];
+      let app: object;
+      app = mount(EventForm, {
+        target,
+        props: {
+          ...props,
+          onsave: (result: unknown) => {
+            (window as any).__saves.push(result);
+          },
+          // Same reasoning as `EventPopover` above: in the real app the parent
+          // owns whether the form exists at all, so cancelling has to actually
+          // remove it here or "Escape closes it" would have nothing to observe.
+          oncancel: () => unmount(app),
+        },
+      });
     } else {
       mount(COMPONENTS[name], { target, props });
     }

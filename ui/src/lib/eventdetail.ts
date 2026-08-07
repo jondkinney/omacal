@@ -19,9 +19,22 @@ export type EventDetail = {
   end_ms: number;
   is_all_day: boolean;
   is_recurring: boolean;
-  /** The raw `RRULE`, carried through unchanged so the UI can tell a rule it
-   *  can represent from one it cannot. */
+  /** The raw `RRULE`, carried through unchanged so the UI can show a rule it
+   *  cannot represent back to the user in words. Display only — never parse it
+   *  to decide what the app can express; that is `repeat`'s job. */
   recurrence: string | null;
+  /** Which Repeat option represents `recurrence` exactly, or `'custom'` for a
+   *  rule this app cannot express.
+   *
+   *  Computed on the Rust side by `write::repeat_from_rrule`, which decides by
+   *  *exact string equality* against the rules `write::rrule_for` authors.
+   *  Never re-derive it here: the whole point of exact equality is that one
+   *  authority decides what omacal can express, and a second copy of the table
+   *  in TypeScript drifts the moment either side gains an option. It fails
+   *  silently when it does — an unrepresentable rule read as a representable
+   *  one means the next save rewrites "every 2nd Tuesday" as "weekly", and
+   *  mails the whole guest list about it. */
+  repeat: string;
   color: string | null;
   organizer_email: string | null;
   self_response: string | null;

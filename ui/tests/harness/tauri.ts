@@ -93,7 +93,9 @@ export const CALENDAR_SYNC_REMOVED = 143;
 const RESPOND_STUB_DETAIL = {
   id: 0, title: null, description: null, location: null, conference_uri: null,
   start_ms: 0, end_ms: 0, is_all_day: false, is_recurring: false, color: null,
-  organizer_email: null, self_response: null, can_respond: true, attendees: [],
+  recurrence: null, repeat: 'never',
+  organizer_email: null, self_response: null, can_respond: true, can_edit: false,
+  attendees: [],
 };
 
 const listeners = new Map<string, Set<(e: unknown) => void>>();
@@ -269,9 +271,14 @@ function statusFor(scenario: string): AppStatus {
  *  it switched on by default, exactly as a real `sign_in` leaves it. */
 const SIGNED_IN_CALENDARS: Calendar[] = [
   { id: 1, account_id: 1, account_email: 'new@x.com', summary: 'Personal',
-    color_hex: '#5b8def', selected: true, sync_enabled: true, is_primary: true },
+    color_hex: '#5b8def', selected: true, sync_enabled: true, is_primary: true,
+    access_role: 'owner' },
+  // A subscribed holiday calendar really is a `reader`, and this is the one
+  // fixture in the suite that stands in for a real `sign_in` import — so it
+  // carries the role a real one would rather than a uniformly writable list.
   { id: 2, account_id: 1, account_email: 'new@x.com', summary: 'Holidays',
-    color_hex: '#e2a03f', selected: true, sync_enabled: true, is_primary: false },
+    color_hex: '#e2a03f', selected: true, sync_enabled: true, is_primary: false,
+    access_role: 'reader' },
 ];
 
 function getWeek(weekStartMs: number): Promise<WeekPayload> {
