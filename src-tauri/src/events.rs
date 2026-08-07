@@ -1684,6 +1684,17 @@ async fn delete_via_client(
 ///   refusal that pushes the user onto the more destructive button is worse than
 ///   the imprecision it prevents.
 ///
+///   **The exact cost of not refusing, which is not zero.** `UNTIL` is compared
+///   against `originalStartTime`, not against where a block is drawn, so the two
+///   disagree for any occurrence somebody has dragged *across* the cut. One
+///   dragged **backwards** renders before the cut — inside the half the user is
+///   keeping — while its slot is after `UNTIL`, so Google drops it: a meeting
+///   they meant to keep disappears, silently, and they cannot see what went. One
+///   dragged forwards is the mirror and survives a delete it was inside. A
+///   refusal cannot fix either; it can only decline the whole operation, which
+///   is why the common case is not made to pay for the rare one. It is a real
+///   limitation and belongs in front of anybody changing this.
+///
 /// `master_row` is the only place the value type comes from, and the clicked row
 /// is deliberately **not** a parameter of this function so that it cannot be
 /// read from by accident. RFC 5545 requires `UNTIL` to carry the same value type
@@ -1692,6 +1703,15 @@ async fn delete_via_client(
 /// agree with *that* and with nothing else. The zone is inert and passed for
 /// shape: [`edit_zone`]'s all-day arm returns `cal_tz` whatever it is handed and
 /// the timed form of `UNTIL` never reads a zone. Only the flag is load-bearing.
+///
+/// **That absence is the whole of the protection, and no test can stand in for
+/// it.** Every fixture here has the master and the clicked row agreeing on
+/// `is_all_day`, so nothing in the suite distinguishes `master_row.is_all_day`
+/// from `ev.is_all_day` — the two are the same value in all of them. Harmless
+/// while the clicked row is not reachable from this function; a silent hole the
+/// moment somebody adds it as a parameter. If you add one, add the fixture that
+/// tells them apart first: an all-day master with a timed exception, on the
+/// model of `the_until_follows_the_masters_value_type_not_the_new_series`.
 ///
 /// The `412` is not retried, for [`split_series`]' reason minus its
 /// complication: the master was read moments ago, so a `412` means somebody
@@ -1761,6 +1781,21 @@ async fn truncate_series(
     // carry `recurrence`, which is this write's only payload, so it would stamp
     // the new version onto a row still holding the untruncated rule — the grid
     // expanding past the cut while the store claimed to be current.
+    //
+    // **What this does not repair, and the one case a user will notice.** Local
+    // rows for materialised exceptions in the tail are left alone, because
+    // whether Google drops them is an inference about `UNTIL` rather than
+    // something this app observes — and leaving them is correct if it keeps
+    // them, merely stale for a sync interval if it does not.
+    //
+    // The clicked row is the exception to that, in the literal sense: when the
+    // popover was opened from an exception, `split_at_ms` *is* that row's own
+    // `original_start_utc`, so it is inside the deleted range by construction
+    // and needs no inference at all. It is still left alone, because the same
+    // uncertainty about what Google does to it applies — but the visible result
+    // is the worst-placed one available: the very block the user clicked goes on
+    // drawing while the rest of the tail disappears around it. Task 10 wants a
+    // `sync_now` after this scope for that reason, not a local re-read.
     match omacal_sync::to_stored(&patched, master_row.calendar_id, cal_tz) {
         Some(row) => {
             omacal_store::upsert_event(pool, &row).await?;
@@ -2954,6 +2989,34 @@ mod tests {
         (pool, id)
     }
 
+    /// [`seeded_pool_on_cal`]'s fixture on a **`reader`** calendar, for the
+    /// tests whose whole subject is a gate sitting *above* the writability
+    /// check.
+    ///
+    /// Not a stylistic preference, and not about read-only calendars at all. On
+    /// an `owner` calendar the only thing between such a test and
+    /// `crate::load_config()` — the real `~/.config/omacal/config.toml`, then
+    /// the real Keychain — is the single gate it exists to test. That is exactly
+    /// the shape that put a Task 6 test on the wrong side of a guard the moment
+    /// Task 7 implemented the scope it had used as its stand-in for
+    /// "unimplemented"; see
+    /// [`an_unimplemented_scope_is_refused_rather_than_treated_as_this_occurrence`].
+    ///
+    /// A `reader` calendar puts a second gate underneath the first. The
+    /// assertion stays just as discriminating — remove the gate under test and
+    /// the message is wrong either way — but a future task that implements the
+    /// scope makes these fail **loudly at the writability check** rather than
+    /// falling through to a credential no test may touch.
+    async fn seeded_pool_on_read_only_cal(
+        ev: &mut omacal_store::StoredEvent,
+    ) -> (SqlitePool, i64) {
+        let pool = omacal_store::connect_memory().await.unwrap();
+        let cal = seed_calendar_with_tz(&pool, "reader", "UTC").await;
+        ev.calendar_id = cal;
+        let id = omacal_store::upsert_event(&pool, ev).await.unwrap();
+        (pool, id)
+    }
+
     /// What the form sends back: the fields it was pre-filled from, with the
     /// user's change applied. Two things are deliberate.
     ///
@@ -3514,10 +3577,18 @@ mod tests {
     /// nobody looking only because the seeded account (`e@x`) happens to have
     /// no keyring entry. `"thisAndPrevious"` is Google's own vocabulary for a
     /// scope this app has no plans for.
+    ///
+    /// **And the choice of scope is not the only defence, because it cannot be.**
+    /// Nobody predicted the first incident either. The fixture is a `reader`
+    /// calendar ([`seeded_pool_on_read_only_cal`]) so that a future task
+    /// implementing this scope hits the writability gate — "this calendar is not
+    /// writable from omacal" — instead of falling through to `load_config`. The
+    /// assertion below is unchanged and just as discriminating: delete the scope
+    /// gate and it fails either way.
     #[tokio::test]
     async fn an_unimplemented_scope_is_refused_rather_than_treated_as_this_occurrence() {
         let mut ev = weekly_master("RRULE:FREQ=WEEKLY");
-        let (pool, id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+        let (pool, id) = seeded_pool_on_read_only_cal(&mut ev).await;
 
         let err = update_impl(
             &state_with(pool, false),
@@ -5503,6 +5574,26 @@ mod tests {
         req.headers.get(name).and_then(|v| v.to_str().ok()).map(str::to_string)
     }
 
+    /// The instance lookup as it actually went out, and one of its query
+    /// parameters.
+    ///
+    /// Same diagnostic reason again, for the value this task made it possible to
+    /// get wrong: `delete_via_client` now holds *two* instants — the clicked
+    /// block's `occurrence_start_ms` and the rule's own `split_at_ms` — and
+    /// bracketing the lookup by the second resolves a dragged occurrence to
+    /// whatever sits at the slot it left. The mock matches `timeMin`, so that
+    /// swap is answered `404` and reported as `http error: 404 Not Found`, which
+    /// is true and says nothing about the window. Asserting it first names it.
+    fn the_lookup(sent: &[wiremock::Request]) -> &wiremock::Request {
+        sent.iter()
+            .find(|r| r.url.path().ends_with("/instances"))
+            .unwrap_or_else(|| panic!("no instance lookup was sent: {:?}", methods_and_paths(sent)))
+    }
+
+    fn query_param_of(req: &wiremock::Request, key: &str) -> Option<String> {
+        req.url.query_pairs().find(|(k, _)| k == key).map(|(_, v)| v.into_owned())
+    }
+
     const MASTER_PATH: &str = "/calendars/cal%40x.com/events/master1";
     const INSTANCE_ID: &str = "master1_20260810T090000Z";
 
@@ -5810,9 +5901,20 @@ mod tests {
         mount_delete(&server, &format!("/calendars/cal%40x.com/events/{INSTANCE_ID}")).await;
 
         let client = omacal_google::CalendarClient::new(server.uri(), "tok");
-        delete_via_client(&pool, "this", clicked, ev, "cal@x.com", "UTC", &client)
-            .await
-            .unwrap();
+        let outcome =
+            delete_via_client(&pool, "this", clicked, ev, "cal@x.com", "UTC", &client).await;
+
+        // Before the result: this row is dragged, so the clicked block and the
+        // rule's slot are five hours apart and a lookup bracketed by the wrong
+        // one is only visible here.
+        let sent = requests(&server).await;
+        assert_eq!(
+            query_param_of(the_lookup(&sent), "timeMin"),
+            Some(omacal_sync::to_rfc3339(clicked)),
+            "the lookup was bracketed by the occurrence's slot rather than by where its block \
+             is drawn, so a dragged occurrence resolves to whatever now sits at its old time"
+        );
+        outcome.unwrap();
 
         let (row, _) = omacal_store::event_by_id(&pool, id)
             .await
@@ -5863,9 +5965,17 @@ mod tests {
         mount_delete(&server, "/calendars/cal%40x.com/events/master1_20260817T090000Z").await;
 
         let client = omacal_google::CalendarClient::new(server.uri(), "tok");
-        delete_via_client(&pool, "this", clicked, ev, "cal@x.com", "UTC", &client)
-            .await
-            .unwrap();
+        let outcome =
+            delete_via_client(&pool, "this", clicked, ev, "cal@x.com", "UTC", &client).await;
+
+        let sent = requests(&server).await;
+        assert_eq!(
+            query_param_of(the_lookup(&sent), "timeMin"),
+            Some(omacal_sync::to_rfc3339(clicked)),
+            "the lookup was bracketed by the occurrence's slot rather than by where its block \
+             is drawn, so a dragged occurrence resolves to whatever now sits at its old time"
+        );
+        outcome.unwrap();
 
         let (row, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
         assert_eq!(
@@ -6189,10 +6299,18 @@ mod tests {
     /// test used `"following"` as its stand-in, and the moment Task 7 shipped
     /// the scope it ran past the gate and read the real
     /// `~/.config/omacal/config.toml`, which no test may do.
+    ///
+    /// **Choosing the scope carefully is not enough on its own**, because that
+    /// is what was done last time. The fixture is a `reader` calendar
+    /// ([`seeded_pool_on_read_only_cal`]), so if this scope is ever implemented
+    /// the writability gate underneath catches it — "this calendar is not
+    /// writable from omacal" — and nothing reaches `load_config` or the
+    /// Keychain. The assertion is unchanged and still fails if the scope gate
+    /// goes.
     #[tokio::test]
     async fn an_unimplemented_delete_scope_is_refused_rather_than_treated_as_this_occurrence() {
         let mut ev = weekly_master("RRULE:FREQ=WEEKLY");
-        let (pool, id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+        let (pool, id) = seeded_pool_on_read_only_cal(&mut ev).await;
 
         let err = delete_impl(&state_with(pool, false), id, "thisAndPrevious", OCCURRENCE)
             .await
