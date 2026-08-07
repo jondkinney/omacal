@@ -984,15 +984,44 @@ test.describe('BigYearRibbon', () => {
     // above), so a bounding-box assertion on it can never catch this.
     await page.goto(show('three-lanes'));
     const packed = page.locator('.rrow').first();
+
+    // `RESERVED_PILL_LANES` (2) trims the CSS budget below `PILL_LANE_CAP`
+    // (3, `pack_lanes`'s own cap) — reservation and cap are deliberately not
+    // the same number any more, so this is what proves the split didn't
+    // quietly become a cap of its own: all three of this row's genuinely
+    // overlapping spans still render, the row just grows past its reserved
+    // budget to fit the one it doesn't have a track for.
+    await expect(packed.locator('.pill')).toHaveCount(3);
+
     expect((await packed.locator('.rdays').boundingBox())!.height).toBeGreaterThan(0);
 
-    // And the strip is the same height in a packed row as in an empty one:
-    // that is what `MAX_PILL_LANES` reserving three lanes buys, and without it
-    // every row's days sat at a different height down the page.
+    // And the day strip is the same height in a packed row as in an empty
+    // one: `.rdays` sits at its own protected minimum regardless of how tall
+    // `.pills` grows beside it — true even here, where this row's third lane
+    // and overflow both exceed `RESERVED_PILL_LANES`'s budget and grow the
+    // row past it (see that constant's own comment). Without *any* lane
+    // reservation, a quiet row's `.pills` collapses toward nothing instead,
+    // and its `.rdays` inflates to absorb the slack — so the two diverge.
     const quiet = page.locator('.rrow').nth(2);
     const packedDays = (await packed.locator('.rdays').boundingBox())!.height;
     const quietDays = (await quiet.locator('.rdays').boundingBox())!.height;
     expect(Math.abs(packedDays - quietDays)).toBeLessThan(1);
+  });
+
+  test('all fourteen rows fit on one screen with no scroll', async ({ page }) => {
+    // The design doc's own promise for this view (spec §4): "Big Year — one
+    // screen, the whole year." `RESERVED_PILL_LANES`'s comment explains the
+    // budget this depends on: 14 rows at a uniform ~35px fit inside the
+    // ~530px container the suite's default 1280x720 viewport gives `.rows`
+    // (`devices['Desktop Chrome']`/`['Desktop Safari']` in
+    // playwright.config.ts — no `setViewportSize` here, same as every other
+    // spec in this file). Pinned so that budget can't drift back out of
+    // reach without a spec noticing, the way the original 3-lane reservation
+    // did.
+    await page.goto(show('y2026'));
+    await expect(page.locator('.rrow')).toHaveCount(14);
+    const overflow = await page.locator('.rows').evaluate((el) => el.scrollHeight - el.clientHeight);
+    expect(overflow).toBeLessThanOrEqual(0);
   });
 
   test('days outside the synced window are hatched, not left blank', async ({ page }) => {

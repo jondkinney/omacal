@@ -10,12 +10,37 @@
     onopen: (event: UiEvent, rect: Rect) => void;
   } = $props();
 
-  // A row's own lane count from `pills` alone would collapse to 0 on a row
-  // with no pills — the common case — which would make every other row's
-  // strip a different height. `pack_lanes` caps at 3, so that is the strip's
-  // height regardless of what any one row uses. Mirrors `MonthGrid`'s
-  // `MAX_BAR_LANES`.
-  const MAX_PILL_LANES = 3;
+  // The data cap: `pack_lanes(&segments, 28, 3)` (commands.rs) never packs a
+  // fourth overlapping span into a lane, folding it into `overflow` instead.
+  // This is a limit on what the assembler *packs*, not on what the strip
+  // *reserves* — see `RESERVED_PILL_LANES` below for that distinction — and
+  // it's what the "+N more" row's own position (`grid-row:{cap + 1}`) reads
+  // off: the row just past the highest lane a pill can occupy. Mirrors
+  // `MonthGrid`'s `MAX_BAR_LANES`.
+  const PILL_LANE_CAP = 3;
+  // The layout budget: how many lane tracks `.pills` reserves up front via
+  // `grid-template-rows`, so a row with no pills — the common case — doesn't
+  // collapse to a different height than every other row. Deliberately less
+  // than `PILL_LANE_CAP`: reserving all three (the original fix) kept every
+  // row's height identical, but at 12px a lane that is 3 × 12px + the 15px
+  // day strip in all fourteen rows, which no longer fits one screen (spec
+  // §4's "one screen, the whole year") below about 973px of viewport height.
+  // Two reserved lanes at 10px, with `.pills`'s own top/bottom padding
+  // dropped too, keeps a quiet or lightly-packed row at a uniform ~37px
+  // (15px day strip + 21px pill strip: 2 × 10px lanes + a 1px gap between
+  // them, plus the row's own 1px top border) — measured, not just added up:
+  // the padding had to go too, since 15px + 2 × 10px alone still overshoots
+  // the ~530px container at 1280×720 by about 15px once borders and the
+  // strip's own gap are counted. 14 × ~37px fits with room to spare. A row
+  // that actually needs its third lane still gets it — `pack_lanes` still
+  // caps at `PILL_LANE_CAP`, nothing is dropped — it just grows past the
+  // reserved budget for that one row, the same way an overflowing row
+  // already grows to fit its "+N more" line today. Levelling every row's
+  // height, including the busiest one, was Big Year's original property;
+  // fitting on one screen at all took priority when they collided, and a row
+  // that pays the height cost is rare — three genuinely overlapping all-day
+  // spans in the same 28-day stretch.
+  const RESERVED_PILL_LANES = 2;
 
   const MONTH_NAMES = [
     'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
@@ -41,7 +66,7 @@
   <div class="rows">
     {#each ribbon.rows as row, r (r)}
       <div class="rrow">
-        <div class="pills" style="--lanes:{MAX_PILL_LANES}">
+        <div class="pills" style="--lanes:{RESERVED_PILL_LANES}">
           {#each row.pills as lane (`${lane.idx}:${lane.lane}`)}
             {@const ev = row.pill_events[lane.idx]}
             <button
@@ -62,7 +87,7 @@
             <!-- A span, not a button: like `MonthRow.bar_overflow`, these
                  cover several days, so there is no single day to hand the
                  parent. -->
-            <div class="more" style="grid-row:{MAX_PILL_LANES + 1}; grid-column:1 / -1">
+            <div class="more" style="grid-row:{PILL_LANE_CAP + 1}; grid-column:1 / -1">
               +{row.overflow.length} more
             </div>
           {/if}
@@ -120,15 +145,16 @@
           border-top: 1px solid var(--hairline); }
   .rrow:first-child { border-top: 0; }
 
-  /* `grid-template-rows`, not `grid-auto-rows`, for the lanes themselves:
-     explicit tracks exist whether or not a pill occupies them, so the strip
-     is `--lanes` tall in every row — the promise `MAX_PILL_LANES` is there to
-     make, and the reason the day strips below line up across all fourteen
-     rows. `grid-auto-rows` still covers the one implicit track the "+N more"
-     row adds when a row overflows. */
+  /* `grid-template-rows`, not `grid-auto-rows`, for the reserved lanes
+     themselves: explicit tracks exist whether or not a pill occupies them,
+     so the strip is `--lanes` (`RESERVED_PILL_LANES`) tall in every row that
+     stays within budget. `grid-auto-rows` is the same 10px for whatever goes
+     beyond that: a row's third, uncapped-but-unreserved lane, and the one
+     implicit track the "+N more" row adds when a row overflows — both grow
+     the row rather than being clipped, same mechanism, same size. */
   .pills { display: grid; grid-template-columns: repeat(28, 1fr);
-           grid-template-rows: repeat(var(--lanes), 12px);
-           grid-auto-rows: 12px; gap: 1px 0; padding: 1px 0; }
+           grid-template-rows: repeat(var(--lanes), 10px);
+           grid-auto-rows: 10px; gap: 1px 0; }
 
   .pill { appearance: none; -webkit-appearance: none; font: inherit;
           text-align: left; cursor: pointer; border: 0; border-left: 2px solid var(--cal);

@@ -79,6 +79,18 @@ legitimate; the unsynced shading of §6 is what keeps it honest about dots it
 cannot know.
 
 **Big Year** — one screen, the whole year, **all-day and multi-day events only**.
+"One screen" means all 14 rows visible with no vertical scroll at 1280×720 —
+the UI test suite's own default viewport (`playwright.config.ts`) — and is
+pinned there by a spec (`components.spec.ts`, `BigYearRibbon`, "all fourteen
+rows fit on one screen with no scroll"), not just asserted here. It holds for
+the common case: a quiet or lightly-packed row reserves a uniform height for
+its pill strip. The one shape that can still cost a partial scroll at exactly
+1280×720 is a row with three genuinely overlapping all-day spans — the pill
+strip only reserves height for two lanes, not the full three `pack_lanes`
+can pack, so that rare row grows past its reservation (see
+`RESERVED_PILL_LANES`'s own comment in `BigYearRibbon.svelte` for the budget
+and why levelling every row's height lost out to fitting on one screen at
+all).
 
 - **Rows are exactly 28 days.** This is the deliberate departure from the
   reference image's 29, recorded in the original spec and repeated here because

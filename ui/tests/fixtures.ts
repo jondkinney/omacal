@@ -720,8 +720,14 @@ const twoPillsBigYear = (): BigYearPayload => {
  *  and painted at `.rdays`'s would-be position anyway, landing inside the
  *  *next* row rather than vanishing. The weekend stripe was never missing,
  *  just in the wrong place, overlapping the row below it. Row 1 is left
- *  empty on purpose, so a spec can compare the two and see the strip is the
- *  same height in both, which is what `MAX_PILL_LANES` is for. */
+ *  empty on purpose, so a spec can compare the two and see the day strip is
+ *  the same height in both regardless — `.rdays` sits at its own protected
+ *  minimum whether or not `.pills` beside it grows past its reservation
+ *  (`RESERVED_PILL_LANES`, `BigYearRibbon.svelte`), which this row's own
+ *  third lane and overflow both do. Also registered so a spec can prove
+ *  `pack_lanes`'s cap and the strip's *reservation* are different numbers on
+ *  purpose: all three packed pills still render even though only two lanes'
+ *  worth of height is reserved for them. */
 const threeLanesBigYear = (): BigYearPayload => {
   const b = emptyBigYear(2026, RIBBON_START, YEAR_2026_START, YEAR_2027_START);
 

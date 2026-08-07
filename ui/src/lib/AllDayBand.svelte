@@ -14,10 +14,10 @@
       onopen: (event: UiEvent, rect: Rect) => void } = $props();
 
   // Only to place the "+N more" row on the track just past the last occupied
-  // lane. Not a reserved height, unlike `BigYearRibbon`'s `MAX_PILL_LANES`:
-  // `pack_lanes` fills lanes from 0 up, so every lane below this one carries a
-  // chip and `.rows` is already exactly this many chips tall. There is nothing
-  // for a height derived from it to hold open.
+  // lane. Not a reserved height, unlike `BigYearRibbon`'s
+  // `RESERVED_PILL_LANES`: `pack_lanes` fills lanes from 0 up, so every lane
+  // below this one carries a chip and `.rows` is already exactly this many
+  // chips tall. There is nothing for a height derived from it to hold open.
   const laneCount = $derived(lanes.length ? Math.max(...lanes.map((l) => l.lane)) + 1 : 0);
 
   // `getBoundingClientRect()` for the same reason `EventBlock` uses it: the
