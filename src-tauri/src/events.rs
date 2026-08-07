@@ -13,9 +13,23 @@ pub struct EventDetail {
     pub end_ms: i64,
     pub is_all_day: bool,
     pub is_recurring: bool,
-    /// The raw `RRULE`, carried through unchanged so the UI can tell a rule it
-    /// can represent from one it cannot.
+    /// The raw `RRULE`, carried through unchanged so the UI can show a rule it
+    /// cannot represent back to the user in words.
     pub recurrence: Option<String>,
+    /// Which Repeat option represents [`Self::recurrence`] exactly, or
+    /// `"custom"` for a rule this app cannot express — the answer
+    /// [`crate::write::repeat_from_rrule`] gives, computed here rather than in
+    /// the UI.
+    ///
+    /// Deliberately not derivable from `recurrence` on the TypeScript side.
+    /// That function decides by *exact string equality* against what
+    /// [`crate::write::rrule_for`] authors, and the point of exact equality is
+    /// that one authority decides what omacal can express — a second copy of
+    /// the table in the UI drifts the moment either side gains an option, and
+    /// the failure mode is silent: a rule the app cannot express gets treated
+    /// as one it can, and the next save overwrites "every 2nd Tuesday" with
+    /// "weekly" for the whole guest list.
+    pub repeat: String,
     pub color: Option<String>,
     pub organizer_email: Option<String>,
     pub self_response: Option<String>,
@@ -102,7 +116,8 @@ async fn event_detail_impl(state: &AppState, id: i64) -> anyhow::Result<EventDet
         end_ms: event.end_utc,
         is_all_day: event.is_all_day,
         is_recurring,
-        recurrence: event.recurrence.clone(),
+        repeat: crate::write::repeat_from_rrule(event.recurrence.as_deref()),
+        recurrence: event.recurrence,
         color: event.color_hex,
         organizer_email: event.organizer_email,
         self_response: event.self_response,
@@ -2646,6 +2661,35 @@ mod tests {
         assert_eq!(d.calendar_id, cal_id, "calendar_id must be the event's own, not dropped or hardcoded");
         assert_eq!(d.recurrence.as_deref(), Some("RRULE:FREQ=MONTHLY;BYDAY=-1FR"));
         assert!(d.can_edit);
+    }
+
+    /// The other half of the same payload: the raw rule tells the form what to
+    /// *show*, this tells it whether the Repeat control may be used at all.
+    ///
+    /// Computed here rather than in TypeScript on purpose — `repeat_from_rrule`
+    /// decides by exact string equality against what `rrule_for` authors, and a
+    /// second copy of that table in the UI would drift. Three different rules
+    /// producing three different answers is what makes this test able to fail:
+    /// a stub returning any one constant is caught by the other two.
+    #[tokio::test]
+    async fn detail_reports_which_repeat_option_the_rule_is() {
+        let detail_for = |recurrence: Option<&'static str>| async move {
+            let mut ev = stored(vec![]);
+            ev.recurrence = recurrence.map(str::to_string);
+            let (pool, id) = seeded_pool_with(&ev).await;
+            event_detail_impl(&state_with(pool, false), id).await.unwrap()
+        };
+
+        // A rule `rrule_for` authors, matched exactly.
+        assert_eq!(detail_for(Some("RRULE:FREQ=WEEKLY")).await.repeat, "weekly");
+        // A rule it does not, and could not: the form must refuse to overwrite it.
+        assert_eq!(
+            detail_for(Some("RRULE:FREQ=WEEKLY;INTERVAL=2")).await.repeat,
+            "custom",
+            "a fortnightly rule must not be reported as one omacal can express"
+        );
+        // No rule at all is not the same as an unrepresentable one.
+        assert_eq!(detail_for(None).await.repeat, "never");
     }
 
     /// `respond_impl`'s own `can_respond(state.demo, …)` — the second demo

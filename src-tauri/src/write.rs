@@ -349,10 +349,10 @@ pub(crate) fn has_count(rule: &str) -> bool {
 /// overwrite it. Being generous here (parsing `FREQ` and ignoring the rest)
 /// is exactly how "every 2nd Tuesday" becomes "weekly" behind the user's back.
 ///
-/// Only the Repeat control's read side (Task 9) will call this, to decide
-/// whether the rule on an existing event can be represented at all — no
-/// write command needs it. Unused outside its own tests until then.
-#[allow(dead_code)]
+/// Called once, on the read side: `events::event_detail_impl` puts the answer
+/// on `EventDetail::repeat` so the Repeat control has it without re-deriving
+/// it. No write command needs it — a write is told which option the user
+/// picked and maps it forward through [`rrule_for`].
 pub(crate) fn repeat_from_rrule(rule: Option<&str>) -> String {
     let Some(rule) = rule else {
         return "never".into();

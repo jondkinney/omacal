@@ -13,6 +13,16 @@ pub struct CalendarRow {
     /// Fetched from Google at all.
     pub sync_enabled: bool,
     pub is_primary: bool,
+    /// Google's own word for what this account may do here: `owner`, `writer`,
+    /// `reader`, `freeBusyReader`.
+    ///
+    /// Carried all the way to the UI because the event form has to offer only
+    /// the calendars a create could actually land on — a subscribed holiday
+    /// calendar is a `reader`, and offering it produces a Save that
+    /// `create_impl` can only refuse. That refusal already exists and stays
+    /// (`can_edit`, applied server-side against this same column via
+    /// `calendar_for_write`); this field is what stops the UI walking into it.
+    pub access_role: String,
 }
 
 /// Every calendar across every account, primary first, then alphabetical —
@@ -20,7 +30,7 @@ pub struct CalendarRow {
 pub async fn list_calendars(pool: &SqlitePool) -> anyhow::Result<Vec<CalendarRow>> {
     let rows = sqlx::query(
         "SELECT c.id, c.account_id, a.email AS account_email, c.summary,
-                c.color_hex, c.selected, c.sync_enabled, c.is_primary
+                c.color_hex, c.selected, c.sync_enabled, c.is_primary, c.access_role
          FROM calendars c
          JOIN accounts a ON a.id = c.account_id
          ORDER BY a.email, c.is_primary DESC, c.summary COLLATE NOCASE",
@@ -39,6 +49,7 @@ pub async fn list_calendars(pool: &SqlitePool) -> anyhow::Result<Vec<CalendarRow
             selected: r.get::<i64, _>("selected") != 0,
             sync_enabled: r.get::<i64, _>("sync_enabled") != 0,
             is_primary: r.get::<i64, _>("is_primary") != 0,
+            access_role: r.get("access_role"),
         })
         .collect())
 }
@@ -241,6 +252,27 @@ mod tests {
         seed(&pool).await;
         let cals = list_calendars(&pool).await.unwrap();
         assert!(cals[0].is_primary, "the primary calendar should lead the list");
+    }
+
+    /// The event form has nothing but this column to decide which calendars it
+    /// may offer, and the query dropped it until Task 9 — every calendar
+    /// reached the UI looking equally writable, subscribed holiday calendars
+    /// included. `seed_two_accounts` seeds one `owner` and one `reader`, so a
+    /// query that hard-coded either value still fails here.
+    #[tokio::test]
+    async fn listing_reports_each_calendars_access_role() {
+        let pool = connect_memory().await.unwrap();
+        seed_two_accounts(&pool).await;
+        let cals = list_calendars(&pool).await.unwrap();
+        let role = |summary: &str| {
+            cals.iter()
+                .find(|c| c.summary == summary)
+                .unwrap_or_else(|| panic!("no calendar named {summary}"))
+                .access_role
+                .clone()
+        };
+        assert_eq!(role("On A"), "owner");
+        assert_eq!(role("On B"), "reader");
     }
 
     #[tokio::test]
