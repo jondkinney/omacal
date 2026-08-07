@@ -111,11 +111,23 @@
   .ribbon { display: flex; flex-direction: column; gap: 8px; padding: 4px; }
 
   .rows { display: flex; flex-direction: column; height: calc(100vh - 190px); overflow-y: auto; }
-  .rrow { flex: 1; display: flex; flex-direction: column; min-height: 0;
+  /* No `min-height: 0` — that let a row shrink below its own contents, and
+     `.pills` is the taller of the two children, so the day strip is what
+     absorbed the shortfall: a fully packed row squeezed `.rdays` to zero and
+     its days spilled over the row below. A short viewport scrolls `.rows`
+     (which is what its `overflow-y` is for) rather than crushing a row. */
+  .rrow { flex: 1; display: flex; flex-direction: column;
           border-top: 1px solid var(--hairline); }
   .rrow:first-child { border-top: 0; }
 
+  /* `grid-template-rows`, not `grid-auto-rows`, for the lanes themselves:
+     explicit tracks exist whether or not a pill occupies them, so the strip
+     is `--lanes` tall in every row — the promise `MAX_PILL_LANES` is there to
+     make, and the reason the day strips below line up across all fourteen
+     rows. `grid-auto-rows` still covers the one implicit track the "+N more"
+     row adds when a row overflows. */
   .pills { display: grid; grid-template-columns: repeat(28, 1fr);
+           grid-template-rows: repeat(var(--lanes), 12px);
            grid-auto-rows: 12px; gap: 1px 0; padding: 1px 0; }
 
   .pill { appearance: none; -webkit-appearance: none; font: inherit;
@@ -129,7 +141,10 @@
 
   .more { font-size: 8px; color: var(--muted); opacity: .8; }
 
-  .rdays { flex: 1; display: grid; grid-template-columns: repeat(28, 1fr); min-height: 0; }
+  /* Likewise no `min-height: 0`: the weekend shading is painted by `.rday`'s
+     own background, so a day strip with no height is a row with no stripes —
+     and the stripes are the whole reason the ribbon's rows are 28 days. */
+  .rdays { flex: 1; display: grid; grid-template-columns: repeat(28, 1fr); }
 
   .rday { display: flex; flex-direction: column; align-items: center; justify-content: center;
           gap: 1px; min-width: 0; position: relative; font-size: 8.5px; color: var(--text);

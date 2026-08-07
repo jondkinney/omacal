@@ -712,6 +712,39 @@ const twoPillsBigYear = (): BigYearPayload => {
   return b;
 };
 
+/** Row 0 packed to `pack_lanes`'s full three-lane cap *and* overflowing, next
+ *  to rows with no pills at all. The busiest shape the assembler can produce,
+ *  and the one the pill strip's height has to survive: with `.pills`
+ *  content-sized, this row's strip grew tall enough to squeeze `.rdays` to
+ *  zero, and a zero-height `.rday.wknd` paints no weekend stripe — the one
+ *  property the 28-day row exists to produce. Row 1 is left empty on purpose,
+ *  so a spec can compare the two and see the strip is the same height in
+ *  both, which is what `MAX_PILL_LANES` is for. */
+const threeLanesBigYear = (): BigYearPayload => {
+  const b = emptyBigYear(2026, RIBBON_START, YEAR_2026_START, YEAR_2027_START);
+
+  const span = (id: number, title: string, color: string, from: number, to: number) => ev({
+    id, title, is_all_day: true, color,
+    start_ms: RIBBON_START + from * 24 * H, end_ms: RIBBON_START + (to + 1) * 24 * H,
+  });
+
+  b.rows[0].pill_events = [
+    span(920, 'Berlin trip', '#5b8def', 2, 12),
+    span(921, 'Rahul on leave', '#e2a03f', 4, 9),
+    span(922, 'Team offsite', '#2dd4bf', 6, 8),
+    span(923, 'Diwali', '#f472b6', 7, 7),
+  ];
+  b.rows[0].pills = [
+    { idx: 0, lane: 0, start_col: 2, end_col: 12, cont_left: false, cont_right: false },
+    { idx: 1, lane: 1, start_col: 4, end_col: 9, cont_left: false, cont_right: false },
+    { idx: 2, lane: 2, start_col: 6, end_col: 8, cont_left: false, cont_right: false },
+  ];
+  // `pack_lanes` caps at three, so the fourth overlapping span is folded away.
+  b.rows[0].overflow = [3];
+
+  return b;
+};
+
 export const FIXTURES: Record<string, Record<string, any>> = {
   WeekGrid: {
     empty: { week: emptyWeek() },
@@ -735,6 +768,7 @@ export const FIXTURES: Record<string, Record<string, any>> = {
     crossing: { ribbon: crossingBigYear() },
     'two-pills': { ribbon: twoPillsBigYear() },
     'same-name-legend': { ribbon: sameNameLegendBigYear() },
+    'three-lanes': { ribbon: threeLanesBigYear() },
   },
   EventBlock: {
     // The duration ladder.

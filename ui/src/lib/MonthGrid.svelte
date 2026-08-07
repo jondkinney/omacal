@@ -12,10 +12,18 @@
     ondaypick: (startMs: number) => void;
   } = $props();
 
-  // A row's own lane count from `bars` alone would collapse to 0 when a row
-  // has no bars, which is the common case — every row still needs a fixed
-  // strip height so cells below it line up across rows. `pack_lanes` caps at
-  // 3, so that is the strip's height regardless of what any one row uses.
+  // `pack_lanes`'s own cap, mirrored here so the row-level "+N more" can be
+  // placed on the track just past the last lane a bar can occupy.
+  //
+  // It does *not* fix the bar strip's height: `.bars` is content-sized, so a
+  // row with no bars gets a 4px strip and a two-lane row gets 36px, and the
+  // cells below them are correspondingly 90px and 58px. `BigYearRibbon`
+  // reserves its lanes with `grid-template-rows` to keep its day strips level;
+  // the same change here is not a one-liner, because a month row has only
+  // ~95px to divide and a reserved 53px strip leaves 41px of cell — measured,
+  // that squeezes all three timed lines to 0.05px and the event titles
+  // disappear. Levelling these strips needs a real height budget for the
+  // cell, which is a Month-view change, not a Big-Year one.
   const MAX_BAR_LANES = 3;
   // How many timed lines a cell shows before folding the rest into "+N more".
   // Matches `pack_lanes`'s own lane cap for bars — three is what a narrow
@@ -50,7 +58,7 @@
 <div class="grid">
   {#each month.rows as row}
     <div class="mrow">
-      <div class="bars" style="--lanes:{MAX_BAR_LANES}">
+      <div class="bars">
         {#each row.bars as lane (`${lane.idx}:${lane.lane}`)}
           {@const ev = row.bar_events[lane.idx]}
           <button

@@ -956,6 +956,27 @@ test.describe('BigYearRibbon', () => {
     expect(await page.evaluate(() => (window as any).__lastOpen)).toBeTruthy();
   });
 
+  test('a fully packed row keeps its day strip, and its weekend stripes with it', async ({ page }) => {
+    // The weekend shading is `.rday`'s own background, so a day strip with no
+    // height is a row with no stripes — and the stripes are the whole reason
+    // the rows are 28 days. With `.pills` content-sized, row 0 here (three
+    // lanes plus a "+N more") pushed `.rdays` to exactly 0 and its days spilled
+    // over the row below, while every quieter row was fine — so the busiest
+    // row, the one that most needs reading, was the one that lost the property.
+    await page.goto(show('three-lanes'));
+    const packed = page.locator('.rrow').first();
+    expect((await packed.locator('.rdays').boundingBox())!.height).toBeGreaterThan(0);
+    expect((await packed.locator('.rday.wknd').first().boundingBox())!.height).toBeGreaterThan(0);
+
+    // And the strip is the same height in a packed row as in an empty one:
+    // that is what `MAX_PILL_LANES` reserving three lanes buys, and without it
+    // every row's days sat at a different height down the page.
+    const quiet = page.locator('.rrow').nth(2);
+    const packedDays = (await packed.locator('.rdays').boundingBox())!.height;
+    const quietDays = (await quiet.locator('.rdays').boundingBox())!.height;
+    expect(Math.abs(packedDays - quietDays)).toBeLessThan(1);
+  });
+
   test('two co-existing pills in one row each keep their own title', async ({ page }) => {
     // `y2026` and `crossing` never pack more than one pill per row, so `idx`
     // and `lane` never diverge there — a `pill_events[lane.idx]` /
