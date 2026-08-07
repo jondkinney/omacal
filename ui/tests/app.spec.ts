@@ -273,6 +273,28 @@ test.describe('App', () => {
     expect(Number(shown)).toBe(1786341600000); // the day that was clicked
   });
 
+  test('the anchor date reaches Year view too, but never Big Year', async ({ page }) => {
+    // Spec §5 says "every switch", and Year is a switch. `yearNum` is its own
+    // counter seeded from the real clock, so Year used to open on the current
+    // year no matter where the anchor stood — here, anchored in Aug 2026 under
+    // a clock frozen to Jan 2024, it opened on 2024.
+    await page.goto(app('connected'));
+    await expect(page.locator('.vswitch button')).toHaveCount(5); // mount race — see above
+    await page.keyboard.press('3');
+    await page.locator('.mcell .num').nth(14).click(); // anchors on 10 Aug 2026
+    await expect(page.locator('.col')).toHaveCount(1);
+
+    await page.keyboard.press('4');
+    await expect(page.locator('.ygrid')).toHaveAttribute('data-year', '2026');
+
+    // Big Year is deliberately left out: spec §4 bounds it to the real current
+    // year and the next, so an anchor in the past has nowhere to put it —
+    // seeding it would either break the bound or drag the anchor forward past
+    // it. The clock is frozen to Jan 2024, so that bound is 2024.
+    await page.keyboard.press('5');
+    await expect(page.locator('.ribbon')).toHaveAttribute('data-year', '2024');
+  });
+
   // Whole-branch review, finding 1: the `<h1>` was derived from `weekStartMs`
   // in every view, so Day and Month — which render `anchorMs`'s own month —
   // were titled with the month the *Monday of that week* falls in. The two

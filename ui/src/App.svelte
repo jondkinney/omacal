@@ -40,8 +40,24 @@
   // Big Year must never drag a past `anchorMs` forward to satisfy its own
   // bound (spec §4). Both start on the real current year, same reasoning as
   // `anchorMs` starting on today.
+  //
+  // `yearNum` is re-seeded from `anchorMs` on the way into Year view (see
+  // `pick`) — a separate counter is how Year *steps*, not licence for it to
+  // open somewhere other than where you were looking. `bigYearNum` is not,
+  // for the bound above.
   let yearNum = $state(new Date().getFullYear());
   let bigYearNum = $state(new Date().getFullYear());
+
+  // `jiff` rejects a civil date outside -9999..=9999, and `assemble_big_year`
+  // asks for `year + 1`, so `year_start_ms(10000, ..)` panics rather than
+  // erroring — a stuck `L` key is enough to reach it. The lower bound is the
+  // epoch: nothing below it is reachable through any other view, and negative
+  // millisecond boundaries are untested the whole way down. Year view is
+  // freely navigable in both directions (spec §4), so this is a guard against
+  // a crash, not a policy about which years are interesting — no year anyone
+  // can have data for is on the far side of it.
+  const YEAR_MIN = 1970;
+  const YEAR_MAX = 9998;
 
   // Derived purely for Header's title, and only in Week view: the week of Mon
   // 29 Jan reads "January" even though it runs into February. Day and Month
@@ -264,6 +280,20 @@
   // through, so neither path can diverge from the other. All five slots are
   // live (spec §10) — nothing left to turn away here.
   function pick(v: View) {
+    // Spec §5 and the DoD: the anchor survives every switch, and Year is a
+    // switch like any other. `yearNum` starts on the real current year, so
+    // without this an anchor on 28 Dec 2022 opened Year on the current year
+    // instead — a jump of however long the app had been running against that
+    // anchor. Re-seeded on every entry rather than only the first, so Year
+    // agrees with the Month view the user just came from; Year's own `‹`/`›`
+    // move `yearNum` alone, and that navigation is not meant to outlive a
+    // trip through another view.
+    //
+    // Deliberately not `bigYearNum`: Big Year is bounded to the current year
+    // and the next, so seeding it from a past anchor would have to either
+    // break that bound or drag the anchor forward past it — see its
+    // declaration, and `step` below.
+    if (v === 'year') yearNum = new Date(anchorMs).getFullYear();
     view = v;
   }
 
@@ -279,7 +309,10 @@
   function step(dir: 1 | -1) {
     // Year and Big Year step `yearNum`/`bigYearNum`, not `anchorMs` — see
     // their declaration above for why the two are kept apart.
-    if (view === 'year') { yearNum += dir; return; }
+    if (view === 'year') {
+      yearNum = Math.min(Math.max(yearNum + dir, YEAR_MIN), YEAR_MAX);
+      return;
+    }
     if (view === 'bigyear') {
       // Spec §4: Big Year is a planning surface — what is coming, not what
       // happened — so it is bounded to the real current year and next, and
