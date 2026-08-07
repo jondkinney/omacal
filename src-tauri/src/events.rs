@@ -556,7 +556,7 @@ async fn create_impl(
         anyhow::bail!("demo mode — there is nothing to create");
     }
 
-    let (cal_google_id, access_role, account_email) =
+    let (cal_google_id, access_role, account_email, cal_tz) =
         omacal_store::calendar_for_write(&state.pool, calendar_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("that calendar is no longer here"))?;
@@ -575,7 +575,9 @@ async fn create_impl(
     let token = crate::access_token_for(state, &cfg, &account_email).await?;
     let client = omacal_google::CalendarClient::new(crate::GOOGLE_CALENDAR_API, &token);
 
-    let id = create_via_client(&state.pool, calendar_id, &cal_google_id, fields, &client).await?;
+    let id =
+        create_via_client(&state.pool, calendar_id, &cal_google_id, &cal_tz, fields, &client)
+            .await?;
 
     event_detail_impl(state, id).await
 }
@@ -589,6 +591,19 @@ async fn create_impl(
 /// function's whole point is "only send what changed from a *before*", and a
 /// create has no before — every field on it is new.
 ///
+/// `cal_tz` is the *calendar's own* stored timezone (`calendars.timezone`,
+/// via `calendar_for_write`), deliberately not `fields.tz` — the zone the
+/// event happens to be authored in. For a timed event the two never diverge
+/// in practice: `event_time_json` sends `dateTime` with an explicit offset,
+/// `resolve` (in `omacal-sync`) parses that offset directly and never
+/// consults `cal_tz` at all. An all-day event is the case that makes them
+/// diverge: Google's wire format for `start`/`end` there is a bare `date`
+/// with no zone of its own, so `resolve` *always* falls back to `cal_tz` to
+/// turn "2026-08-10" into an instant — and sync always resolves every other
+/// all-day row on this calendar against `calendars.timezone`. Passing
+/// `fields.tz` here instead would store this one row at a different instant
+/// than the very next sync recomputes it at, until sync corrects it.
+///
 /// Returns the local row id rather than an `EventDetail`: reading the
 /// freshly-written row back needs the `AppState` [`event_detail_impl`] takes,
 /// which this function is deliberately not handed — the same reason
@@ -597,6 +612,7 @@ async fn create_via_client(
     pool: &SqlitePool,
     calendar_id: i64,
     cal_google_id: &str,
+    cal_tz: &str,
     fields: crate::write::EventFields,
     client: &omacal_google::CalendarClient,
 ) -> anyhow::Result<i64> {
@@ -619,7 +635,7 @@ async fn create_via_client(
     // shaped identically to one that arrived through an ordinary sync,
     // rather than drifting from it through a second, hand-rolled conversion
     // — the exact hazard `to_stored` exists to have only one of.
-    let row = omacal_sync::to_stored(&created, calendar_id, &f.tz).ok_or_else(|| {
+    let row = omacal_sync::to_stored(&created, calendar_id, cal_tz).ok_or_else(|| {
         anyhow::anyhow!("Google returned an event omacal could not store")
     })?;
 
@@ -1578,19 +1594,20 @@ mod tests {
     // in this file that writes something into existence rather than
     // changing something that already exists.
 
-    /// One calendar with the given `access_role`, owned by a fresh account —
-    /// everything `create_impl` needs to resolve before it can build a
-    /// request. Returns the calendar's local row id, the same shape
-    /// `seeded_pool_with` returns an event id for.
-    async fn seed_calendar(pool: &SqlitePool, access_role: &str) -> i64 {
+    /// One calendar with the given `access_role` and `timezone`, owned by a
+    /// fresh account — everything `create_impl` needs to resolve before it
+    /// can build a request. Returns the calendar's local row id, the same
+    /// shape `seeded_pool_with` returns an event id for.
+    async fn seed_calendar_with_tz(pool: &SqlitePool, access_role: &str, timezone: &str) -> i64 {
         sqlx::query("INSERT INTO accounts (google_sub, email, created_at) VALUES ('s','e@x',0)")
             .execute(pool)
             .await
             .unwrap();
         sqlx::query(
             "INSERT INTO calendars (account_id, google_id, summary, timezone, access_role)
-             VALUES (1, 'cal@x.com', 'Cal', 'UTC', ?1)",
+             VALUES (1, 'cal@x.com', 'Cal', ?1, ?2)",
         )
+        .bind(timezone)
         .bind(access_role)
         .execute(pool)
         .await
@@ -1601,9 +1618,17 @@ mod tests {
             .unwrap()
     }
 
-    /// A plain one-hour timed event, with nothing about its content under
-    /// test — the create tests below care about the demo/writability gates
-    /// and the write-back, not about which fields were set.
+    /// `seed_calendar_with_tz` with `UTC`, for the tests below that don't
+    /// care what the calendar's own zone is.
+    async fn seed_calendar(pool: &SqlitePool, access_role: &str) -> i64 {
+        seed_calendar_with_tz(pool, access_role, "UTC").await
+    }
+
+    /// A plain one-hour timed event, with a repeating rule set on purpose:
+    /// `a_created_event_is_stored_locally` asserts the whole request body,
+    /// and `recurrence: None` would let a mutation that silently dropped
+    /// `f.recurrence` from that body pass unnoticed, since there would be
+    /// nothing there to drop.
     fn sample_fields() -> crate::write::EventFields {
         crate::write::EventFields {
             summary: Some("Lunch".into()),
@@ -1613,7 +1638,7 @@ mod tests {
             end_ms: 1_786_446_000_000,
             is_all_day: false,
             tz: "Europe/Sofia".into(),
-            recurrence: None,
+            recurrence: Some(Some("RRULE:FREQ=WEEKLY".into())),
         }
     }
 
@@ -1627,11 +1652,13 @@ mod tests {
     #[tokio::test]
     async fn creating_refuses_in_demo_mode_without_touching_config_keyring_or_google() {
         let pool = omacal_store::connect_memory().await.unwrap();
-        let err = create_impl(&state_with(pool, true), 1, sample_fields())
-            .await
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("demo"), "got: {err}");
+        let err = create_impl(&state_with(pool, true), 1, sample_fields()).await.unwrap_err();
+        assert!(err.to_string().contains("demo"), "got: {err}");
+        // Binds the emitter to `errors.rs`'s allowlist: checking only
+        // `.contains` above would leave this green even if the two literals
+        // drifted apart (a trailing period added to one, say), while
+        // `create_event`'s real caller started reading OPAQUE instead.
+        assert_eq!(crate::errors::user_facing(&err), "demo mode — there is nothing to create");
     }
 
     /// A subscribed holiday calendar, or one shared with you read-only, is
@@ -1643,21 +1670,38 @@ mod tests {
     async fn creating_into_a_read_only_calendar_is_refused() {
         let pool = omacal_store::connect_memory().await.unwrap();
         let cal = seed_calendar(&pool, "reader").await;
-        let err = create_impl(&state_with(pool, false), cal, sample_fields())
-            .await
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("not writable"), "got: {err}");
+        let err = create_impl(&state_with(pool, false), cal, sample_fields()).await.unwrap_err();
+        assert!(err.to_string().contains("not writable"), "got: {err}");
+        assert_eq!(crate::errors::user_facing(&err), "this calendar is not writable from omacal");
     }
 
     /// The end-to-end write-back: `create_via_client` posts to Google, then
     /// stores the response through `omacal_sync::to_stored` — the same
     /// mapping a regular sync uses — via `upsert_event`, and returns the
     /// local row id it landed on.
+    ///
+    /// The mock binds both the destination (`path`) and the payload
+    /// (`body_json`, matched as the whole document) — not just that *a* POST
+    /// happened. Without both, three separate mistakes all pass 295/295:
+    /// posting to the wrong calendar id, silently dropping `recurrence` from
+    /// the body, and swapping `start`/`end`. `body_json` compares the whole
+    /// document, so it also tells "recurrence absent" from "recurrence
+    /// present and null" for free — `body["recurrence"].is_null()` alone
+    /// cannot, since `Value`'s `Index` returns `Null` for a missing key too.
     #[tokio::test]
     async fn a_created_event_is_stored_locally() {
+        let fields = sample_fields();
+        let expected_body = serde_json::json!({
+            "start": crate::write::event_time_json(fields.start_ms, fields.is_all_day, &fields.tz),
+            "end":   crate::write::event_time_json(fields.end_ms,   fields.is_all_day, &fields.tz),
+            "summary": "Lunch",
+            "recurrence": ["RRULE:FREQ=WEEKLY"],
+        });
+
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events"))
+            .and(wiremock::matchers::body_json(expected_body))
             .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "id": "g-new", "status": "confirmed", "etag": "\"e1\"",
                 "summary": "Lunch",
@@ -1672,12 +1716,61 @@ mod tests {
         let cal = seed_calendar(&pool, "owner").await;
         let client = omacal_google::CalendarClient::new(server.uri(), "tok");
 
-        let id = create_via_client(&pool, cal, "cal@x.com", sample_fields(), &client)
+        let id = create_via_client(&pool, cal, "cal@x.com", "UTC", fields, &client)
             .await
             .unwrap();
 
         let (row, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
         assert_eq!(row.google_id, "g-new");
         assert_eq!(row.calendar_id, cal, "the row must land on the calendar that was asked for");
+    }
+
+    /// All-day dates carry no timezone of their own on Google's wire format
+    /// (a bare `{"date": "..."}` , no `timeZone`) — see `create_via_client`'s
+    /// own doc comment. `resolve` (in `omacal-sync`) therefore always falls
+    /// back to whatever `cal_tz` it is handed, and sync always passes
+    /// `calendars.timezone`. This pins that `create_via_client` does too:
+    /// authored in `America/New_York`, stored on a calendar whose own zone is
+    /// `Pacific/Auckland`, the row must land where the calendar's zone puts
+    /// it — not where the authoring zone would have.
+    #[tokio::test]
+    async fn an_all_day_create_resolves_against_the_calendars_own_timezone_not_the_authoring_one() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "g-allday", "status": "confirmed", "etag": "\"e1\"",
+                "start": {"date": "2026-08-10"},
+                "end":   {"date": "2026-08-11"}
+            })))
+            .mount(&server)
+            .await;
+
+        let pool = omacal_store::connect_memory().await.unwrap();
+        let cal = seed_calendar_with_tz(&pool, "owner", "Pacific/Auckland").await;
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+
+        let mut fields = sample_fields();
+        fields.is_all_day = true;
+        fields.tz = "America/New_York".into(); // the authoring zone — must be ignored
+
+        let id = create_via_client(&pool, cal, "cal@x.com", "Pacific/Auckland", fields, &client)
+            .await
+            .unwrap();
+
+        let (row, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
+        let expected_start_utc = "2026-08-10"
+            .parse::<jiff::civil::Date>()
+            .unwrap()
+            .to_datetime(jiff::civil::Time::midnight())
+            .in_tz("Pacific/Auckland")
+            .unwrap()
+            .timestamp()
+            .as_millisecond();
+        assert_eq!(
+            row.start_utc, expected_start_utc,
+            "an all-day create must resolve against the calendar's own timezone, not the \
+             authoring one — otherwise it lands at a different instant than the next sync \
+             would recompute it at"
+        );
     }
 }
