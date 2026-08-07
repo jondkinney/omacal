@@ -184,17 +184,6 @@ fn n_day_boundaries(start_ms: i64, n: usize, tz: &str) -> Vec<i64> {
     out
 }
 
-/// The eight instants bounding a week's seven days.
-///
-/// A thin `n = 7` alias over `n_day_boundaries`, kept so the boundary-math
-/// tests below — written before Day/Month existed and calling this directly
-/// — don't need to thread a day count through. Has no caller outside
-/// `#[cfg(test)]`.
-#[cfg(test)]
-fn day_boundaries(week_start_ms: i64, tz: &str) -> Vec<i64> {
-    n_day_boundaries(week_start_ms, 7, tz)
-}
-
 /// Local midnight for a civil date, in `tz`, as epoch milliseconds. Falls
 /// back to UTC if the zone is unknown — the grid must still render, the same
 /// fallback philosophy as `n_day_boundaries`.
@@ -517,6 +506,157 @@ pub fn assemble_year(events: &[StoredEvent], year: i32, now_ms: i64, tz: &str) -
     YearPayload { year, months }
 }
 
+// This task wires `assemble_big_year` and its payload types up to tests
+// only; the `#[tauri::command]` wrapper and `invoke_handler` registration
+// belong to the ribbon-view task that consumes it (unlike `assemble_year`,
+// which landed together with `get_year` in the same task). Until that lands,
+// nothing outside `#[cfg(test)]` constructs these types, which `-D warnings`
+// would otherwise flag as dead code — same situation as `theme.rs` and
+// `Interval::overlaps`, and the same fix.
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize)]
+pub struct RibbonDay {
+    pub start_ms: i64,
+    /// False for days that spill into the year before or after — the ribbon
+    /// is a Monday-aligned 14x28 grid, which never lines up exactly on
+    /// 1 Jan or 31 Dec.
+    pub in_year: bool,
+    /// Outside the synced window (`synced_window`), same meaning as
+    /// `YearDay::unsynced`.
+    pub unsynced: bool,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize)]
+pub struct RibbonRow {
+    pub days: Vec<RibbonDay>, // always 28
+    /// All-day/multi-day spans, lane-packed at row_len 28, 3 lanes.
+    pub pills: Vec<Lane>,
+    pub pill_events: Vec<UiEvent>, // `Lane.idx` indexes into this
+    pub overflow: Vec<usize>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize)]
+pub struct BigYearPayload {
+    pub year: i32,
+    pub rows: Vec<RibbonRow>, // always 14
+    /// Every calendar with at least one pill, for the legend.
+    pub legend: Vec<LegendEntry>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize)]
+pub struct LegendEntry {
+    pub name: String,
+    pub color: Option<String>,
+}
+
+/// The Big Year ribbon: fourteen rows of 28 days (392 days total), anchored
+/// on the Monday on or before `year`-01-01 and running with overhang on both
+/// ends. Only all-day and multi-day events are shown — this view answers
+/// "does this leave request swallow a weekend", not "how busy is this day".
+///
+/// Rows are 28 days, not 29, even though 392 already covers the year with
+/// room to spare either width would give: 28 is a multiple of 7, so the
+/// weekend columns (`[5,6,12,13,19,20,26,27]`) fall in the same place in
+/// every row, reading as straight vertical stripes down the page. A 29-day
+/// row drifts the weekends diagonally instead, which quietly defeats the
+/// view's entire purpose. See
+/// `every_row_puts_its_weekends_in_the_same_columns`.
+#[allow(dead_code)]
+pub fn assemble_big_year(events: &[StoredEvent], year: i32, now_ms: i64, tz: &str) -> BigYearPayload {
+    use jiff::civil::{date, Weekday};
+
+    let mut d = date(year as i16, 1, 1);
+    while d.weekday() != Weekday::Monday {
+        d = d.yesterday().expect("civil date underflow");
+    }
+    let ribbon_start_ms = local_midnight_ms(d, tz);
+    let bounds = n_day_boundaries(ribbon_start_ms, 392, tz);
+
+    let year_start_ms = local_midnight_ms(date(year as i16, 1, 1), tz);
+    let next_year_start_ms = local_midnight_ms(date((year + 1) as i16, 1, 1), tz);
+    let (synced_from, synced_to) = crate::synced_window(now_ms);
+    let suppressed = suppressed_slots(events);
+
+    // Accumulated across every row: the calendar behind each *placed* pill —
+    // not one that overflowed into "+N more", which never becomes visible.
+    let mut legend_pairs: Vec<(i64, Option<String>)> = Vec::new();
+
+    let rows = (0..14)
+        .map(|r| {
+            let row_bounds = &bounds[r * 28..=r * 28 + 28];
+            let row_start = row_bounds[0];
+            let row_end = row_bounds[28];
+
+            let mut pill_events: Vec<UiEvent> = Vec::new();
+            let mut pill_calendars: Vec<(i64, Option<String>)> = Vec::new();
+            let mut segments: Vec<Segment> = Vec::new();
+
+            for src in events {
+                // A cancelled exception exists only to record that an
+                // occurrence was deleted; see `assemble_days`.
+                if src.status == "cancelled" {
+                    continue;
+                }
+                for iv in occurrences(src, row_start, row_end) {
+                    if suppressed.contains(&(src.calendar_id, src.google_id.as_str(), iv.start_ms)) {
+                        continue;
+                    }
+                    if src.is_all_day {
+                        let start_col = signed_column(row_bounds, iv.start_ms);
+                        // Google's all-day end is exclusive, so the last
+                        // covered day is one millisecond before it.
+                        let end_col = signed_column(row_bounds, iv.end_ms - 1);
+                        segments.push(Segment { idx: pill_events.len(), start_col, end_col });
+                        pill_calendars.push((src.calendar_id, src.color_hex.clone()));
+                        pill_events.push(to_ui(src, iv.start_ms, iv.end_ms));
+                    }
+                }
+            }
+
+            // Three lanes, matching the spec's row height.
+            let (pills, overflow) = pack_lanes(&segments, 28, 3);
+
+            for lane in &pills {
+                legend_pairs.push(pill_calendars[lane.idx].clone());
+            }
+
+            let days = (0..28)
+                .map(|c| {
+                    let start_ms = row_bounds[c];
+                    RibbonDay {
+                        start_ms,
+                        in_year: start_ms >= year_start_ms && start_ms < next_year_start_ms,
+                        unsynced: start_ms < synced_from || start_ms >= synced_to,
+                    }
+                })
+                .collect();
+
+            RibbonRow { days, pills, pill_events, overflow }
+        })
+        .collect();
+
+    legend_pairs.sort_by_key(|(cid, _)| *cid);
+    legend_pairs.dedup_by_key(|(cid, _)| *cid);
+    let legend = legend_pairs
+        .into_iter()
+        .map(|(cid, color)| LegendEntry {
+            // `StoredEvent` carries no calendar name: `calendars.summary`
+            // exists (see `omacal_store::calendars::CalendarRow`) but
+            // `SELECT_COLS` never joins it in, and this function's signature
+            // takes no calendars list to join it from here either. A real
+            // label needs one of those to change; flagged in the task
+            // report rather than silently invented.
+            name: format!("Calendar {cid}"),
+            color,
+        })
+        .collect();
+
+    BigYearPayload { year, rows, legend }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -619,7 +759,7 @@ mod tests {
 
     #[test]
     fn a_dst_week_contains_a_twenty_five_hour_day() {
-        let bounds = day_boundaries(dst_week_start(), "Europe/Sofia");
+        let bounds = n_day_boundaries(dst_week_start(), 7, "Europe/Sofia");
         let lengths: Vec<i64> = bounds.windows(2).map(|w| w[1] - w[0]).collect();
         assert_eq!(lengths.len(), 7);
         assert!(
@@ -630,7 +770,7 @@ mod tests {
 
     #[test]
     fn a_normal_week_has_seven_equal_days() {
-        let bounds = day_boundaries(dst_week_start() - 7 * DAY, "Europe/Sofia");
+        let bounds = n_day_boundaries(dst_week_start() - 7 * DAY, 7, "Europe/Sofia");
         let lengths: Vec<i64> = bounds.windows(2).map(|w| w[1] - w[0]).collect();
         assert!(lengths.iter().all(|&l| l == DAY), "got {lengths:?}");
     }
@@ -638,7 +778,7 @@ mod tests {
     #[test]
     fn an_event_late_on_a_long_day_stays_inside_its_column() {
         let start = dst_week_start();
-        let bounds = day_boundaries(start, "Europe/Sofia");
+        let bounds = n_day_boundaries(start, 7, "Europe/Sofia");
         // 24h30m into the 25-hour Sunday: valid, and only representable
         // because the day window is its true length.
         let late = bounds[6] + 24 * 3_600_000 + 1_800_000;
@@ -653,7 +793,7 @@ mod tests {
 
     #[test]
     fn an_unknown_timezone_still_produces_seven_days() {
-        let bounds = day_boundaries(MON, "Mars/Olympus_Mons");
+        let bounds = n_day_boundaries(MON, 7, "Mars/Olympus_Mons");
         assert_eq!(bounds.len(), 8);
         assert_eq!(bounds[7] - bounds[0], 7 * DAY);
     }
@@ -1027,5 +1167,70 @@ mod tests {
         let y = assemble_year(&[], 2026, 1_786_341_600_000, "Europe/Sofia");
         assert!(y.months[0].days[0].unsynced, "1 Jan 2026 is before now-180d");
         assert!(!y.months[7].days[0].unsynced, "1 Aug 2026 is inside the window");
+    }
+
+    #[test]
+    fn the_ribbon_starts_on_the_monday_before_new_year_and_runs_fourteen_rows() {
+        let b = assemble_big_year(&[], 2026, 1_786_341_600_000, "Europe/Sofia");
+        assert_eq!(b.rows.len(), 14);
+        assert_eq!(b.rows[0].days.len(), 28);
+        // 1 Jan 2026 is a Thursday, so the ribbon opens Mon 29 Dec 2025.
+        assert_eq!(b.rows[0].days[0].start_ms, 1766959200000);
+        assert_eq!(b.rows[1].days[0].start_ms, 1769378400000);
+        assert_eq!(b.rows[13].days[0].start_ms, 1798408800000);
+        assert!(!b.rows[0].days[0].in_year, "29 Dec 2025 belongs to the year before");
+    }
+
+    #[test]
+    fn every_row_puts_its_weekends_in_the_same_columns() {
+        // This is the entire reason rows are 28 days and not the reference
+        // image's 29: at 28 the weekend columns are constant, so the shading
+        // reads as straight vertical stripes instead of drifting diagonally.
+        // A later "tidy-up" to 29 would break exactly this.
+        use jiff::{civil::Weekday, Timestamp};
+        let b = assemble_big_year(&[], 2026, 1_786_341_600_000, "Europe/Sofia");
+        let expected = [5usize, 6, 12, 13, 19, 20, 26, 27];
+        for (r, row) in b.rows.iter().enumerate() {
+            let weekend: Vec<usize> = row
+                .days
+                .iter()
+                .enumerate()
+                .filter(|(_, d)| {
+                    let wd = Timestamp::from_millisecond(d.start_ms)
+                        .unwrap()
+                        .in_tz("Europe/Sofia")
+                        .unwrap()
+                        .weekday();
+                    wd == Weekday::Saturday || wd == Weekday::Sunday
+                })
+                .map(|(i, _)| i)
+                .collect();
+            assert_eq!(weekend, expected, "row {r} weekend columns drifted");
+        }
+    }
+
+    #[test]
+    fn a_span_crossing_a_row_boundary_splits_and_both_halves_know_it() {
+        // 28-day rows guarantee this happens; `pack_lanes` already sets
+        // `cont_left`/`cont_right` when it clips, so the renderer's `‹`
+        // marker is a flag being read, not recomputed.
+        // Sun 25 Jan .. Tue 27 Jan 2026 inclusive, so the end is Wed 28 at
+        // 00:00 — Google's all-day end is exclusive. Row 0 ends on Sun 25
+        // Jan, so this straddles the row 0/1 boundary by construction.
+        let ev = vec![all_day_event(1769292000000, 1769551200000)];
+        let b = assemble_big_year(&ev, 2026, 1_786_341_600_000, "Europe/Sofia");
+        let r0: Vec<_> = b.rows[0].pills.iter().collect();
+        let r1: Vec<_> = b.rows[1].pills.iter().collect();
+        assert_eq!(r0.len(), 1, "row 0 carries the Sunday tail");
+        assert_eq!(r1.len(), 1, "row 1 carries the Mon-Tue head");
+        assert!(r0[0].cont_right, "row 0's half continues past the row");
+        assert!(r1[0].cont_left, "row 1's half began before the row");
+    }
+
+    #[test]
+    fn only_all_day_and_multi_day_events_reach_the_ribbon() {
+        let timed = vec![timed_event(1_786_341_600_000, 1_786_341_600_000 + 3_600_000)];
+        let b = assemble_big_year(&timed, 2026, 1_786_341_600_000, "Europe/Sofia");
+        assert!(b.rows.iter().all(|r| r.pills.is_empty()));
     }
 }
