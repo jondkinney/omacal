@@ -629,10 +629,27 @@ const bigYear2026 = (): BigYearPayload => {
   ];
 
   b.legend = [
-    { name: 'plamen@excitel.com', color: '#e2a03f' },
-    { name: 'work@excitel.com', color: '#2dd4bf' },
+    { name: 'plamen@excitel.com', color: '#e2a03f', calendar_id: 1 },
+    { name: 'work@excitel.com', color: '#2dd4bf', calendar_id: 2 },
   ];
 
+  return b;
+};
+
+/** Two legend entries whose `name` is byte-identical, on different calendars.
+ *  Reachable the moment a second account is connected (Plan 1c): two accounts
+ *  subscribed to the same public calendar both report it under the same
+ *  `summary`, and `get_big_year` copies that verbatim into `name`. Keying the
+ *  legend's `{#each}` by `name` makes Svelte 5 throw `each_key_duplicate` —
+ *  which does not degrade to a broken legend, it takes the whole ribbon down
+ *  (`items=0 rows=0`). Same pills as `bigYear2026`, so the spec that reads
+ *  this can assert on rows and pills as well as on the legend itself. */
+const sameNameLegendBigYear = (): BigYearPayload => {
+  const b = bigYear2026();
+  b.legend = [
+    { name: 'Holidays in Bulgaria', color: '#e2a03f', calendar_id: 1 },
+    { name: 'Holidays in Bulgaria', color: '#2dd4bf', calendar_id: 2 },
+  ];
   return b;
 };
 
@@ -660,7 +677,7 @@ const crossingBigYear = (): BigYearPayload => {
     { idx: 0, lane: 0, start_col: 0, end_col: 1, cont_left: true, cont_right: false },
   ];
 
-  b.legend = [{ name: 'plamen@excitel.com', color: '#5b8def' }];
+  b.legend = [{ name: 'plamen@excitel.com', color: '#5b8def', calendar_id: 1 }];
 
   return b;
 };
@@ -717,6 +734,7 @@ export const FIXTURES: Record<string, Record<string, any>> = {
     y2026: { ribbon: bigYear2026() },
     crossing: { ribbon: crossingBigYear() },
     'two-pills': { ribbon: twoPillsBigYear() },
+    'same-name-legend': { ribbon: sameNameLegendBigYear() },
   },
   EventBlock: {
     // The duration ladder.

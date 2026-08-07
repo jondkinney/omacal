@@ -937,6 +937,19 @@ test.describe('BigYearRibbon', () => {
     await expect(page.locator('.legend .item')).toHaveCount(2);
   });
 
+  test('two calendars sharing a name still render the whole ribbon', async ({ page }) => {
+    // Two accounts subscribed to the same public calendar report the same
+    // `summary`, which `get_big_year` copies verbatim into `name`. Keying the
+    // legend by `name` makes Svelte 5 throw `each_key_duplicate`, and that is
+    // not a broken legend — the component never mounts, so the rows go with
+    // it. The rows are asserted first for exactly that reason: the legend
+    // count alone would not say which failure mode this is guarding.
+    await page.goto(show('same-name-legend'));
+    await expect(page.locator('.rrow')).toHaveCount(14);
+    await expect(page.locator('.pill')).toHaveCount(2);
+    await expect(page.locator('.legend .item')).toHaveCount(2);
+  });
+
   test('clicking a pill opens the popover', async ({ page }) => {
     await page.goto(show('y2026'));
     await page.locator('.pill').first().click();

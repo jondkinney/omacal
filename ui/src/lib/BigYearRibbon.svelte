@@ -90,7 +90,14 @@
 
   {#if ribbon.legend.length}
     <div class="legend">
-      {#each ribbon.legend as entry (entry.name)}
+      <!-- Keyed by `calendar_id`, never by `name`: two accounts subscribed to
+           the same public calendar ("Holidays in Bulgaria") both report it
+           under that identical `summary`, which `get_big_year` copies
+           verbatim into `name`. A duplicate key is not a cosmetic problem in
+           Svelte 5 — `each_key_duplicate` throws, and the whole ribbon fails
+           to render, not just the legend. `calendar_id` is what the Rust side
+           already deduplicated on, so it is unique by construction. -->
+      {#each ribbon.legend as entry (entry.calendar_id)}
         <div class="item">
           <i class="dot" style="background:{entry.color ?? 'var(--muted)'}"></i>
           <span>{entry.name}</span>
