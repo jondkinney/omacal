@@ -348,6 +348,73 @@ test.describe('the form’s civil↔instant boundary (characterised, not fixed)'
       expect(v.saveable).toBe(false);
     });
   });
+
+  test.describe('Europe/Sofia browser, Auckland calendar — the all-day zone crossing', () => {
+    // The headline defect of Plan 6, and the one the Rust side has already
+    // closed: `EventInput` now carries a `date` for an all-day event, so no
+    // zone conversion happens on the wire at all. This is the **other half**,
+    // still open, and it is now the only thing pinning it — Task 2 correctly
+    // inverted the Rust characterisation test, which used to be its witness.
+    //
+    // The surviving lossiness is one line, `eventform.ts`'s
+    // `date: dateOf(startMs)` in `valueFromDetail`. `whenOf`'s all-day arm is a
+    // browser→browser round trip that gives `value.date` back unchanged in
+    // every ordinary case, so it is *not* where this goes wrong; the date is
+    // already the wrong one by the time it is reached, and the form has been
+    // displaying that wrong date since it opened.
+    //
+    // Task 4 inverts this: `valueFromDetail` takes `detail.start_date`, which
+    // Task 3 derives in the calendar's own zone, and both assertions below
+    // become the values their comments name.
+    test.use({ timezoneId: 'Europe/Sofia' });
+
+    test('CHARACTERISED: an all-day trip on a calendar east of the browser is shown, and saved, a day early', async ({ page }) => {
+      await page.goto(PURE);
+      const r = await page.evaluate(() => {
+        const ef = (window as any).__eventform;
+        // A one-day all-day trip on 10 Aug 2026, stored the way sync stores
+        // one: midnight in the *calendar's* zone, Pacific/Auckland (UTC+12).
+        // That is 12:00Z on the 9th — still the 9th to a Sofia browser (UTC+3,
+        // so 15:00), which is the whole defect.
+        const startMs = Date.UTC(2026, 7, 9, 12, 0);
+        const endMs = Date.UTC(2026, 7, 10, 12, 0);
+        const detail = {
+          id: 1, calendar_id: 1, title: 'Berlin trip', description: null, location: null,
+          conference_uri: null, start_ms: startMs, end_ms: endMs, is_all_day: true,
+          is_recurring: false, recurrence: null, repeat: 'never', color: null,
+          organizer_email: null, self_response: null, can_respond: true, can_edit: true,
+          attendees: [],
+        };
+        // Exactly what `App.openEdit` then `App.saveForm` do, with the user
+        // touching nothing at all.
+        const value = ef.valueFromDetail(detail, startMs, endMs);
+        const sent = ef.toEventInput(value, value);
+        return { shownFirstDay: value.date, shownLastDay: value.endDate, when: sent.when };
+      });
+
+      // WRONG, and wrong *before anybody presses Save*. Correct: '2026-08-10'.
+      // The trip is on the 10th in the zone the calendar keeps it in; Sofia
+      // reads the stored instant (12:00Z on the 9th) as the 9th.
+      expect(r.shownFirstDay).toBe('2026-08-09');
+      // Right, and that is what makes this hard to see. `valueFromDetail`
+      // derives the last day from `endMs - DAY_MS/2`, and the half-day of slack
+      // happens to absorb a 12-hour offset. **Only one end is wrong**, so the
+      // form shows a one-day trip as spanning the 9th to the 10th: two days,
+      // in a form where every field looks like a plausible date.
+      expect(r.shownLastDay).toBe('2026-08-10');
+
+      expect(r.when.kind).toBe('allDay');
+      // WRONG. Correct: '2026-08-10'. The trip starts a day earlier, for
+      // everyone on it, with `sendUpdates=all` behind the PATCH.
+      expect(r.when.startDate).toBe('2026-08-09');
+      // Right — and it being right is the harm rather than a consolation. The
+      // exclusive end of a one-day trip on the 10th *is* the 11th, so the end
+      // stays put while the start slides back: a one-day event is saved as a
+      // **two-day** one. An error at both ends would at least have kept the
+      // duration.
+      expect(r.when.endDate).toBe('2026-08-11');
+    });
+  });
 });
 
 test.describe('the anchor’s precision (characterised, not fixed)', () => {

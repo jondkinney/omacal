@@ -3996,6 +3996,170 @@ mod tests {
         );
     }
 
+    /// **The zone `shifted_when`'s all-day arm reads its dates in, and the only
+    /// fixture in this file that can see it.**
+    ///
+    /// That arm calls `date_in_zone` four times — on the target's two ends and
+    /// on the anchor's two — and every one of them is a *subtraction away* from
+    /// mattering. Put the whole arm on UTC and Auckland and New York both stay
+    /// green, because each shifts the target and the anchor by the **same**
+    /// number of UTC days in both seasons: Auckland is UTC+13 and UTC+12, so
+    /// midnight is the previous UTC date all year; New York is UTC-5 and UTC-4,
+    /// so it is the same UTC date all year. Either way the offsets cancel out of
+    /// `to - from` and the answer survives a zone it was never given.
+    ///
+    /// `Europe/Lisbon` is the one that does not cancel: **UTC+0 in January and
+    /// UTC+1 in August**, so the master's midnight is the same UTC date and the
+    /// clicked occurrence's is the previous one. Read in UTC the anchor moves a
+    /// day and the target does not, so a title-only save sends
+    /// `{"start":{"date":"2026-01-06"}}` — the series' DTSTART a day forward,
+    /// every occurrence with it, `sendUpdates=all`.
+    ///
+    /// The two fixture checks below are what keep that true. If either instant
+    /// stops straddling midnight the way it does here, this test goes on passing
+    /// while proving nothing, which is exactly how the suite stayed blind to the
+    /// defect this whole plan exists to close.
+    #[test]
+    fn an_all_day_series_reads_its_dates_in_the_calendars_zone_not_utc() {
+        const CAL_TZ: &str = "Europe/Lisbon";
+
+        let mut ev = all_day_row("2026-01-05", "2026-01-06", CAL_TZ);
+        ev.recurrence = Some("RRULE:FREQ=WEEKLY".into());
+        let occurrence = midnight_in("2026-08-10", CAL_TZ);
+
+        assert_eq!(
+            jiff::Timestamp::from_millisecond(ev.start_utc).unwrap().to_string(),
+            "2026-01-05T00:00:00Z",
+            "fixture check: the master's midnight must fall on the *same* UTC date"
+        );
+        assert_eq!(
+            jiff::Timestamp::from_millisecond(occurrence).unwrap().to_string(),
+            "2026-08-09T23:00:00Z",
+            "fixture check: the occurrence's midnight must fall on the *previous* UTC \
+             date. Together with the check above, that is what stops the two offsets \
+             cancelling — without it a UTC derivation passes unnoticed"
+        );
+
+        // The user changed the title and nothing else.
+        let mut after = all_day_form("Berlin trip (booked)", "2026-08-10", "2026-08-11");
+        after.tz = "Europe/Sofia".into();
+
+        let body = edit_patch_body(&ev, ev.start_utc, ev.end_utc, occurrence, CAL_TZ, &after);
+
+        assert_eq!(body["summary"], "Berlin trip (booked)");
+        assert!(
+            body.get("start").is_none(),
+            "the dates were derived in the wrong zone: the master's DTSTART moves a day \
+             forward and takes every occurrence with it: {body}"
+        );
+        assert!(body.get("end").is_none(), "{body}");
+    }
+
+    /// Turning **All day on** for a whole series, with the form's date agreeing
+    /// with the event's own zone.
+    ///
+    /// The arm is chosen by the *form's* variant, so this crosses from a timed
+    /// before-side to an all-day after-side — the mixed case that has no branch
+    /// of its own. The master must become an all-day event on **its own** date,
+    /// not on the clicked occurrence's seven months later.
+    ///
+    /// `cal_tz` is deliberately a third zone nothing should reach: for a timed
+    /// row `edit_zone` answers `ev.start_tz`, so an implementation that took the
+    /// calendar's zone here fails on this fixture rather than passing by
+    /// coincidence.
+    ///
+    /// **`America/Argentina/Buenos_Aires` and not just any third zone.** These
+    /// dates are a *difference*, so a wrong zone only shows when it moves the
+    /// target and the anchor by different numbers of days. Buenos Aires is
+    /// UTC-3 with no daylight saving, against New York's UTC-5 and UTC-4: it
+    /// reads the January instant as the next day and the August one as the same
+    /// day, so the two do not cancel. `Pacific/Auckland` was the first choice
+    /// here and was **wrong** — it shifts both by +1 and the substitution passes
+    /// unnoticed.
+    #[test]
+    fn turning_on_all_day_for_a_series_lands_on_the_masters_own_date() {
+        const CAL_TZ: &str = "America/Argentina/Buenos_Aires";
+
+        let mut ev = weekly_master("RRULE:FREQ=WEEKLY");
+        ev.start_tz = "America/New_York".into();
+        ev.end_tz = "America/New_York".into();
+        ev.start_utc = ny("2026-01-05T22:00:00");
+        ev.end_utc = ny("2026-01-05T23:00:00");
+
+        let occurrence = ny("2026-08-10T22:00:00");
+        assert_ne!(
+            crate::write::date_in_zone(ev.start_utc, CAL_TZ) == "2026-01-05",
+            crate::write::date_in_zone(occurrence, CAL_TZ) == "2026-08-10",
+            "fixture check: the calendar's zone must disagree with the event's own on \
+             exactly one of these two instants. If it disagrees on both, the offsets \
+             cancel out of the subtraction and a wrong zone passes unnoticed"
+        );
+
+        // A New York user: the form shows the 10th, which is the occurrence's
+        // date in the event's own zone, so the shift is zero.
+        let after = all_day_form("Standup", "2026-08-10", "2026-08-11");
+
+        let body = edit_patch_body(&ev, ev.start_utc, ev.end_utc, occurrence, CAL_TZ, &after);
+
+        assert_eq!(
+            body["start"],
+            serde_json::json!({ "date": "2026-01-05" }),
+            "the master became all-day on the clicked occurrence's date rather than its \
+             own, which drops every occurrence before it: {body}"
+        );
+        assert_eq!(body["end"], serde_json::json!({ "date": "2026-01-06" }), "{body}");
+    }
+
+    /// The same toggle from a browser a day ahead of the event's own zone — the
+    /// residual `shifted_when` documents, pinned so its **size** is a fact
+    /// rather than a claim.
+    ///
+    /// 22:00 in New York is 05:00 the next morning in Sofia, so the form shows
+    /// the 11th and the user means the 11th. That reads as a one-day shift, and
+    /// the master moves one day. It is wrong — the display half of this same
+    /// boundary, which design §3 leaves open for timed rows — but it is wrong by
+    /// **a day**, not by the seven months a form value sent verbatim would cost.
+    ///
+    /// If a later task closes the display half for timed rows, this test is the
+    /// one to invert: `2026-01-05`/`2026-01-06` becomes the right answer.
+    #[test]
+    fn turning_on_all_day_from_a_browser_a_day_ahead_moves_the_master_by_one_day_not_seven_months() {
+        let mut ev = weekly_master("RRULE:FREQ=WEEKLY");
+        ev.start_tz = "America/New_York".into();
+        ev.end_tz = "America/New_York".into();
+        ev.start_utc = ny("2026-01-05T22:00:00");
+        ev.end_utc = ny("2026-01-05T23:00:00");
+
+        let occurrence = ny("2026-08-10T22:00:00");
+        assert_eq!(
+            crate::write::date_in_zone(occurrence, "Europe/Sofia"),
+            "2026-08-11",
+            "fixture check: the browser must genuinely read this occurrence as the next \
+             day, or this test is the one above with different numbers"
+        );
+
+        let after = all_day_form("Standup", "2026-08-11", "2026-08-12");
+
+        // The same non-cancelling third zone as the test above, for the same
+        // reason — see its fixture check.
+        let body = edit_patch_body(
+            &ev,
+            ev.start_utc,
+            ev.end_utc,
+            occurrence,
+            "America/Argentina/Buenos_Aires",
+            &after,
+        );
+
+        assert_eq!(
+            body["start"],
+            serde_json::json!({ "date": "2026-01-06" }),
+            "bounded: one day off the master's own date. Not 2026-08-11, which is the \
+             form's value sent verbatim and would drop seven months of occurrences: {body}"
+        );
+        assert_eq!(body["end"], serde_json::json!({ "date": "2026-01-07" }), "{body}");
+    }
+
     /// A scope this command does not implement must be refused rather than
     /// left to fall through: [`target_event_id`] reads every scope that is not
     /// `"all"` as "this one", so an unrecognised one would silently edit a
