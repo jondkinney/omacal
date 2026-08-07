@@ -204,6 +204,14 @@ const cal = (o: Partial<Calendar> & { id: number; account_email: string; summary
   ...o,
 });
 
+/** A fixture instant as the `yyyy-mm-dd` its calendar keeps it on.
+ *
+ *  Every all-day fixture here sits at **UTC** midnight, so the calendar these
+ *  fixtures describe is a UTC one and `toISOString` reads the date back
+ *  exactly. Deliberately not `dateOf`, which answers in whatever zone the
+ *  reader is in — the very substitution `valueFromDetail` no longer makes. */
+const utcDate = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
+
 const attendee = (o: Partial<Attendee> & { email: string }): Attendee => ({
   display_name: null,
   response_status: 'needsAction',
@@ -221,14 +229,17 @@ const detail = (o: Partial<EventDetail> & { id: number }): EventDetail => ({
   start_ms: MON + 9 * H,
   end_ms: MON + 9 * H + 30 * 60_000,
   // `null` on both, matching `is_all_day: false` below — the Rust side sends
-  // dates only for an all-day event.
+  // dates for an all-day event and for nothing else, and sends both or neither.
   //
-  // The all-day fixtures further down keep these defaults, and for a real
-  // event that pairing is a shape `event_detail_impl` cannot produce. Nothing
-  // reads either field yet: `valueFromDetail` still derives its dates from
-  // `start_ms` in the browser's zone, which is the half of the defect Task 4
-  // closes. That is the task that gives the all-day fixtures their real dates,
-  // and inverts the spec that currently pins the wrong ones.
+  // **Every all-day fixture must therefore override both**, and they all do.
+  // The pairing `is_all_day: true` with these defaults is a shape
+  // `event_detail_impl` cannot produce, and it used to sit in four fixtures
+  // here — which mattered, because a null-defaulting fixture invites a
+  // defensive `detail.start_date ?? dateOf(start_ms)` in `valueFromDetail`,
+  // and that fallback is the browser-zone derivation this branch exists to
+  // delete. It would have kept the defect alive with every spec green.
+  // `valueFromDetail` throws on a null date rather than substituting one, so a
+  // fixture that forgets them fails loudly at import instead.
   start_date: null,
   end_date: null,
   is_all_day: false,
@@ -408,6 +419,10 @@ const ALLDAY_RECURRING: UiEvent = ev({
 POPOVER_DETAILS[80] = detail({
   id: 80, title: 'Team off-site', is_all_day: true,
   start_ms: MON, end_ms: MON + 24 * H,
+  // The dates `event_detail_impl` derives for this row. `end_date` is the
+  // **inclusive** last day, so a one-day event names the same date twice —
+  // never `end_ms`'s own date, which is the exclusive midnight after it.
+  start_date: utcDate(MON), end_date: utcDate(MON),
   attendees: [
     attendee({ email: 'ana@x.com', display_name: 'Ana', response_status: 'accepted' }),
     attendee({ email: 'me@x.com', is_self: true }),
@@ -419,6 +434,11 @@ POPOVER_DETAILS[81] = detail({
   // `POPOVER_DETAILS[42]` sets for the timed path, which the all-day path
   // reaches through entirely different markup and so has to prove separately.
   start_ms: ALLDAY_SERIES_DTSTART, end_ms: ALLDAY_SERIES_DTSTART + 24 * H,
+  // The **master's** dates, therefore, and not the clicked chip's — derived
+  // from the row above, which is the DTSTART. Same trap one field over:
+  // `valueFromDetail` has to move them onto the occurrence it is given, or a
+  // form opened from the third chip shows the first day of the series.
+  start_date: utcDate(ALLDAY_SERIES_DTSTART), end_date: utcDate(ALLDAY_SERIES_DTSTART),
   attendees: [attendee({ email: 'me@x.com', is_self: true })],
 });
 
@@ -1010,6 +1030,14 @@ POPOVER_DETAILS[APP_ALLDAY_ID] = detail({
   is_all_day: true,
   is_recurring: true, recurrence: 'RRULE:FREQ=DAILY', repeat: 'daily',
   start_ms: APP_ALLDAY_SERIES_DTSTART, end_ms: APP_ALLDAY_SERIES_DTSTART + 24 * H,
+  // The **master's** own dates — Mon 29 Jan — because that is what the backend
+  // derives from the row above, and the clicked chip is Wed 31 Jan. The gap is
+  // the point: `valueFromDetail` must move these onto the occurrence it is
+  // given, and `app.spec.ts`'s "editing from an all-day chip sends the chip's
+  // own day" asserts the form shows 2024-01-31. Taking `start_date` verbatim
+  // is `detail.start_ms` all over again and fails there.
+  start_date: utcDate(APP_ALLDAY_SERIES_DTSTART),
+  end_date: utcDate(APP_ALLDAY_SERIES_DTSTART),
   attendees: [
     attendee({ email: 'ana@x.com', display_name: 'Ana', response_status: 'accepted' }),
     attendee({ email: 'me@x.com', is_self: true }),
@@ -1380,7 +1408,12 @@ export const FIXTURES: Record<string, Record<string, any>> = {
       anchor: ANCHOR,
       initial: editing(
         detail({ id: 14, title: 'Berlin trip', is_all_day: true, can_edit: true,
-                 start_ms: TRIP_START, end_ms: TRIP_END_EXCLUSIVE }),
+                 start_ms: TRIP_START, end_ms: TRIP_END_EXCLUSIVE,
+                 // Inclusive last day on `end_date` — Wednesday, not the
+                 // Thursday `end_ms` names — which is the whole reason this
+                 // scenario exists and now arrives already made rather than
+                 // being worked out from an instant.
+                 start_date: TRIP_FIRST_DAY, end_date: TRIP_LAST_DAY }),
         TRIP_START, TRIP_END_EXCLUSIVE,
       ),
       calendars: FORM_CALENDARS,

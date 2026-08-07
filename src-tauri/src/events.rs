@@ -2984,6 +2984,79 @@ mod tests {
         assert_eq!(d.end_date, None, "a timed event has no date of its own");
     }
 
+    /// **The Rust↔TypeScript wire contract for [`EventDetail`], pinned by
+    /// name.**
+    ///
+    /// This struct only ever crosses as JSON — `invoke<EventDetail>` on the
+    /// other side — and until this test nothing in the workspace serialized it
+    /// at all. Adding `#[serde(rename = "startDate")]` to
+    /// [`EventDetail::start_date`] passed `cargo test`, `cargo clippy` **and**
+    /// the UI's `npm run check`, while every all-day form read `undefined` for
+    /// the date it now depends on: no Playwright spec reaches Rust (they all
+    /// stub the detail themselves) and no Rust test looked at the JSON. The
+    /// names were pinned by nothing.
+    ///
+    /// The **whole** key set rather than the two new fields, because every name
+    /// here carries the same risk and a rename is as cheap for any of them.
+    /// Sorted, because the contract is the names — the UI reads properties, not
+    /// positions. The expected list is `ui/src/lib/eventdetail.ts`'s
+    /// `EventDetail` type: the two are meant to be diffed against each other,
+    /// and a field added on one side has to be added on the other or fail here.
+    #[tokio::test]
+    async fn an_event_detail_serializes_under_the_names_the_ui_reads() {
+        const CAL_TZ: &str = "Europe/Lisbon";
+
+        // An all-day row with a guest on it, so both halves below have
+        // something real to look at: a timed row would serialize `start_date`
+        // as `null` and an empty guest list would make the attendee check
+        // vacuous.
+        let mut ev = all_day_row("2026-08-10", "2026-08-11", CAL_TZ);
+        ev.attendees = vec![guest(true)];
+        let (pool, id) = seeded_pool_on_cal(&mut ev, CAL_TZ).await;
+        let d = event_detail_impl(&state_with(pool, false), id).await.unwrap();
+
+        let json = serde_json::to_value(&d).unwrap();
+        let obj = json.as_object().expect("an EventDetail must serialize as a JSON object");
+        let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+
+        let mut expected = [
+            "id", "calendar_id", "title", "description", "location",
+            "conference_uri", "start_ms", "end_ms", "start_date", "end_date",
+            "is_all_day", "is_recurring", "recurrence", "repeat", "color",
+            "organizer_email", "self_response", "can_respond", "can_edit",
+            "attendees",
+        ];
+        expected.sort_unstable();
+        assert_eq!(keys, expected, "the UI reads these by name off `invoke`'s result");
+
+        // Not merely present: an all-day event must carry both dates as
+        // strings. `valueFromDetail` takes them verbatim and has no fallback —
+        // deliberately, since the only fallback available is a date derived in
+        // the *browser's* zone, which is the defect this plan exists to close.
+        assert!(
+            obj["start_date"].is_string() && obj["end_date"].is_string(),
+            "an all-day detail must carry both dates, not null"
+        );
+
+        // The nested attendee, which crosses the same wire inside this one.
+        // `is_self` decides the form's `guestCount` — how many people a save
+        // emails — and is read by property name exactly like the rest.
+        //
+        // A *subset* check, not equality: `comment` and `additional_guests` are
+        // carried through purely so an RSVP patch does not erase them, and the
+        // UI's own `Attendee` type deliberately does not declare them.
+        let attendee = obj["attendees"].as_array().expect("attendees is an array")[0]
+            .as_object()
+            .expect("an attendee is an object");
+        for name in ["email", "display_name", "response_status", "optional", "is_self"] {
+            assert!(
+                attendee.contains_key(name),
+                "the UI's `Attendee` reads `{name}`, which is not on the wire under that name"
+            );
+        }
+    }
+
     /// `respond_impl`'s own `can_respond(state.demo, …)` — the second demo
     /// gate on the write path, behind [`respond_to_event_impl`]'s. Nothing
     /// reached it before this test, because the guard in front always fired

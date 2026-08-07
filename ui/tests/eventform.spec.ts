@@ -1,9 +1,21 @@
 import { test, expect } from '@playwright/test';
 import { offerableCalendarId, type Calendar } from '../src/lib/calendars';
 import {
-  blankValue, blankValueAt, endAfterStart, instantsOf, ruleInWords, shiftedEndDate,
-  toEventInput, valueFromDetail,
+  blankValue, blankValueAt, endAfterStart, ruleInWords, shiftedEndDate,
+  toEventInput, valueFromDetail, whenOf, type EventFormValue,
 } from '../src/lib/eventform';
+
+/** How long a **timed** value is, in ms.
+ *
+ *  `whenOf` returns a union and a timed value is the only kind with instants
+ *  at all, so the narrowing is done once here rather than at each call site.
+ *  It throws rather than returning a number for an all-day value: there is no
+ *  honest answer, which is the point of the union. */
+const spanOf = (value: EventFormValue): number => {
+  const when = whenOf(value);
+  if (when.kind !== 'timed') throw new Error('an all-day value has no instants');
+  return when.endMs - when.startMs;
+};
 
 // Pure functions, exercised directly — same shape as `position.spec.ts` and
 // `sanitize.spec.ts`. Driving these through a mounted form would need a
@@ -166,8 +178,7 @@ test.describe('blankValue', () => {
     expect(v.date).toBe('2026-08-05');
     expect(v.endDate).toBe('2026-08-06');
     expect(endAfterStart(v)).toBe(true);
-    const [startMs, endMs] = instantsOf(v);
-    expect(endMs - startMs).toBe(30 * MINUTES);
+    expect(spanOf(v)).toBe(30 * MINUTES);
   });
 
   test('a chosen day keeps the time and takes the end date with it', async () => {
@@ -178,7 +189,7 @@ test.describe('blankValue', () => {
     expect(v.date).toBe('2026-08-12');
     expect(v.endDate).toBe('2026-08-13');
     expect(endAfterStart(v)).toBe(true);
-    expect(instantsOf(v)[1] - instantsOf(v)[0]).toBe(30 * MINUTES);
+    expect(spanOf(v)).toBe(30 * MINUTES);
   });
 
   test('an ordinary daytime create keeps both dates on the same day', async () => {
@@ -191,7 +202,40 @@ test.describe('blankValue', () => {
     const v = blankValue(at(2026, 8, 5, 9, 12), 1);
     expect(v.date).toBe('2026-08-05');
     expect(v.endDate).toBe('2026-08-05');
-    expect(instantsOf(v)[1] - instantsOf(v)[0]).toBe(30 * MINUTES);
+    expect(spanOf(v)).toBe(30 * MINUTES);
+  });
+});
+
+test.describe('endAfterStart on an all-day value', () => {
+  // Zone-independent, so no page: the all-day arm compares *dates*, and a date
+  // has no zone to be read in. That is the property, not an implementation
+  // detail — the timed arm still builds instants and still needs a page.
+
+  /** An all-day form value with the two dates under test. The rest comes from a
+   *  real blank value, so nothing here has to be kept in step with
+   *  `EventFormValue` by hand. */
+  const allDayValue = (date: string, endDate: string): EventFormValue => ({
+    ...blankValueAt(Date.UTC(2026, 7, 10), 1), isAllDay: true, date, endDate,
+  });
+
+  test('a single-day event is savable, and a backwards one is not', () => {
+    // `endDate` is the *inclusive* last day, so naming the same day twice is a
+    // one-day event and must pass. Only a last day genuinely before the first
+    // fails.
+    expect(endAfterStart(allDayValue('2026-08-10', '2026-08-10'))).toBe(true);
+    expect(endAfterStart(allDayValue('2026-08-10', '2026-08-12'))).toBe(true);
+    expect(endAfterStart(allDayValue('2026-08-10', '2026-08-09'))).toBe(false);
+  });
+
+  test('a half-typed date never enables Save', () => {
+    // The reason the all-day arm compares through `utcOf` rather than as
+    // strings. An unparseable date reaches the comparison as `addDays`'
+    // `'NaN-NaN-NaN'`, which sorts *after* every real date — so a string
+    // comparison answers `true` here and lets Save fire on a form the user is
+    // still typing into, sending `'NaN-NaN-NaN'` to Google as a date.
+    expect(endAfterStart(allDayValue('2026-08-10', ''))).toBe(false);
+    expect(endAfterStart(allDayValue('', '2026-08-10'))).toBe(false);
+    expect(endAfterStart(allDayValue('2026-08-10', '2026-08'))).toBe(false);
   });
 });
 
@@ -227,7 +271,13 @@ test.describe('blankValueAt', () => {
 // must change these tests deliberately, which is the point. Same device Task 9
 // used to pin the all-day edit-zone defect, and for the same reason.
 //
-// One root cause behind all four: `dateOf`/`timeOf`/`toMs` convert between an
+// **There were four.** The fourth was the all-day zone crossing, and it is gone
+// from here because Task 4 fixed it: it now lives below as
+// "an all-day event's dates cross the boundary as dates", asserting the values
+// its comments used to name as correct. The three that remain are all about
+// *timed* events, which keep instants deliberately (design §3).
+//
+// One root cause behind all three: `dateOf`/`timeOf`/`toMs` convert between an
 // instant and a civil (date, time) pair, and that conversion is neither
 // injective nor precision-preserving.
 //
@@ -244,8 +294,9 @@ test.describe('blankValueAt', () => {
 // measured by re-parsing two ambiguous pairs. And it does nothing at all for
 // the skipped-midnight case, where the damage is `toMs` moving the **start**
 // forward by an hour while the end stays put. Both cures live inside
-// `instantsOf`/`toMs`, which the edit path and the all-day path share, and
-// which Plan 6 has to rewrite anyway. A piecemeal fix here would be rewritten
+// `whenOf`'s timed arm and `toMs`, which the edit path and the all-day path
+// shared when this was written and no longer do — Plan 6 separated them, so a
+// later fix here reaches timed events only. A piecemeal fix here would be rewritten
 // by it within the week and would meanwhile give the boundary a second, subtly
 // different set of rules.
 //
@@ -272,8 +323,11 @@ test.describe('the form’s civil↔instant boundary (characterised, not fixed)'
         // local time to.
         const now = new Date(2026, 9, 25, 3, 0, 0, 0).getTime();
         const value = ef.blankValue(now, 1);
-        const [startMs, endMs] = ef.instantsOf(value);
-        return { start: value.start, end: value.end, saveable: ef.endAfterStart(value), span: endMs - startMs };
+        const when = ef.whenOf(value);
+        return {
+          start: value.start, end: value.end, saveable: ef.endAfterStart(value),
+          span: when.endMs - when.startMs,
+        };
       });
 
       expect(v.start).toBe('03:30');
@@ -300,7 +354,8 @@ test.describe('the form’s civil↔instant boundary (characterised, not fixed)'
         const endMs = startMs + 30 * 60_000;
         const detail = {
           id: 1, calendar_id: 1, title: 'Standup', description: null, location: null,
-          conference_uri: null, start_ms: startMs, end_ms: endMs, is_all_day: false,
+          conference_uri: null, start_ms: startMs, end_ms: endMs,
+          start_date: null, end_date: null, is_all_day: false,
           is_recurring: false, recurrence: null, repeat: 'never', color: null,
           organizer_email: null, self_response: null, can_respond: true, can_edit: true,
           attendees: [],
@@ -333,8 +388,11 @@ test.describe('the form’s civil↔instant boundary (characterised, not fixed)'
         const now = new Date(2026, 5, 15, 0, 0, 0, 0).getTime(); // 15 Jun, 00:00
         const day = new Date(2026, 8, 6, 0, 0, 0, 0).getTime(); // 6 Sep — normalises to 01:00
         const value = ef.blankValue(now, 1, day);
-        const [startMs, endMs] = ef.instantsOf(value);
-        return { start: value.start, end: value.end, saveable: ef.endAfterStart(value), span: endMs - startMs };
+        const when = ef.whenOf(value);
+        return {
+          start: value.start, end: value.end, saveable: ef.endAfterStart(value),
+          span: when.endMs - when.startMs,
+        };
       });
 
       // Reached by pressing `n`, or by clicking that day in Month or Big Year,
@@ -348,72 +406,300 @@ test.describe('the form’s civil↔instant boundary (characterised, not fixed)'
       expect(v.saveable).toBe(false);
     });
   });
+});
 
-  test.describe('Europe/Sofia browser, Auckland calendar — the all-day zone crossing', () => {
-    // The headline defect of Plan 6, and the one the Rust side has already
-    // closed: `EventInput` now carries a `date` for an all-day event, so no
-    // zone conversion happens on the wire at all. This is the **other half**,
-    // still open, and it is now the only thing pinning it — Task 2 correctly
-    // inverted the Rust characterisation test, which used to be its witness.
+// --- An all-day event's dates cross the boundary as dates -----------------
+//
+// **The headline defect of Plan 6, closed, and these are its witnesses.** The
+// first spec below is the inversion of
+// `CHARACTERISED: an all-day trip on a calendar east of the browser is shown,
+// and saved, a day early`, which asserted the wrong values on purpose for
+// eight tasks and named the right ones in its comments. Those comments are the
+// assertions now.
+//
+// What used to happen: `valueFromDetail` read the date off `start_ms` with
+// `dateOf`, in the **browser's** zone. The store holds midnight in the
+// **calendar's**, so east of the calendar the form opened on the previous day
+// — before anybody pressed anything — and Save sent that day. Only the *start*
+// was wrong: the old inclusive end stepped back `DAY_MS / 2` from the exclusive
+// midnight, and half a day of slack silently absorbed the offset. So a one-day
+// trip was not moved a day, it was **stretched into a two-day one**, with
+// `sendUpdates=all` behind the PATCH.
+//
+// The fixture is a **Pacific/Auckland** calendar (UTC+12) read by a
+// **Europe/Sofia** browser (UTC+3). The calendar's zone is what carries the
+// test — see the describe below, which says exactly how far that goes and how
+// far it does not. Unless the browser reads the stored instant as a *different*
+// date from the one the calendar keeps it on, taking the detail's date and
+// deriving one here are the same answer and none of this proves anything, so
+// every spec asserts that reading explicitly rather than describing it in a
+// comment: a comment claiming a fixture discriminates has already been
+// disproved by a mutation once on this branch.
+const AUCKLAND_CAL = 'Pacific/Auckland';
+
+/**
+ * A one-off all-day event as `event_detail_impl` reports one.
+ *
+ * `startMs`/`endMs` are midnight in the **calendar's** zone, which is how sync
+ * stores an all-day event: Google sends a bare `date` and `omacal_sync`
+ * resolves it against `calendars.timezone`. `startDate`/`lastDate` are the same
+ * two days read back in that zone — `lastDate` **inclusive**, the day a person
+ * would point at, which is the shape `EventDetail.end_date` carries.
+ *
+ * Built here and passed into the page rather than written inside each
+ * `page.evaluate`, so the four specs below cannot drift apart in the one detail
+ * that matters. The recurring case sets `is_recurring` on top of it.
+ */
+const allDayDetail = (startDate: string, lastDate: string, startMs: number, endMs: number) => ({
+  id: 1, calendar_id: 1, title: 'Berlin trip', description: null, location: null,
+  conference_uri: null, start_ms: startMs, end_ms: endMs,
+  start_date: startDate, end_date: lastDate,
+  is_all_day: true, is_recurring: false, recurrence: null, repeat: 'never', color: null,
+  organizer_email: null, self_response: null, can_respond: true, can_edit: true,
+  attendees: [],
+});
+
+/** Midnight on `date` in Auckland, as the store holds an all-day event.
+ *
+ *  The offset is written into the literal — August is NZST, UTC+12, New
+ *  Zealand's own daylight saving having ended in April — rather than looked up
+ *  from the zone. An instant computed *from* `Pacific/Auckland` would be
+ *  midnight there by construction and could never disagree with the zone the
+ *  fixture claims. `dateIn` below is what checks the two still agree. */
+const aucklandMidnight = (date: string): number => Date.parse(`${date}T00:00:00+12:00`);
+
+/** The `yyyy-mm-dd` `ms` falls on in `zone` — `en-CA` renders ISO order.
+ *  Node-side, so it reads `zone` rather than the browser's own. */
+const dateIn = (ms: number, zone: string): string =>
+  new Intl.DateTimeFormat('en-CA', { timeZone: zone }).format(new Date(ms));
+
+test.describe('an all-day event’s dates cross the boundary as dates', () => {
+  // The **browser**; the calendar is `AUCKLAND_CAL`, nine hours east of it in
+  // August.
+  //
+  // Honest note on what this zone does and does not buy, because a comment
+  // claiming a fixture discriminates has already been disproved by a mutation
+  // once on this branch. **It is the calendar's zone that separates here, not
+  // the browser's.** Auckland is UTC+12, so its midnight falls on the *previous
+  // UTC date* — which means the `dateOf(start_ms)` mutation fails these specs
+  // under Playwright's default UTC browser too. Verified, not assumed: it
+  // failed all four with `timezoneId: 'UTC'` substituted here.
+  //
+  // Sofia stays because it is the real scenario the plan is about — a user east
+  // of the calendar, opening a form on the wrong day — and because it puts a
+  // second, independent zone in the picture, so nothing can read "the browser's
+  // zone" and be accidentally right. A calendar zone with a *negative* offset
+  // (the brief's `America/New_York`) would separate under neither browser.
+  test.use({ timezoneId: 'Europe/Sofia' });
+
+  test('an all-day trip on a calendar east of the browser is shown, and saved, on its own day', async ({ page }) => {
+    await page.goto(PURE);
+    // A one-day trip on 10 Aug 2026. One day, because that is the case where
+    // the old code's damage was a stretch rather than a move — and the case a
+    // three-day fixture cannot show.
+    const startMs = aucklandMidnight('2026-08-10');
+    const endMs = aucklandMidnight('2026-08-11');
+    const detail = allDayDetail('2026-08-10', '2026-08-10', startMs, endMs);
+
+    // Fixture check: the instant really does fall on the day the detail claims,
+    // *in the calendar's zone*. Without this the `+12:00` written into
+    // `aucklandMidnight` is an assumption about NZ's 2026 rules that a tzdata
+    // update could quietly falsify, leaving a fixture describing a shape the
+    // backend cannot produce.
+    expect(dateIn(startMs, AUCKLAND_CAL)).toBe(detail.start_date);
+    expect(dateIn(endMs - 1, AUCKLAND_CAL)).toBe(detail.end_date);
+
+    const r = await page.evaluate((d) => {
+      const ef = (window as any).__eventform;
+      // Exactly what `App.openEdit` then `App.saveForm` do, with the user
+      // touching nothing at all.
+      const value = ef.valueFromDetail(d, d.start_ms, d.end_ms);
+      const sent = ef.toEventInput(value, value);
+      return {
+        shownFirstDay: value.date, shownLastDay: value.endDate, when: sent.when,
+        // The browser's own reading of the stored instant — what the old code
+        // used, and what this fixture has to differ from to prove anything.
+        browserReading: ef.dateOf(d.start_ms),
+      };
+    }, detail);
+
+    // Fixture check, asserted rather than asserted-in-a-comment: Sofia reads
+    // midnight-in-Auckland on the 10th (12:00Z on the 9th) as the **9th**. If
+    // this ever stops holding, `dateOf(start_ms)` and `detail.start_date` agree
+    // and every assertion below passes without discriminating.
+    expect(r.browserReading).toBe('2026-08-09');
+    expect(r.browserReading).not.toBe(detail.start_date);
+
+    // Correct, and correct *before anybody presses Save*. The trip is on the
+    // 10th in the zone the calendar keeps it in, and that is the day the form
+    // opens on.
+    expect(r.shownFirstDay).toBe('2026-08-10');
+    // A one-day trip names the same day twice. It used to read '2026-08-10'
+    // here too — by luck, from the half-day of slack — while the first day read
+    // the 9th, so the form showed a one-day trip spanning two.
+    expect(r.shownLastDay).toBe('2026-08-10');
+
+    expect(r.when.kind).toBe('allDay');
+    expect(r.when.startDate).toBe('2026-08-10');
+    // Unchanged from the characterised version, and that is the point: the end
+    // was already right, so a fix that moved *both* would have been wrong. The
+    // exclusive end of a one-day trip on the 10th is the 11th.
+    expect(r.when.endDate).toBe('2026-08-11');
+  });
+
+  test('an all-day value round-trips its dates without touching an instant', async ({ page }) => {
+    await page.goto(PURE);
+    // Three days — Mon 10th to Wed 12th inclusive — so the start and the end
+    // are different dates and neither can stand in for the other.
+    const startMs = aucklandMidnight('2026-08-10');
+    const endMs = aucklandMidnight('2026-08-13');
+    const detail = allDayDetail('2026-08-10', '2026-08-12', startMs, endMs);
+
+    // Fixture check, as above: the instants fall on the days the detail claims,
+    // in the calendar's own zone. `endMs - 1` because `end_ms` is the exclusive
+    // midnight *after* the last day, and `end_date` is that last day.
+    expect(dateIn(startMs, AUCKLAND_CAL)).toBe(detail.start_date);
+    expect(dateIn(endMs - 1, AUCKLAND_CAL)).toBe(detail.end_date);
+
+    const r = await page.evaluate((d) => {
+      const ef = (window as any).__eventform;
+      const value = ef.valueFromDetail(d, d.start_ms, d.end_ms);
+      const sent = ef.toEventInput(value, value);
+      return {
+        value, when: sent.when,
+        browserStart: ef.dateOf(d.start_ms), browserEnd: ef.dateOf(d.end_ms),
+      };
+    }, detail);
+
+    // Fixture check: the browser reads the **start** instant as a different
+    // date from the one the calendar keeps it on. That is what makes the start
+    // assertions below discriminate at all.
+    expect(r.browserStart).toBe('2026-08-09');
+    expect(r.browserStart).not.toBe(detail.start_date);
+    // The **end** does not separate the same way, and saying so plainly is
+    // worth more than a check that looks stronger than it is: the browser's
+    // reading of the *exclusive* midnight is the inclusive last day here, and
+    // that coincidence is exactly what let the old code get the end right while
+    // the start was a day early — which is why the bug stretched a trip rather
+    // than moving it. What the reading does differ from is the exclusive date
+    // the wire carries.
+    expect(r.browserEnd).toBe('2026-08-12');
+    expect(r.browserEnd).not.toBe(r.when.endDate);
+
+    // The detail's dates reach the form unchanged…
+    expect(r.value.date).toBe(detail.start_date);
+    expect(r.value.endDate).toBe(detail.end_date);
+
+    // …and reach the wire unchanged, apart from the one inclusive→exclusive
+    // step the next test is about.
+    expect(r.when.kind).toBe('allDay');
+    expect(r.when.startDate).toBe(detail.start_date);
+
+    // No instant on the wire at all — the union's other arm is not merely
+    // unpopulated, it is absent. An all-day event has no instant to send, and
+    // Rust's `WhenInput` refuses a payload that carries one.
+    expect('startMs' in r.when).toBe(false);
+    expect('endMs' in r.when).toBe(false);
+  });
+
+  test('an all-day end date converts inclusive to exclusive exactly once', async ({ page }) => {
+    await page.goto(PURE);
+    // Both spans, because they fail differently. Applied **zero** times, the
+    // one-day trip becomes a zero-length event Google rejects outright; applied
+    // **twice**, it becomes a two-day one — the exact harm this plan exists to
+    // stop, arriving from the opposite direction.
+    const oneDay = allDayDetail(
+      '2026-08-10', '2026-08-10',
+      aucklandMidnight('2026-08-10'), aucklandMidnight('2026-08-11'),
+    );
+    const trip = allDayDetail(
+      '2026-08-10', '2026-08-12',
+      aucklandMidnight('2026-08-10'), aucklandMidnight('2026-08-13'),
+    );
+
+    // Fixture check, as in the specs above: each instant falls on the day its
+    // detail claims, in the calendar's own zone.
+    for (const d of [oneDay, trip]) {
+      expect(dateIn(d.start_ms, AUCKLAND_CAL)).toBe(d.start_date);
+      expect(dateIn(d.end_ms - 1, AUCKLAND_CAL)).toBe(d.end_date);
+    }
+
+    const r = await page.evaluate(([one, three]) => {
+      const ef = (window as any).__eventform;
+      const sent = (d: any) => {
+        const value = ef.valueFromDetail(d, d.start_ms, d.end_ms);
+        return { shownLastDay: value.endDate, when: ef.toEventInput(value, value).when };
+      };
+      return { one: sent(one), three: sent(three) };
+    }, [oneDay, trip]);
+
+    // What the form **displays** is the last day a person would point at.
+    expect(r.one.shownLastDay).toBe('2026-08-10');
+    expect(r.three.shownLastDay).toBe('2026-08-12');
+
+    // What the **input carries** is the day after it, once.
+    expect(r.one.when.endDate).toBe('2026-08-11');
+    expect(r.three.when.endDate).toBe('2026-08-13');
+
+    // The whole claim in one line each: exactly one day between what is shown
+    // and what is sent. Zero would shorten every all-day event ever saved; two
+    // would lengthen it.
+    const days = (from: string, to: string) =>
+      (Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000;
+    expect(days(r.one.shownLastDay, r.one.when.endDate)).toBe(1);
+    expect(days(r.three.shownLastDay, r.three.when.endDate)).toBe(1);
+
+    // And the start crosses with no conversion at all — an off-by-one applied
+    // to both ends would satisfy every assertion above.
+    expect(r.one.when.startDate).toBe('2026-08-10');
+    expect(r.three.when.startDate).toBe('2026-08-10');
+  });
+
+  test('an all-day form value opened from a series shows the clicked occurrence’s day', async ({ page }) => {
+    await page.goto(PURE);
+    // **Not in the brief, and a defect in it.** `EventDetail.start_date` is
+    // derived from the *store row's* `start_ms`, and for a recurring series
+    // that row is the master — its date is the series' DTSTART, never the day
+    // on screen. Taking it verbatim is `detail.start_ms` all over again, the
+    // mistake `updateEvent`'s doc comment spends a paragraph on and the one §4
+    // of the design lists under "what must not regress".
     //
-    // The surviving lossiness is one line, `eventform.ts`'s
-    // `date: dateOf(startMs)` in `valueFromDetail`. `whenOf`'s all-day arm is a
-    // browser→browser round trip that gives `value.date` back unchanged in
-    // every ordinary case, so it is *not* where this goes wrong; the date is
-    // already the wrong one by the time it is reached, and the form has been
-    // displaying that wrong date since it opened.
-    //
-    // Task 4 inverts this: `valueFromDetail` takes `detail.start_date`, which
-    // Task 3 derives in the calendar's own zone, and both assertions below
-    // become the values their comments name.
-    test.use({ timezoneId: 'Europe/Sofia' });
+    // A daily all-day series starting Mon 10 Aug, with the **Thursday** chip
+    // clicked. Verbatim, the form would open on the 10th; the Rust side reads
+    // the difference from `occurrenceStartMs` as a deliberate move and PATCHes
+    // the occurrence four days back, with `sendUpdates=all`.
+    const master = allDayDetail(
+      '2026-08-10', '2026-08-10',
+      aucklandMidnight('2026-08-10'), aucklandMidnight('2026-08-11'),
+    );
+    master.is_recurring = true;
+    const occurrenceStart = aucklandMidnight('2026-08-13');
+    const occurrenceEnd = aucklandMidnight('2026-08-14');
 
-    test('CHARACTERISED: an all-day trip on a calendar east of the browser is shown, and saved, a day early', async ({ page }) => {
-      await page.goto(PURE);
-      const r = await page.evaluate(() => {
-        const ef = (window as any).__eventform;
-        // A one-day all-day trip on 10 Aug 2026, stored the way sync stores
-        // one: midnight in the *calendar's* zone, Pacific/Auckland (UTC+12).
-        // That is 12:00Z on the 9th — still the 9th to a Sofia browser (UTC+3,
-        // so 15:00), which is the whole defect.
-        const startMs = Date.UTC(2026, 7, 9, 12, 0);
-        const endMs = Date.UTC(2026, 7, 10, 12, 0);
-        const detail = {
-          id: 1, calendar_id: 1, title: 'Berlin trip', description: null, location: null,
-          conference_uri: null, start_ms: startMs, end_ms: endMs, is_all_day: true,
-          is_recurring: false, recurrence: null, repeat: 'never', color: null,
-          organizer_email: null, self_response: null, can_respond: true, can_edit: true,
-          attendees: [],
-        };
-        // Exactly what `App.openEdit` then `App.saveForm` do, with the user
-        // touching nothing at all.
-        const value = ef.valueFromDetail(detail, startMs, endMs);
-        const sent = ef.toEventInput(value, value);
-        return { shownFirstDay: value.date, shownLastDay: value.endDate, when: sent.when };
-      });
+    // Fixture check: the clicked block really is a different day from the
+    // master's, or "moved onto the occurrence" and "taken verbatim" agree.
+    expect(occurrenceStart).not.toBe(master.start_ms);
+    expect(dateIn(master.start_ms, AUCKLAND_CAL)).toBe(master.start_date);
+    expect(dateIn(occurrenceStart, AUCKLAND_CAL)).toBe('2026-08-13');
 
-      // WRONG, and wrong *before anybody presses Save*. Correct: '2026-08-10'.
-      // The trip is on the 10th in the zone the calendar keeps it in; Sofia
-      // reads the stored instant (12:00Z on the 9th) as the 9th.
-      expect(r.shownFirstDay).toBe('2026-08-09');
-      // Right, and that is what makes this hard to see. `valueFromDetail`
-      // derives the last day from `endMs - DAY_MS/2`, and the half-day of slack
-      // happens to absorb a 12-hour offset. **Only one end is wrong**, so the
-      // form shows a one-day trip as spanning the 9th to the 10th: two days,
-      // in a form where every field looks like a plausible date.
-      expect(r.shownLastDay).toBe('2026-08-10');
+    const r = await page.evaluate(([d, s, e]) => {
+      const ef = (window as any).__eventform;
+      const value = ef.valueFromDetail(d, s, e);
+      return {
+        value, when: ef.toEventInput(value, value).when,
+        browserReading: ef.dateOf(s),
+      };
+    }, [master, occurrenceStart, occurrenceEnd] as [typeof master, number, number]);
 
-      expect(r.when.kind).toBe('allDay');
-      // WRONG. Correct: '2026-08-10'. The trip starts a day earlier, for
-      // everyone on it, with `sendUpdates=all` behind the PATCH.
-      expect(r.when.startDate).toBe('2026-08-09');
-      // Right — and it being right is the harm rather than a consolation. The
-      // exclusive end of a one-day trip on the 10th *is* the 11th, so the end
-      // stays put while the start slides back: a one-day event is saved as a
-      // **two-day** one. An error at both ends would at least have kept the
-      // duration.
-      expect(r.when.endDate).toBe('2026-08-11');
-    });
+    // Fixture check: and Sofia still reads that block's instant as the previous
+    // day, so this cannot be passed by falling back to `dateOf(startMs)`.
+    expect(r.browserReading).toBe('2026-08-12');
+
+    expect(r.value.date).toBe('2026-08-13');
+    expect(r.value.endDate).toBe('2026-08-13');
+    expect(r.when.kind).toBe('allDay');
+    expect(r.when.startDate).toBe('2026-08-13');
+    expect(r.when.endDate).toBe('2026-08-14');
   });
 });
 
@@ -426,7 +712,8 @@ test.describe('the anchor’s precision (characterised, not fixed)', () => {
     const endMs = startMs + 30 * 60_000;
     const detail = {
       id: 1, calendar_id: 1, title: 'Standup', description: null, location: null,
-      conference_uri: null, start_ms: startMs, end_ms: endMs, is_all_day: false,
+      conference_uri: null, start_ms: startMs, end_ms: endMs,
+      start_date: null, end_date: null, is_all_day: false,
       is_recurring: false, recurrence: null, repeat: 'never', color: null,
       organizer_email: null, self_response: null, can_respond: true, can_edit: true,
       attendees: [],
