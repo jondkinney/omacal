@@ -18,7 +18,7 @@
   const todayStart = (() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); })();
 </script>
 
-<div class="year" data-year={year.year}>
+<div class="ygrid" data-year={year.year}>
   {#each year.months as month (month.month)}
     <div class="ymonth">
       <div class="mname">{MONTH_NAMES[month.month - 1]}</div>
@@ -44,8 +44,8 @@
 </div>
 
 <style>
-  .year { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px;
-          padding: 4px; overflow-y: auto; height: calc(100vh - 150px); }
+  .ygrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px;
+           padding: 4px; overflow-y: auto; height: calc(100vh - 150px); }
 
   .ymonth { display: flex; flex-direction: column; gap: 4px; }
   .mname { font-size: 11px; font-weight: 600; color: var(--text);

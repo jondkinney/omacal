@@ -48,10 +48,7 @@
   // `step`), so the label has to follow the view too: a control announced as
   // "Previous week" that moves the grid by a month — or, in Month view,
   // sometimes not at all and sometimes across a month boundary — is worse
-  // than either behaviour on its own. `year`/`bigyear` have no unit yet
-  // (`step` returns early for them, and both are unreachable while the
-  // switcher disables them); they name their own slot so the record is
-  // complete rather than defaulting to a week they don't step by.
+  // than either behaviour on its own.
   const NAV_UNIT: Record<View, string> = {
     day: 'day', week: 'week', month: 'month', year: 'year', bigyear: 'year',
   };
