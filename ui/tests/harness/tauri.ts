@@ -13,7 +13,10 @@ import type { WeekPayload, MonthPayload, YearPayload, BigYearPayload } from '../
 import type { AppStatus } from '../../src/lib/status';
 import type { Calendar } from '../../src/lib/calendars';
 import type { EventDetail } from '../../src/lib/eventdetail';
-import { labelledWeek, weekLabel, APP_FIVE_MIN_AGO, POPOVER_DETAILS, busyDayMonth } from '../fixtures';
+import {
+  labelledWeek, weekLabel, APP_FIVE_MIN_AGO, POPOVER_DETAILS, busyDayMonth,
+  appWritableWeek, APP_WRITE_CALENDARS, CREATED_DETAIL,
+} from '../fixtures';
 
 /** What the real `get_palette` returns; the same fallback_dark values. */
 const PALETTE = {
@@ -93,7 +96,9 @@ export const CALENDAR_SYNC_REMOVED = 143;
 const RESPOND_STUB_DETAIL = {
   id: 0, title: null, description: null, location: null, conference_uri: null,
   start_ms: 0, end_ms: 0, is_all_day: false, is_recurring: false, color: null,
-  organizer_email: null, self_response: null, can_respond: true, attendees: [],
+  recurrence: null, repeat: 'never',
+  organizer_email: null, self_response: null, can_respond: true, can_edit: false,
+  attendees: [],
 };
 
 const listeners = new Map<string, Set<(e: unknown) => void>>();
@@ -269,12 +274,17 @@ function statusFor(scenario: string): AppStatus {
  *  it switched on by default, exactly as a real `sign_in` leaves it. */
 const SIGNED_IN_CALENDARS: Calendar[] = [
   { id: 1, account_id: 1, account_email: 'new@x.com', summary: 'Personal',
-    color_hex: '#5b8def', selected: true, sync_enabled: true, is_primary: true },
+    color_hex: '#5b8def', selected: true, sync_enabled: true, is_primary: true,
+    access_role: 'owner' },
+  // A subscribed holiday calendar really is a `reader`, and this is the one
+  // fixture in the suite that stands in for a real `sign_in` import — so it
+  // carries the role a real one would rather than a uniformly writable list.
   { id: 2, account_id: 1, account_email: 'new@x.com', summary: 'Holidays',
-    color_hex: '#e2a03f', selected: true, sync_enabled: true, is_primary: false },
+    color_hex: '#e2a03f', selected: true, sync_enabled: true, is_primary: false,
+    access_role: 'reader' },
 ];
 
-function getWeek(weekStartMs: number): Promise<WeekPayload> {
+function getWeek(scenario: string, weekStartMs: number): Promise<WeekPayload> {
   if (failWeekOnce !== null) {
     const message = failWeekOnce;
     failWeekOnce = null;
@@ -286,6 +296,11 @@ function getWeek(weekStartMs: number): Promise<WeekPayload> {
       parked.set(weekStartMs, { resolve, reject });
     });
   }
+  // The `writable` scenario answers with the same two editable events whatever
+  // week is asked for — same shortcut, and the same reasoning, as `getMonth`
+  // below: its specs pin literal instants, and none of them needs the payload
+  // to match the week it requested.
+  if (scenario === 'writable') return Promise.resolve(appWritableWeek());
   return Promise.resolve(labelledWeek(weekStartMs));
 }
 
@@ -328,15 +343,33 @@ function getYearStub(y: number): YearPayload {
   };
 }
 
-/** Big Year view's own `get_big_year` stub: fourteen otherwise-empty 28-day
- *  rows, echoing back whatever year was actually asked for — same reasoning
- *  as `getYearStub` above (`BigYearRibbon`'s own `y2026`/`crossing` fixtures
- *  already cover the populated case). */
+/**
+ * Big Year view's own `get_big_year` stub: fourteen otherwise-empty 28-day
+ * rows, echoing back whatever year was actually asked for — same reasoning as
+ * `getYearStub` above (`BigYearRibbon`'s own `y2026`/`crossing` fixtures
+ * already cover the populated case).
+ *
+ * The days carry **real** `start_ms` values. They used to be `0` throughout,
+ * on the reasoning that no App spec read them; Task 10 made a ribbon day
+ * clickable, and a click through a day whose start is `0` opens an event form
+ * dated 1 January 1970 — a fixture that would have made the create-from-Big-Year
+ * witness assert the epoch and call it a pass. Anchored the way
+ * `assemble_big_year` anchors: the Monday on or before 1 January of the year
+ * asked for, then 28 days per row.
+ */
 function getBigYearStub(y: number): BigYearPayload {
+  const jan1 = new Date(y, 0, 1);
+  // `getDay()` is 0 for Sunday, so Sunday steps back six days, not none.
+  const back = (jan1.getDay() + 6) % 7;
+  const ribbonStart = new Date(y, 0, 1 - back).getTime();
   return {
     year: y,
-    rows: Array.from({ length: 14 }, () => ({
-      days: Array.from({ length: 28 }, () => ({ start_ms: 0, in_year: true, unsynced: false })),
+    rows: Array.from({ length: 14 }, (_, r) => ({
+      days: Array.from({ length: 28 }, (_, c) => ({
+        start_ms: ribbonStart + (r * 28 + c) * DAY_MS,
+        in_year: true,
+        unsynced: false,
+      })),
       pills: [],
       pill_events: [],
       overflow: [],
@@ -374,7 +407,7 @@ export function installTauriStub(scenario: string): Harness {
       case 'get_status':
         return status;
       case 'get_week':
-        return getWeek(args.weekStartMs);
+        return getWeek(scenario, args.weekStartMs);
       case 'get_day':
         return getDay(args.dayStartMs);
       case 'get_month':
@@ -389,6 +422,7 @@ export function installTauriStub(scenario: string): Harness {
       // assertion undisturbed. CalendarPopover specs never take this path —
       // they mount the component directly with fixture props instead.
       case 'get_calendars':
+        if (scenario === 'writable') return APP_WRITE_CALENDARS;
         return scenario === 'sign-in-adds-account' && signedIn
           ? SIGNED_IN_CALENDARS
           : ([] as Calendar[]);
@@ -435,6 +469,25 @@ export function installTauriStub(scenario: string): Harness {
         // return value. Any well-shaped stand-in satisfies its type.
         return RESPOND_STUB_DETAIL;
       }
+      // The three write commands. None of them needs a hold, a forced failure
+      // or a per-scenario answer: what every spec asserts on is the *arguments*
+      // they were given — above all `occurrenceStartMs`, which must be the
+      // clicked block's own `start_ms` and never `detail.start_ms` — and
+      // `harness.calls` above already records those for every command, in
+      // order. A second capture on `window` would be a second thing to keep in
+      // step with it.
+      case 'create_event':
+        return CREATED_DETAIL;
+      case 'update_event':
+        // What the real command answers with: the freshly written detail. `App`
+        // never reads it (it reloads the grid instead), so the unchanged
+        // fixture is a truthful enough stand-in.
+        return POPOVER_DETAILS[args.id] ?? CREATED_DETAIL;
+      case 'delete_event_cmd':
+        // Returns nothing, exactly as the Rust command does: the event the
+        // popover was showing is gone, and reading it back would fail on the
+        // runs that succeeded.
+        return null;
       case 'sign_in':
         // Tauri rejects a `Result<_, String>` with the bare string, so the
         // app sees exactly the sentence Rust produced.

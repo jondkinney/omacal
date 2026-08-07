@@ -8,8 +8,21 @@ import AllDayBand from '../../src/lib/AllDayBand.svelte';
 import Header from '../../src/lib/Header.svelte';
 import CalendarPopover from '../../src/lib/CalendarPopover.svelte';
 import EventPopover from '../../src/lib/EventPopover.svelte';
+import EventForm from '../../src/lib/EventForm.svelte';
+import DeleteConfirm from '../../src/lib/DeleteConfirm.svelte';
+import * as eventform from '../../src/lib/eventform';
 import { FIXTURES } from '../fixtures';
 import { installTauriStub } from './tauri';
+
+// The form's pure date functions, reachable from a spec.
+//
+// `eventform.spec.ts` exercises these directly in the Node process, which is
+// right for everything that does not depend on a zone. The two characterisation
+// specs at the end of that file *are* about zone transitions, and Playwright's
+// `timezoneId` reaches the browser context, not Node — so those run in the page
+// and reach the module through here. Assigned before the branching below, so a
+// spec can ask for a URL that mounts nothing at all.
+(window as any).__eventform = eventform;
 
 // Palette normally arrives from the Rust get_palette command; the harness
 // applies the same fallback_dark values so snapshots are deterministic.
@@ -32,7 +45,7 @@ const fixture = params.get('f') ?? 'default';
 
 const COMPONENTS: Record<string, any> = {
   WeekGrid, MonthGrid, YearGrid, BigYearRibbon, EventBlock, AllDayBand, Header, CalendarPopover,
-  EventPopover,
+  EventPopover, EventForm, DeleteConfirm,
 };
 const target = document.getElementById('app')!;
 
@@ -78,9 +91,32 @@ if (name === 'App') {
       // as a getter, so this is enough to make that live from outside.
       let week = $state(props.week);
       (window as any).__setWeek = (w: unknown) => { week = w; };
+      // `oncreate`/`onedit`/`ondelete` are callback props, not Tauri commands
+      // — the grid decides *which occurrence* a write is about and hands that
+      // up, rather than writing anything itself. Captured on the window the
+      // same way `MonthGrid`'s `onopen` is, so a spec can read exactly what it
+      // was handed.
+      (window as any).__lastCreate = null;
+      (window as any).__lastEdit = null;
+      (window as any).__lastDelete = null;
       // Spread first, then shadow `week` with the live getter — naming only
       // `week` here would silently drop any second prop a fixture grows.
-      mount(WeekGrid, { target, props: { ...props, get week() { return week; } } });
+      mount(WeekGrid, {
+        target,
+        props: {
+          ...props,
+          get week() { return week; },
+          oncreate: (startMs: unknown, rect: unknown) => {
+            (window as any).__lastCreate = { startMs, rect };
+          },
+          onedit: (occurrence: unknown, rect: unknown) => {
+            (window as any).__lastEdit = { occurrence, rect };
+          },
+          ondelete: (occurrence: unknown, rect: unknown) => {
+            (window as any).__lastDelete = { occurrence, rect };
+          },
+        },
+      });
     } else if (name === 'MonthGrid') {
       // `onopen`/`ondaypick` are callback props, not Tauri commands, so they
       // have no home in `tauri.ts`'s `invoke` switch — same reasoning as
@@ -95,6 +131,9 @@ if (name === 'App') {
           },
           ondaypick: (startMs: unknown) => {
             (window as any).__lastDayPick = startMs;
+          },
+          oncreate: (dayStartMs: unknown, rect: unknown) => {
+            (window as any).__lastCreate = { startMs: dayStartMs, rect };
           },
         },
       });
@@ -121,6 +160,31 @@ if (name === 'App') {
           onopen: (event: unknown, rect: unknown) => {
             (window as any).__lastOpen = { event, rect };
           },
+          oncreate: (dayStartMs: unknown, rect: unknown) => {
+            (window as any).__lastCreate = { startMs: dayStartMs, rect };
+          },
+        },
+      });
+    } else if (name === 'DeleteConfirm') {
+      // `onconfirm`/`oncancel` are callback props: this panel writes nothing
+      // itself, since the caller owns both the command and the reload after
+      // it. `__confirms` is an array rather than a slot for the reason
+      // `EventForm`'s `__saves` is — half of what a spec asserts is that
+      // nothing was confirmed at all, and one slot cannot tell "never called"
+      // from "called and overwritten".
+      (window as any).__confirms = [];
+      let app: object;
+      app = mount(DeleteConfirm, {
+        target,
+        props: {
+          ...props,
+          onconfirm: (scope: unknown) => {
+            (window as any).__confirms.push(scope);
+          },
+          // Same reasoning as `EventPopover`/`EventForm` below: in the real app
+          // the parent owns whether this panel exists, so cancelling has to
+          // actually remove it here or "Escape closes it" observes nothing.
+          oncancel: () => unmount(app),
         },
       });
     } else if (name === 'EventPopover') {
@@ -135,6 +199,30 @@ if (name === 'App') {
       // `onclose` is a no-op, since it can't know about this harness.
       let app: object;
       app = mount(EventPopover, { target, props: { ...props, onclose: () => unmount(app) } });
+    } else if (name === 'EventForm') {
+      // `onsave`/`oncancel` are callback props, not Tauri commands — the form
+      // itself never calls `invoke`, since which write command a save becomes
+      // (create or update, and at which scope) is the caller's decision, not
+      // its own. Captured on the window exactly as `MonthGrid`'s `onopen` is.
+      //
+      // `__saves` is an array rather than a single value: half of what these
+      // specs assert is that a *refused* save called nothing at all, and a
+      // single slot cannot tell "never called" from "called and overwritten".
+      (window as any).__saves = [];
+      let app: object;
+      app = mount(EventForm, {
+        target,
+        props: {
+          ...props,
+          onsave: (result: unknown) => {
+            (window as any).__saves.push(result);
+          },
+          // Same reasoning as `EventPopover` above: in the real app the parent
+          // owns whether the form exists at all, so cancelling has to actually
+          // remove it here or "Escape closes it" would have nothing to observe.
+          oncancel: () => unmount(app),
+        },
+      });
     } else {
       mount(COMPONENTS[name], { target, props });
     }

@@ -1,6 +1,8 @@
 import { test, expect } from '@playwright/test';
 import {
-  FIXED_NOW, POPOVER_DETAILS, POPOVER_REFRESHED_DETAIL, popoverWeekWithResponse, YEAR_2026_NOW,
+  FIXED_NOW, FORM_FALLBACK_ID, FORM_NOW, FORM_UNWRITABLE_ID, FORM_UNWRITABLE_NAMES,
+  MON, POPOVER_DETAILS, POPOVER_REFRESHED_DETAIL,
+  TRIP_END_MS, TRIP_FIRST_DAY, TRIP_LAST_DAY, popoverWeekWithResponse, YEAR_2026_NOW,
 } from './fixtures';
 import { CALENDAR_SYNC_REMOVED } from './harness/tauri';
 
@@ -11,6 +13,51 @@ test.describe('WeekGrid', () => {
     await page.goto(show('WeekGrid', 'empty'));
     await expect(page.locator('.col')).toHaveCount(7);
     await expect(page).toHaveScreenshot('weekgrid-empty.png');
+  });
+
+  // Task 10. Exactly on the 10:00 line, which is where somebody aims to make a
+  // 10:00 meeting — and the one place the empty-space target does not receive
+  // the click unless the hour rules are made transparent to the pointer. They
+  // are positioned after it in the column, so a point within half a pixel of a
+  // line returns `.rule` from `elementFromPoint` without
+  // `pointer-events: none`; measured in both engines. A 1px dead band every
+  // two hours is not something a user would ever report as a bug, only as the
+  // app "sometimes not doing anything".
+  test('clicking exactly on an hour line still asks for a new event there', async ({ page }) => {
+    await page.goto(show('WeekGrid', 'empty'));
+    const col = page.locator('.col').first();
+    const box = (await col.boundingBox())!;
+    await col.click({ position: { x: box.width / 2, y: box.height * (10 / 24) } });
+    expect(await page.evaluate(() => (window as any).__lastCreate)).toMatchObject({
+      startMs: MON + 10 * 3_600_000,
+    });
+  });
+
+  // The same guard for the current-time line, which is the worse of the two:
+  // it is 1.5px plus a 7px dot, and it crawls down today's column all day, so
+  // the dead band it makes is both bigger and moving.
+  //
+  // I first left this unspec'd on the grounds that reaching `.now` needed a
+  // fixture whose week moves with the calendar. That was wrong, and the fix is
+  // the pattern this suite already uses for `YearGrid`'s today-highlight: the
+  // fixture stays fixed in the past and the *clock* moves to it. Frozen at
+  // 10:20 on `MON` itself, the first column becomes today, `.now` renders at
+  // 10:20 — and the click at 10:00 lands on the hour line while the dot sits
+  // 20 minutes below, so this covers `.rule` and `.now` at once without
+  // needing to know exactly where the dot fell.
+  test('the current-time line does not swallow a click either', async ({ page }) => {
+    await page.clock.setFixedTime(MON + 10 * 3_600_000 + 20 * 60_000);
+    await page.goto(show('WeekGrid', 'empty'));
+    await expect(page.locator('.col.today .now')).toHaveCount(1);
+
+    const col = page.locator('.col').first();
+    const box = (await col.boundingBox())!;
+    // Straight through the dot: it is drawn by `.now::before` at the line's
+    // own left edge, so this is the pixel most likely to be intercepted.
+    await col.click({ position: { x: 3, y: box.height * (10 + 20 / 60) / 24 } });
+    expect(await page.evaluate(() => (window as any).__lastCreate)).toMatchObject({
+      startMs: MON + 10 * 3_600_000,
+    });
   });
 
   test('renders overlaps side by side', async ({ page }) => {
@@ -82,6 +129,35 @@ test.describe('WeekGrid popover flow', () => {
     // start_ms (POPOVER_RECURRING's, the fourth occurrence) — see fixtures.ts.
     expect(call.occurrenceStartMs).toBe(POPOVER_DETAILS[42].start_ms + 3 * 24 * 3_600_000);
     expect(call.occurrenceStartMs).not.toBe(POPOVER_DETAILS[42].start_ms);
+  });
+
+  // Task 10, and the same property as the spec above through a different code
+  // path: Edit and Delete hand the caller an `Occurrence`, and its `startMs`
+  // must be the clicked block's, never `detail.start_ms`. Both controls in one
+  // spec, because they are the same relay called twice — and the popover has
+  // to be gone by the time either lands, or the form would open behind a scrim
+  // that is still there.
+  test('edit and delete hand up the clicked block, and close the popover', async ({ page }) => {
+    const seriesStart = POPOVER_DETAILS[42].start_ms;
+    const blockStart = seriesStart + 3 * 24 * 3_600_000;
+
+    await page.goto(show('popover'));
+    await page.getByRole('button', { name: 'Standup' }).click();
+    await expect(page.locator('.pop')).toBeVisible();
+    await page.getByRole('button', { name: 'Edit' }).click();
+    await expect(page.locator('.pop')).toHaveCount(0);
+    const edit = await page.evaluate(() => (window as any).__lastEdit);
+    expect(edit.occurrence.startMs).toBe(blockStart);
+    expect(edit.occurrence.startMs).not.toBe(seriesStart);
+    expect(edit.occurrence.endMs).toBe(blockStart + 30 * 60_000);
+
+    await page.getByRole('button', { name: 'Standup' }).click();
+    await expect(page.locator('.pop')).toBeVisible();
+    await page.getByRole('button', { name: 'Delete' }).click();
+    await expect(page.locator('.pop')).toHaveCount(0);
+    const del = await page.evaluate(() => (window as any).__lastDelete);
+    expect(del.occurrence.startMs).toBe(blockStart);
+    expect(del.occurrence.startMs).not.toBe(seriesStart);
   });
 
   test('a successful response restyles the clicked block without a refetch', async ({ page }) => {
@@ -795,6 +871,28 @@ test.describe('EventPopover', () => {
     await expect(page.locator('.pop')).toHaveCount(0);
   });
 
+  // Task 10. A pair, deliberately: `detail()`'s own default is
+  // `can_edit: false`, so the "shown" half fails until its fixture opts in
+  // explicitly, and the "hidden" half is the one that could pass vacuously —
+  // which is the safe way round, since an absent control ships nothing to
+  // somebody who may not use it. Together they discriminate both ways.
+  test('an event the user can write to offers Edit and Delete', async ({ page }) => {
+    await page.goto(show('editable'));
+    await expect(page.getByRole('button', { name: 'Edit' })).toHaveCount(1);
+    await expect(page.getByRole('button', { name: 'Delete' })).toHaveCount(1);
+  });
+
+  test('an event the user cannot write to offers neither', async ({ page }) => {
+    // Offering either on a calendar this account only reads would produce a
+    // Save — or a Delete confirmation with no undo behind it — that
+    // `update_impl`'s own writability check could only refuse, after the user
+    // had already decided to go through with it.
+    await page.goto(show('standup'));
+    await expect(page.locator('.pop')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Edit' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Delete' })).toHaveCount(0);
+  });
+
   test('clicking a guest list does not close it', async ({ page }) => {
     // The scrim must sit behind the panel, not over it.
     await page.goto(show('standup'));
@@ -848,6 +946,28 @@ test.describe('MonthGrid', () => {
     await page.goto(show('august'));
     await page.locator('.mcell .num').nth(14).click();
     expect(await page.evaluate(() => (window as any).__lastDayPick)).toBeTruthy();
+  });
+
+  // Task 10. Both halves in one spec, because the risk is precisely that they
+  // become the same click: the empty-space target covers the whole cell, and
+  // the day number keeps its own click only by sitting above it. Invert the
+  // `z-index` pair in `MonthGrid`'s styles and the second half fails — the
+  // target swallows the number.
+  test('empty cell space asks for a new event on that day, and the day number still does not', async ({ page }) => {
+    // The grid's first cell, Mon 27 Jul, which carries nothing but its own
+    // number — so a click on the middle of it is genuinely empty space and
+    // nothing else could have answered.
+    await page.goto(show('august'));
+    const cell = page.locator('.mcell').first();
+
+    await cell.locator('.newhere').click();
+    expect(await page.evaluate(() => (window as any).__lastCreate)).toMatchObject({
+      startMs: Date.UTC(2026, 6, 27),
+    });
+    expect(await page.evaluate(() => (window as any).__lastDayPick)).toBeFalsy();
+
+    await cell.locator('.num').click();
+    expect(await page.evaluate(() => (window as any).__lastDayPick)).toBe(Date.UTC(2026, 6, 27));
   });
 
   test('clicking an event opens the popover, not the day', async ({ page }) => {
@@ -969,6 +1089,28 @@ test.describe('BigYearRibbon', () => {
     expect(await page.evaluate(() => (window as any).__lastOpen)).toBeTruthy();
   });
 
+  // Task 10. The ribbon's day strip carried no click handler at all before
+  // this, so it is the one grid where "empty space" is the whole day cell —
+  // and the `z-index` pair that keeps the day number above the target is the
+  // same shape `MonthGrid` needs, for the same reason.
+  test('clicking a day asks the parent for a new event on it', async ({ page }) => {
+    await page.goto(show('y2026'));
+    // Row 0, column 4: four days after the ribbon's own anchor of Mon 29 Dec
+    // 2025, so Fri 2 Jan 2026. No pill on it (row 0's runs 8-10) and not a
+    // first-of-month (which would put a `.mchip` in the way), so nothing else
+    // could have answered.
+    //
+    // Off-centre on purpose: a ribbon day is about 45px wide and 15px tall,
+    // and its own number sits in the middle of it — the click has to land on
+    // the part that is actually empty, which is also what proves the day
+    // number is still on top rather than buried under the target.
+    await page.locator('.rrow').first().locator('.rday .newhere').nth(4)
+      .click({ position: { x: 3, y: 3 } });
+    expect(await page.evaluate(() => (window as any).__lastCreate)).toMatchObject({
+      startMs: Date.UTC(2026, 0, 2),
+    });
+  });
+
   test('a fully packed row keeps its day strip, and its weekend stripes with it', async ({ page }) => {
     // Measured with the old (unreserved-lanes, unprotected-min-height) layout
     // reinstated: `.rdays` itself collapsed to 0 height, but each `.rday` kept
@@ -1049,5 +1191,297 @@ test.describe('BigYearRibbon', () => {
     await expect(pills).toHaveCount(2);
     await expect(pills.nth(0)).toContainText('Berlin trip');
     await expect(pills.nth(1)).toContainText('Team offsite');
+  });
+});
+
+test.describe('EventForm', () => {
+  /**
+   * Navigate with the clock frozen, every time.
+   *
+   * Not optional and not per-spec: the `create` fixture is built from
+   * `Date.now()` inside the page (see fixtures.ts), because the "next half
+   * hour" default is the thing under test and a fixture that pinned the
+   * instant itself could not tell a form that applies the default from one
+   * that was handed the answer. Freezing it here means no spec in this block
+   * can forget, and none of them rots into a failure on a future date.
+   */
+  const open = async (page: import('@playwright/test').Page, fixture: string) => {
+    await page.clock.setFixedTime(FORM_NOW);
+    await page.goto(`/tests/harness/index.html?c=EventForm&f=${fixture}`);
+    await expect(page.locator('.pop')).toBeVisible();
+  };
+
+  /** Everything the form handed `onsave`, in order — `[]` when it refused.
+   *  An array, not a slot: half of what these specs assert is that nothing
+   *  was saved at all. */
+  const saves = (page: import('@playwright/test').Page) =>
+    page.evaluate(() => (window as any).__saves as any[]);
+
+  test('only writable calendars are offered', async ({ page }) => {
+    // A subscribed holiday calendar is a `reader` and a room is a
+    // `freeBusyReader`; `create_impl` refuses both server-side, so offering
+    // either produces a Save that can only fail. Two unwritable roles, not
+    // one, so a filter written as "anything but reader" is caught too.
+    await open(page, 'create');
+    const select = page.getByLabel('Calendar', { exact: true });
+    await expect(select.locator('option')).toHaveCount(2);
+    await expect(select.locator('option')).toHaveText(['Personal', 'Team']);
+    for (const name of FORM_UNWRITABLE_NAMES) {
+      await expect(select.locator('option').filter({ hasText: name })).toHaveCount(0);
+    }
+  });
+
+  test('a create seeded with a calendar it cannot write to falls back to one it can', async ({ page }) => {
+    // Filtering the option list is not filtering the value. Seeded with the
+    // reader's id, the select rendered *blank* — no option matches — and Save
+    // then sent that id with nothing on screen to say so. Task 10 chooses this
+    // seed, so the shape is reachable from the next task rather than theoretical.
+    await open(page, 'create-seeded-unwritable');
+    const select = page.getByLabel('Calendar', { exact: true });
+    await expect(select).not.toHaveValue('');
+    await expect(select).toHaveValue(String(FORM_FALLBACK_ID));
+
+    await page.getByRole('button', { name: 'Create' }).click();
+    const [saved] = await saves(page);
+    // What is shown and what is saved have to agree; that is the property that
+    // was broken, so both halves are asserted.
+    expect(saved.calendarId).toBe(FORM_FALLBACK_ID);
+    expect(saved.calendarId).not.toBe(FORM_UNWRITABLE_ID);
+  });
+
+  test('the calendar can be chosen on a create and not on an edit', async ({ page }) => {
+    // `update_event` takes no calendar id — it reads the target from
+    // `event_for_write(id)` — so an enabled control on an edit silently
+    // discards the choice. Both arms in one spec: `disabled={true}` always
+    // would pass the edit half on its own.
+    await open(page, 'create');
+    await expect(page.getByLabel('Calendar', { exact: true })).toBeEnabled();
+
+    await open(page, 'with-guests');
+    await expect(page.getByLabel('Calendar', { exact: true })).toBeDisabled();
+  });
+
+  test('moving the start date takes the end date with it', async ({ page }) => {
+    // Otherwise changing the date of an ordinary one-hour meeting leaves the
+    // end date on the old day and Save refuses a range the user never asked
+    // for. Asserted through to the saved instants, not just the input: the
+    // point is that the save is *accepted* and lands on the new day.
+    await open(page, 'create');
+    await page.getByLabel('Date', { exact: true }).fill('2026-08-12');
+    await expect(page.getByLabel('End date', { exact: true })).toHaveValue('2026-08-12');
+
+    await page.getByRole('button', { name: 'Create' }).click();
+    const [saved] = await saves(page);
+    // 09:30 on 12 Aug 2026, UTC — the project's `timezoneId`.
+    expect(saved.fields.startMs).toBe(Date.UTC(2026, 7, 12, 9, 30));
+    expect(saved.fields.endMs).toBe(Date.UTC(2026, 7, 12, 10, 0));
+  });
+
+  test('save is refused when the end is before the start', async ({ page }) => {
+    // Refused, not corrected. Silently swapping the ends would save something
+    // nobody asked for, and on an event with guests mail it to all of them.
+    await open(page, 'end-before-start');
+    await page.getByRole('button', { name: 'Create' }).click();
+    // Nothing saved, asserted first: that is the safety property, and it is
+    // the one whose failure names the actual defect. Telling the user why
+    // matters too, but a form that saved a backwards event and then apologised
+    // would still have saved it.
+    expect(await saves(page)).toEqual([]);
+    await expect(page.getByTestId('form-error')).toBeVisible();
+  });
+
+  test('an unrepresentable repeat rule is shown as a disabled Custom option', async ({ page }) => {
+    // Spec §6's UI half. `write::repeat_from_rrule` answered `custom` for this
+    // fortnightly rule, and the form's job is to show what it cannot rewrite
+    // rather than quietly present it as something it can.
+    await open(page, 'custom-repeat');
+    const select = page.getByLabel('Repeat', { exact: true });
+    await expect(select).toHaveValue('custom');
+
+    const custom = select.locator('option[value="custom"]');
+    // The *entry* is disabled; the select is not. Disabling the select would
+    // make the rule unchangeable rather than un-clobberable, and the whole
+    // design is that replacing it stays possible as an explicit act.
+    //
+    // Asserted through the DOM property rather than `toBeDisabled()`, which
+    // resolves disabledness through the ARIA state and reports an `<option>`
+    // carrying a real `disabled` attribute as enabled. The property is what
+    // actually makes the entry unselectable, so it is what is worth asserting.
+    expect(await custom.evaluate((el) => (el as HTMLOptionElement).disabled)).toBe(true);
+    await expect(select.locator('option:not([disabled])')).toHaveCount(6);
+    await expect(select).toBeEnabled();
+    // In words, not as the raw rule: `RRULE:FREQ=WEEKLY;INTERVAL=2` is not
+    // something to ask a user to read before deciding whether to replace it.
+    await expect(custom).toHaveText('Custom · Every 2 weeks');
+  });
+
+  test('an event with guests warns that saving notifies them', async ({ page }) => {
+    // `patch_event` sends `sendUpdates=all` unconditionally, so every save on
+    // this event is also five emails — four, once the person doing the saving
+    // is taken out of the count. The fixture has five attendees for exactly
+    // that reason.
+    await open(page, 'with-guests');
+    await expect(page.getByTestId('guest-notice')).toHaveText('Saving will notify 4 guests.');
+  });
+
+  test('a description is rendered as text, never as markup', async ({ page }) => {
+    // Anyone who knows the user's email can put an event on their calendar,
+    // description included, and this webview can invoke Tauri commands.
+    await open(page, 'nasty-description');
+    await expect(page.locator('img')).toHaveCount(0);
+    // And byte for byte: sanitising on the way *in* would rewrite what the
+    // author typed and then save the rewrite back over the real event —
+    // `stripTags` alone would leave this field empty.
+    await expect(page.getByLabel('Description', { exact: true }))
+      .toHaveValue('<img src=x onerror=alert(1)>');
+  });
+
+  test('a new event opens at the next half hour', async ({ page }) => {
+    // 09:12 frozen, so 09:30 is a rounding rather than an echo of the clock.
+    await open(page, 'create');
+    await expect(page.getByLabel('Date', { exact: true })).toHaveValue('2026-08-05');
+    await expect(page.getByLabel('Start', { exact: true })).toHaveValue('09:30');
+    await expect(page.getByLabel('End', { exact: true })).toHaveValue('10:00');
+  });
+
+  test('a recurring edit offers three scopes and says what All events does', async ({ page }) => {
+    // "All events" on a time change shifts the whole series rather than
+    // pinning every occurrence to the edited date — deliberate (the
+    // alternative drops occurrences before the clicked one) and impossible to
+    // infer from three radio labels.
+    await open(page, 'recurring-edit');
+    await expect(page.getByRole('radio')).toHaveCount(3);
+    await expect(page.getByRole('radio', { name: 'This event' })).toBeChecked();
+    await expect(page.getByTestId('all-events-note')).toHaveCount(0);
+
+    await page.getByRole('radio', { name: 'All events' }).check();
+    await expect(page.getByTestId('all-events-note')).toContainText('every occurrence an hour later');
+  });
+
+  test('a one-off event offers no scope choice', async ({ page }) => {
+    // Without this the scope spec above passes on a form that always shows
+    // three radios, whatever it was given.
+    await open(page, 'with-guests');
+    await expect(page.getByRole('radio')).toHaveCount(0);
+  });
+
+  test('a multi-day all-day event keeps its last day, and saves it back unchanged', async ({ page }) => {
+    // Google's `end.date` is exclusive and so is the store's `end_ms`: a
+    // three-day trip starting Mon 10 Aug ends at midnight on Thu 13th. Showing
+    // that date reads a day long; sending back the date shown shortens the trip
+    // by a day and mails everyone about it. Both ends are asserted, because
+    // converting on only one side is the failure that looks right on screen.
+    await open(page, 'multi-day-all-day');
+    await expect(page.getByLabel('First day', { exact: true })).toHaveValue(TRIP_FIRST_DAY);
+    await expect(page.getByLabel('Last day', { exact: true })).toHaveValue(TRIP_LAST_DAY);
+
+    await page.getByRole('button', { name: 'Save' }).click();
+    const [saved] = await saves(page);
+    expect(saved.fields.isAllDay).toBe(true);
+    expect(saved.fields.endMs).toBe(TRIP_END_MS);
+  });
+
+  test('saving without touching Repeat sends no rule at all', async ({ page }) => {
+    // The property the whole `custom` design rests on: an absent `repeat` means
+    // "the user did not touch Repeat", and the existing rule is left alone.
+    // Sending `custom` — or anything else — would rewrite a fortnightly meeting
+    // as something omacal can express, for the whole guest list.
+    await open(page, 'custom-repeat');
+    await page.getByRole('button', { name: 'Save' }).click();
+    const [saved] = await saves(page);
+    expect(Object.keys(saved.fields)).not.toContain('repeat');
+  });
+
+  test('choosing another repeat option sends the overwrite explicitly', async ({ page }) => {
+    // The other half: leaving an untouched rule alone must not turn into never
+    // being able to change one.
+    await open(page, 'custom-repeat');
+    await page.getByLabel('Repeat', { exact: true }).selectOption('weekly');
+    await page.getByRole('button', { name: 'Save' }).click();
+    const [saved] = await saves(page);
+    expect(saved.fields.repeat).toBe('weekly');
+  });
+});
+
+test.describe('DeleteConfirm', () => {
+  const show = (f: string) => `/tests/harness/index.html?c=DeleteConfirm&f=${f}`;
+
+  const open = async (page: import('@playwright/test').Page, fixture: string) => {
+    await page.goto(show(fixture));
+    await expect(page.locator('.pop')).toBeVisible();
+  };
+
+  /** Every scope the panel handed `onconfirm`, in order — `[]` when it asked
+   *  and nothing was confirmed. An array, not a slot, for the reason
+   *  `EventForm`'s `__saves` is one: half of what these assert is that nothing
+   *  happened at all. */
+  const confirms = (page: import('@playwright/test').Page) =>
+    page.evaluate(() => (window as any).__confirms as any[]);
+
+  test('names the event, says who gets emailed, and warns there is no undo', async ({ page }) => {
+    // Three things a confirmation with no undo behind it has to be honest
+    // about, and one it must not be: the fixture has three attendees, one of
+    // them the signed-in user, so the count is two. Telling somebody they are
+    // about to email themselves is just wrong.
+    await open(page, 'one-off');
+    await expect(page.locator('h2')).toContainText('Board prep');
+    await expect(page.getByTestId('delete-guest-notice')).toContainText('2 guests are told by email');
+    await expect(page.getByTestId('delete-no-undo')).toContainText('cannot be undone');
+    // A one-off has one deletion, so naming it three ways would be three
+    // different words for the same act.
+    await expect(page.getByRole('radio')).toHaveCount(0);
+    expect(await confirms(page)).toEqual([]);
+  });
+
+  test('the three scopes are three different operations, and each says which', async ({ page }) => {
+    // Not three sizes of one deletion. "This and following" deletes nothing at
+    // all — it patches the series' rule so it stops earlier, which is the only
+    // way to lose the tail without also losing the occurrences before the
+    // clicked one, since they are all the same Google event. "All events" takes
+    // the past with it. Neither is inferable from a three-item radio list.
+    await open(page, 'recurring');
+    const scopes = page.locator('.scope label');
+    await expect(scopes).toHaveCount(3);
+    await expect(scopes.nth(1)).toContainText('deletes nothing');
+    await expect(scopes.nth(1)).toContainText('shortens the series');
+    await expect(scopes.nth(2)).toContainText('already happened');
+    // Every scope notifies: `sendUpdates=all` is unconditional on the DELETE
+    // and on the "this and following" PATCH alike, so the notice may not read
+    // as if it applied to only one of the three.
+    await expect(page.getByTestId('delete-guest-notice')).toContainText('Whichever you choose');
+
+    // And the chosen scope is the one that comes back — a panel that always
+    // confirmed `'this'` would satisfy every assertion above.
+    await page.getByRole('radio', { name: 'This and following' }).check();
+    await page.getByRole('button', { name: 'Delete' }).click();
+    expect(await confirms(page)).toEqual(['following']);
+  });
+
+  // Each radio bound to the scope it actually sends, one spec per option, so
+  // that no option can be silently rewired to another. The two that are not
+  // the default matter most and differ most: "All events" removes a whole
+  // series *including its past*, "This and following" removes nothing at all
+  // and merely shortens the rule. Wiring the first to the second leaves the
+  // panel reading exactly right and is a different, irreversible act — with
+  // mail going out either way. Only an assertion per option catches it.
+  for (const [label, scope] of [
+    ['This event', 'this'],
+    ['This and following', 'following'],
+    ['All events', 'all'],
+  ] as const) {
+    test(`"${label}" sends the scope ${scope}`, async ({ page }) => {
+      await open(page, 'recurring');
+      await page.getByRole('radio', { name: label }).check();
+      await page.getByRole('button', { name: 'Delete' }).click();
+      expect(await confirms(page)).toEqual([scope]);
+    });
+  }
+
+  test('an event with nobody on it claims nothing about guests', async ({ page }) => {
+    // "0 guests are told by email" is both untrue and alarming. The no-undo
+    // line stays either way: that one is about the event, not the guest list.
+    await open(page, 'no-guests');
+    await expect(page.getByTestId('delete-guest-notice')).toHaveCount(0);
+    await expect(page.getByTestId('delete-no-undo')).toBeVisible();
   });
 });

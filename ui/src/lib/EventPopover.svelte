@@ -11,6 +11,8 @@
     occurrenceStartMs,
     onclose,
     onresponded,
+    onedit,
+    ondelete,
   }: {
     detail: EventDetail;
     anchor: Rect;
@@ -30,6 +32,21 @@
      *  grid that never restyles — the exact staleness this task exists to
      *  close. */
     onresponded: (response: 'accepted' | 'tentative' | 'declined') => void;
+    /** Asked to open the event form on the block this popover was opened for.
+     *  This component deliberately neither owns the form nor calls
+     *  `updateEvent` itself: both need the *clicked block's* own `start_ms`,
+     *  which lives one layer out with the `UiEvent` it came from, and
+     *  `detail.start_ms` — the only start this component has — is precisely
+     *  the value that must never reach a write. See `eventdetail.ts`.
+     *
+     *  Required, not optional, for the same reason `onresponded` is: a caller
+     *  that quietly omitted it would render an Edit button that does nothing. */
+    onedit: () => void;
+    /** Asked to confirm and perform a delete, for the same block and for the
+     *  same reason `onedit` is asked rather than done here. Nothing is deleted
+     *  by clicking this: the caller owns the confirmation, which has three
+     *  scopes, a guest count and no undo behind it. */
+    ondelete: () => void;
   } = $props();
 
   const segments = $derived(descriptionSegments(detail.description));
@@ -232,6 +249,19 @@
     </div>
   {/if}
 
+  <!-- Only when the backend says this account may write to the calendar the
+       event is on (`can_edit`, from the same `access_role` column
+       `create_impl`/`update_impl` check server-side). Offering either control
+       on a subscribed holiday calendar would produce a Save — or worse, a
+       Delete confirmation — the server could only refuse, after the user had
+       already decided to go through with it. -->
+  {#if detail.can_edit}
+    <div class="own">
+      <button onclick={onedit}>Edit</button>
+      <button onclick={ondelete}>Delete</button>
+    </div>
+  {/if}
+
   {#if note}<p class="note" class:err={note.kind === 'error'}>{note.text}</p>{/if}
 </div>
 
@@ -300,6 +330,16 @@
                  border-radius: 6px; padding: 5px 0; }
   .rsvp button.chosen { background: var(--accent); border-color: var(--accent); color: var(--bg); }
   .rsvp button:disabled { opacity: .6; cursor: default; }
+
+  /* Quieter than the RSVP row above it, and separated from it by a hairline:
+     answering an invitation is what this panel is mostly for, and these two
+     are the pair that change the event for everybody. */
+  .own { display: flex; gap: 6px; margin-top: 8px; padding-top: 8px;
+         border-top: 1px solid var(--hairline); }
+  .own button { flex: 1; font: inherit; font-size: 11.5px; cursor: pointer;
+                background: none; color: var(--muted);
+                border: 1px solid var(--hairline); border-radius: 6px; padding: 5px 0; }
+  .own button:hover { color: var(--text); }
 
   .note { font-size: 10.5px; color: var(--muted); line-height: 1.4;
           margin: 8px 0 0; padding: 6px 8px; border-radius: 5px;

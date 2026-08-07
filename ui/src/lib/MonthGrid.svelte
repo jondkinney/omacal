@@ -3,13 +3,18 @@
   import type { MonthPayload, UiEvent } from './api';
   import type { Rect } from './position';
 
-  let { month, onopen, ondaypick }: {
+  let { month, onopen, ondaypick, oncreate }: {
     month: MonthPayload;
     /** Same contract as `WeekGrid`'s: an anchor rect plus the clicked event,
      *  handed straight to `EventPopover` via `placePopover`. */
     onopen: (event: UiEvent, rect: Rect) => void;
     /** Asks the parent to switch to Day view for this day's `start_ms`. */
     ondaypick: (startMs: number) => void;
+    /** A click on empty space in a day cell. A month cell has no time in it,
+     *  only a date, so this hands the parent the day's own `start_ms` and lets
+     *  it apply the app's default hour — unlike `WeekGrid`'s `oncreate`, which
+     *  reads a real time off where in the column the click landed. */
+    oncreate: (dayStartMs: number, rect: Rect) => void;
   } = $props();
 
   // `pack_lanes`'s own cap, mirrored here so the row-level "+N more" can be
@@ -35,11 +40,13 @@
   const todayStart = (() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); })();
 
   // Shared by `.bar` and `.timed`: both hand `onopen` the same
-  // `{ event, rect }` shape an `EventBlock`/`AllDayBand` chip does. `.mcell`
-  // itself owns no click handler — only `.num` and `.more` ask for a day —
-  // so `stopPropagation` here is belt-and-braces rather than load-bearing,
-  // but it costs nothing and documents that an event click is never a
-  // day-pick.
+  // `{ event, rect }` shape an `EventBlock`/`AllDayBand` chip does.
+  // `stopPropagation` stays belt-and-braces: `.mcell` still owns no click
+  // handler of its own, and the empty-space target added below it is a
+  // *sibling* button rather than an ancestor, precisely so that no click on a
+  // day number, a chip or a "+N more" has to be stopped from also creating an
+  // event. Handlers on the cell itself would have made every one of those a
+  // propagation question.
   function openEvent(event: UiEvent, e: MouseEvent) {
     e.stopPropagation();
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
@@ -48,6 +55,11 @@
 
   function pickDay(startMs: number) {
     ondaypick(startMs);
+  }
+
+  function createOn(dayStartMs: number, e: MouseEvent) {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    oncreate(dayStartMs, { top: r.top, left: r.left, width: r.width, height: r.height });
   }
 </script>
 
@@ -87,6 +99,16 @@
       <div class="cells">
         {#each row.cells as cell}
           <div class="mcell" class:out={!cell.in_month} class:today={cell.start_ms === todayStart}>
+            <!-- Empty cell space, as a real control — same reasoning as
+                 `WeekGrid`'s own `.newhere`, including the `tabindex="-1"`:
+                 42 invisible tab stops per month would be noise, and `n`
+                 reaches the same form with no target at all. -->
+            <button
+              class="newhere"
+              aria-label="New event"
+              tabindex="-1"
+              onclick={(e) => createOn(cell.start_ms, e)}
+            ></button>
             <button class="num" onclick={() => pickDay(cell.start_ms)}>
               {new Date(cell.start_ms).getDate()}
             </button>
@@ -136,26 +158,43 @@
 
   .mcell { display: flex; flex-direction: column; gap: 1px; padding: 3px 4px;
            border-left: 1px solid var(--hairline); min-width: 0;
-           overflow: hidden; }
+           overflow: hidden; position: relative; }
+
+  /* Covers the whole cell, paints nothing, and is held *under* the cell's own
+     controls by the `z-index` pair below — explicitly, not incidentally.
+     Measured, with the `z-index`es taken out of all four rules: both WebKit
+     and Chromium already put `.num`, `.timed` and `.more` on top, because a
+     flex item paints as an atomic inline block and both engines lift that
+     above an absolutely positioned sibling. That is far too fine a point to be
+     resting "is the day number clickable" on, so the order is stated instead
+     of inherited — 0 here, 1 on each of the three — and `MonthGrid`'s own
+     "the day number still does not" spec fails the moment they invert. */
+  .newhere { appearance: none; -webkit-appearance: none; position: absolute; inset: 0;
+             background: none; border: 0; padding: 0; margin: 0; font: inherit;
+             cursor: cell; z-index: 0; }
+
   .mcell:first-child { border-left: 0; }
   .mcell.today { background: var(--today-tint); border-radius: 6px; }
   .mcell.out .num { color: var(--muted); opacity: .6; }
   .mcell.out .timed { opacity: .55; }
 
+  /* `position: relative` + `z-index: 1` on all three of the cell's own
+     controls, so each stays above `.newhere` — see its comment. */
   .num { appearance: none; -webkit-appearance: none; font: inherit; cursor: pointer;
          border: 0; background: transparent; padding: 0; margin: 0; align-self: flex-start;
-         font-size: 11px; color: var(--text); font-variant-numeric: tabular-nums; }
+         font-size: 11px; color: var(--text); font-variant-numeric: tabular-nums;
+         position: relative; z-index: 1; }
   .mcell.today .num { color: var(--accent); font-weight: 600; }
 
   .timed { appearance: none; -webkit-appearance: none; font: inherit;
            display: flex; align-items: center; gap: 4px; text-align: left; cursor: pointer;
            border: 0; background: transparent; padding: 0; margin: 0;
            font-size: 9.5px; color: var(--text); white-space: nowrap; overflow: hidden;
-           text-overflow: ellipsis; }
+           text-overflow: ellipsis; position: relative; z-index: 1; }
   .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
 
   .more { font-size: 9px; color: var(--muted); opacity: .8; padding: 0; background: transparent;
-          border: 0; text-align: left; font: inherit; }
+          border: 0; text-align: left; font: inherit; position: relative; z-index: 1; }
   /* Only the cell-level `+N more` is a button. The row-level one is a `div`
      covering several days at once, with no single day to hand the parent, so
      it does nothing when clicked — and must not invite the click. */

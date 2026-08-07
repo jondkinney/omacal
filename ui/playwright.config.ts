@@ -39,6 +39,29 @@ export default defineConfig({
   // than a second of wall time. The peak scales with the project's test
   // count, so revisit the number as it approaches ~250.
   //
+  // Re-measured at Task 10 (Plan 5), because the suite had grown well past
+  // what the paragraph above was written against.
+  //
+  // Two things to count correctly, both of which a first pass at this got
+  // wrong. Worker indices are per project — webkit takes 0-5 and chromium
+  // 6-11 — so contexts never carry across the two, and the number that matters
+  // is the peak inside one project, not across the run. And a *test* is not a
+  // *context*: Playwright instantiates the `page` fixture lazily, so the
+  // fifty-odd pure-function tests here (position, sanitize, location, and most
+  // of eventform) open none at all. Counting tests rather than contexts
+  // overstates the peak by about half.
+  //
+  // Measured at 225 tests per project, of which 175 create a context: the peak
+  // is **31** of the ~63 available, in both engines. That is 2.0x clear. The
+  // busiest worker is also not far off its even share — 31 against 29.2 — so
+  // scheduling by duration costs a few contexts here, not a landslide.
+  //
+  // Contexts track context-creating tests, not the headline test count, so
+  // read the bar that way: the ceiling is around 355 context-creating tests
+  // per project, roughly 180 beyond where this sits. The "revisit near 250"
+  // note above is still the right instruction; it is a bar on the count that
+  // opens pages.
+  //
   // PWDEBUG already forces a single worker inside Playwright, so this cannot
   // rescue a debug run of the whole suite — debug one test, not 106.
   workers: process.env.PWDEBUG ? 1 : 6,

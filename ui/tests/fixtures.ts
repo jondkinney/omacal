@@ -6,6 +6,7 @@ import type { AppStatus } from '../src/lib/status';
 import type { Calendar } from '../src/lib/calendars';
 import type { Attendee, EventDetail } from '../src/lib/eventdetail';
 import type { Rect } from '../src/lib/position';
+import { blankValue, valueFromDetail, type EventFormValue } from '../src/lib/eventform';
 
 // `ViewSwitcher`'s own `View` union isn't imported here: it lives in a
 // `<script module>` block, which plain `tsc` (this file's own
@@ -60,12 +61,23 @@ const day = (offset: number, events: UiEvent[], p: Placed[]) => ({
   placed: p,
 });
 
-const emptyWeek = (): WeekPayload => ({
-  days: Array.from({ length: 7 }, (_, i) => day(i, [], [])),
+/** An empty week anchored anywhere — `emptyWeek` below is this at `MON`, which
+ *  is what every component fixture in this file wants. The App-level write
+ *  fixtures need one at `APP_MON` instead, so that a click on empty grid space
+ *  lands on the same date the app actually opened on. */
+const emptyWeekAt = (weekStartMs: number): WeekPayload => ({
+  days: Array.from({ length: 7 }, (_, i) => ({
+    start_ms: weekStartMs + i * 24 * H,
+    end_ms: weekStartMs + (i + 1) * 24 * H,
+    events: [] as UiEvent[],
+    placed: [] as Placed[],
+  })),
   all_day: [],
   all_day_events: [],
   overflow: [],
 });
+
+const emptyWeek = (): WeekPayload => emptyWeekAt(MON);
 
 const populatedWeek = (): WeekPayload => {
   const w = emptyWeek();
@@ -183,6 +195,12 @@ const cal = (o: Partial<Calendar> & { id: number; account_email: string; summary
   selected: true,
   sync_enabled: true,
   is_primary: false,
+  // Every CalendarPopover fixture below predates this field and shows every
+  // calendar regardless of role, which is right — you can hide a holiday
+  // calendar you cannot write to. `owner` keeps their DOM exactly as it was.
+  // `EventForm`'s own fixtures name the role explicitly, because for that
+  // component it is the thing under test.
+  access_role: 'owner',
   ...o,
 });
 
@@ -195,6 +213,7 @@ const attendee = (o: Partial<Attendee> & { email: string }): Attendee => ({
 });
 
 const detail = (o: Partial<EventDetail> & { id: number }): EventDetail => ({
+  calendar_id: 1,
   title: 'Standup',
   description: null,
   location: null,
@@ -203,10 +222,32 @@ const detail = (o: Partial<EventDetail> & { id: number }): EventDetail => ({
   end_ms: MON + 9 * H + 30 * 60_000,
   is_all_day: false,
   is_recurring: false,
+  recurrence: null,
+  // What `write::repeat_from_rrule` answers for `recurrence: null`, so the two
+  // defaults agree. A fixture that sets one must set the other.
+  repeat: 'never',
   color: '#5b8def',
   organizer_email: null,
   self_response: 'needsAction',
   can_respond: true,
+  // `false`, deliberately, and not because any fixture here wants it: nothing
+  // reads this field yet, and Task 10 ships the Edit and Delete controls that
+  // will.
+  //
+  // Which default is safe turns on which way a wrong fixture fails. With
+  // `true`, a spec asserting the controls are *shown* passes no matter what
+  // the code does — every fixture is editable, so the assertion is satisfied
+  // by the fixture rather than by the component, and a `can_edit` check that
+  // was never written looks implemented. With `false`, that same spec fails
+  // loudly until its fixture opts in, and the "hidden" spec is the one that
+  // could pass vacuously — but a control that is *absent* is the safe state,
+  // so a vacuous pass there does not ship a control to somebody who may not
+  // use it.
+  //
+  // Task 10 must therefore set `can_edit: true` explicitly on any fixture
+  // meant to show Edit and Delete, and should keep at least one spec that
+  // proves the controls appear, so the pair discriminates in both directions.
+  can_edit: false,
   attendees: [],
   ...o,
 });
@@ -260,6 +301,13 @@ export const POPOVER_DETAILS: Record<number, EventDetail> = {
     id: 42, title: 'Standup', is_recurring: true,
     start_ms: SERIES_DTSTART, end_ms: SERIES_DTSTART + 30 * 60_000,
     self_response: 'needsAction',
+    // `can_edit: true`, explicitly and for the same reason the RSVP trap above
+    // exists: Task 10's Edit and Delete carry the *same* occurrence-identity
+    // rule as the RSVP, through a different code path, and this is the one
+    // fixture whose block start and detail start already disagree. Without it
+    // the controls never render and `WeekGrid`'s relay cannot be exercised at
+    // all.
+    can_edit: true,
     attendees: [attendee({ email: 'me@x.com', is_self: true, response_status: 'needsAction' })],
   }),
   50: detail({ id: 50, title: 'Sync', location: 'Room A' }),
@@ -519,8 +567,28 @@ const APP_MONTH_EVENT_ID = Math.floor((BUSY_DAY_START_MS + 9 * H) / 1000);
 POPOVER_DETAILS[APP_MONTH_EVENT_ID] = detail({
   id: APP_MONTH_EVENT_ID,
   title: 'Standup',
-  start_ms: BUSY_DAY_START_MS + 9 * H,
-  end_ms: BUSY_DAY_START_MS + 9 * H + 30 * 60_000,
+  // A weekly series whose master DTSTART is a **week before** the block
+  // `busyDayMonth` renders, which is the whole point of the fixture (Fix round
+  // 1, finding 1). `App` builds its own `{@const occurrence}` for the Month and
+  // Big Year popover — a second instance of the Plan 2 defect, in code
+  // `WeekGrid`'s specs never touch — and while these two timestamps were equal
+  // it could be handed `gridDetail.start_ms` with the whole suite still green.
+  // Unequal, the Month edit spec's own Date assertion catches it for free.
+  //
+  // Recurring, not a one-off with a mismatched start: only a series master ever
+  // reports a `start_ms` that is not its clicked block's, so a non-recurring
+  // fixture shaped this way would be describing an event that cannot exist.
+  is_recurring: true,
+  recurrence: 'RRULE:FREQ=WEEKLY',
+  repeat: 'weekly',
+  start_ms: BUSY_DAY_START_MS + 9 * H - 7 * 24 * H,
+  end_ms: BUSY_DAY_START_MS + 9 * H - 7 * 24 * H + 30 * 60_000,
+  // `can_edit: true` (Task 10), explicitly: `App` renders its *own*
+  // `EventPopover` for Month and Big Year rather than `WeekGrid`'s, so the
+  // Edit/Delete wiring on that second instance is a separate piece of code
+  // with its own way of being missed — the same gap Fix round 1's finding 4
+  // found for `onopen` on exactly this popover.
+  can_edit: true,
 });
 
 // Real 2026 day counts and lead-blank (Monday-first weekday of the 1st)
@@ -767,6 +835,202 @@ const unsyncedBigYear = (): BigYearPayload => {
   return b;
 };
 
+// --- The event form -------------------------------------------------------
+
+/** Wed 5 Aug 2026 09:12 UTC — what every `EventForm` spec freezes the page
+ *  clock to. Deliberately *not* on a half-hour boundary: "the next half hour"
+ *  is then 09:30, a value no fixture could have handed the form by accident. */
+export const FORM_NOW = Date.UTC(2026, 7, 5, 9, 12);
+/** 09:00 that same morning — the clicked occurrence's own start for the edit
+ *  fixtures below, and clear of `FORM_NOW` so a form that ignored `initial`
+ *  and defaulted everything would show 09:30 instead and be caught. */
+const FORM_START = Date.UTC(2026, 7, 5, 9, 0);
+const FORM_END = FORM_START + 30 * 60_000;
+
+/**
+ * Four calendars, one per access role Google reports.
+ *
+ * Two writable, two not. The `freeBusyReader` is not decoration: with only a
+ * `reader` in the list, a filter written as "anything but reader" would pass
+ * the same assertions as the whitelist the backend actually applies, and the
+ * two differ on exactly this row. One account throughout, so an option's label
+ * is the plain calendar name and "none of them is the reader's" is a
+ * straightforward text assertion.
+ */
+const FORM_CALENDARS: Calendar[] = [
+  cal({ id: 1, account_email: 'me@x.com', summary: 'Personal', is_primary: true, access_role: 'owner' }),
+  cal({ id: 2, account_email: 'me@x.com', summary: 'Team', access_role: 'writer' }),
+  cal({ id: 3, account_email: 'me@x.com', summary: 'Holidays in Bulgaria', access_role: 'reader' }),
+  cal({ id: 4, account_email: 'me@x.com', summary: 'Meeting rooms', access_role: 'freeBusyReader' }),
+];
+
+/** The names of the two calendars a create must never be offered — exported so
+ *  the spec asserts against the same strings the fixture is built from. */
+export const FORM_UNWRITABLE_NAMES = ['Holidays in Bulgaria', 'Meeting rooms'];
+/** The `reader`'s own id, and the id a form seeded with it must not keep. */
+export const FORM_UNWRITABLE_ID = 3;
+/** The first writable calendar's id — what that seed must fall back to. */
+export const FORM_FALLBACK_ID = 1;
+
+/** A form value for editing `d`, anchored on the 09:00 occurrence above.
+ *  Routed through the real `valueFromDetail` rather than hand-written, so the
+ *  mapping the app will actually use in Task 10 is the one under test here. */
+const editing = (d: EventDetail, startMs = FORM_START, endMs = FORM_END): EventFormValue =>
+  valueFromDetail(d, startMs, endMs);
+
+/** Monday 10 Aug 2026, all day, for three days: Mon, Tue, Wed. `end_ms` is the
+ *  *exclusive* midnight Google and the store both use — Thursday — so a form
+ *  that showed it unchanged would read a day long, and one that sent back what
+ *  it showed would shorten the trip by a day and mail everyone about it. */
+const TRIP_START = Date.UTC(2026, 7, 10);
+const TRIP_END_EXCLUSIVE = TRIP_START + 3 * 24 * H;
+/** The last day a person would name: Wednesday 12 Aug. */
+export const TRIP_LAST_DAY = '2026-08-12';
+export const TRIP_FIRST_DAY = '2026-08-10';
+export const TRIP_END_MS = TRIP_END_EXCLUSIVE;
+
+// --- App-level create, edit and delete ------------------------------------
+//
+// The `writable` App scenario. Every other scenario keeps `labelledWeek`'s
+// single event, whose detail carries the `detail()` default of
+// `can_edit: false` — which is what keeps the "Edit and Delete are hidden"
+// half of that pair honest. Nothing here changes that; this adds a second
+// scenario whose events can actually be edited, so the other half has
+// something real to appear on.
+
+/** Monday 29 Jan 2024 09:00 UTC — the recurring series' own DTSTART, and what
+ *  `event_detail` reports as its master row's `start_ms`. The value every
+ *  write command below must *not* be given. */
+export const APP_SERIES_DTSTART = APP_MON + 9 * H;
+/** Thursday 1 Feb 2024 09:00 UTC — the clicked block's own `start_ms`, three
+ *  days and a month boundary away from the DTSTART so a command handed the
+ *  wrong one cannot look plausible. */
+export const APP_SERIES_OCCURRENCE = APP_MON + 3 * 24 * H + 9 * H;
+export const APP_SERIES_ID = 4242;
+export const APP_ONE_OFF_ID = 4243;
+const APP_ONE_OFF_START = APP_MON + 14 * H;
+export const APP_ALLDAY_ID = 4244;
+/** Monday 29 Jan 2024, all day — the all-day series' own DTSTART, and what
+ *  `event_detail` reports as its master row's `start_ms`. */
+export const APP_ALLDAY_SERIES_DTSTART = APP_MON;
+/** Wednesday 31 Jan 2024, all day — the *chip* the specs click, two days into
+ *  the series. All-day occurrences are contiguous (each ends exactly where the
+ *  next begins), so a route that reached for the master's start instead lands
+ *  on a real neighbouring day rather than on something obviously wrong, which
+ *  is why the two are deliberately different days here. */
+export const APP_ALLDAY_OCCURRENCE = APP_MON + 2 * 24 * H;
+
+/** The calendar a create must land on: the user's own primary. Third in the
+ *  list below on purpose — a seed that took `calendars[0]` would pick the
+ *  holiday calendar and a seed that took the first *writable* one would pick
+ *  Team, so this id rejects both. */
+export const APP_PRIMARY_CALENDAR_ID = 9;
+/** The `reader` in that list, which a create may never land on. */
+export const APP_READER_CALENDAR_ID = 7;
+
+/** One account, three roles, the two unwritable-then-writable ordering above.
+ *  A subscribed holiday calendar really is a `reader`; this is what a real
+ *  `get_calendars` looks like. */
+export const APP_WRITE_CALENDARS: Calendar[] = [
+  cal({ id: APP_READER_CALENDAR_ID, account_email: 'me@x.com',
+        summary: 'Holidays in Bulgaria', access_role: 'reader' }),
+  cal({ id: 8, account_email: 'me@x.com', summary: 'Team', access_role: 'writer' }),
+  cal({ id: APP_PRIMARY_CALENDAR_ID, account_email: 'me@x.com', summary: 'Personal',
+        is_primary: true, access_role: 'owner' }),
+];
+
+const APP_SERIES_BLOCK: UiEvent = ev({
+  id: APP_SERIES_ID, title: 'Standup',
+  start_ms: APP_SERIES_OCCURRENCE, end_ms: APP_SERIES_OCCURRENCE + 30 * 60_000,
+});
+const APP_ONE_OFF_BLOCK: UiEvent = ev({
+  id: APP_ONE_OFF_ID, title: 'Board prep',
+  start_ms: APP_ONE_OFF_START, end_ms: APP_ONE_OFF_START + 60 * 60_000,
+});
+/** The band chip. `commands::assemble_week` routes every `is_all_day` event
+ *  into `all_day_events` and never into a day column, so a chip is the only
+ *  representation this event ever gets — there is no `EventBlock` to fall back
+ *  on, and therefore no other App-level route to its edit and delete. */
+const APP_ALLDAY_CHIP: UiEvent = ev({
+  id: APP_ALLDAY_ID, title: 'Diwali', is_all_day: true, color: '#e2a03f',
+  start_ms: APP_ALLDAY_OCCURRENCE, end_ms: APP_ALLDAY_OCCURRENCE + 24 * H,
+});
+
+POPOVER_DETAILS[APP_SERIES_ID] = detail({
+  id: APP_SERIES_ID, title: 'Standup', can_edit: true,
+  calendar_id: APP_PRIMARY_CALENDAR_ID,
+  is_recurring: true, recurrence: 'RRULE:FREQ=WEEKLY', repeat: 'weekly',
+  // The series start, deliberately not the block's — the trap the whole task
+  // is built around, set here so an App-level spec can prove the value that
+  // reaches `update_event`/`delete_event_cmd` is the block's.
+  start_ms: APP_SERIES_DTSTART, end_ms: APP_SERIES_DTSTART + 30 * 60_000,
+  attendees: [
+    attendee({ email: 'ana@x.com', display_name: 'Ana', response_status: 'accepted' }),
+    attendee({ email: 'petya@x.com' }),
+    attendee({ email: 'me@x.com', is_self: true }),
+  ],
+});
+/** Two guests, not three: the delete confirmation must not count the person
+ *  doing the deleting. */
+export const APP_SERIES_GUESTS = 2;
+
+POPOVER_DETAILS[APP_ONE_OFF_ID] = detail({
+  id: APP_ONE_OFF_ID, title: 'Board prep', can_edit: true,
+  calendar_id: APP_PRIMARY_CALENDAR_ID,
+  start_ms: APP_ONE_OFF_START, end_ms: APP_ONE_OFF_START + 60 * 60_000,
+});
+
+/** The all-day series behind the band chip. `can_edit: true` **explicitly**:
+ *  `detail()`'s own default is `false` (see its comment), so without this the
+ *  Edit and Delete controls never render and the chip route cannot be driven
+ *  at all.
+ *
+ *  Recurring, with the DTSTART two days before the clicked chip, for the same
+ *  reason `POPOVER_DETAILS[APP_SERIES_ID]` above is: only a series master ever
+ *  reports a `start_ms` that is not the block's own, and unless the two differ
+ *  a route that read `detail.start_ms` would carry the right value by
+ *  coincidence. */
+POPOVER_DETAILS[APP_ALLDAY_ID] = detail({
+  id: APP_ALLDAY_ID, title: 'Diwali', can_edit: true,
+  calendar_id: APP_PRIMARY_CALENDAR_ID,
+  is_all_day: true,
+  is_recurring: true, recurrence: 'RRULE:FREQ=DAILY', repeat: 'daily',
+  start_ms: APP_ALLDAY_SERIES_DTSTART, end_ms: APP_ALLDAY_SERIES_DTSTART + 24 * H,
+  attendees: [
+    attendee({ email: 'ana@x.com', display_name: 'Ana', response_status: 'accepted' }),
+    attendee({ email: 'me@x.com', is_self: true }),
+  ],
+});
+
+/** The `writable` scenario's week: both events on Monday's column and inside
+ *  its top tenth, so a spec can click empty grid space further down without
+ *  hitting either. Their on-screen positions come from `Placed`, not from
+ *  their own timestamps, which is what lets the recurring one keep a Thursday
+ *  `start_ms` while rendering in Monday's column. */
+export const appWritableWeek = (): WeekPayload => {
+  const w = emptyWeekAt(APP_MON);
+  const events = [APP_SERIES_BLOCK, APP_ONE_OFF_BLOCK];
+  w.days[0] = {
+    start_ms: APP_MON,
+    end_ms: APP_MON + 24 * H,
+    events,
+    placed: [placed(0.02, 0.02, 0, 1, 0), placed(0.06, 0.02, 0, 1, 1)],
+  };
+  // The all-day band, on Wednesday's column: one chip, on its own lane, well
+  // clear of the two blocks above (which live in Monday's column, and in the
+  // scrolling body rather than in the band at all).
+  w.all_day_events = [APP_ALLDAY_CHIP];
+  w.all_day = [
+    { idx: 0, lane: 0, start_col: 2, end_col: 2, cont_left: false, cont_right: false },
+  ];
+  return w;
+};
+
+/** What the `create_event` stub resolves with. Never read by anything under
+ *  test — `App` reloads the grid rather than rendering the returned detail —
+ *  but it has to be a well-shaped `EventDetail` to satisfy the command's type. */
+export const CREATED_DETAIL: EventDetail = detail({ id: 9001, title: 'Lunch' });
+
 export const FIXTURES: Record<string, Record<string, any>> = {
   WeekGrid: {
     empty: { week: emptyWeek() },
@@ -913,7 +1177,7 @@ export const FIXTURES: Record<string, Record<string, any>> = {
           attendee({ email: 'petya@x.com', response_status: 'declined' }),
         ],
       }),
-      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop,
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
     },
     // The raw description is already entity-encoded, as a hostile calendar
     // invite's would be — `descriptionSegments` decodes it back to the
@@ -923,7 +1187,7 @@ export const FIXTURES: Record<string, Record<string, any>> = {
     // `<script>` element — exactly the regression Step 7 breaks on purpose.
     'nasty-description': {
       detail: detail({ id: 2, description: '&lt;script&gt;alert(1)&lt;/script&gt;' }),
-      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop,
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
     },
     recurring: {
       detail: detail({
@@ -931,7 +1195,7 @@ export const FIXTURES: Record<string, Record<string, any>> = {
         is_recurring: true,
         attendees: [attendee({ email: 'me@x.com', is_self: true })],
       }),
-      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop,
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
     },
     readonly: {
       detail: detail({
@@ -943,13 +1207,13 @@ export const FIXTURES: Record<string, Record<string, any>> = {
           attendee({ email: 'petya@x.com', response_status: 'declined' }),
         ],
       }),
-      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop,
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
     },
     // The harness's `respond_to_event` stub rejects for this scenario name —
     // see tests/harness/tauri.ts.
     'respond-fails': {
       detail: detail({ id: 5, attendees: [attendee({ email: 'me@x.com', is_self: true })] }),
-      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop,
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
     },
     // `detail.start_ms` is the series DTSTART (Monday); the block actually
     // clicked is the fourth occurrence (Thursday) — the trap named in the
@@ -963,7 +1227,7 @@ export const FIXTURES: Record<string, Record<string, any>> = {
         start_ms: SERIES_DTSTART,
         attendees: [attendee({ email: 'me@x.com', is_self: true })],
       }),
-      anchor: ANCHOR, occurrenceStartMs: FOURTH_OCCURRENCE, onclose: noop, onresponded: noop,
+      anchor: ANCHOR, occurrenceStartMs: FOURTH_OCCURRENCE, onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
     },
     // Non-recurring, so the backend really does write back (unlike the
     // bare-master "this one" case above) — the harness's `respond_to_event`
@@ -975,7 +1239,137 @@ export const FIXTURES: Record<string, Record<string, any>> = {
         id: 7,
         attendees: [attendee({ email: 'me@x.com', is_self: true, response_status: 'needsAction' })],
       }),
-      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop,
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
+    },
+    // `can_edit: true` *explicitly*: `detail()`'s own default is `false`, and
+    // it is false so that a spec asserting the controls are shown fails until
+    // its fixture opts in, rather than passing because every fixture happens
+    // to be editable. Its pair is `standup` above, which takes the default —
+    // between them the two discriminate in both directions.
+    editable: {
+      detail: detail({ id: 8, title: 'Board prep', can_edit: true }),
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
+    },
+  },
+  DeleteConfirm: {
+    // Three attendees, one of them the signed-in user, so the notice must say
+    // two. A panel whose guests were all strangers would pass whether or not
+    // the count excluded the person doing the deleting.
+    'one-off': {
+      detail: detail({
+        id: 20, title: 'Board prep', can_edit: true,
+        attendees: [
+          attendee({ email: 'ana@x.com', display_name: 'Ana' }),
+          attendee({ email: 'petya@x.com' }),
+          attendee({ email: 'me@x.com', is_self: true }),
+        ],
+      }),
+      anchor: ANCHOR, onconfirm: noop, oncancel: noop,
+    },
+    recurring: {
+      detail: detail({
+        id: 21, title: 'Standup', can_edit: true, is_recurring: true,
+        recurrence: 'RRULE:FREQ=WEEKLY', repeat: 'weekly',
+        attendees: [
+          attendee({ email: 'ana@x.com', display_name: 'Ana' }),
+          attendee({ email: 'me@x.com', is_self: true }),
+        ],
+      }),
+      anchor: ANCHOR, onconfirm: noop, oncancel: noop,
+    },
+    // Nobody to tell. The guest notice must be absent rather than read
+    // "0 guests are told by email", which is both untrue and alarming.
+    'no-guests': {
+      detail: detail({ id: 22, title: 'Focus time', can_edit: true }),
+      anchor: ANCHOR, onconfirm: noop, oncancel: noop,
+    },
+  },
+  // `onsave`/`oncancel` are supplied by the harness, not here: they are
+  // callback props rather than Tauri commands, so they are captured on the
+  // window exactly as `MonthGrid`'s `onopen` is (see harness/mount.svelte.ts).
+  EventForm: {
+    // Built from `Date.now()` on purpose. The "next half hour" default belongs
+    // to `blankValue`, and a fixture that pinned the instant itself could not
+    // tell a form that applies the default from one that was handed the answer.
+    // Every spec freezes the clock to `FORM_NOW` before navigating; without
+    // that this fixture is the dated time bomb the task brief warns about.
+    create: { anchor: ANCHOR, initial: blankValue(Date.now(), null), calendars: FORM_CALENDARS },
+    // Seeded with the `reader`'s id — the shape Task 10 can produce, since it
+    // picks that second argument. Filtering the option list alone left the
+    // select blank and saved calendar 3 anyway, with no error: a Save the
+    // backend could only refuse. The value has to be normalised too.
+    'create-seeded-unwritable': {
+      anchor: ANCHOR, initial: blankValue(FORM_NOW, FORM_UNWRITABLE_ID), calendars: FORM_CALENDARS,
+    },
+    // 14:00 to 13:00 on the same day — backwards by an hour, not by a minute,
+    // so no rounding anywhere could make the two ends agree.
+    'end-before-start': {
+      anchor: ANCHOR,
+      initial: { ...blankValue(FORM_NOW, 1), start: '14:00', end: '13:00' },
+      calendars: FORM_CALENDARS,
+    },
+    // Spec §6's UI half: a fortnightly rule, which `write::rrule_for` has no
+    // way to author, so `write::repeat_from_rrule` answers `custom` and the
+    // form must refuse to overwrite it by accident. `repeat` and `recurrence`
+    // are set together — the backend derives one from the other, and a fixture
+    // where they disagreed would be describing an event that cannot exist.
+    'custom-repeat': {
+      anchor: ANCHOR,
+      initial: editing(detail({
+        id: 10, title: 'Sprint review', is_recurring: true,
+        recurrence: 'RRULE:FREQ=WEEKLY;INTERVAL=2', repeat: 'custom', can_edit: true,
+      })),
+      calendars: FORM_CALENDARS,
+    },
+    // Five attendees, one of them the signed-in user: the notice must say
+    // four. A fixture whose guests were all strangers would pass whether or
+    // not the count excluded the person doing the saving.
+    'with-guests': {
+      anchor: ANCHOR,
+      initial: editing(detail({
+        id: 11, title: 'Board prep', can_edit: true,
+        attendees: [
+          attendee({ email: 'ana@x.com', display_name: 'Ana' }),
+          attendee({ email: 'petya@x.com' }),
+          attendee({ email: 'rahul@x.com' }),
+          attendee({ email: 'ivan@x.com' }),
+          attendee({ email: 'me@x.com', is_self: true }),
+        ],
+      })),
+      calendars: FORM_CALENDARS,
+    },
+    // A description that is live markup if anything ever renders it, and that
+    // must survive the round trip through the form byte for byte — sanitising
+    // it on the way *in* would silently rewrite what its author typed and then
+    // save the rewrite back over the real event.
+    'nasty-description': {
+      anchor: ANCHOR,
+      initial: editing(detail({
+        id: 12, title: 'Notes', can_edit: true,
+        description: '<img src=x onerror=alert(1)>',
+      })),
+      calendars: FORM_CALENDARS,
+    },
+    // An ordinary weekly series, for the scope chooser and what it says about
+    // "All events".
+    'recurring-edit': {
+      anchor: ANCHOR,
+      initial: editing(detail({
+        id: 13, title: 'Standup', is_recurring: true,
+        recurrence: 'RRULE:FREQ=WEEKLY', repeat: 'weekly', can_edit: true,
+      })),
+      calendars: FORM_CALENDARS,
+    },
+    // Three days, all day. See TRIP_START above for why the exclusive end is
+    // the whole point of this one.
+    'multi-day-all-day': {
+      anchor: ANCHOR,
+      initial: editing(
+        detail({ id: 14, title: 'Berlin trip', is_all_day: true, can_edit: true,
+                 start_ms: TRIP_START, end_ms: TRIP_END_EXCLUSIVE }),
+        TRIP_START, TRIP_END_EXCLUSIVE,
+      ),
+      calendars: FORM_CALENDARS,
     },
   },
 };

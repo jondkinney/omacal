@@ -9,6 +9,7 @@ mod status;
 mod sync_loop;
 mod theme;
 mod theme_watch;
+mod write;
 
 use sqlx::SqlitePool;
 use tauri::Manager;
@@ -361,6 +362,17 @@ fn now_ms() -> i64 {
 /// thing a new user sees.
 ///
 /// Worded for both actions it guards: Sync now, and Connect Google Calendar.
+///
+/// A second, separate demo refusal exists at `events::create_impl` ("demo
+/// mode — there is nothing to create") rather than reusing this constant.
+/// Two reasons, not one: this message's own wording ("nothing to connect or
+/// sync") does not describe creating an event, and it starts with a capital
+/// D — `create_impl`'s own guard test asserts `err.contains("demo")` on the
+/// raw `anyhow` message (checked before that error ever reaches
+/// `errors::user_facing`), which a leading-capital string cannot satisfy.
+/// If a third demo-gated write command shows up, give it the same treatment
+/// rather than growing this constant's wording to cover three unrelated
+/// actions.
 const DEMO_SYNC_MESSAGE: &str =
     "Demo mode — this is synthetic data, so there is nothing to connect or sync.";
 
@@ -657,7 +669,10 @@ pub fn run() {
             calendars::set_calendar_sync,
             events::event_detail,
             events::respond_to_event,
-            events::refresh_event
+            events::refresh_event,
+            events::create_event,
+            events::update_event,
+            events::delete_event_cmd
         ])
         .run(tauri::generate_context!())
         .expect("error while running omacal");

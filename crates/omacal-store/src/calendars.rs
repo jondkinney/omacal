@@ -13,6 +13,16 @@ pub struct CalendarRow {
     /// Fetched from Google at all.
     pub sync_enabled: bool,
     pub is_primary: bool,
+    /// Google's own word for what this account may do here: `owner`, `writer`,
+    /// `reader`, `freeBusyReader`.
+    ///
+    /// Carried all the way to the UI because the event form has to offer only
+    /// the calendars a create could actually land on — a subscribed holiday
+    /// calendar is a `reader`, and offering it produces a Save that
+    /// `create_impl` can only refuse. That refusal already exists and stays
+    /// (`can_edit`, applied server-side against this same column via
+    /// `calendar_for_write`); this field is what stops the UI walking into it.
+    pub access_role: String,
 }
 
 /// Every calendar across every account, primary first, then alphabetical —
@@ -20,7 +30,7 @@ pub struct CalendarRow {
 pub async fn list_calendars(pool: &SqlitePool) -> anyhow::Result<Vec<CalendarRow>> {
     let rows = sqlx::query(
         "SELECT c.id, c.account_id, a.email AS account_email, c.summary,
-                c.color_hex, c.selected, c.sync_enabled, c.is_primary
+                c.color_hex, c.selected, c.sync_enabled, c.is_primary, c.access_role
          FROM calendars c
          JOIN accounts a ON a.id = c.account_id
          ORDER BY a.email, c.is_primary DESC, c.summary COLLATE NOCASE",
@@ -39,8 +49,40 @@ pub async fn list_calendars(pool: &SqlitePool) -> anyhow::Result<Vec<CalendarRow
             selected: r.get::<i64, _>("selected") != 0,
             sync_enabled: r.get::<i64, _>("sync_enabled") != 0,
             is_primary: r.get::<i64, _>("is_primary") != 0,
+            access_role: r.get("access_role"),
         })
         .collect())
+}
+
+/// One calendar's `google_id`, `access_role`, owning account's email, and own
+/// stored `timezone`, by the calendar's own row id.
+///
+/// The counterpart to [`crate::events::event_for_write`] for a write that
+/// creates an event rather than changing one that already exists: there is no
+/// event row yet to key a lookup on, only the calendar it will be created on,
+/// so this starts from `calendars` instead of `events` and skips straight to
+/// the two joins that query already does.
+///
+/// `timezone` is included because it must be the *calendar's own* zone that a
+/// caller later hands to `omacal_sync::to_stored`, not whatever zone the
+/// caller happens to be authoring an event in — see `create_via_client`'s doc
+/// comment for why an all-day create is the case that makes those two differ.
+pub async fn calendar_for_write(
+    pool: &SqlitePool,
+    id: i64,
+) -> anyhow::Result<Option<(String, String, String, String)>> {
+    let row = sqlx::query(
+        "SELECT c.google_id, c.access_role, a.email AS account_email, c.timezone
+         FROM calendars c
+         JOIN accounts a ON a.id = c.account_id
+         WHERE c.id = ?1",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| {
+        (r.get("google_id"), r.get("access_role"), r.get("account_email"), r.get("timezone"))
+    }))
 }
 
 /// Show or hide a calendar. Pure display — no data is fetched or discarded.
@@ -119,6 +161,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn calendar_for_write_returns_the_calendars_google_id_role_email_and_timezone() {
+        let pool = connect_memory().await.unwrap();
+        seed(&pool).await;
+        let (google_id, access_role, account_email, timezone) =
+            calendar_for_write(&pool, 1).await.unwrap().expect("calendar exists");
+        assert_eq!(google_id, "primary");
+        assert_eq!(access_role, "owner");
+        assert_eq!(account_email, "me@x.com");
+        assert_eq!(timezone, "UTC", "seed()'s calendar timezone");
+    }
+
+    #[tokio::test]
+    async fn calendar_for_write_returns_none_for_an_unknown_id() {
+        let pool = connect_memory().await.unwrap();
+        // Seeded first, so this proves the `WHERE` clause actually filters —
+        // against a bare empty pool the same assertion would pass whether or
+        // not the query filters on `id` at all.
+        seed(&pool).await;
+        assert!(calendar_for_write(&pool, 999).await.unwrap().is_none());
+    }
+
+    /// Crosses calendar and account ids the same way
+    /// `omacal_store::events::tests::seed_two_accounts` does — calendar id 1
+    /// belongs to account 2, calendar id 2 belongs to account 1 — so a join on
+    /// the wrong column (`a.id = c.id` instead of `a.id = c.account_id`)
+    /// still returns *an* account row, just the wrong one, rather than
+    /// failing loudly. Returns the id of the calendar owned by account "a".
+    async fn seed_two_accounts(pool: &SqlitePool) -> i64 {
+        sqlx::query("INSERT INTO accounts (google_sub, email, created_at) VALUES ('a','a@x',0)")
+            .execute(pool).await.unwrap();
+        sqlx::query("INSERT INTO accounts (google_sub, email, created_at) VALUES ('b','b@x',0)")
+            .execute(pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO calendars (account_id, google_id, summary, timezone, access_role)
+             VALUES (2, 'cal-on-b', 'On B', 'UTC', 'reader')",
+        ).execute(pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO calendars (account_id, google_id, summary, timezone, access_role)
+             VALUES (1, 'cal-on-a', 'On A', 'Pacific/Auckland', 'owner')",
+        ).execute(pool).await.unwrap();
+
+        let (id, account_id): (i64, i64) =
+            sqlx::query_as("SELECT id, account_id FROM calendars WHERE google_id = 'cal-on-a'")
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        debug_assert_ne!(
+            id, account_id,
+            "cal-on-a: the calendar's id must not equal its own account_id, or a join on the \
+             wrong column still returns the right row"
+        );
+        id
+    }
+
+    /// The account JOIN, unbound without this: `seed_two_accounts` crosses
+    /// calendar and account ids so joining `accounts` on the wrong column
+    /// (e.g. `a.id = c.id` instead of `a.id = c.account_id`) still returns an
+    /// account, just account "b"'s instead of "a"'s. `account_email` is what
+    /// `access_token_for` uses to pick a Google account's token, so a wrong
+    /// join here means creating the event under a different Google account
+    /// than the calendar's own.
+    #[tokio::test]
+    async fn calendar_for_write_resolves_the_owning_account_not_one_sharing_an_id() {
+        let pool = connect_memory().await.unwrap();
+        let cal_on_a = seed_two_accounts(&pool).await;
+
+        let (google_id, _access_role, account_email, _timezone) =
+            calendar_for_write(&pool, cal_on_a).await.unwrap().expect("calendar exists");
+        assert_eq!(google_id, "cal-on-a");
+        assert_eq!(
+            account_email, "a@x",
+            "must be account a's own email, not account b's merely sharing an id with cal_on_a"
+        );
+    }
+
+    #[tokio::test]
     async fn listing_returns_every_calendar_with_its_account() {
         let pool = connect_memory().await.unwrap();
         seed(&pool).await;
@@ -134,6 +252,27 @@ mod tests {
         seed(&pool).await;
         let cals = list_calendars(&pool).await.unwrap();
         assert!(cals[0].is_primary, "the primary calendar should lead the list");
+    }
+
+    /// The event form has nothing but this column to decide which calendars it
+    /// may offer, and the query dropped it until Task 9 — every calendar
+    /// reached the UI looking equally writable, subscribed holiday calendars
+    /// included. `seed_two_accounts` seeds one `owner` and one `reader`, so a
+    /// query that hard-coded either value still fails here.
+    #[tokio::test]
+    async fn listing_reports_each_calendars_access_role() {
+        let pool = connect_memory().await.unwrap();
+        seed_two_accounts(&pool).await;
+        let cals = list_calendars(&pool).await.unwrap();
+        let role = |summary: &str| {
+            cals.iter()
+                .find(|c| c.summary == summary)
+                .unwrap_or_else(|| panic!("no calendar named {summary}"))
+                .access_role
+                .clone()
+        };
+        assert_eq!(role("On A"), "owner");
+        assert_eq!(role("On B"), "reader");
     }
 
     #[tokio::test]

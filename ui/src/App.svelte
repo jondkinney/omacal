@@ -7,8 +7,15 @@
     type WeekPayload, type MonthPayload, type YearPayload, type BigYearPayload, type UiEvent,
   } from './lib/api';
   import { getStatus, signIn, syncNow, type AppStatus } from './lib/status';
-  import { getCalendars, type Calendar } from './lib/calendars';
-  import { getEventDetail, type EventDetail } from './lib/eventdetail';
+  import { getCalendars, offerableCalendarId, type Calendar } from './lib/calendars';
+  import {
+    createEvent, deleteEvent, getEventDetail, updateEvent,
+    type EventDetail, type Occurrence,
+  } from './lib/eventdetail';
+  import {
+    blankValue, blankValueAt, valueFromDetail,
+    type EventFormResult, type EventFormValue, type Scope,
+  } from './lib/eventform';
   import type { Rect } from './lib/position';
   import WeekGrid from './lib/WeekGrid.svelte';
   import MonthGrid from './lib/MonthGrid.svelte';
@@ -16,6 +23,8 @@
   import BigYearRibbon from './lib/BigYearRibbon.svelte';
   import Header from './lib/Header.svelte';
   import EventPopover from './lib/EventPopover.svelte';
+  import EventForm from './lib/EventForm.svelte';
+  import DeleteConfirm from './lib/DeleteConfirm.svelte';
   import ViewSwitcher, { type View } from './lib/ViewSwitcher.svelte';
 
   /** Midnight local on the day `ms` falls in — `T`'s target, and Day view's
@@ -373,6 +382,11 @@
   // for a later `===`).
   let gridSelId = $state<number | null>(null);
   let gridSelStart = $state<number | null>(null);
+  // Carried for the same reason `WeekGrid`'s own `selectedEndMs` is: the event
+  // form needs the clicked occurrence's whole span, and the master's duration
+  // is not it. Not part of `isGridSelected` — `id` + `start_ms` already name an
+  // occurrence uniquely.
+  let gridSelEnd = $state<number | null>(null);
   let gridAnchor = $state<Rect | null>(null);
   let gridDetail = $state<EventDetail | null>(null);
 
@@ -383,6 +397,7 @@
   async function openGridEvent(event: UiEvent, rect: Rect) {
     gridSelId = event.id;
     gridSelStart = event.start_ms;
+    gridSelEnd = event.end_ms;
     gridAnchor = rect;
     gridDetail = null;
     try {
@@ -396,8 +411,213 @@
   function closeGridEvent() {
     gridSelId = null;
     gridSelStart = null;
+    gridSelEnd = null;
     gridAnchor = null;
     gridDetail = null;
+  }
+
+  // --- Creating, editing and deleting --------------------------------------
+  //
+  // Every write lives here rather than in the component that offers the
+  // control, for one reason: each of the three needs something the component
+  // does not have. A create needs a calendar to land on, which is App's
+  // `calendars`. An edit and a delete need the *clicked block's* own
+  // `start_ms` — never `detail.start_ms` (see `eventdetail.ts`) — which the
+  // grid has and the popover does not. And all three need the grid refreshed
+  // afterwards, which only App can do.
+
+  /**
+   * The calendar a new event lands on unless the user picks another: the
+   * signed-in user's own primary, when a create can actually land on it.
+   *
+   * `offerableCalendarId` is what makes that "when" true. There may be no
+   * primary at all — before the first sign-in, or for an account whose own
+   * calendar is not synced — and the list can lead with calendars this app
+   * cannot write to, a subscribed holiday calendar being the ordinary case.
+   * Seeding the form with one of those renders a *blank* select, because no
+   * option matches the value, and then saves that id anyway; see
+   * `offerableCalendarId`'s own comment for the whole shape of it.
+   */
+  const createCalendarId = $derived(
+    offerableCalendarId(calendars.find((c) => c.is_primary)?.id ?? null, calendars),
+  );
+
+  /** What the open form is for. `id` and `occurrenceStartMs` are captured when
+   *  the form opens, never re-read from the popover state afterwards: the
+   *  popover is already closed by then, and `occurrenceStartMs` is the one
+   *  value an edit cannot be allowed to guess. */
+  type FormRequest =
+    | { mode: 'create'; anchor: Rect; initial: EventFormValue }
+    | { mode: 'edit'; anchor: Rect; initial: EventFormValue; id: number; occurrenceStartMs: number };
+
+  let form = $state<FormRequest | null>(null);
+  let pendingDelete = $state<{ occurrence: Occurrence; anchor: Rect } | null>(null);
+
+  /** A rect for a form nothing was clicked to open — `n`. Zero-sized, a quarter
+   *  of the way down and half the panel's width left of centre, which is where
+   *  `placePopover`'s prefer-the-right rule then lands the panel: roughly
+   *  centred, rather than against an edge. */
+  function keyboardAnchor(): Rect {
+    return { top: window.innerHeight / 4, left: window.innerWidth / 2 - 170, width: 0, height: 0 };
+  }
+
+  /**
+   * The day a new event opens on: `anchorMs`, except in Year and Big Year.
+   *
+   * Those two navigate their own counters and deliberately leave `anchorMs`
+   * alone — see their declarations for why — so the anchor is simply not what
+   * is on screen there. `n` in Year after two `l`s would otherwise open a form
+   * two years behind the grid being read, and `n` is the *only* way to create
+   * from Year, which has no empty grid space left to click.
+   *
+   * The anchor's month and day are kept and moved into the displayed year,
+   * which is the inverse of `pick`'s own re-seeding of `yearNum` from
+   * `anchorMs`. Clamped to the target month's last day for exactly the reason
+   * `step` clamps: 29 February moved into a non-leap year overflows into March
+   * rather than failing.
+   */
+  function createDayMs(): number {
+    const shownYear = view === 'year' ? yearNum : view === 'bigyear' ? bigYearNum : null;
+    if (shownYear === null) return anchorMs;
+    const d = new Date(anchorMs);
+    const dom = d.getDate();
+    d.setDate(1);
+    d.setFullYear(shownYear);
+    const lastDayOfTarget = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+    d.setDate(Math.min(dom, lastDayOfTarget));
+    return d.getTime();
+  }
+
+  /** `n`: a new event on the date the user is looking at, at the next half
+   *  hour. Not on *today* — the anchor is the whole point (spec §5), and the
+   *  two differ the moment anybody navigates. */
+  function newEventOnAnchor() {
+    form = {
+      mode: 'create',
+      anchor: keyboardAnchor(),
+      initial: blankValue(Date.now(), createCalendarId, createDayMs()),
+    };
+  }
+
+  /** Day and Week: the grid names a real time, so the form opens at it. */
+  function newEventAt(startMs: number, rect: Rect) {
+    form = { mode: 'create', anchor: rect, initial: blankValueAt(startMs, createCalendarId) };
+  }
+
+  /** Month and Big Year: the grid names a date and no time, so the form takes
+   *  the same default hour `n` would have used — the next half hour, moved to
+   *  the day that was clicked. */
+  function newEventOnDay(dayStartMs: number, rect: Rect) {
+    form = {
+      mode: 'create',
+      anchor: rect,
+      initial: blankValue(Date.now(), createCalendarId, dayStartMs),
+    };
+  }
+
+  /**
+   * Edit, from either popover.
+   *
+   * `occurrence.startMs`/`endMs` are the clicked block's own, and they are what
+   * `valueFromDetail` is given as well as what `updateEvent` will be handed
+   * below. Both from the same pair is the invariant `updateEvent`'s doc comment
+   * rests on: the Rust side reads a time change as the difference between
+   * `fields.startMs` and `occurrenceStartMs`, so two values from different
+   * sources make an untouched time look like a move of weeks.
+   */
+  function openEdit(occurrence: Occurrence, rect: Rect) {
+    closeGridEvent();
+    form = {
+      mode: 'edit',
+      anchor: rect,
+      id: occurrence.detail.id,
+      occurrenceStartMs: occurrence.startMs,
+      initial: valueFromDetail(occurrence.detail, occurrence.startMs, occurrence.endMs),
+    };
+  }
+
+  /** Delete, from either popover. Nothing is deleted here — this opens the
+   *  confirmation, which is where the three scopes, the guest count and the
+   *  "no undo" live. */
+  function askDelete(occurrence: Occurrence, rect: Rect) {
+    closeGridEvent();
+    pendingDelete = { occurrence, anchor: rect };
+  }
+
+  /**
+   * Where every successful write ends.
+   *
+   * A *sync*, not just a re-read, and that is the whole point of the function.
+   * Two of the write paths deliberately leave the local store alone: a `'this'`
+   * edit or delete against a bare recurring master patches a Google resource
+   * this app has no row for, so the backend correctly skips its write-back
+   * (see `update_event`'s and `delete_event_cmd`'s own comments), and a
+   * `'following'` delete opened from an exception row is the same shape. Asking
+   * the database again would repaint exactly what is already on screen — the
+   * old title, or the block the user just deleted — for up to a sync interval.
+   *
+   * The local reload runs first and unconditionally, so whatever the write
+   * *did* fold back shows immediately and a sync that cannot reach Google still
+   * leaves the grid as current as the store is. The failure is reported without
+   * claiming the write itself did not happen, because it did.
+   */
+  async function refreshAfterWrite() {
+    await reload();
+    busy = true;
+    try {
+      await syncNow();
+      await refreshStatus();
+      await reload();
+    } catch (e) {
+      error = `The change was made, but omacal could not refresh from Google: ${e}`;
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function saveForm(result: EventFormResult) {
+    const request = form;
+    if (!request) return;
+    form = null;
+    busy = true;
+    error = null;
+    try {
+      if (request.mode === 'create') {
+        await createEvent(result.calendarId, result.fields);
+      } else {
+        // `request.occurrenceStartMs`, never `detail.start_ms`: for a series
+        // the second is the master's DTSTART, and an edit aimed at it patches
+        // occurrence #0 with the whole form as its payload and `sendUpdates=all`
+        // behind it. The scope comes from the form's own chooser (Task 9).
+        await updateEvent(request.id, result.scope, request.occurrenceStartMs, result.fields);
+      }
+    } catch (e) {
+      error = String(e);
+      return;
+    } finally {
+      busy = false;
+    }
+    await refreshAfterWrite();
+  }
+
+  async function runDelete(scope: Scope) {
+    const target = pendingDelete;
+    if (!target) return;
+    pendingDelete = null;
+    busy = true;
+    error = null;
+    try {
+      // Same rule, and it bites hardest here: `'this'` aimed at the master's
+      // DTSTART removes the series' *first* occurrence rather than the one the
+      // user clicked, and mails everybody about it.
+      await deleteEvent(target.occurrence.detail.id, scope, target.occurrence.startMs);
+    } catch (e) {
+      error = String(e);
+      return;
+    } finally {
+      busy = false;
+    }
+    await refreshAfterWrite();
   }
 
   // Keys are dropped when the user is typing (an `input`/`textarea`) or when
@@ -419,6 +639,18 @@
 
   function handleKeydown(e: KeyboardEvent) {
     if (isTypingTarget(e)) return;
+    // A modifier means the key belongs to the browser or the OS, not to
+    // omacal: ⌘N opens a window and ⌘L focuses a location bar. Every shortcut
+    // below is a bare key, so this turns nothing off that ever worked — and it
+    // keeps ⌘N in particular from opening an event form behind whatever the
+    // platform does with it.
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    // Nothing on the keyboard reaches the views while a form or a delete
+    // confirmation is open. Their scrims have already made everything behind
+    // them unclickable, and `n` opening a second form on top of the first is
+    // the same mistake by keyboard. Escape is unaffected: each panel listens
+    // for it on `window` itself.
+    if (form || pendingDelete) return;
     const keyed = KEY_VIEW[e.key];
     if (keyed) {
       pick(keyed);
@@ -428,6 +660,7 @@
       case 'h': step(-1); break;
       case 'l': step(1); break;
       case 't': goToday(); break;
+      case 'n': newEventOnAnchor(); break;
     }
   }
 </script>
@@ -448,29 +681,63 @@
   />
   {#if view === 'month'}
     {#if month}
-      <MonthGrid {month} onopen={openGridEvent} ondaypick={handleDayPick} />
+      <MonthGrid {month} onopen={openGridEvent} ondaypick={handleDayPick} oncreate={newEventOnDay} />
     {/if}
   {:else if view === 'year'}
+    <!-- No `oncreate` here, and deliberately: every day in Year view is
+         already a button that opens that day (`ondaypick`, spec §5), so there
+         is no empty space in the grid left to mean anything else. The route to
+         a new event from Year is the one the view is for — pick the day, then
+         create in it, or press `n`. -->
     {#if year}
       <YearGrid {year} ondaypick={handleDayPick} />
     {/if}
   {:else if view === 'bigyear'}
     {#if bigYear}
-      <BigYearRibbon ribbon={bigYear} onopen={openGridEvent} />
+      <BigYearRibbon ribbon={bigYear} onopen={openGridEvent} oncreate={newEventOnDay} />
     {/if}
   {:else if week}
-    <WeekGrid {week} />
+    <WeekGrid {week} oncreate={newEventAt} onedit={openEdit} ondelete={askDelete} />
   {/if}
 </main>
 
 {#if gridSelId !== null && gridSelStart !== null && gridAnchor && gridDetail}
   {@const startMs = gridSelStart}
+  {@const rect = gridAnchor}
+  <!-- Captured at this render, not read back off the module state inside the
+       callbacks: `openEdit`/`askDelete` both call `closeGridEvent()` first, so
+       by the time they need these values the state they came from is null.
+       `endMs` falls back to `startMs` only to satisfy the type — the `{#if}`
+       above already proves a block is selected, and `gridSelEnd` is assigned
+       and cleared in lockstep with `gridSelStart`. -->
+  {@const occurrence = { detail: gridDetail, startMs, endMs: gridSelEnd ?? startMs }}
   <EventPopover
     detail={gridDetail}
     anchor={gridAnchor}
     occurrenceStartMs={startMs}
     onclose={closeGridEvent}
     onresponded={() => {}}
+    onedit={() => openEdit(occurrence, rect)}
+    ondelete={() => askDelete(occurrence, rect)}
+  />
+{/if}
+
+{#if form}
+  <EventForm
+    anchor={form.anchor}
+    initial={form.initial}
+    {calendars}
+    onsave={saveForm}
+    oncancel={() => (form = null)}
+  />
+{/if}
+
+{#if pendingDelete}
+  <DeleteConfirm
+    detail={pendingDelete.occurrence.detail}
+    anchor={pendingDelete.anchor}
+    onconfirm={runDelete}
+    oncancel={() => (pendingDelete = null)}
   />
 {/if}
 

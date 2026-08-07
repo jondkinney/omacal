@@ -246,6 +246,94 @@ impl CalendarClient {
             .map_err(|e| ApiError::Transport(e.to_string()))?;
         Ok(body.items)
     }
+
+    /// Create an event. `send_updates` is Google's own vocabulary — `"all"`,
+    /// `"externalOnly"` or `"none"` — and is a parameter rather than a
+    /// constant because the two creates in this app want opposite answers.
+    ///
+    /// A create typed into the new-event form has no attendees to notify:
+    /// omacal cannot add guests, so there is nobody on a fresh event to tell,
+    /// and `"none"` keeps a new entry in your own calendar from mailing
+    /// anyone. Splitting a recurring series with "this and following" is the
+    /// other case, and it is not the same one — the event it creates carries
+    /// the whole guest list of the series it continues. See
+    /// `events::split_series` for why that one passes `"all"`.
+    ///
+    /// Hardcoding `"none"` here, as this method did when a create could only
+    /// ever be guestless, is what makes that distinction invisible: a split
+    /// would move every guest's meeting and tell none of them.
+    pub async fn insert_event(
+        &self,
+        cal: &str,
+        body: &serde_json::Value,
+        send_updates: &str,
+    ) -> Result<model::Event, ApiError> {
+        let resp = self
+            .http
+            .post(format!(
+                "{}/calendars/{}/events",
+                self.base_url,
+                urlencoding_path(cal)
+            ))
+            .bearer_auth(&self.access_token)
+            .query(&[("sendUpdates", send_updates)])
+            .json(body)
+            .send()
+            .await
+            .map_err(|e| ApiError::Transport(e.to_string()))?;
+
+        if !resp.status().is_success() {
+            return Err(ApiError::Http(format!("{}", resp.status())));
+        }
+
+        resp.json::<model::Event>()
+            .await
+            .map_err(|e| ApiError::Transport(e.to_string()))
+    }
+
+    /// Delete an event. `sendUpdates=all` so a cancelled meeting reaches the
+    /// guest list — a meeting that vanishes for the organiser only is worse
+    /// than an email.
+    ///
+    /// `404` is success: the event is already gone, which is what the caller
+    /// asked for. Returning an error there would make a double-click, or a
+    /// retry after a dropped response, look like a failure.
+    pub async fn delete_event(
+        &self,
+        cal: &str,
+        event_id: &str,
+        etag: Option<&str>,
+    ) -> Result<(), ApiError> {
+        let mut req = self
+            .http
+            .delete(format!(
+                "{}/calendars/{}/events/{}",
+                self.base_url,
+                urlencoding_path(cal),
+                urlencoding_path(event_id)
+            ))
+            .bearer_auth(&self.access_token)
+            .query(&[("sendUpdates", "all")]);
+        if let Some(etag) = etag {
+            req = req.header("If-Match", etag);
+        }
+
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| ApiError::Transport(e.to_string()))?;
+
+        if resp.status() == reqwest::StatusCode::PRECONDITION_FAILED {
+            return Err(ApiError::PreconditionFailed);
+        }
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(());
+        }
+        if !resp.status().is_success() {
+            return Err(ApiError::Http(format!("{}", resp.status())));
+        }
+        Ok(())
+    }
 }
 
 /// Calendar ids are email-like and must be percent-encoded in the path.
@@ -263,7 +351,7 @@ fn urlencoding_path(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wiremock::matchers::{header, method, path, query_param};
+    use wiremock::matchers::{body_json_string, header, method, path, query_param};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     #[tokio::test]
@@ -482,5 +570,92 @@ mod tests {
             .unwrap();
         assert_eq!(instances.len(), 2);
         assert_eq!(instances[0].id, "master1_20260803T090000Z");
+    }
+
+    /// `.expect(1)` and the `query_param` matcher together are what make this
+    /// test about notification at all: without the matcher a request carrying
+    /// any `sendUpdates` would match, and without `.expect(1)` a request that
+    /// missed the mock would come back as wiremock's bare 404 and fail for a
+    /// reason that reads like a transport problem rather than a wrong query.
+    #[tokio::test]
+    async fn insert_posts_the_body_and_notifies_exactly_as_asked() {
+        for send_updates in ["none", "all"] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/calendars/cal%40x.com/events"))
+                .and(query_param("sendUpdates", send_updates))
+                .and(body_json_string(r#"{"summary":"Lunch"}"#))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "id": "new1", "status": "confirmed", "etag": "\"e1\""
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let c = CalendarClient::new(server.uri(), "tok");
+            let ev = c
+                .insert_event("cal@x.com", &serde_json::json!({"summary": "Lunch"}), send_updates)
+                .await
+                .unwrap();
+            assert_eq!(ev.id, "new1");
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_sends_if_match_and_notifies_guests() {
+        // `.expect(1)` is load-bearing, not decorative: `delete_event` treats
+        // an unmatched-mock 404 as success (that is its own 404-means-gone
+        // rule, working exactly as designed), so a request that misses this
+        // mock — e.g. a wrong `sendUpdates` — would otherwise still return
+        // `Ok(())` and this test would pass while asserting nothing.
+        //
+        // The ids are deliberately chosen so each encodes differently under
+        // `urlencoding_path`: `cal@x.com` -> `cal%40x.com`, `ev#1` -> `ev%231`.
+        // Plain-ASCII ids like the old `"c"`/`"e1"` round-trip unchanged, so
+        // they would never notice `urlencoding_path` being silently removed
+        // from either path segment — the same trap documented on
+        // `event_instances_url_encodes_the_calendar_id` above.
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/calendars/cal%40x.com/events/ev%231"))
+            .and(query_param("sendUpdates", "all"))
+            .and(header("If-Match", "\"etag1\""))
+            .respond_with(ResponseTemplate::new(204))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let c = CalendarClient::new(server.uri(), "tok");
+        c.delete_event("cal@x.com", "ev#1", Some("\"etag1\""))
+            .await
+            .unwrap();
+    }
+
+    /// Already gone is the caller's desired end state, not an error.
+    #[tokio::test]
+    async fn delete_treats_404_as_success() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let c = CalendarClient::new(server.uri(), "tok");
+        c.delete_event("c", "gone", None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn delete_surfaces_a_conflict_as_precondition_failed() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .respond_with(ResponseTemplate::new(412))
+            .mount(&server)
+            .await;
+
+        let c = CalendarClient::new(server.uri(), "tok");
+        assert!(matches!(
+            c.delete_event("c", "e1", Some("\"old\"")).await,
+            Err(ApiError::PreconditionFailed)
+        ));
     }
 }

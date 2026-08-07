@@ -28,6 +28,24 @@ const SAFE_PREFIXES: &[&str] = &[
     // directory (os error 2)"); fires before any secret is ever read off disk,
     // so "client_secret" here can only ever be the literal key name.
     "no config at ",
+    // src-tauri/src/events.rs — `split_series`' refusal to strand materialised
+    // exceptions in the tail of a series it is about to split. A prefix rather
+    // than an exact entry because it genuinely has a variable part: the number
+    // of occupied slots, so the user knows the scale of what they are being
+    // asked to redo.
+    //
+    // What follows the prefix is a `COUNT(*)` rendered by `format!` and nothing
+    // else — an `i64` from `omacal_store::exceptions_from`, which cannot carry a
+    // path, a URL or a token whatever the database holds. The `bail!` is
+    // reached by a bare `?` with no `.context(..)` anywhere on its way to
+    // `update_event`'s `.map_err(..)`, so nothing is appended after it either.
+    // `a_split_that_would_strand_moved_occurrences_is_refused_before_any_write`
+    // in `events.rs` pins the whole rendered string for a known count, so a
+    // future wrap that started smuggling detail in after the number would fail
+    // a test rather than pass unnoticed.
+    "some later occurrences of this series were moved or deleted on their own, and a split \
+     cannot carry them across — edit all events instead, or re-create them afterwards. \
+     Occurrences affected: ",
 ];
 
 /// Error messages matched as a whole, not a prefix: nothing may come before or
@@ -58,6 +76,29 @@ const SAFE_EXACT: &[&str] = &[
     "that event is no longer here",
     "this calendar cannot be answered from omacal",
     "you are not a guest on this event",
+    // src-tauri/src/events.rs — `create_impl`'s three guards: the missing-
+    // calendar branch (a calendar removed between the picker and the save),
+    // the demo gate, and the writability check. Reached only through
+    // `create_event`'s `.map_err(|e| crate::errors::user_facing(&e))` with no
+    // `.context(..)` added on the way, so each is byte-identical here too.
+    "that calendar is no longer here",
+    "demo mode — there is nothing to create",
+    "this calendar is not writable from omacal",
+    // src-tauri/src/events.rs — `update_impl`'s demo gate. A third fixed
+    // literal for a third verb rather than one shared string: see
+    // `DEMO_SYNC_MESSAGE`'s own doc comment in `lib.rs` for why each write
+    // command says what *it* cannot do. Reached only through `update_event`'s
+    // `.map_err(|e| crate::errors::user_facing(&e))` with no `.context(..)`
+    // added on the way, so it is byte-identical here too. `update_impl`'s
+    // other three refusals reuse literals already listed above.
+    "demo mode — there is nothing to save",
+    // src-tauri/src/events.rs — `delete_impl`'s demo gate. A fourth fixed
+    // literal for a fourth verb, on the same reasoning as the third above.
+    // Reached only through `delete_event_cmd`'s `.map_err(|e|
+    // crate::errors::user_facing(&e))` with no `.context(..)` added on the way,
+    // so it is byte-identical here too. `delete_impl`'s other three refusals
+    // reuse literals already listed above.
+    "demo mode — there is nothing to delete",
     // src-tauri/src/events.rs — `resolve_instance_id`'s empty-lookup branch on
     // a bare series master (reached from `respond_via_client`, called by
     // `respond_to_event`). Fixed literal, no interpolation, and reached via a
@@ -68,6 +109,34 @@ const SAFE_EXACT: &[&str] = &[
     // occurrence the local store has no exception row for yet — read as
     // OPAQUE instead of naming what happened.
     "could not find that occurrence on the calendar",
+    // src-tauri/src/events.rs — `row_from_wire`'s tombstone branch, reached
+    // when the occurrence being edited was deleted between the popover opening
+    // and the save. Fixed literal, no interpolation, raised with `bail!` and
+    // propagated by a bare `?` with no `.context(..)` anywhere on the way to
+    // `update_event`'s `.map_err(..)`. Deliberately narrower than the branch it
+    // replaced: an event whose *times* will not parse is a shape nobody has
+    // seen, and that one stays opaque rather than telling the user something
+    // specific that may not be true.
+    "that occurrence is no longer on the calendar",
+    // src-tauri/src/events.rs — `split_series`' refusal to split a series that
+    // ends after a fixed number of occurrences. Fixed literal, no
+    // interpolation, raised with `bail!` before either write and propagated by
+    // a bare `?` with no `.context(..)` on the way to `update_event`'s
+    // `.map_err(..)`. Allowlisted because the user can act on it: "All events"
+    // does what they wanted, and OPAQUE here would send them looking in a log
+    // for a decision rather than a fault.
+    "omacal cannot split a series that ends after a set number of times — \
+     edit all events instead",
+    // src-tauri/src/events.rs — `split_series`' second write failing after the
+    // first landed. Built by `map_err` from a fixed literal that drops the
+    // underlying `ApiError` entirely (it is logged instead), so no status line
+    // or URL is interpolated into it, and propagated by a bare `?` with no
+    // `.context(..)` added. **The one message in this list the user must act
+    // on**: two overlapping series are on their calendar, both render, and
+    // nothing else in the app will ever tell them. OPAQUE here would send them
+    // looking for an edit that did not happen instead of a duplicate that did.
+    "the new series was created but the original could not be shortened — \
+     you now have two overlapping series and should delete one",
 ];
 
 /// The generic replacement. Deliberately says where to look rather than
@@ -212,6 +281,16 @@ mod tests {
             "this calendar cannot be answered from omacal",
             "you are not a guest on this event",
             "could not find that occurrence on the calendar",
+            "that calendar is no longer here",
+            "demo mode — there is nothing to create",
+            "this calendar is not writable from omacal",
+            "demo mode — there is nothing to save",
+            "demo mode — there is nothing to delete",
+            "that occurrence is no longer on the calendar",
+            "omacal cannot split a series that ends after a set number of times — \
+             edit all events instead",
+            "the new series was created but the original could not be shortened — \
+             you now have two overlapping series and should delete one",
         ];
         for expected in EXPECTED {
             assert!(
@@ -226,6 +305,48 @@ mod tests {
             "SAFE_EXACT gained an entry this test does not name — add it above, having first \
              checked it against the rule in SAFE_EXACT's doc comment: a fixed literal, no \
              interpolation, no `.context(..)` anywhere on its way here"
+        );
+    }
+
+    /// [`every_message_the_app_relies_on_showing_is_still_allowlisted`]'s rule,
+    /// for the list that has no business being the one without it.
+    ///
+    /// `SAFE_PREFIXES` is the *weaker* of the two checks: `starts_with`
+    /// semantics admit anything at all after the prefix, so an entry here is a
+    /// standing promise that whatever the code appends to that literal is
+    /// benign — a promise no test can verify, which is exactly why an addition
+    /// has to pass back through the rule in `SAFE_PREFIXES`' doc comment rather
+    /// than arriving unremarked. Both directions of the guard mirror the one
+    /// above: the membership loop catches a deletion (the user silently loses
+    /// an actionable message), the length assertion catches an addition.
+    ///
+    /// Written out as data rather than read off the list, for the same reason
+    /// as the exact list's: every other test in this module iterates
+    /// `SAFE_PREFIXES` itself and so agrees with it by construction, whatever
+    /// it happens to contain.
+    #[test]
+    fn every_prefix_the_app_relies_on_showing_is_still_allowlisted() {
+        const EXPECTED: &[&str] = &[
+            "no config at ",
+            "some later occurrences of this series were moved or deleted on their own, and a \
+             split cannot carry them across — edit all events instead, or re-create them \
+             afterwards. Occurrences affected: ",
+        ];
+        for expected in EXPECTED {
+            assert!(
+                SAFE_PREFIXES.contains(expected),
+                "`{expected}` is no longer allowlisted: the user now reads \"{OPAQUE}\" instead \
+                 of a message that told them what happened"
+            );
+        }
+        assert_eq!(
+            SAFE_PREFIXES.len(),
+            EXPECTED.len(),
+            "SAFE_PREFIXES gained an entry this test does not name — add it above, having first \
+             checked it against the rule in SAFE_PREFIXES' doc comment: this list admits \
+             *anything* after the prefix, so the variable part must be known-benign at every \
+             call site that emits it, and nothing on the way to `user_facing` may wrap it in \
+             further `.context(..)`"
         );
     }
 
