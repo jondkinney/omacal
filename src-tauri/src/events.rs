@@ -2416,6 +2416,89 @@ mod tests {
         );
     }
 
+    /// Scope `"all"` from an already-moved exception row, in its *ordinary*
+    /// shape: the row's own start is the occurrence the user clicked. The
+    /// target is the master — a different Google resource, with its own
+    /// DTSTART two weeks earlier — while the form was pre-filled from the
+    /// moved occurrence. A title-only edit must carry no `start` at all;
+    /// carrying one drags the series' DTSTART onto the exception's date and
+    /// drops every occurrence before it, with `sendUpdates=all` behind it.
+    ///
+    /// The realistic configuration of the branch, and the regression test for
+    /// it. It is deliberately *not* the test that binds the choice of
+    /// `is_recurring` over `recurrence.is_some()`: with the anchor's other arm
+    /// reading `ev.start_utc`, the two agree whenever the row's start and the
+    /// clicked occurrence coincide, which is precisely this fixture. Verified
+    /// by running it under that mutation — it passes. The sibling test
+    /// `editing_all_events_from_an_exception_row_asks_the_master_and_anchors_on_the_click`
+    /// separates the two values and is the one that fails there; deleting it
+    /// as a duplicate of this would leave that branch unbound.
+    #[tokio::test]
+    async fn editing_all_events_from_a_moved_occurrence_leaves_the_series_start_alone() {
+        let mut ev = stored(vec![]);
+        ev.google_id = "master1_20260810T090000Z".into();
+        ev.summary = Some("Standup".into());
+        ev.recurring_event_id = Some("master1".into());
+        ev.start_utc = OCCURRENCE + 5 * HOUR; // this occurrence was moved
+        ev.end_utc = OCCURRENCE + 6 * HOUR;
+        ev.etag = Some("\"exc\"".into());
+        let occ = ev.start_utc;
+        let (pool, _id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/master1"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "master1", "status": "confirmed", "etag": "\"m1\"",
+                "summary": "Standup",
+                "recurrence": ["RRULE:FREQ=WEEKLY"],
+                "start": {"dateTime": omacal_sync::to_rfc3339(DTSTART)},
+                "end":   {"dateTime": omacal_sync::to_rfc3339(DTSTART + HOUR)}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/master1"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "master1", "status": "confirmed", "etag": "\"m2\"",
+                "summary": "Standup (moved)",
+                "recurrence": ["RRULE:FREQ=WEEKLY"],
+                "start": {"dateTime": omacal_sync::to_rfc3339(DTSTART)},
+                "end":   {"dateTime": omacal_sync::to_rfc3339(DTSTART + HOUR)}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        update_via_client(
+            &pool,
+            "all",
+            occ,
+            ev,
+            "cal@x.com",
+            "UTC",
+            form("Standup (moved)", occ, occ + HOUR),
+            &client,
+        )
+        .await
+        .unwrap();
+
+        let sent = requests(&server).await;
+        let patch = sent.iter().find(|r| r.method.as_str() == "PATCH").unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&patch.body).unwrap();
+        assert!(
+            body.get("start").is_none(),
+            "a title-only edit moved the series' DTSTART: {body}"
+        );
+        assert_eq!(
+            patch.headers.get("if-match").unwrap(),
+            "\"m1\"",
+            "the exception's etag was sent as the master's version"
+        );
+    }
+
     /// Spec §6 end to end, not only in the pure builder. The Repeat dropdown
     /// cannot express "the last Friday of the month", so a save that carried
     /// `recurrence` would quietly rewrite this series into something simpler
@@ -3112,4 +3195,5 @@ mod tests {
         assert!(err.to_string().contains("not writable"), "got: {err}");
         assert_eq!(crate::errors::user_facing(&err), "this calendar is not writable from omacal");
     }
+
 }
