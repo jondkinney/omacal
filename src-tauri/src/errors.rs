@@ -66,6 +66,14 @@ const SAFE_EXACT: &[&str] = &[
     "that calendar is no longer here",
     "demo mode — there is nothing to create",
     "this calendar is not writable from omacal",
+    // src-tauri/src/events.rs — `update_impl`'s demo gate. A third fixed
+    // literal for a third verb rather than one shared string: see
+    // `DEMO_SYNC_MESSAGE`'s own doc comment in `lib.rs` for why each write
+    // command says what *it* cannot do. Reached only through `update_event`'s
+    // `.map_err(|e| crate::errors::user_facing(&e))` with no `.context(..)`
+    // added on the way, so it is byte-identical here too. `update_impl`'s
+    // other three refusals reuse literals already listed above.
+    "demo mode — there is nothing to save",
     // src-tauri/src/events.rs — `resolve_instance_id`'s empty-lookup branch on
     // a bare series master (reached from `respond_via_client`, called by
     // `respond_to_event`). Fixed literal, no interpolation, and reached via a
@@ -223,6 +231,7 @@ mod tests {
             "that calendar is no longer here",
             "demo mode — there is nothing to create",
             "this calendar is not writable from omacal",
+            "demo mode — there is nothing to save",
         ];
         for expected in EXPECTED {
             assert!(

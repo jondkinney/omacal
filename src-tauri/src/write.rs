@@ -49,10 +49,11 @@ pub(crate) fn event_time_json(ms: i64, is_all_day: bool, tz: &str) -> Value {
 /// and null means "clear it". Both are needed, and conflating them makes
 /// clearing a location impossible.
 ///
-/// `create_event` (Task 5) builds its insert body from `EventFields`
-/// directly instead — a create has no "before" to diff against, so this is
-/// unused outside its own tests until the edit command (Task 6) calls it.
-#[allow(dead_code)]
+/// `create_event` builds its insert body from `EventFields` directly instead —
+/// a create has no "before" to diff against. The edit command is this
+/// function's consumer: `events::edit_patch_body` builds both sides and calls
+/// it, and its doc comment is where the rules for *how* each side is built
+/// live.
 pub(crate) fn changed_fields(before: &EventFields, after: &EventFields) -> Value {
     let mut body = serde_json::Map::new();
 

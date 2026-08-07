@@ -78,3 +78,29 @@ export const respondToEvent = (
 /** Creates a new event on `calendarId` and returns its freshly-written detail. */
 export const createEvent = (calendarId: number, fields: EventInput) =>
   invoke<EventDetail>('create_event', { calendarId, fields });
+
+/**
+ * Saves an edit and returns the freshly-written detail.
+ *
+ * `occurrenceStartMs` carries the same rule as `respondToEvent`'s, and carries
+ * it harder: it is the clicked block's own `start_ms`, never
+ * `detail.start_ms`. For a recurring series that second value is the master
+ * row's DTSTART, and an edit aimed at it patches occurrence #0 — with the
+ * whole event as the payload and `sendUpdates=all` mailing the result to every
+ * guest.
+ *
+ * `fields` is the form's whole state, not a diff: what the user actually
+ * changed is worked out on the Rust side, against the event as it was loaded,
+ * so a field nobody touched is never sent. `repeat` left out means "the user
+ * did not touch Repeat" and the event's existing rule — which may be one this
+ * app cannot express — is left alone.
+ *
+ * `scope` has no `'following'` arm yet; the command refuses one rather than
+ * treating it as "this occurrence".
+ */
+export const updateEvent = (
+  id: number,
+  scope: 'this' | 'all',
+  occurrenceStartMs: number,
+  fields: EventInput,
+) => invoke<EventDetail>('update_event', { id, scope, occurrenceStartMs, fields });
