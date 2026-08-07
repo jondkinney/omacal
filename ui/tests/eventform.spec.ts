@@ -336,22 +336,40 @@ test.describe('a timed value is sent as the instants it was read off', () => {
   const FIRST_PASS = Date.parse('2026-10-25T03:00:00+03:00');
   const SECOND_PASS = Date.parse('2026-10-25T03:00:00+02:00');
 
+  /** Midnight opening 25 Oct in Sofia — still UTC+3, the transition being at
+   *  04:00 — as `App.createDayMs` hands it to `blankValue`. */
+  const THAT_DAY = Date.parse('2026-10-25T00:00:00+03:00');
+
   test('a new event asked for inside the repeated hour is half an hour long, and savable', async ({ page }) => {
     await page.goto(PURE);
-    const v = await page.evaluate((firstPass) => {
+    const v = await page.evaluate(([firstPass, thatDay]) => {
       const ef = (window as any).__eventform;
-      // The clock reads 03:00 and it is the first pass of it — which is also
-      // what `new Date(2026, 9, 25, 3, 0)` resolves that wall clock to.
-      const value = ef.blankValue(firstPass, 1);
+      // **Three arguments, because two is a call the application never makes.**
+      // `App.newEventOnAnchor` (`n`) and `App.newEventOnDay` both pass the day
+      // the user is looking at; only `newEventAt` skips `blankValue` entirely,
+      // for `blankValueAt`. The `dayStartMs === undefined` early return is
+      // reachable from tests and nowhere else, so a spec that took it would
+      // leave the day-move branch — the one that rebuilds the value — unwitnessed.
+      // Here the day *is* the clock's own day, which is what pressing `n` at
+      // 03:00 on the 25th while looking at the 25th does.
+      const value = ef.blankValue(firstPass, 1, thatDay);
       const when = ef.whenOf(value);
       return {
         start: value.start, end: value.end, saveable: ef.endAfterStart(value),
         span: when.endMs - when.startMs, startMs: when.startMs, endMs: when.endMs,
+        date: value.date, endDate: value.endDate,
         // The premise, in the terms the defect is written in: re-parsing the
         // end's own wall clock lands on the *earlier* of the two passes.
         reparsedEnd: ef.toMs(value.endDate, value.end),
       };
-    }, FIRST_PASS);
+    }, [FIRST_PASS, THAT_DAY] as [number, number]);
+
+    // Fixture premise: the day move really did happen and really did land back
+    // on the same day. A `dayStartMs` on any *other* day would move the dates
+    // off the instants, and re-derivation there is correct rather than a bug —
+    // so this spec would stop saying anything about the branch it exists for.
+    expect(v.date).toBe('2026-10-25');
+    expect(v.endDate).toBe('2026-10-25');
 
     // Fixture premise. Without an hour between two instants that read the same,
     // this zone has no repeated hour and nothing below discriminates.
@@ -385,11 +403,29 @@ test.describe('a timed value is sent as the instants it was read off', () => {
     const startMs = SECOND_PASS;
     const endMs = SECOND_PASS + 30 * 60_000;
 
-    const r = await page.evaluate(([d, first]) => {
+    // **A series, and its row's instants are not the clicked occurrence's.**
+    // A one-off detail has `start_ms === startMs`, and against one of those a
+    // `valueFromDetail` that took `detail.start_ms` as the source instead of the
+    // occurrence's own is *invisible* — the whole suite stays green while the
+    // pass-through is disabled for every occurrence of every series, which is
+    // the commonest shape this defect has. It is also the
+    // `detail.start_ms`-vs-`occurrenceStartMs` confusion `updateEvent`'s doc
+    // comment and §4 of the design both name under "must not regress".
+    //
+    // The master's DTSTART is the same wall clock a week earlier, when Sofia was
+    // still on UTC+3 throughout, so the gap is 169 hours rather than 168 — and
+    // an occurrence landing in the *second* pass is what a series carries after
+    // somebody moves that one occurrence, which keeps its master row and its
+    // master's DTSTART.
+    const master = timedDetail(Date.parse('2026-10-18T03:00:00+03:00'), Date.parse('2026-10-18T03:30:00+03:00'));
+    master.is_recurring = true;
+
+    const r = await page.evaluate(([d, first, s, e]) => {
       const ef = (window as any).__eventform;
       // Exactly what `App.openEdit` then `EventForm.save` do, with the user
-      // touching nothing but the title.
-      const initial = ef.valueFromDetail(d, d.start_ms, d.end_ms);
+      // touching nothing but the title — and `openEdit` passes the **clicked
+      // block's** times, never `detail.start_ms`.
+      const initial = ef.valueFromDetail(d, s, e);
       const value = { ...initial, title: 'Renamed' };
       const sent = ef.toEventInput(value, initial);
       return {
@@ -401,7 +437,7 @@ test.describe('a timed value is sent as the instants it was read off', () => {
         reparsedStart: ef.toMs(value.date, value.start),
         reparsedEnd: ef.toMs(value.endDate, value.end),
       };
-    }, [timedDetail(startMs, endMs), FIRST_PASS] as [EventDetail, number]);
+    }, [master, FIRST_PASS, startMs, endMs] as [EventDetail, number, number, number]);
 
     expect(r.date).toBe('2026-10-25');
     expect(r.start).toBe('03:00');
@@ -415,6 +451,11 @@ test.describe('a timed value is sent as the instants it was read off', () => {
     expect(r.readsAsFirstPass).toBe(true);
     expect(r.reparsedStart).toBe(startMs - 3_600_000);
     expect(r.reparsedEnd).toBe(endMs - 3_600_000);
+    // And the premise that makes the row-vs-occurrence distinction bite: the
+    // master's own instants are 169 hours away and could not stand in for the
+    // clicked block's under any rounding.
+    expect((startMs - master.start_ms) / 3_600_000).toBe(169);
+    expect((endMs - master.end_ms) / 3_600_000).toBe(169);
 
     // The claim, as drift first so a regression reads as the movement it is.
     expect(r.when.kind).toBe('timed');
@@ -440,10 +481,21 @@ test.describe('a timed value is sent as the instants it was read off', () => {
       const initial = ef.valueFromDetail(d, d.start_ms, d.end_ms);
       // The user moves the start earlier and leaves the end alone.
       const value = { ...initial, start: '02:00' };
-      return { when: ef.toEventInput(value, initial).when };
+      return {
+        when: ef.toEventInput(value, initial).when,
+        // This spec's own premise, which it used to borrow from its siblings:
+        // run verbatim in a zone with no transition on this date — Istanbul is
+        // UTC+3 all year — every assertion below passes while proving nothing,
+        // because there the untouched end re-derives to itself.
+        reparsedEnd: ef.toMs(value.endDate, value.end),
+      };
     }, timedDetail(startMs, endMs));
 
     expect(r.when.kind).toBe('timed');
+    // Fixture premise: the untouched end really is ambiguous, so passing it
+    // through and re-deriving it are different answers.
+    expect(r.reparsedEnd).toBe(endMs - 3_600_000);
+
     // Moved, because the user moved it. Without this the pass-through would
     // freeze every time against every edit: the form would show 02:00 and save
     // 03:00, which is the same class of silent wrongness from the other side.
@@ -454,7 +506,44 @@ test.describe('a timed value is sent as the instants it was read off', () => {
     // side is decided on its own, so editing one does not drag the other
     // through a lossy round trip.
     expect(r.when.endMs).toBe(endMs);
-    expect(r.when.endMs).not.toBe(endMs - 3_600_000);
+  });
+
+  test('a half-edited pair inside the repeated hour is refused, not silently moved', async ({ page }) => {
+    await page.goto(PURE);
+    // The cost of deciding each side on its own, pinned rather than left to be
+    // discovered. Same 03:00-03:30 standup in the second pass; the user shortens
+    // it by fifteen minutes and touches nothing else.
+    const startMs = SECOND_PASS;
+    const endMs = SECOND_PASS + 30 * 60_000;
+
+    const r = await page.evaluate((d) => {
+      const ef = (window as any).__eventform;
+      const initial = ef.valueFromDetail(d, d.start_ms, d.end_ms);
+      const value = { ...initial, end: '03:15' };
+      const when = ef.toEventInput(value, initial).when;
+      return {
+        when, saveable: ef.endAfterStart(value),
+        // What an all-or-nothing check would have sent for the start instead.
+        wholeValueReparse: ef.toMs(value.date, value.start),
+      };
+    }, timedDetail(startMs, endMs));
+
+    // The start passes through untouched, because the user did not touch it…
+    expect(r.when.startMs).toBe(startMs);
+    // …and the end re-derives onto the *first* pass, because '03:15' is
+    // ambiguous and `toMs` resolves it there. The pair is genuinely incoherent:
+    // 45 minutes backwards, with no field on the form visibly wrong.
+    expect(r.when.endMs - r.when.startMs).toBe(-45 * 60_000);
+    expect(r.saveable).toBe(false);
+
+    // **This is the honest half of a real trade, not an oversight.** A check
+    // that re-derived both sides together whenever *any* civil field changed
+    // would answer +15 minutes here and save happily — by dragging the start
+    // the user never touched an hour earlier, which is exactly the move this
+    // whole task exists to stop, arriving through the back door. Refusing a
+    // save the user can see and fix beats making a silent one they cannot.
+    expect(r.wholeValueReparse).toBe(startMs - 3_600_000);
+    expect(r.when.endMs - r.wholeValueReparse).toBe(15 * 60_000);
   });
 });
 
