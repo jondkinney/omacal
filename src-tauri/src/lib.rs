@@ -481,6 +481,16 @@ fn sync_result(total: u64, failed: &[String]) -> anyhow::Result<u64> {
     Ok(total)
 }
 
+/// The window the app keeps synced.
+///
+/// Extracted so the year views and the sync loop cannot disagree about where
+/// the edge is: both render decisions ("is this date fetched?") and fetch
+/// decisions ("what should I ask Google for?") must read one definition.
+pub(crate) fn synced_window(now_ms: i64) -> (i64, i64) {
+    const DAY: i64 = 24 * 3_600_000;
+    (now_ms - 180 * DAY, now_ms + 365 * DAY)
+}
+
 /// Refreshes the access token and syncs every calendar of every account.
 ///
 /// Pure sync work, with no demo check and no status bookkeeping of its own —
@@ -495,9 +505,8 @@ pub(crate) async fn sync_all(state: &AppState) -> anyhow::Result<u64> {
     let accounts: Vec<(i64, String)> =
         sqlx::query_as("SELECT id, email FROM accounts ORDER BY id").fetch_all(pool).await?;
 
-    const DAY: i64 = 24 * 3_600_000;
     let now = now_ms();
-    let (window_start, window_end) = (now - 180 * DAY, now + 365 * DAY);
+    let (window_start, window_end) = synced_window(now);
 
     let cfg = &cfg;
     let (total, failed) = sync_accounts(
@@ -630,6 +639,19 @@ mod tests {
         // Strictly greater: a token expiring this millisecond is not worth a
         // request that will fail.
         assert!(!cached_is_usable(Some(&cached(NOW)), NOW));
+    }
+
+    #[test]
+    fn the_synced_window_is_180_days_back_and_365_forward() {
+        // Both year views render dates outside this, and must say "not fetched"
+        // rather than draw them as free. One definition, so the views and the
+        // sync loop can never disagree about where the edge is.
+        const DAY: i64 = 24 * 3_600_000;
+        let now = 1_786_341_600_000; // Mon 10 Aug 2026 09:00 Europe/Sofia
+        let (from, to) = synced_window(now);
+        assert_eq!(from, now - 180 * DAY);
+        assert_eq!(to, now + 365 * DAY);
+        assert!(from < now && now < to);
     }
 
     /// The message is shown for whichever button the user pressed, so it has
