@@ -1301,6 +1301,20 @@ async fn split_series(
     // ---- 2. The original, shortened. --------------------------------------
     // Past this point the tail exists on Google, so every failure below is the
     // duplicate, whatever its cause.
+    //
+    // Every argument here describes the **master**, and `master_row.is_all_day`
+    // is the one that has a plausible-looking wrong answer sitting next to it.
+    // RFC 5545 requires `UNTIL` to carry the same value type as the `DTSTART`
+    // of the rule it belongs to, and this body is `recurrence` alone — the
+    // master keeps whatever `start` it already had. The tail's flag
+    // (`after.is_all_day`, twenty lines up) is a different event's, and the two
+    // genuinely diverge: splitting an all-day series into a timed remainder is
+    // an ordinary thing for a user to do, and taking the tail's flag there
+    // writes a date-time `UNTIL` onto a series whose `DTSTART` is a bare date.
+    //
+    // The zone is inert and is passed for shape only: `edit_zone`'s all-day arm
+    // returns `cal_tz` whatever it is handed, and `until_value`'s timed form
+    // never reads a zone at all. Only the flag is load-bearing.
     let shortened: Vec<String> = lines
         .iter()
         .map(|l| {
@@ -2603,6 +2617,17 @@ mod tests {
     /// invisible.
     async fn requests(server: &wiremock::MockServer) -> Vec<wiremock::Request> {
         server.received_requests().await.expect("request recording is on by default")
+    }
+
+    /// The same list as `METHOD /path`, for assertions about requests that
+    /// should never have been sent at all.
+    ///
+    /// `wiremock::Request`'s own `Debug` renders the body as a `Vec<u8>`, so a
+    /// message naming the offending request buries it behind several hundred
+    /// integers — on the two refusal tests, precisely where the reader needs to
+    /// see "POST /calendars/…/events" and nothing else.
+    fn methods_and_paths(sent: &[wiremock::Request]) -> Vec<String> {
+        sent.iter().map(|r| format!("{} {}", r.method.as_str(), r.url.path())).collect()
     }
 
     /// The defect this whole design guards against. "This one" must patch the
@@ -4149,17 +4174,23 @@ mod tests {
         .await
         .unwrap_err();
 
+        // What was *sent* is asserted before what was said, and the order is
+        // for the diagnostic rather than the logic. Move the refusal below the
+        // create and the unmounted POST answers 404, so the error becomes a
+        // transport failure: asserting the message first reports `http error:
+        // 404 Not Found`, which reads like a network fault instead of the
+        // design violation it is.
+        let sent = requests(&server).await;
+        assert!(
+            sent.iter().all(|r| matches!(r.method.as_str(), "GET")),
+            "a refusal still wrote something — the check must run before either write: {:?}",
+            methods_and_paths(&sent)
+        );
         assert!(err.to_string().contains("set number of times"), "got: {err}");
         assert_eq!(
             crate::errors::user_facing(&err),
             "omacal cannot split a series that ends after a set number of times — \
              edit all events instead"
-        );
-
-        let sent = requests(&server).await;
-        assert!(
-            sent.iter().all(|r| matches!(r.method.as_str(), "GET")),
-            "a refusal still wrote something: {sent:?}"
         );
         let (row, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
         assert_eq!(row.recurrence.as_deref(), Some("RRULE:FREQ=WEEKLY;COUNT=10"));
@@ -4235,6 +4266,18 @@ mod tests {
         .await
         .unwrap_err();
 
+        // Asserted before the message, for the same diagnostic reason as the
+        // `COUNT` refusal above: with the check below the create, the unmounted
+        // POST 404s and the message assertion would report a transport error
+        // rather than naming the write that should never have happened.
+        let sent = requests(&server).await;
+        assert!(
+            sent.iter().all(|r| r.method.as_str() == "GET"),
+            "the split was refused but something was written anyway — the check must run \
+             before either write: {:?}",
+            methods_and_paths(&sent)
+        );
+
         // The whole rendered string, not a `.contains`: it pins the count to
         // the two occurrences actually at risk (three would mean the one before
         // the split was swept in, one would mean the cancelled one was missed),
@@ -4245,12 +4288,6 @@ mod tests {
             "some later occurrences of this series were moved or deleted on their own, and a \
              split cannot carry them across — edit all events instead, or re-create them \
              afterwards. Occurrences affected: 2"
-        );
-
-        let sent = requests(&server).await;
-        assert!(
-            sent.iter().all(|r| r.method.as_str() == "GET"),
-            "the split was refused but something was written anyway: {sent:?}"
         );
         let (row, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
         assert_eq!(row.recurrence.as_deref(), Some("RRULE:FREQ=WEEKLY"));
@@ -4370,12 +4407,16 @@ mod tests {
     /// — and a date-valued `UNTIL` is inclusive of the day it names, so the
     /// ending is the *previous* date, not the previous second.
     ///
-    /// The zone that date is read in is the calendar's, matching
-    /// [`edit_zone`]'s all-day arm and the bare `date` the create sends
-    /// alongside it. `Pacific/Auckland` is UTC+12, so its midnight falls on the
+    /// The zone that date is read in is the calendar's, per [`edit_zone`]'s
+    /// all-day arm. `Pacific/Auckland` is UTC+12, so its midnight falls on the
     /// previous date in UTC: a truncation that read the instant in UTC would
     /// end the series a day early and take an occurrence the user meant to
     /// keep.
+    ///
+    /// This fixture has the master and the tail both all-day, so it says
+    /// nothing about *where* the value type came from — the two candidate
+    /// expressions agree here. `the_until_follows_the_masters_value_type_not_the_new_series`
+    /// is the one that separates them; this is the ordinary shape.
     #[tokio::test]
     async fn splitting_an_all_day_series_ends_it_on_the_previous_date() {
         let midnight = |wall: &str| {
@@ -4471,6 +4512,175 @@ mod tests {
             created["start"],
             serde_json::json!({"date": "2026-08-10"}),
             "the tail's own start disagrees with the date the original was ended on"
+        );
+    }
+
+    /// **Where the `UNTIL`'s value type comes from**, in the one configuration
+    /// that can tell: an all-day series split into a *timed* remainder.
+    ///
+    /// Every other fixture in this file has the master and the tail agreeing on
+    /// `is_all_day`, so `master_row.is_all_day` and `after.is_all_day` are the
+    /// same value and either one produces a passing test. They are not the same
+    /// rule. The truncation patches `recurrence` alone, so the master keeps the
+    /// bare-date `start` it already had, and RFC 5545 requires its `UNTIL` to
+    /// stay a bare date — whatever the user chose for the new event.
+    ///
+    /// `isAllDay` is a required absolute field on every `updateEvent` call, so
+    /// this is reachable the moment the UI ships the scope: toggle "All day"
+    /// off, pick "this and following", and a rule built from the form's flag
+    /// puts `UNTIL=20260809T115959Z` on a series whose `DTSTART` is
+    /// `VALUE=DATE`.
+    #[tokio::test]
+    async fn the_until_follows_the_masters_value_type_not_the_new_series() {
+        let midnight = |wall: &str| {
+            wall.parse::<jiff::civil::DateTime>()
+                .unwrap()
+                .in_tz("Pacific/Auckland")
+                .unwrap()
+                .timestamp()
+                .as_millisecond()
+        };
+        let dtstart = midnight("2026-07-27T00:00:00");
+        let occurrence = midnight("2026-08-10T00:00:00");
+
+        let mut ev = weekly_master("RRULE:FREQ=WEEKLY");
+        ev.is_all_day = true;
+        ev.start_utc = dtstart;
+        ev.end_utc = dtstart + 24 * HOUR;
+        ev.start_tz = "Pacific/Auckland".into();
+        ev.end_tz = "Pacific/Auckland".into();
+        let (pool, _id) = seeded_pool_on_cal(&mut ev, "Pacific/Auckland").await;
+
+        let all_day_master = serde_json::json!({
+            "id": "master1", "status": "confirmed", "etag": "\"m1\"",
+            "summary": "On call",
+            "recurrence": ["RRULE:FREQ=WEEKLY"],
+            "start": {"date": "2026-07-27"},
+            "end":   {"date": "2026-07-28"}
+        });
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/master1"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(all_day_master.clone()),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "tail1", "status": "confirmed", "etag": "\"t1\"",
+                "summary": "On call",
+                "recurrence": ["RRULE:FREQ=WEEKLY"],
+                "start": {"dateTime": omacal_sync::to_rfc3339(occurrence + 9 * HOUR)},
+                "end":   {"dateTime": omacal_sync::to_rfc3339(occurrence + 10 * HOUR)}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/master1"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(all_day_master))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        // The user turned "All day" off and gave the remainder real times.
+        let after = form("On call", occurrence + 9 * HOUR, occurrence + 10 * HOUR);
+        assert!(!after.is_all_day, "fixture check: the tail must be timed, or this proves nothing");
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        update_via_client(
+            &pool,
+            "following",
+            occurrence,
+            ev,
+            "cal@x.com",
+            "Pacific/Auckland",
+            after,
+            &client,
+        )
+        .await
+        .unwrap();
+
+        let sent = requests(&server).await;
+        let patch = sent.iter().find(|r| r.method.as_str() == "PATCH").expect("no truncate");
+        let body: serde_json::Value = serde_json::from_slice(&patch.body).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({ "recurrence": ["RRULE:FREQ=WEEKLY;UNTIL=20260809"] }),
+            "the UNTIL was built from the *new* series' all-day flag: an all-day master \
+             ended with a date-time UNTIL, which RFC 5545 forbids and other clients reject"
+        );
+        // The same request pair, disagreeing on purpose: the tail really is
+        // timed. Without this the assertion above could pass on a fixture where
+        // nothing diverged after all.
+        let post = sent.iter().find(|r| r.method.as_str() == "POST").expect("no create");
+        let created: serde_json::Value = serde_json::from_slice(&post.body).unwrap();
+        assert!(
+            created["start"].get("dateTime").is_some(),
+            "fixture check: the tail must go out timed: {created}"
+        );
+    }
+
+    /// The mirror, so the rule is bound in both directions rather than only
+    /// where "bare date" happens to be the answer: a *timed* series split into
+    /// an all-day remainder keeps its date-time `UNTIL`.
+    ///
+    /// Without this, a truncation hardcoded to the all-day form — or one that
+    /// read the tail's flag — would still pass the test above.
+    #[tokio::test]
+    async fn a_timed_master_keeps_a_date_time_until_when_the_tail_is_all_day() {
+        let mut ev = weekly_master("RRULE:FREQ=WEEKLY");
+        let (pool, _id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+
+        let server = wiremock::MockServer::start().await;
+        mount_master(&server, &["RRULE:FREQ=WEEKLY"]).await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "tail1", "status": "confirmed", "etag": "\"t1\"",
+                "summary": "Standup (from here)",
+                "recurrence": ["RRULE:FREQ=WEEKLY"],
+                "start": {"date": "2026-08-10"},
+                "end":   {"date": "2026-08-11"}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/master1"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(wire_master(&[
+                UNTIL_BEFORE_OCCURRENCE,
+            ])))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut after = form("Standup (from here)", OCCURRENCE, OCCURRENCE + 24 * HOUR);
+        after.is_all_day = true;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        update_via_client(&pool, "following", OCCURRENCE, ev, "cal@x.com", "UTC", after, &client)
+            .await
+            .unwrap();
+
+        let sent = requests(&server).await;
+        let patch = sent.iter().find(|r| r.method.as_str() == "PATCH").expect("no truncate");
+        let body: serde_json::Value = serde_json::from_slice(&patch.body).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({ "recurrence": [UNTIL_BEFORE_OCCURRENCE] }),
+            "a timed master was ended with a bare-date UNTIL because the *new* series is \
+             all-day: the value types must match the rule's own DTSTART"
+        );
+        let post = sent.iter().find(|r| r.method.as_str() == "POST").expect("no create");
+        let created: serde_json::Value = serde_json::from_slice(&post.body).unwrap();
+        assert_eq!(
+            created["start"],
+            serde_json::json!({"date": "2026-08-10"}),
+            "fixture check: the tail must go out all-day, or the two flags never diverged"
         );
     }
 

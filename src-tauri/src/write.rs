@@ -228,9 +228,20 @@ pub(crate) fn rrule_for(repeat: &str) -> Option<String> {
 /// An all-day series has a `DTSTART` that is a bare date, so `UNTIL` must be a
 /// bare date too — and "the moment before" is then the *previous day*, not the
 /// previous second, since a date-valued `UNTIL` is inclusive of the whole day
-/// it names. The date is read in `tz`, the same zone
-/// [`event_time_json`] renders an all-day `date` in for the very same write,
-/// so the rule this produces and the `start` sent alongside it cannot disagree.
+/// it names. The date is read in `tz`.
+///
+/// **`is_all_day` is the value type of the series being truncated, and of
+/// nothing else.** Worth stating flatly, because the plausible-sounding wrong
+/// answer is right next to it: the caller (`events::split_series`) creates a
+/// *second* event in the same breath, and that one has an all-day flag of its
+/// own — the form's. They are unrelated. A truncation patches `recurrence` and
+/// nothing else, so the event it lands on keeps whatever `start` it already
+/// had; the rule has to agree with *that*. A user splitting an all-day series
+/// into a timed remainder is an ordinary thing to do, and taking the new
+/// event's flag there writes a date-time `UNTIL` onto a series whose `DTSTART`
+/// is still a bare date. An earlier version of this comment said the date was
+/// read in the same zone the sibling `start` is rendered in — true of the
+/// fixtures, false as a rule, and an instruction to introduce exactly that bug.
 ///
 /// **No daylight-saving hazard, unlike [`shifted_like`].** The timed form is an
 /// absolute UTC instant on both sides: one second is subtracted from epoch
