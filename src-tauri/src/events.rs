@@ -1223,6 +1223,49 @@ async fn split_series(
         );
     }
 
+    // Occurrences in the tail that somebody has already changed on their own.
+    //
+    // They are separate Google events pointing back at *this* master, and
+    // truncating it takes them with it — Google drops the instances past
+    // `UNTIL`, materialised ones included. The new series is generated fresh
+    // from the rule and knows nothing about them, so a move is silently undone
+    // and a deletion silently reversed: the cancelled occurrence comes back.
+    //
+    // That is the same failure the create-before-truncate ordering exists to
+    // prevent, and the same reason it cannot be shipped quietly — the user
+    // cannot see what went, so they cannot put it back. Carrying them across
+    // means re-creating each against a master that did not exist a moment ago,
+    // which is a larger piece of work than this; until then it refuses, before
+    // either write, and names the number so the user knows the scale of what
+    // they are being asked to redo.
+    //
+    // The clicked occurrence is excluded, and that is not a rounding-off: when
+    // the row being edited *is* an exception — dragging one occurrence and then
+    // splitting from it is an ordinary thing to do — it is not stranded by the
+    // split. It becomes the first occurrence of the new series, carrying the
+    // form's values. Counting it would refuse precisely the case this handles
+    // best.
+    //
+    // A lower bound, and the message is worded to be true as one: this counts
+    // what the store has synced, so an exception created seconds ago in a
+    // window this app has not fetched is not in it. Better than proceeding
+    // regardless, and honest about which direction it can be wrong in.
+    let stranded = omacal_store::exceptions_from(
+        pool,
+        ev.calendar_id,
+        &master.id,
+        split_at_ms,
+        &ev.google_id,
+    )
+    .await?;
+    if stranded > 0 {
+        anyhow::bail!(
+            "some later occurrences of this series were moved or deleted on their own, and a \
+             split cannot carry them across — edit all events instead, or re-create them \
+             afterwards. Occurrences affected: {stranded}"
+        );
+    }
+
     // ---- 1. The tail. -----------------------------------------------------
     let zone = edit_zone(after.is_all_day, cal_tz, &ev.start_tz);
     let mut body = serde_json::json!({
@@ -4120,6 +4163,206 @@ mod tests {
         );
         let (row, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
         assert_eq!(row.recurrence.as_deref(), Some("RRULE:FREQ=WEEKLY;COUNT=10"));
+    }
+
+    /// One occurrence of `master1` changed on its own: a separate Google event
+    /// pointing back at the master, overriding the slot at `original_start`.
+    /// `status` is a parameter because a *cancelled* exception is the one that
+    /// looks harmless and is not — it is the only record that an occurrence was
+    /// deleted, so losing it does not leave a gap, it brings a cancelled
+    /// meeting back.
+    fn exception_row(google_id: &str, original_start: i64, status: &str) -> omacal_store::StoredEvent {
+        let mut ev = stored(vec![]);
+        ev.google_id = google_id.into();
+        ev.summary = Some("Standup".into());
+        ev.recurring_event_id = Some("master1".into());
+        ev.original_start_utc = Some(original_start);
+        ev.start_utc = original_start;
+        ev.end_utc = original_start + HOUR;
+        ev.status = status.into();
+        ev
+    }
+
+    /// Occurrences after the split point that somebody already moved or deleted
+    /// belong to the *original* master, and truncating it takes them with it —
+    /// Google drops every instance past `UNTIL`, materialised ones included.
+    /// The new series is generated fresh from the rule and knows nothing about
+    /// them, so a move is silently undone and a deletion silently reversed.
+    ///
+    /// That is the same class of loss the create-before-truncate ordering
+    /// exists to prevent, and it cannot be shipped quietly for the same reason:
+    /// the user cannot see what went, so they cannot put it back. It refuses
+    /// **before either write** — refusing after the create would leave the
+    /// duplicate this whole design is arranged to avoid — and names the count,
+    /// so the user knows the scale of what they are being asked to redo.
+    ///
+    /// The fixture is deliberately mixed: one moved occurrence and one
+    /// cancelled one after the split, and one moved occurrence *before* it that
+    /// must not be counted, since it stays with the original series and is in
+    /// no danger. A check that counted every exception of the master would pass
+    /// a `> 0` assertion while refusing splits that are perfectly safe.
+    #[tokio::test]
+    async fn a_split_that_would_strand_moved_occurrences_is_refused_before_any_write() {
+        let mut ev = weekly_master("RRULE:FREQ=WEEKLY");
+        let (pool, id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+        for mut row in [
+            // Before the split: stays with the original, must not be counted.
+            exception_row("master1_20260803T090000Z", OCCURRENCE - 7 * 24 * HOUR, "confirmed"),
+            // After the split: both would be stranded.
+            exception_row("master1_20260817T090000Z", OCCURRENCE + 7 * 24 * HOUR, "confirmed"),
+            exception_row("master1_20260824T090000Z", OCCURRENCE + 14 * 24 * HOUR, "cancelled"),
+        ] {
+            row.calendar_id = ev.calendar_id;
+            omacal_store::upsert_event(&pool, &row).await.unwrap();
+        }
+
+        let server = wiremock::MockServer::start().await;
+        mount_master(&server, &["RRULE:FREQ=WEEKLY"]).await;
+        // Neither write is mounted: one arriving is a bare 404, which fails the
+        // assertions below rather than passing quietly.
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        let err = update_via_client(
+            &pool,
+            "following",
+            OCCURRENCE,
+            ev,
+            "cal@x.com",
+            "UTC",
+            form("Standup (from here)", OCCURRENCE, OCCURRENCE + HOUR),
+            &client,
+        )
+        .await
+        .unwrap_err();
+
+        // The whole rendered string, not a `.contains`: it pins the count to
+        // the two occurrences actually at risk (three would mean the one before
+        // the split was swept in, one would mean the cancelled one was missed),
+        // and binds the message to `errors.rs`'s prefix entry, whose safety
+        // argument is that nothing but this number ever follows it.
+        assert_eq!(
+            crate::errors::user_facing(&err),
+            "some later occurrences of this series were moved or deleted on their own, and a \
+             split cannot carry them across — edit all events instead, or re-create them \
+             afterwards. Occurrences affected: 2"
+        );
+
+        let sent = requests(&server).await;
+        assert!(
+            sent.iter().all(|r| r.method.as_str() == "GET"),
+            "the split was refused but something was written anyway: {sent:?}"
+        );
+        let (row, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
+        assert_eq!(row.recurrence.as_deref(), Some("RRULE:FREQ=WEEKLY"));
+    }
+
+    /// The occurrence being split *at* must not be counted against itself.
+    ///
+    /// Dragging one occurrence and later splitting from it is ordinary, and
+    /// that occurrence is not stranded: it becomes the first occurrence of the
+    /// new series, carrying the form's values. Counting it refuses exactly the
+    /// case the split handles best — and does so on a comparison (`>=` on the
+    /// slot it overrides) that looks obviously right.
+    ///
+    /// One *other* exception sits further down the tail, so the split is still
+    /// refused and the assertion is on the number: `1`, not `2`. Dropping the
+    /// exclusion says `2`; dropping the whole check refuses nothing at all.
+    #[tokio::test]
+    async fn the_occurrence_being_split_at_is_not_counted_as_stranded_by_its_own_split() {
+        let mut ev = exception_row("master1_20260810T090000Z", OCCURRENCE, "confirmed");
+        ev.start_utc = OCCURRENCE + 5 * HOUR; // dragged, and the block clicked
+        ev.end_utc = OCCURRENCE + 6 * HOUR;
+        let clicked = ev.start_utc;
+        let (pool, _id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+
+        let mut later =
+            exception_row("master1_20260824T090000Z", OCCURRENCE + 14 * 24 * HOUR, "confirmed");
+        later.calendar_id = ev.calendar_id;
+        omacal_store::upsert_event(&pool, &later).await.unwrap();
+
+        let server = wiremock::MockServer::start().await;
+        mount_master(&server, &["RRULE:FREQ=WEEKLY"]).await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        let err = update_via_client(
+            &pool,
+            "following",
+            clicked,
+            ev,
+            "cal@x.com",
+            "UTC",
+            form("Standup (from here)", clicked, clicked + HOUR),
+            &client,
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(
+            crate::errors::user_facing(&err),
+            "some later occurrences of this series were moved or deleted on their own, and a \
+             split cannot carry them across — edit all events instead, or re-create them \
+             afterwards. Occurrences affected: 1",
+            "the occurrence the user split at was counted as a casualty of its own split"
+        );
+    }
+
+    /// The other half of that rule, and the one that keeps it from being
+    /// vacuous: exceptions belonging to a *different* series, and ones before
+    /// the split point, must not block a split that strands nothing. A check
+    /// keyed on the wrong column — or on no column at all — refuses every split
+    /// on any calendar that has ever had an occurrence moved.
+    #[tokio::test]
+    async fn exceptions_of_other_series_and_earlier_occurrences_do_not_block_a_split() {
+        let mut ev = weekly_master("RRULE:FREQ=WEEKLY");
+        let (pool, _id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+
+        let mut earlier =
+            exception_row("master1_20260803T090000Z", OCCURRENCE - 7 * 24 * HOUR, "confirmed");
+        earlier.calendar_id = ev.calendar_id;
+        omacal_store::upsert_event(&pool, &earlier).await.unwrap();
+
+        // A different series entirely, with an occurrence moved well past the
+        // split point.
+        let mut other = exception_row("other_20260824T090000Z", OCCURRENCE + 14 * 24 * HOUR, "confirmed");
+        other.recurring_event_id = Some("other-master".into());
+        other.calendar_id = ev.calendar_id;
+        omacal_store::upsert_event(&pool, &other).await.unwrap();
+
+        let server = wiremock::MockServer::start().await;
+        mount_master(&server, &["RRULE:FREQ=WEEKLY"]).await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(wire_new_series(OCCURRENCE)),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/master1"))
+            .and(wiremock::matchers::body_json(serde_json::json!({
+                "recurrence": [UNTIL_BEFORE_OCCURRENCE],
+            })))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(wire_master(&[
+                UNTIL_BEFORE_OCCURRENCE,
+            ])))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        update_via_client(
+            &pool,
+            "following",
+            OCCURRENCE,
+            ev,
+            "cal@x.com",
+            "UTC",
+            form("Standup (from here)", OCCURRENCE, OCCURRENCE + HOUR),
+            &client,
+        )
+        .await
+        .expect("a split that strands nothing must not be refused");
     }
 
     /// RFC 5545 §3.3.10: `UNTIL` must carry the same value type as `DTSTART`.

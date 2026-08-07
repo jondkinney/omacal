@@ -28,6 +28,24 @@ const SAFE_PREFIXES: &[&str] = &[
     // directory (os error 2)"); fires before any secret is ever read off disk,
     // so "client_secret" here can only ever be the literal key name.
     "no config at ",
+    // src-tauri/src/events.rs — `split_series`' refusal to strand materialised
+    // exceptions in the tail of a series it is about to split. A prefix rather
+    // than an exact entry because it genuinely has a variable part: the number
+    // of occupied slots, so the user knows the scale of what they are being
+    // asked to redo.
+    //
+    // What follows the prefix is a `COUNT(*)` rendered by `format!` and nothing
+    // else — an `i64` from `omacal_store::exceptions_from`, which cannot carry a
+    // path, a URL or a token whatever the database holds. The `bail!` is
+    // reached by a bare `?` with no `.context(..)` anywhere on its way to
+    // `update_event`'s `.map_err(..)`, so nothing is appended after it either.
+    // `a_split_that_would_strand_moved_occurrences_is_refused_before_any_write`
+    // in `events.rs` pins the whole rendered string for a known count, so a
+    // future wrap that started smuggling detail in after the number would fail
+    // a test rather than pass unnoticed.
+    "some later occurrences of this series were moved or deleted on their own, and a split \
+     cannot carry them across — edit all events instead, or re-create them afterwards. \
+     Occurrences affected: ",
 ];
 
 /// Error messages matched as a whole, not a prefix: nothing may come before or

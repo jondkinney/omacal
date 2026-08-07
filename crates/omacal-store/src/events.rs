@@ -236,6 +236,58 @@ pub async fn event_for_write(
     event_row_for_write(pool, id).await
 }
 
+/// How many materialised exceptions of `master_google_id` override an
+/// occurrence at or after `from_ms`.
+///
+/// An exception is one occurrence of a series that has been changed on its own
+/// — moved, retitled, or deleted. It is a separate Google event pointing back
+/// at the master, and `original_start_utc` is the slot it overrides, which is
+/// what has to be compared against a split point: an occurrence dragged into
+/// next month still overrides the slot it left behind.
+///
+/// Counted, rather than fetched, because the one caller
+/// (`events::split_series`) needs only to know whether splitting there would
+/// strand any — and how many, to say so.
+///
+/// **Cancelled exceptions are counted too, and that is the point of the
+/// `status` column being absent from this query.** A cancelled exception is the
+/// only record that a particular occurrence was deleted; losing it does not
+/// leave a gap, it brings a cancelled meeting back to life in the new series.
+///
+/// `except_google_id` is excluded from the count, and it is load-bearing rather
+/// than a convenience. The occurrence a split happens *at* is very often an
+/// exception itself — dragging one occurrence and then splitting from it is an
+/// ordinary thing to do — and that one is not stranded by the split: it becomes
+/// the first occurrence of the new series, carrying the form's values. Counting
+/// it would refuse exactly the case the caller handles best. Pass the
+/// `google_id` of the row being edited; when that row is the master it names no
+/// exception and the exclusion does nothing.
+///
+/// Only ever a lower bound: it sees what this store has synced. An exception
+/// somebody created seconds ago, in a window this app has not fetched, is not
+/// in here to be counted. The caller's refusal is therefore best-effort, and
+/// says so.
+pub async fn exceptions_from(
+    pool: &SqlitePool,
+    calendar_id: i64,
+    master_google_id: &str,
+    from_ms: i64,
+    except_google_id: &str,
+) -> anyhow::Result<i64> {
+    // Hits `idx_events_recurring (calendar_id, recurring_event_id)`.
+    Ok(sqlx::query_scalar(
+        "SELECT COUNT(*) FROM events
+          WHERE calendar_id = ?1 AND recurring_event_id = ?2 AND original_start_utc >= ?3
+            AND google_id <> ?4",
+    )
+    .bind(calendar_id)
+    .bind(master_google_id)
+    .bind(from_ms)
+    .bind(except_google_id)
+    .fetch_one(pool)
+    .await?)
+}
+
 /// Events overlapping `[from_ms, to_ms)` on selected calendars, plus every
 /// recurring master on a selected calendar. Masters are returned unconditionally
 /// because their stored `start_utc` is the series start, which may be years
@@ -348,6 +400,72 @@ mod tests {
             description: None, etag: None, sequence: 0, organizer_email: None,
             attendees: Vec::new(),
         }
+    }
+
+    /// Every clause of `exceptions_from` in one fixture, because each of them
+    /// is a way for a series split to be refused when it is safe, or allowed
+    /// when it would strand somebody's changed occurrences.
+    ///
+    /// The `<> except_google_id` clause is the one worth staring at: the
+    /// occurrence a split happens at is very often an exception itself, and it
+    /// is not stranded — it becomes the new series' first occurrence. Without
+    /// that clause, splitting from an occurrence you had previously dragged is
+    /// refused every time.
+    ///
+    /// Cancelled exceptions count. A cancelled exception is the only record
+    /// that an occurrence was deleted, so losing it does not leave a gap — the
+    /// cancelled meeting comes back in the new series.
+    #[tokio::test]
+    async fn exceptions_from_counts_only_the_ones_a_split_would_strand() {
+        let pool = connect_memory().await.unwrap();
+        let cal = seed(&pool).await;
+        let other_cal = {
+            sqlx::query(
+                "INSERT INTO calendars (account_id, google_id, summary, timezone, access_role)
+                 VALUES (1, 'second', 'Home', 'Europe/Sofia', 'owner')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            2
+        };
+
+        let exception = |cal: i64, gid: &str, master: &str, slot: i64, status: &str| {
+            let mut e = ev(cal, gid, slot, slot + 1000);
+            e.recurring_event_id = Some(master.into());
+            e.original_start_utc = Some(slot);
+            e.status = status.into();
+            e
+        };
+
+        for row in [
+            // Before the split: stays with the original series.
+            exception(cal, "m1_a", "m1", 1_000, "confirmed"),
+            // The occurrence being split at, dragged elsewhere. Not stranded.
+            exception(cal, "m1_at", "m1", 2_000, "confirmed"),
+            // After the split: both stranded, cancelled included.
+            exception(cal, "m1_b", "m1", 3_000, "confirmed"),
+            exception(cal, "m1_c", "m1", 4_000, "cancelled"),
+            // A different series, and a different calendar. Neither counts.
+            exception(cal, "m2_a", "m2", 5_000, "confirmed"),
+            exception(other_cal, "m1_elsewhere", "m1", 5_000, "confirmed"),
+            // An ordinary event of the series' own master, which is not an
+            // exception at all and has no `original_start_utc`.
+            ev(cal, "m1", 0, 1_000),
+        ] {
+            upsert_event(&pool, &row).await.unwrap();
+        }
+
+        assert_eq!(
+            exceptions_from(&pool, cal, "m1", 2_000, "m1_at").await.unwrap(),
+            2,
+            "expected only the two occupied slots after the split point"
+        );
+        // The same call from the master's own row: nothing is excluded, so the
+        // occurrence at the split point counts too.
+        assert_eq!(exceptions_from(&pool, cal, "m1", 2_000, "m1").await.unwrap(), 3);
+        // A split with nothing after it strands nothing.
+        assert_eq!(exceptions_from(&pool, cal, "m1", 9_000, "m1").await.unwrap(), 0);
     }
 
     #[tokio::test]

@@ -114,6 +114,12 @@ export const createEvent = (calendarId: number, fields: EventInput) =>
  * also the one scope that notifies guests of a *creation*: the new series
  * carries the whole guest list of the one it continues.
  *
+ * `'following'` also refuses two shapes outright, before writing anything, and
+ * both messages are written to be shown to the user as they are: a series that
+ * ends after a set number of times, and one whose later occurrences have been
+ * moved or deleted on their own — a split cannot carry those across, and losing
+ * them silently would be worse than not splitting.
+ *
  * A scope this command does not implement is refused outright rather than
  * treated as "this occurrence".
  */
