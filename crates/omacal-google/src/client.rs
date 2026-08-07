@@ -587,9 +587,16 @@ mod tests {
         // rule, working exactly as designed), so a request that misses this
         // mock — e.g. a wrong `sendUpdates` — would otherwise still return
         // `Ok(())` and this test would pass while asserting nothing.
+        //
+        // The ids are deliberately chosen so each encodes differently under
+        // `urlencoding_path`: `cal@x.com` -> `cal%40x.com`, `ev#1` -> `ev%231`.
+        // Plain-ASCII ids like the old `"c"`/`"e1"` round-trip unchanged, so
+        // they would never notice `urlencoding_path` being silently removed
+        // from either path segment — the same trap documented on
+        // `event_instances_url_encodes_the_calendar_id` above.
         let server = MockServer::start().await;
         Mock::given(method("DELETE"))
-            .and(path("/calendars/c/events/e1"))
+            .and(path("/calendars/cal%40x.com/events/ev%231"))
             .and(query_param("sendUpdates", "all"))
             .and(header("If-Match", "\"etag1\""))
             .respond_with(ResponseTemplate::new(204))
@@ -598,7 +605,9 @@ mod tests {
             .await;
 
         let c = CalendarClient::new(server.uri(), "tok");
-        c.delete_event("c", "e1", Some("\"etag1\"")).await.unwrap();
+        c.delete_event("cal@x.com", "ev#1", Some("\"etag1\""))
+            .await
+            .unwrap();
     }
 
     /// Already gone is the caller's desired end state, not an error.
