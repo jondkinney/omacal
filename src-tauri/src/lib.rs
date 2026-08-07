@@ -9,6 +9,7 @@ mod status;
 mod sync_loop;
 mod theme;
 mod theme_watch;
+mod write;
 
 use sqlx::SqlitePool;
 use tauri::Manager;
