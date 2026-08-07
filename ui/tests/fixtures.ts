@@ -1,5 +1,6 @@
 import type {
   UiEvent, Placed, Lane, WeekPayload, MonthPayload, MonthRow, YearPayload, YearMonth,
+  BigYearPayload, RibbonRow,
 } from '../src/lib/api';
 import type { AppStatus } from '../src/lib/status';
 import type { Calendar } from '../src/lib/calendars';
@@ -568,6 +569,102 @@ const y2026 = (): YearPayload => {
  *  March (the dotted day), so the three specs stay independent. */
 export const YEAR_2026_NOW = Date.UTC(2026, 5, 10); // Wed 10 Jun 2026
 
+// Big Year ribbon. 1 Jan 2026 is a Thursday in UTC (same as the Rust suite's
+// own Europe/Sofia computation for the same year), so the Monday on or
+// before it is 29 Dec 2025 — the ribbon's anchor.
+const RIBBON_START = Date.UTC(2025, 11, 29);
+const YEAR_2026_START = Date.UTC(2026, 0, 1);
+const YEAR_2027_START = Date.UTC(2027, 0, 1);
+/** Row 1 begins exactly 28 days after the ribbon's own anchor. */
+const ROW1_START = RIBBON_START + 28 * 24 * H;
+
+/** An empty 14x28 ribbon for `year`, `in_year` computed the same way
+ *  `assemble_big_year` does — against `[yearStartMs, nextYearStartMs)` — so
+ *  a fixture only has to say what's *inside* a row, never redo the boundary
+ *  arithmetic per day. Mirrors `emptyMonth`/`emptyYear` above. */
+function emptyBigYear(
+  year: number, ribbonStartMs: number, yearStartMs: number, nextYearStartMs: number,
+): BigYearPayload {
+  const rows: RibbonRow[] = Array.from({ length: 14 }, (_, r) => ({
+    days: Array.from({ length: 28 }, (_, c) => {
+      const start = ribbonStartMs + (r * 28 + c) * 24 * H;
+      return {
+        start_ms: start,
+        in_year: start >= yearStartMs && start < nextYearStartMs,
+        unsynced: false,
+      };
+    }),
+    pills: [] as Lane[],
+    pill_events: [] as UiEvent[],
+    overflow: [] as number[],
+  }));
+  return { year, rows, legend: [] };
+}
+
+/** 2026's ribbon: two pills on two different calendars, in two different
+ *  rows, clear of any row boundary — enough for a two-item legend and a
+ *  clickable pill, without also exercising the row-crossing case
+ *  `crossingBigYear` covers on its own. */
+const bigYear2026 = (): BigYearPayload => {
+  const b = emptyBigYear(2026, RIBBON_START, YEAR_2026_START, YEAR_2027_START);
+
+  // Row 0, columns 8-10: Jan 6-8 2026, three days.
+  const leave = ev({
+    id: 900, title: 'Rahul on leave', is_all_day: true, color: '#e2a03f',
+    start_ms: RIBBON_START + 8 * 24 * H, end_ms: RIBBON_START + 11 * 24 * H,
+  });
+  b.rows[0].pill_events = [leave];
+  b.rows[0].pills = [
+    { idx: 0, lane: 0, start_col: 8, end_col: 10, cont_left: false, cont_right: false },
+  ];
+
+  // Row 1, columns 4-6: Jan 30 - Feb 1 2026, three days.
+  const offsite = ev({
+    id: 901, title: 'Team off-site', is_all_day: true, color: '#2dd4bf',
+    start_ms: ROW1_START + 4 * 24 * H, end_ms: ROW1_START + 7 * 24 * H,
+  });
+  b.rows[1].pill_events = [offsite];
+  b.rows[1].pills = [
+    { idx: 0, lane: 0, start_col: 4, end_col: 6, cont_left: false, cont_right: false },
+  ];
+
+  b.legend = [
+    { name: 'plamen@excitel.com', color: '#e2a03f' },
+    { name: 'work@excitel.com', color: '#2dd4bf' },
+  ];
+
+  return b;
+};
+
+/** A single all-day span straddling the row 0/1 boundary: row 0 carries its
+ *  clipped tail (`cont_right`), row 1 its clipped head (`cont_left`) —
+ *  mirrors the Rust suite's own
+ *  `a_span_crossing_a_row_boundary_splits_and_both_halves_know_it`, and the
+ *  reason `pill_events` is genuinely per-row (the same event appears twice,
+ *  once in each row's own array) rather than shared across rows, same as
+ *  `MonthRow.bar_events`. */
+const crossingBigYear = (): BigYearPayload => {
+  const b = emptyBigYear(2026, RIBBON_START, YEAR_2026_START, YEAR_2027_START);
+
+  const spanEvent = (id: number) => ev({
+    id, title: 'Sun-Tue trip', is_all_day: true, color: '#5b8def',
+    start_ms: RIBBON_START + 25 * 24 * H, end_ms: RIBBON_START + 30 * 24 * H,
+  });
+
+  b.rows[0].pill_events = [spanEvent(910)];
+  b.rows[0].pills = [
+    { idx: 0, lane: 0, start_col: 25, end_col: 27, cont_left: false, cont_right: true },
+  ];
+  b.rows[1].pill_events = [spanEvent(910)];
+  b.rows[1].pills = [
+    { idx: 0, lane: 0, start_col: 0, end_col: 1, cont_left: true, cont_right: false },
+  ];
+
+  b.legend = [{ name: 'plamen@excitel.com', color: '#5b8def' }];
+
+  return b;
+};
+
 export const FIXTURES: Record<string, Record<string, any>> = {
   WeekGrid: {
     empty: { week: emptyWeek() },
@@ -585,6 +682,10 @@ export const FIXTURES: Record<string, Record<string, any>> = {
   },
   YearGrid: {
     y2026: { year: y2026() },
+  },
+  BigYearRibbon: {
+    y2026: { ribbon: bigYear2026() },
+    crossing: { ribbon: crossingBigYear() },
   },
   EventBlock: {
     // The duration ladder.

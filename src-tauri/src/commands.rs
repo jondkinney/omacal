@@ -506,14 +506,6 @@ pub fn assemble_year(events: &[StoredEvent], year: i32, now_ms: i64, tz: &str) -
     YearPayload { year, months }
 }
 
-// This task wires `assemble_big_year` and its payload types up to tests
-// only; the `#[tauri::command]` wrapper and `invoke_handler` registration
-// belong to the ribbon-view task that consumes it (unlike `assemble_year`,
-// which landed together with `get_year` in the same task). Until that lands,
-// nothing outside `#[cfg(test)]` constructs these types, which `-D warnings`
-// would otherwise flag as dead code — same situation as `theme.rs` and
-// `Interval::overlaps`, and the same fix.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize)]
 pub struct RibbonDay {
     pub start_ms: i64,
@@ -526,7 +518,6 @@ pub struct RibbonDay {
     pub unsynced: bool,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize)]
 pub struct RibbonRow {
     pub days: Vec<RibbonDay>, // always 28
@@ -536,7 +527,6 @@ pub struct RibbonRow {
     pub overflow: Vec<usize>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize)]
 pub struct BigYearPayload {
     pub year: i32,
@@ -545,11 +535,27 @@ pub struct BigYearPayload {
     pub legend: Vec<LegendEntry>,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize)]
 pub struct LegendEntry {
     pub name: String,
     pub color: Option<String>,
+}
+
+/// The Monday on or before `year`-01-01, at local midnight in `tz` — the
+/// anchor for the 392-day Big Year ribbon.
+///
+/// `pub(crate)`: `get_big_year` needs this same anchor to size its fetch
+/// window *before* calling `assemble_big_year`, which recomputes it
+/// internally — the same relationship `month_grid_start_ms` has with
+/// `get_month`/`assemble_month`.
+pub(crate) fn big_year_start_ms(year: i32, tz: &str) -> i64 {
+    use jiff::civil::{date, Weekday};
+
+    let mut d = date(year as i16, 1, 1);
+    while d.weekday() != Weekday::Monday {
+        d = d.yesterday().expect("civil date underflow");
+    }
+    local_midnight_ms(d, tz)
 }
 
 /// The Big Year ribbon: fourteen rows of 28 days (392 days total), anchored
@@ -564,15 +570,10 @@ pub struct LegendEntry {
 /// row drifts the weekends diagonally instead, which quietly defeats the
 /// view's entire purpose. See
 /// `every_row_puts_its_weekends_in_the_same_columns`.
-#[allow(dead_code)]
 pub fn assemble_big_year(events: &[StoredEvent], year: i32, now_ms: i64, tz: &str) -> BigYearPayload {
-    use jiff::civil::{date, Weekday};
+    use jiff::civil::date;
 
-    let mut d = date(year as i16, 1, 1);
-    while d.weekday() != Weekday::Monday {
-        d = d.yesterday().expect("civil date underflow");
-    }
-    let ribbon_start_ms = local_midnight_ms(d, tz);
+    let ribbon_start_ms = big_year_start_ms(year, tz);
     let bounds = n_day_boundaries(ribbon_start_ms, 392, tz);
 
     let year_start_ms = local_midnight_ms(date(year as i16, 1, 1), tz);
@@ -1179,6 +1180,21 @@ mod tests {
         assert_eq!(b.rows[1].days[0].start_ms, 1769378400000);
         assert_eq!(b.rows[13].days[0].start_ms, 1798408800000);
         assert!(!b.rows[0].days[0].in_year, "29 Dec 2025 belongs to the year before");
+    }
+
+    /// 1 Jan 2024 is itself a Monday — the one starting weekday where the
+    /// "Monday on or before" search must stop immediately rather than
+    /// stepping back a further week, the same edge
+    /// `a_month_that_starts_on_a_monday_has_no_leading_days` guards for the
+    /// 42-day month grid. Probed during review against a real
+    /// `assemble_big_year(&[], 2024, ..)` call and then deleted; made
+    /// permanent here since it guards a real, previously-untested edge.
+    /// 1 Jan 2024 00:00:00 UTC = 1704067200000.
+    #[test]
+    fn a_year_that_opens_on_a_monday_does_not_skip_back_a_further_week() {
+        let b = assemble_big_year(&[], 2024, 1_704_067_200_000, "UTC");
+        assert_eq!(b.rows[0].days[0].start_ms, 1_704_067_200_000, "the ribbon must open on 1 Jan itself");
+        assert!(b.rows[0].days[0].in_year, "1 Jan 2024 belongs to the year it opens");
     }
 
     #[test]

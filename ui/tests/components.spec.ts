@@ -895,3 +895,51 @@ test.describe('YearGrid', () => {
     expect(await page.evaluate(() => (window as any).__lastDayPick)).toBeTruthy();
   });
 });
+
+test.describe('BigYearRibbon', () => {
+  const show = (f: string) => `/tests/harness/index.html?c=BigYearRibbon&f=${f}`;
+
+  test('renders fourteen rows of twenty-eight', async ({ page }) => {
+    await page.goto(show('y2026'));
+    await expect(page.locator('.rrow')).toHaveCount(14);
+    await expect(page.locator('.rrow').first().locator('.rday')).toHaveCount(28);
+  });
+
+  test('weekend shading forms straight vertical stripes', async ({ page }) => {
+    // The 28-day row exists for this. Assert the column indices, not a
+    // screenshot: this is the property, and a screenshot would also pass
+    // for a subtly different one.
+    await page.goto(show('y2026'));
+    for (const r of [0, 7, 13]) {
+      const cols: number[] = [];
+      const days = page.locator('.rrow').nth(r).locator('.rday');
+      for (let i = 0; i < 28; i++) {
+        if ((await days.nth(i).getAttribute('class'))?.includes('wknd')) cols.push(i);
+      }
+      expect(cols).toEqual([5, 6, 12, 13, 19, 20, 26, 27]);
+    }
+  });
+
+  test('days outside the year are dimmed, not blank', async ({ page }) => {
+    await page.goto(show('y2026'));
+    const out = page.locator('.rday.out').first();
+    await expect(out).toBeVisible();
+    await expect(out).not.toBeEmpty();
+  });
+
+  test('a span crossing a row shows a continuation marker on both halves', async ({ page }) => {
+    await page.goto(show('crossing'));
+    await expect(page.locator('.pill.cont')).toHaveCount(2);
+  });
+
+  test('the legend names each calendar that has a pill', async ({ page }) => {
+    await page.goto(show('y2026'));
+    await expect(page.locator('.legend .item')).toHaveCount(2);
+  });
+
+  test('clicking a pill opens the popover', async ({ page }) => {
+    await page.goto(show('y2026'));
+    await page.locator('.pill').first().click();
+    expect(await page.evaluate(() => (window as any).__lastOpen)).toBeTruthy();
+  });
+});

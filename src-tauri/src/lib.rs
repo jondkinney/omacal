@@ -143,6 +143,54 @@ async fn get_year(
     Ok(commands::assemble_year(&events, year, now_ms(), &tz))
 }
 
+#[tauri::command]
+async fn get_big_year(
+    state: tauri::State<'_, AppState>,
+    year: i32,
+) -> Result<commands::BigYearPayload, String> {
+    let tz = display_tz(&state.pool);
+    get_big_year_impl(&state.pool, year, &tz, now_ms()).await
+}
+
+/// The body of `get_big_year`, minus the Tauri `State` wrapper so it is
+/// reachable from a test — same reasoning as `sign_in_impl`.
+async fn get_big_year_impl(
+    pool: &SqlitePool,
+    year: i32,
+    tz: &str,
+    now: i64,
+) -> Result<commands::BigYearPayload, String> {
+    let ribbon_start_ms = commands::big_year_start_ms(year, tz);
+    // Same widening as `get_week`/`get_day`/`get_month`/`get_year`, for the
+    // same reason: an event that begins just before the 392-day ribbon, or a
+    // DST-lengthened edge day, must not be missed.
+    const DAY: i64 = 24 * 3_600_000;
+    let events = omacal_store::events_in_window(
+        pool,
+        ribbon_start_ms - DAY,
+        ribbon_start_ms + 393 * DAY,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    let mut payload = commands::assemble_big_year(&events, year, now, tz);
+
+    // `assemble_big_year` takes only `&[StoredEvent]` — deliberately, so it
+    // stays pure over the same shape every other assembler in `commands.rs`
+    // does — and so has no calendar list to draw a real name from. It emits
+    // `"Calendar {id}"` placeholders instead; this command, which does have
+    // the pool, resolves them against `list_calendars` before the payload
+    // ever reaches the UI.
+    let calendars = omacal_store::list_calendars(pool).await.map_err(|e| e.to_string())?;
+    for entry in &mut payload.legend {
+        if let Some(cal_id) = entry.name.strip_prefix("Calendar ").and_then(|s| s.parse::<i64>().ok()) {
+            if let Some(cal) = calendars.iter().find(|c| c.id == cal_id) {
+                entry.name = cal.summary.clone();
+            }
+        }
+    }
+    Ok(payload)
+}
+
 const KEYRING_SERVICE: &str = "omacal";
 
 /// Google's Calendar API root. A constant so the one place that overrides it —
@@ -600,6 +648,7 @@ pub fn run() {
             get_day,
             get_month,
             get_year,
+            get_big_year,
             get_status,
             sign_in,
             sync_now,
@@ -740,6 +789,51 @@ mod tests {
         .execute(pool)
         .await
         .unwrap();
+    }
+
+    /// `assemble_big_year` (Task 3) has no calendar list to draw a real name
+    /// from, so it emits a `"Calendar {id}"` placeholder — `get_big_year_impl`
+    /// is where that gets resolved against `list_calendars`, and this is the
+    /// test that would fail if that join were ever dropped, leaving the
+    /// placeholder to reach the UI.
+    #[tokio::test]
+    async fn the_legend_carries_a_real_calendar_name_not_a_placeholder() {
+        let pool = omacal_store::connect_memory().await.unwrap();
+        let account_id = seed_account(&pool, "sub", "e@x").await;
+        sqlx::query(
+            "INSERT INTO calendars (account_id, google_id, summary, timezone, access_role,
+                 selected, sync_enabled)
+             VALUES (?1, 'cal-1', 'Excitel Team', 'UTC', 'owner', 1, 1)",
+        )
+        .bind(account_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let calendar_id: i64 = sqlx::query_scalar("SELECT id FROM calendars WHERE google_id = 'cal-1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+        // An all-day span, 1-2 Jan 2026 UTC, so it lands squarely inside the
+        // ribbon and is placed as a pill rather than dropped or overflowed.
+        let leave = omacal_store::StoredEvent {
+            id: 0, calendar_id, google_id: "leave".into(), summary: Some("Leave".into()),
+            location: None, start_utc: 1_767_225_600_000, end_utc: 1_767_312_000_000,
+            start_tz: "UTC".into(), end_tz: "UTC".into(),
+            is_all_day: true, recurrence: None,
+            recurring_event_id: None, original_start_utc: None,
+            status: "confirmed".into(), self_response: Some("accepted".into()),
+            conference_uri: None, color_hex: None, description: None, etag: None,
+            sequence: 0, organizer_email: None, attendees: Vec::new(),
+        };
+        omacal_store::upsert_event(&pool, &leave).await.unwrap();
+
+        let payload = get_big_year_impl(&pool, 2026, "UTC", 1_786_341_600_000).await.unwrap();
+        assert!(
+            payload.legend.iter().any(|e| e.name == "Excitel Team"),
+            "legend must carry the real calendar name, not a placeholder: {:?}",
+            payload.legend
+        );
     }
 
     /// The safety property the whole 1c plan rests on: a calendar hidden from

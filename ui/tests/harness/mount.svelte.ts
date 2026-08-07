@@ -2,6 +2,7 @@ import { mount, unmount } from 'svelte';
 import WeekGrid from '../../src/lib/WeekGrid.svelte';
 import MonthGrid from '../../src/lib/MonthGrid.svelte';
 import YearGrid from '../../src/lib/YearGrid.svelte';
+import BigYearRibbon from '../../src/lib/BigYearRibbon.svelte';
 import EventBlock from '../../src/lib/EventBlock.svelte';
 import AllDayBand from '../../src/lib/AllDayBand.svelte';
 import Header from '../../src/lib/Header.svelte';
@@ -30,7 +31,8 @@ const name = params.get('c') ?? 'WeekGrid';
 const fixture = params.get('f') ?? 'default';
 
 const COMPONENTS: Record<string, any> = {
-  WeekGrid, MonthGrid, YearGrid, EventBlock, AllDayBand, Header, CalendarPopover, EventPopover,
+  WeekGrid, MonthGrid, YearGrid, BigYearRibbon, EventBlock, AllDayBand, Header, CalendarPopover,
+  EventPopover,
 };
 const target = document.getElementById('app')!;
 
@@ -106,6 +108,18 @@ if (name === 'App') {
           ...props,
           ondaypick: (startMs: unknown) => {
             (window as any).__lastDayPick = startMs;
+          },
+        },
+      });
+    } else if (name === 'BigYearRibbon') {
+      // Same capture as `MonthGrid`'s `onopen` above: a callback prop, not a
+      // Tauri command, so it has no home in `tauri.ts`'s `invoke` switch.
+      mount(BigYearRibbon, {
+        target,
+        props: {
+          ...props,
+          onopen: (event: unknown, rect: unknown) => {
+            (window as any).__lastOpen = { event, rect };
           },
         },
       });
