@@ -2,9 +2,9 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { placePopover, type Rect } from './position';
-  import { writableCalendars, type Calendar } from './calendars';
+  import { offerableCalendarId, writableCalendars, type Calendar } from './calendars';
   import {
-    CUSTOM_REPEAT, REPEAT_OPTIONS, endAfterStart, ruleInWords, toEventInput,
+    CUSTOM_REPEAT, REPEAT_OPTIONS, endAfterStart, ruleInWords, shiftedEndDate, toEventInput,
     type EventFormResult, type EventFormValue, type Scope,
   } from './eventform';
 
@@ -45,7 +45,10 @@
   // svelte-ignore state_referenced_locally
   let value = $state<EventFormValue>({
     ...initial,
-    calendarId: initial.calendarId ?? (writableCalendars(calendars)[0]?.id ?? null),
+    // Normalised, not merely defaulted: the seed comes from the caller, and a
+    // calendar this app cannot write to must never survive into the value —
+    // see `offerableCalendarId` for what a blank-but-saving select looked like.
+    calendarId: offerableCalendarId(initial.calendarId, calendars),
   });
   let scope = $state<Scope>('this');
   /** Set by a refused save, cleared by the next edit. Deliberately not derived
@@ -81,6 +84,17 @@
     // still oblige focus to start *inside*, which this satisfies.
     titleEl?.focus();
   });
+
+  /** Moving the start date takes the end date with it, keeping the span.
+   *  Without this, changing the date of an ordinary one-hour meeting leaves
+   *  the end date on the old day, and the Save guard then refuses an edit the
+   *  user has no reason to think is wrong — a correct refusal of a range they
+   *  never asked for. Bound one-way plus `onchange` rather than `bind:value`,
+   *  because both fields have to move in the same update. */
+  function moveStartDate(next: string) {
+    value.endDate = shiftedEndDate(value.date, next, value.endDate);
+    value.date = next;
+  }
 
   function save() {
     error = null;
@@ -142,7 +156,7 @@
     <div class="when">
       <label class="field">
         <span class="lab">{value.isAllDay ? 'First day' : 'Date'}</span>
-        <input type="date" bind:value={value.date} />
+        <input type="date" value={value.date} onchange={(e) => moveStartDate(e.currentTarget.value)} />
       </label>
       {#if !value.isAllDay}
         <label class="field">

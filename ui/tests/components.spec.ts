@@ -1,6 +1,7 @@
 import { test, expect } from '@playwright/test';
 import {
-  FIXED_NOW, FORM_NOW, FORM_UNWRITABLE_NAMES, POPOVER_DETAILS, POPOVER_REFRESHED_DETAIL,
+  FIXED_NOW, FORM_FALLBACK_ID, FORM_NOW, FORM_UNWRITABLE_ID, FORM_UNWRITABLE_NAMES,
+  POPOVER_DETAILS, POPOVER_REFRESHED_DETAIL,
   TRIP_END_MS, TRIP_FIRST_DAY, TRIP_LAST_DAY, popoverWeekWithResponse, YEAR_2026_NOW,
 } from './fixtures';
 import { CALENDAR_SYNC_REMOVED } from './harness/tauri';
@@ -1088,6 +1089,52 @@ test.describe('EventForm', () => {
     for (const name of FORM_UNWRITABLE_NAMES) {
       await expect(select.locator('option').filter({ hasText: name })).toHaveCount(0);
     }
+  });
+
+  test('a create seeded with a calendar it cannot write to falls back to one it can', async ({ page }) => {
+    // Filtering the option list is not filtering the value. Seeded with the
+    // reader's id, the select rendered *blank* — no option matches — and Save
+    // then sent that id with nothing on screen to say so. Task 10 chooses this
+    // seed, so the shape is reachable from the next task rather than theoretical.
+    await open(page, 'create-seeded-unwritable');
+    const select = page.getByLabel('Calendar', { exact: true });
+    await expect(select).not.toHaveValue('');
+    await expect(select).toHaveValue(String(FORM_FALLBACK_ID));
+
+    await page.getByRole('button', { name: 'Create' }).click();
+    const [saved] = await saves(page);
+    // What is shown and what is saved have to agree; that is the property that
+    // was broken, so both halves are asserted.
+    expect(saved.calendarId).toBe(FORM_FALLBACK_ID);
+    expect(saved.calendarId).not.toBe(FORM_UNWRITABLE_ID);
+  });
+
+  test('the calendar can be chosen on a create and not on an edit', async ({ page }) => {
+    // `update_event` takes no calendar id — it reads the target from
+    // `event_for_write(id)` — so an enabled control on an edit silently
+    // discards the choice. Both arms in one spec: `disabled={true}` always
+    // would pass the edit half on its own.
+    await open(page, 'create');
+    await expect(page.getByLabel('Calendar', { exact: true })).toBeEnabled();
+
+    await open(page, 'with-guests');
+    await expect(page.getByLabel('Calendar', { exact: true })).toBeDisabled();
+  });
+
+  test('moving the start date takes the end date with it', async ({ page }) => {
+    // Otherwise changing the date of an ordinary one-hour meeting leaves the
+    // end date on the old day and Save refuses a range the user never asked
+    // for. Asserted through to the saved instants, not just the input: the
+    // point is that the save is *accepted* and lands on the new day.
+    await open(page, 'create');
+    await page.getByLabel('Date', { exact: true }).fill('2026-08-12');
+    await expect(page.getByLabel('End date', { exact: true })).toHaveValue('2026-08-12');
+
+    await page.getByRole('button', { name: 'Create' }).click();
+    const [saved] = await saves(page);
+    // 09:30 on 12 Aug 2026, UTC — the project's `timezoneId`.
+    expect(saved.fields.startMs).toBe(Date.UTC(2026, 7, 12, 9, 30));
+    expect(saved.fields.endMs).toBe(Date.UTC(2026, 7, 12, 10, 0));
   });
 
   test('save is refused when the end is before the start', async ({ page }) => {

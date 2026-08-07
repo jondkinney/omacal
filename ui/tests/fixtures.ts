@@ -221,11 +221,21 @@ const detail = (o: Partial<EventDetail> & { id: number }): EventDetail => ({
   can_respond: true,
   // `false`, deliberately, and not because any fixture here wants it: nothing
   // reads this field yet, and Task 10 ships the Edit and Delete controls that
-  // will. Defaulting it to `true` would make every popover fixture implicitly
-  // editable, so a spec asserting those controls are *hidden* would pass
-  // whether or not the code checked anything — a fixture identical under
-  // right and wrong code proves nothing. This way round the failure is loud
-  // instead: a fixture that means to show them has to say so.
+  // will.
+  //
+  // Which default is safe turns on which way a wrong fixture fails. With
+  // `true`, a spec asserting the controls are *shown* passes no matter what
+  // the code does — every fixture is editable, so the assertion is satisfied
+  // by the fixture rather than by the component, and a `can_edit` check that
+  // was never written looks implemented. With `false`, that same spec fails
+  // loudly until its fixture opts in, and the "hidden" spec is the one that
+  // could pass vacuously — but a control that is *absent* is the safe state,
+  // so a vacuous pass there does not ship a control to somebody who may not
+  // use it.
+  //
+  // Task 10 must therefore set `can_edit: true` explicitly on any fixture
+  // meant to show Edit and Delete, and should keep at least one spec that
+  // proves the controls appear, so the pair discriminates in both directions.
   can_edit: false,
   attendees: [],
   ...o,
@@ -819,6 +829,10 @@ const FORM_CALENDARS: Calendar[] = [
 /** The names of the two calendars a create must never be offered — exported so
  *  the spec asserts against the same strings the fixture is built from. */
 export const FORM_UNWRITABLE_NAMES = ['Holidays in Bulgaria', 'Meeting rooms'];
+/** The `reader`'s own id, and the id a form seeded with it must not keep. */
+export const FORM_UNWRITABLE_ID = 3;
+/** The first writable calendar's id — what that seed must fall back to. */
+export const FORM_FALLBACK_ID = 1;
 
 /** A form value for editing `d`, anchored on the 09:00 occurrence above.
  *  Routed through the real `valueFromDetail` rather than hand-written, so the
@@ -1058,6 +1072,13 @@ export const FIXTURES: Record<string, Record<string, any>> = {
     // Every spec freezes the clock to `FORM_NOW` before navigating; without
     // that this fixture is the dated time bomb the task brief warns about.
     create: { anchor: ANCHOR, initial: blankValue(Date.now(), null), calendars: FORM_CALENDARS },
+    // Seeded with the `reader`'s id — the shape Task 10 can produce, since it
+    // picks that second argument. Filtering the option list alone left the
+    // select blank and saved calendar 3 anyway, with no error: a Save the
+    // backend could only refuse. The value has to be normalised too.
+    'create-seeded-unwritable': {
+      anchor: ANCHOR, initial: blankValue(FORM_NOW, FORM_UNWRITABLE_ID), calendars: FORM_CALENDARS,
+    },
     // 14:00 to 13:00 on the same day — backwards by an hour, not by a minute,
     // so no rounding anywhere could make the two ends agree.
     'end-before-start': {

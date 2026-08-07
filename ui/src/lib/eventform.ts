@@ -143,6 +143,47 @@ function midnightAfter(date: string): number {
   return new Date(y, m - 1, d + 1, 0, 0, 0, 0).getTime();
 }
 
+// --- Date arithmetic on dates, not on instants ----------------------------
+//
+// The three below work on `yyyy-mm-dd` through `Date.UTC`, which has no
+// transitions, and never touch the browser's zone. That is the point: the
+// number of days between two dates is a property of the calendar, and it must
+// not change because a clock somewhere went forward an hour. Doing the same
+// sum in local milliseconds lands on 23:00 the previous day across a
+// spring-forward, which `dateOf` then reports as the wrong date entirely.
+
+/** A `yyyy-mm-dd` as a UTC instant, for counting only. `NaN` if unparseable. */
+function utcOf(date: string): number {
+  const [y, m, d] = date.split('-').map(Number);
+  if ([y, m, d].some((n) => !Number.isFinite(n))) return NaN;
+  return Date.UTC(y, m - 1, d);
+}
+
+/** `date` moved by whole days, back as `yyyy-mm-dd`. */
+function addDays(date: string, days: number): string {
+  const [y, m, d] = date.split('-').map(Number);
+  const at = new Date(Date.UTC(y, m - 1, d + days));
+  return `${at.getUTCFullYear()}-${pad(at.getUTCMonth() + 1)}-${pad(at.getUTCDate())}`;
+}
+
+/**
+ * Where the end date goes when the start date moves from `from` to `to`.
+ *
+ * The span is kept, which is what every calendar does and what stops a form
+ * turning a valid event into a refused one because the user changed the date
+ * it starts on and nothing else.
+ *
+ * `endDate` is returned untouched when anything will not parse, and when the
+ * range is already backwards. Repairing a backwards range as a side effect of
+ * an unrelated edit would be exactly the silent correction the Save guard
+ * refuses to make — the user should be told, not quietly fixed.
+ */
+export function shiftedEndDate(from: string, to: string, endDate: string): string {
+  const span = (utcOf(endDate) - utcOf(from)) / DAY_MS;
+  if (!Number.isInteger(span) || span < 0 || !Number.isFinite(utcOf(to))) return endDate;
+  return addDays(to, span);
+}
+
 /** The next half-hour boundary strictly after `nowMs`: 09:12 and 09:30 both
  *  give 09:30 and 10:00 respectively, so opening the form never offers a time
  *  that has already gone. */
@@ -334,9 +375,17 @@ function dayInWords(token: string): string | null {
 function untilInWords(value: string): string | null {
   const m = /^(\d{4})(\d{2})(\d{2})(T\d{6}Z?)?$/.exec(value.trim());
   if (!m) return null;
-  const ms = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
-  if (Number.isNaN(ms)) return null;
-  return new Date(ms).toLocaleDateString(undefined, {
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  const ms = Date.UTC(y, mo - 1, d);
+  const at = new Date(ms);
+  // `Date.UTC` normalises rather than rejects: month 13 rolls into next year,
+  // 31 February into March. `20261345` came back as "Feb 14, 2027" — a
+  // confident wrong date, in the one control whose job is to say what rule is
+  // about to be replaced. Only a value that survives the round trip is real.
+  if (at.getUTCFullYear() !== y || at.getUTCMonth() !== mo - 1 || at.getUTCDate() !== d) {
+    return null;
+  }
+  return at.toLocaleDateString(undefined, {
     year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC',
   });
 }
@@ -358,7 +407,22 @@ const listInWords = (items: string[]): string =>
  */
 export function ruleInWords(rule: string | null): string {
   if (!rule) return '';
-  const raw = rule.trim().slice(0, MAX_RULE_LENGTH);
+  const raw = rule.trim();
+
+  // Over the cap: shown as a visibly-cut rule, never parsed. Truncating first
+  // and describing the remainder is how a rule whose only unmodelled part sits
+  // past the cut — `…;BYSETPOS=2` at character 205 — gets a full, confident
+  // English description with the part that changes its meaning silently gone.
+  // A cut rule still *looks* like a rule; a cut description does not look cut.
+  if (raw.length > MAX_RULE_LENGTH) return `${raw.slice(0, MAX_RULE_LENGTH)}…`;
+
+  // More than one iCalendar line. `recurrence` is newline-joined
+  // (`convert.rs`), and the commonest `custom` in real data is an ordinary
+  // `RRULE` followed by an `EXDATE` naming occurrences somebody deleted —
+  // which is *why* it is custom. Nothing here models a second line, and a
+  // description of the first alone would omit the deletions entirely.
+  if (raw.includes('\n')) return raw;
+
   const body = /^rrule:/i.test(raw) ? raw.slice('RRULE:'.length) : raw;
 
   const parts = new Map<string, string>();

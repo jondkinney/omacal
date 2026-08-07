@@ -24,6 +24,28 @@ export type Calendar = {
 export const writableCalendars = (cals: Calendar[]) =>
   cals.filter((c) => c.access_role === 'owner' || c.access_role === 'writer');
 
+/**
+ * `wanted` if a create could land on it, otherwise the first calendar one
+ * could — or `null` when there is no such calendar at all.
+ *
+ * `writableCalendars` filters the *options*; this filters the *value*, and
+ * both are needed. A form seeded with a `reader`'s id and only the option list
+ * filtered renders a **blank** select — the browser has no option matching the
+ * value — and then saves that id anyway, with nothing on screen to say so. The
+ * backend refuses it (`create_impl`'s `can_edit` check), so nothing is
+ * corrupted; it is exactly the "Save that can only fail" the filter exists to
+ * prevent, and the seed is chosen by the caller rather than by the user.
+ *
+ * Falling back rather than erroring, because the value is not something the
+ * user picked: the select then shows the calendar that will actually be
+ * written to, and they can change it. What is shown and what is saved agree,
+ * which is the property that was broken.
+ */
+export function offerableCalendarId(wanted: number | null, cals: Calendar[]): number | null {
+  const offers = writableCalendars(cals);
+  return offers.some((c) => c.id === wanted) ? wanted : (offers[0]?.id ?? null);
+}
+
 export const getCalendars = () => invoke<Calendar[]>('get_calendars');
 export const setCalendarSelected = (id: number, on: boolean) =>
   invoke<void>('set_calendar_selected', { id, on });
