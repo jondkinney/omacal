@@ -856,6 +856,19 @@ test.describe('MonthGrid', () => {
     expect(await page.evaluate(() => (window as any).__lastOpen)).toBeTruthy();
     expect(await page.evaluate(() => (window as any).__lastDayPick)).toBeFalsy();
   });
+
+  test('a timed line keeps a real, readable height', async ({ page }) => {
+    // `MAX_BAR_LANES`'s own comment explains why: unlike `BigYearRibbon`,
+    // `.bars` here is deliberately content-sized rather than reserving
+    // `MAX_BAR_LANES` fixed tracks with `grid-template-rows` — a month row
+    // has only ~95px to divide, and a reserved bar strip leaves too little
+    // for the cell below, measured to squeeze every timed line down to
+    // 0.05px. Healthy is ~10px; 4px sits with margin on both sides of that
+    // gap without pinning to the exact pixel value.
+    await page.goto(show('busy-day'));
+    const line = page.locator('.mcell .timed').first();
+    expect((await line.boundingBox())!.height).toBeGreaterThan(4);
+  });
 });
 
 test.describe('YearGrid', () => {
@@ -957,16 +970,21 @@ test.describe('BigYearRibbon', () => {
   });
 
   test('a fully packed row keeps its day strip, and its weekend stripes with it', async ({ page }) => {
-    // The weekend shading is `.rday`'s own background, so a day strip with no
-    // height is a row with no stripes — and the stripes are the whole reason
-    // the rows are 28 days. With `.pills` content-sized, row 0 here (three
-    // lanes plus a "+N more") pushed `.rdays` to exactly 0 and its days spilled
-    // over the row below, while every quieter row was fine — so the busiest
-    // row, the one that most needs reading, was the one that lost the property.
+    // Measured with the old (unreserved-lanes, unprotected-min-height) layout
+    // reinstated: `.rdays` itself collapsed to 0 height, but each `.rday` kept
+    // its own 15px content height and painted at the y-coordinate `.rdays`
+    // would have started at — inside the row *below*, since that row's own
+    // strip spans only ~37px. The stripe was never missing; it was painted in
+    // the wrong place, overlapping the next row's days. With `.pills`
+    // content-sized, row 0 here (three lanes plus a "+N more") is what drove
+    // `.rdays` into that squeeze, while every quieter row was fine — so the
+    // busiest row, the one that most needs reading, was the one that lost the
+    // property. Only the `.rdays` assertion below binds: `.rday.wknd`'s own
+    // height stays 15px whether or not the bug is present (see the boxes
+    // above), so a bounding-box assertion on it can never catch this.
     await page.goto(show('three-lanes'));
     const packed = page.locator('.rrow').first();
     expect((await packed.locator('.rdays').boundingBox())!.height).toBeGreaterThan(0);
-    expect((await packed.locator('.rday.wknd').first().boundingBox())!.height).toBeGreaterThan(0);
 
     // And the strip is the same height in a packed row as in an empty one:
     // that is what `MAX_PILL_LANES` reserving three lanes buys, and without it

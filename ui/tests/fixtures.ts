@@ -716,10 +716,12 @@ const twoPillsBigYear = (): BigYearPayload => {
  *  to rows with no pills at all. The busiest shape the assembler can produce,
  *  and the one the pill strip's height has to survive: with `.pills`
  *  content-sized, this row's strip grew tall enough to squeeze `.rdays` to
- *  zero, and a zero-height `.rday.wknd` paints no weekend stripe — the one
- *  property the 28-day row exists to produce. Row 1 is left empty on purpose,
- *  so a spec can compare the two and see the strip is the same height in
- *  both, which is what `MAX_PILL_LANES` is for. */
+ *  zero height — but each `.rday` inside it kept its own 15px content height
+ *  and painted at `.rdays`'s would-be position anyway, landing inside the
+ *  *next* row rather than vanishing. The weekend stripe was never missing,
+ *  just in the wrong place, overlapping the row below it. Row 1 is left
+ *  empty on purpose, so a spec can compare the two and see the strip is the
+ *  same height in both, which is what `MAX_PILL_LANES` is for. */
 const threeLanesBigYear = (): BigYearPayload => {
   const b = emptyBigYear(2026, RIBBON_START, YEAR_2026_START, YEAR_2027_START);
 

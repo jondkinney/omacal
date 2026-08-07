@@ -48,14 +48,15 @@
   let yearNum = $state(new Date().getFullYear());
   let bigYearNum = $state(new Date().getFullYear());
 
-  // `jiff` rejects a civil date outside -9999..=9999, and `assemble_big_year`
-  // asks for `year + 1`, so `year_start_ms(10000, ..)` panics rather than
-  // erroring — a stuck `L` key is enough to reach it. The lower bound is the
-  // epoch: nothing below it is reachable through any other view, and negative
-  // millisecond boundaries are untested the whole way down. Year view is
-  // freely navigable in both directions (spec §4), so this is a guard against
-  // a crash, not a policy about which years are interesting — no year anyone
-  // can have data for is on the far side of it.
+  // `jiff` rejects a civil date outside -9999..=9999, and `yearNum` feeds
+  // `get_year`, which asks for `year + 1` (`commands::year_start_ms` at
+  // `src-tauri/src/lib.rs:131`), so `year_start_ms(10000, ..)` panics rather
+  // than erroring — a stuck `L` key is enough to reach it. The lower bound is
+  // the epoch: nothing below it is reachable through any other view, and
+  // negative millisecond boundaries are untested the whole way down. Year
+  // view is freely navigable in both directions (spec §4), so this is a
+  // guard against a crash, not a policy about which years are interesting —
+  // no year anyone can have data for is on the far side of it.
   const YEAR_MIN = 1970;
   const YEAR_MAX = 9998;
 
