@@ -972,7 +972,9 @@ async fn update_via_client(
     // "This and following" is not a patch at all — it is two writes, and it
     // leaves through [`split_series`] rather than falling into the machinery
     // below. The two ways it does *not* leave here are the point of this
-    // block.
+    // block. (A third — a save that changes nothing — is refused outright by
+    // the guard between this comment and that block, before either write and
+    // before the master is even read.)
     //
     // A row that belongs to no series has no "following": there is one event,
     // and editing it and everything after it is editing it. That reads as
@@ -998,6 +1000,62 @@ async fn update_via_client(
     // also what makes "the first occurrence, dragged later, is still the first
     // occurrence" come out right.
     let split_at_ms = ev.original_start_utc.unwrap_or(occurrence_start_ms);
+
+    // Nothing changed — the same refusal as the empty-PATCH guard further
+    // down, moved in front of the split because the split never reaches it.
+    //
+    // **A split's payload is not a diff**, which is why an empty one cannot be
+    // read off the request it is about to send: [`split_series`] POSTs the
+    // whole tail (times, text, rule and guest list, `sendUpdates=all`) and then
+    // PATCHes the master, so a save that changed nothing still leaves two
+    // Google resources where there was one and mails every guest twice — about
+    // an edit nobody made, with nothing in omacal to undo it. The emptiness
+    // has to be decided from the form against the row, before any of it.
+    //
+    // "Nothing changed" is narrower here than for a patch, and the extra term
+    // is `original_start_utc`:
+    //
+    // * `None` — the clicked block is a plain expansion of the master, so it
+    //   sits exactly on the slot the truncation is aimed at, with the master's
+    //   own duration and text. The tail the POST would create is then the
+    //   master's rule anchored on that same slot, with those same values: the
+    //   series it already expands to. Two writes, and afterwards the calendar
+    //   reads precisely as it did. That is a no-op however many resources it
+    //   takes to produce, and it is the case the UI hands over almost every
+    //   time.
+    //
+    // * `Some` — the row is a materialised exception, and an exception is by
+    //   construction *not* what the rule expands to at that slot: something
+    //   about it (its time, its length, its title) already differs. Splitting
+    //   from it carries that difference onto the whole tail — a series that
+    //   repeats from where one occurrence was moved to, rather than one moved
+    //   occurrence — so the calendar afterwards is genuinely different even
+    //   with every form field untouched. Refusing there would swallow an edit
+    //   the UI gives the user no other way to express, so this never fires for
+    //   an exception. The carve-out is held in place by its own test:
+    //   `a_following_save_from_a_moved_occurrence_still_splits_with_the_form_untouched`.
+    //
+    // The diff itself is [`edit_patch_body`]'s rather than a comparison
+    // written out again here: for this row it is empty exactly when the user
+    // left every field alone, and it is where the civil-movement rules
+    // (`shifted_like`, and the anchor for a recurring row) are already
+    // reasoned through. Only its *emptiness* is used — the body it builds is a
+    // PATCH of the master, and is not what a split would send.
+    //
+    // Placed before the master GET rather than after it, so a no-op costs no
+    // request at all: it also short-circuits the two arms below that would
+    // have fetched the master only to discover the same emptiness at the PATCH
+    // guard. The refusals inside `split_series` (`COUNT`, stranded exceptions)
+    // are skipped along with them, which is right — there is nothing to tell
+    // the user about a split that was never going to change anything.
+    if scope == "following"
+        && ev.original_start_utc.is_none()
+        && edit_patch_body(&ev, ev.start_utc, ev.end_utc, occurrence_start_ms, cal_tz, &after)
+            == serde_json::json!({})
+    {
+        return Ok(());
+    }
+
     // The master this block fetched, when it decided not to split after all.
     // It is the very resource the `"all"` path below is about to ask for, so
     // it is handed on rather than fetched twice.
@@ -4407,6 +4465,164 @@ mod tests {
             .await
             .expect("the new series was not stored locally");
         assert_ne!(tail, row.id, "the tail was written over the master's own row");
+    }
+
+    /// `an_edit_that_changes_nothing_sends_no_request`'s rule, for the one
+    /// scope that never reaches the guard enforcing it.
+    ///
+    /// `"following"` returns into [`split_series`] well before the empty-PATCH
+    /// check, and a split's payload is not a diff: the POST carries the whole
+    /// tail whether or not anything changed, and it carries it with
+    /// `sendUpdates=all`. So a save that touched nothing used to create a
+    /// second series and truncate the first — two Google resources where there
+    /// was one, every guest mailed twice about an edit nobody made, and nothing
+    /// in this app that can undo it.
+    ///
+    /// **No requests at all**, read off the server's own record rather than
+    /// inferred from `Ok`: the master GET is a real request too, and a guard
+    /// placed after it would leave this passing on the strength of a return
+    /// value while the whole reason for the check — the two writes behind that
+    /// GET — went untested.
+    ///
+    /// The whole split is mounted, and answered successfully, *on purpose*.
+    /// Leaving the server bare would fail this test too, but by panicking on
+    /// the 404 the first stray request earns — which reports a transport error
+    /// and never reaches the assertion that names what was actually sent. With
+    /// the responses in place a guard that stopped working produces the real
+    /// failure: `POST /calendars/…/events`, in the message.
+    ///
+    /// The form is `weekly_master`'s own values moved onto the clicked
+    /// occurrence, which is exactly what `valueFromDetail` pre-fills and a user
+    /// who changes nothing sends back.
+    #[tokio::test]
+    async fn a_following_save_that_changes_nothing_sends_no_request() {
+        let mut ev = weekly_master("RRULE:FREQ=WEEKLY");
+        let (pool, _id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+
+        let server = wiremock::MockServer::start().await;
+        // Deliberately without `.expect(..)`: these exist to make the failure
+        // legible, not to assert anything themselves. The assertion is below.
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/master1"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(wire_master(&["RRULE:FREQ=WEEKLY"])),
+            )
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(wire_new_series(OCCURRENCE)),
+            )
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(wire_master(&[
+                UNTIL_BEFORE_OCCURRENCE,
+            ])))
+            .mount(&server)
+            .await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        update_via_client(
+            &pool,
+            "following",
+            OCCURRENCE,
+            ev,
+            "cal@x.com",
+            "UTC",
+            form("Standup", OCCURRENCE, OCCURRENCE + HOUR),
+            &client,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            methods_and_paths(&requests(&server).await),
+            Vec::<String>::new(),
+            "a \"this and following\" save that changed nothing still went to Google — every \
+             guest on the series was mailed twice for it"
+        );
+    }
+
+    /// The half that keeps the guard above from being too wide, and the reason
+    /// it asks about `original_start_utc` rather than only about the diff.
+    ///
+    /// An exception is by construction *not* what the rule expands to at its
+    /// slot: somebody has already moved this occurrence five hours later.
+    /// Splitting from it re-anchors the whole tail onto where it was moved to,
+    /// so the calendar afterwards genuinely differs from the calendar before —
+    /// even though every field in the form is the row's own value, untouched.
+    /// That is an edit the UI offers no other way of expressing, and swallowing
+    /// it silently would be worse than the duplicate the guard exists to
+    /// prevent.
+    ///
+    /// Drop the `original_start_utc` term and this fails with no writes at all;
+    /// drop the whole guard and
+    /// `a_following_save_that_changes_nothing_sends_no_request` fails instead.
+    /// Neither can be made to pass by weakening the other.
+    #[tokio::test]
+    async fn a_following_save_from_a_moved_occurrence_still_splits_with_the_form_untouched() {
+        let mut ev = exception_row("master1_20260810T090000Z", OCCURRENCE, "confirmed");
+        ev.start_utc = OCCURRENCE + 5 * HOUR; // dragged, and the block clicked
+        ev.end_utc = OCCURRENCE + 6 * HOUR;
+        let clicked = ev.start_utc;
+        let (pool, _id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+
+        let server = wiremock::MockServer::start().await;
+        mount_master(&server, &["RRULE:FREQ=WEEKLY"]).await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(wire_new_series(clicked)),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/master1"))
+            .and(wiremock::matchers::body_json(serde_json::json!({
+                "recurrence": [UNTIL_BEFORE_OCCURRENCE],
+            })))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(wire_master(&[
+                UNTIL_BEFORE_OCCURRENCE,
+            ])))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        update_via_client(
+            &pool,
+            "following",
+            clicked,
+            ev,
+            "cal@x.com",
+            "UTC",
+            // The row's own summary and its own span: nothing the user touched.
+            form("Standup", clicked, clicked + HOUR),
+            &client,
+        )
+        .await
+        .expect("a split that re-anchors the tail must not be refused as a no-op");
+
+        let sent = requests(&server).await;
+        let post = sent
+            .iter()
+            .find(|r| r.method.as_str() == "POST")
+            .unwrap_or_else(|| panic!("the tail was never created: {:?}", methods_and_paths(&sent)));
+        let body: serde_json::Value = serde_json::from_slice(&post.body).unwrap();
+        assert_eq!(
+            body["start"],
+            crate::write::event_time_json(clicked, false, "UTC"),
+            "the tail did not take the moved occurrence's own start, which is the whole of \
+             what this split changes: {body}"
+        );
+        assert!(
+            sent.iter().any(|r| r.method.as_str() == "PATCH"),
+            "the original was never shortened: {:?}",
+            methods_and_paths(&sent)
+        );
     }
 
     /// The failure the ordering exists to make survivable. The tail is already

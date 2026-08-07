@@ -909,6 +909,16 @@ export const APP_SERIES_OCCURRENCE = APP_MON + 3 * 24 * H + 9 * H;
 export const APP_SERIES_ID = 4242;
 export const APP_ONE_OFF_ID = 4243;
 const APP_ONE_OFF_START = APP_MON + 14 * H;
+export const APP_ALLDAY_ID = 4244;
+/** Monday 29 Jan 2024, all day — the all-day series' own DTSTART, and what
+ *  `event_detail` reports as its master row's `start_ms`. */
+export const APP_ALLDAY_SERIES_DTSTART = APP_MON;
+/** Wednesday 31 Jan 2024, all day — the *chip* the specs click, two days into
+ *  the series. All-day occurrences are contiguous (each ends exactly where the
+ *  next begins), so a route that reached for the master's start instead lands
+ *  on a real neighbouring day rather than on something obviously wrong, which
+ *  is why the two are deliberately different days here. */
+export const APP_ALLDAY_OCCURRENCE = APP_MON + 2 * 24 * H;
 
 /** The calendar a create must land on: the user's own primary. Third in the
  *  list below on purpose — a seed that took `calendars[0]` would pick the
@@ -937,6 +947,14 @@ const APP_ONE_OFF_BLOCK: UiEvent = ev({
   id: APP_ONE_OFF_ID, title: 'Board prep',
   start_ms: APP_ONE_OFF_START, end_ms: APP_ONE_OFF_START + 60 * 60_000,
 });
+/** The band chip. `commands::assemble_week` routes every `is_all_day` event
+ *  into `all_day_events` and never into a day column, so a chip is the only
+ *  representation this event ever gets — there is no `EventBlock` to fall back
+ *  on, and therefore no other App-level route to its edit and delete. */
+const APP_ALLDAY_CHIP: UiEvent = ev({
+  id: APP_ALLDAY_ID, title: 'Diwali', is_all_day: true, color: '#e2a03f',
+  start_ms: APP_ALLDAY_OCCURRENCE, end_ms: APP_ALLDAY_OCCURRENCE + 24 * H,
+});
 
 POPOVER_DETAILS[APP_SERIES_ID] = detail({
   id: APP_SERIES_ID, title: 'Standup', can_edit: true,
@@ -962,6 +980,28 @@ POPOVER_DETAILS[APP_ONE_OFF_ID] = detail({
   start_ms: APP_ONE_OFF_START, end_ms: APP_ONE_OFF_START + 60 * 60_000,
 });
 
+/** The all-day series behind the band chip. `can_edit: true` **explicitly**:
+ *  `detail()`'s own default is `false` (see its comment), so without this the
+ *  Edit and Delete controls never render and the chip route cannot be driven
+ *  at all.
+ *
+ *  Recurring, with the DTSTART two days before the clicked chip, for the same
+ *  reason `POPOVER_DETAILS[APP_SERIES_ID]` above is: only a series master ever
+ *  reports a `start_ms` that is not the block's own, and unless the two differ
+ *  a route that read `detail.start_ms` would carry the right value by
+ *  coincidence. */
+POPOVER_DETAILS[APP_ALLDAY_ID] = detail({
+  id: APP_ALLDAY_ID, title: 'Diwali', can_edit: true,
+  calendar_id: APP_PRIMARY_CALENDAR_ID,
+  is_all_day: true,
+  is_recurring: true, recurrence: 'RRULE:FREQ=DAILY', repeat: 'daily',
+  start_ms: APP_ALLDAY_SERIES_DTSTART, end_ms: APP_ALLDAY_SERIES_DTSTART + 24 * H,
+  attendees: [
+    attendee({ email: 'ana@x.com', display_name: 'Ana', response_status: 'accepted' }),
+    attendee({ email: 'me@x.com', is_self: true }),
+  ],
+});
+
 /** The `writable` scenario's week: both events on Monday's column and inside
  *  its top tenth, so a spec can click empty grid space further down without
  *  hitting either. Their on-screen positions come from `Placed`, not from
@@ -976,6 +1016,13 @@ export const appWritableWeek = (): WeekPayload => {
     events,
     placed: [placed(0.02, 0.02, 0, 1, 0), placed(0.06, 0.02, 0, 1, 1)],
   };
+  // The all-day band, on Wednesday's column: one chip, on its own lane, well
+  // clear of the two blocks above (which live in Monday's column, and in the
+  // scrolling body rather than in the band at all).
+  w.all_day_events = [APP_ALLDAY_CHIP];
+  w.all_day = [
+    { idx: 0, lane: 0, start_col: 2, end_col: 2, cont_left: false, cont_right: false },
+  ];
   return w;
 };
 

@@ -308,6 +308,48 @@ mod tests {
         );
     }
 
+    /// [`every_message_the_app_relies_on_showing_is_still_allowlisted`]'s rule,
+    /// for the list that has no business being the one without it.
+    ///
+    /// `SAFE_PREFIXES` is the *weaker* of the two checks: `starts_with`
+    /// semantics admit anything at all after the prefix, so an entry here is a
+    /// standing promise that whatever the code appends to that literal is
+    /// benign — a promise no test can verify, which is exactly why an addition
+    /// has to pass back through the rule in `SAFE_PREFIXES`' doc comment rather
+    /// than arriving unremarked. Both directions of the guard mirror the one
+    /// above: the membership loop catches a deletion (the user silently loses
+    /// an actionable message), the length assertion catches an addition.
+    ///
+    /// Written out as data rather than read off the list, for the same reason
+    /// as the exact list's: every other test in this module iterates
+    /// `SAFE_PREFIXES` itself and so agrees with it by construction, whatever
+    /// it happens to contain.
+    #[test]
+    fn every_prefix_the_app_relies_on_showing_is_still_allowlisted() {
+        const EXPECTED: &[&str] = &[
+            "no config at ",
+            "some later occurrences of this series were moved or deleted on their own, and a \
+             split cannot carry them across — edit all events instead, or re-create them \
+             afterwards. Occurrences affected: ",
+        ];
+        for expected in EXPECTED {
+            assert!(
+                SAFE_PREFIXES.contains(expected),
+                "`{expected}` is no longer allowlisted: the user now reads \"{OPAQUE}\" instead \
+                 of a message that told them what happened"
+            );
+        }
+        assert_eq!(
+            SAFE_PREFIXES.len(),
+            EXPECTED.len(),
+            "SAFE_PREFIXES gained an entry this test does not name — add it above, having first \
+             checked it against the rule in SAFE_PREFIXES' doc comment: this list admits \
+             *anything* after the prefix, so the variable part must be known-benign at every \
+             call site that emits it, and nothing on the way to `user_facing` may wrap it in \
+             further `.context(..)`"
+        );
+    }
+
     /// Same pairing for the exact-match list.
     #[test]
     fn every_exact_message_passes_through_unchanged() {

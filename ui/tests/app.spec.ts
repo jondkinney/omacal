@@ -8,6 +8,7 @@ import {
   APP_MON, APP_NOW, weekLabel,
   APP_PRIMARY_CALENDAR_ID, APP_READER_CALENDAR_ID,
   APP_SERIES_DTSTART, APP_SERIES_OCCURRENCE,
+  APP_ALLDAY_OCCURRENCE, APP_ALLDAY_SERIES_DTSTART,
 } from './fixtures';
 import { NO_CONFIG_ERROR } from './harness/tauri';
 
@@ -494,6 +495,11 @@ test.describe('App', () => {
   };
 
   const block = (page: Page, title: string) => page.locator('.ev').filter({ hasText: title });
+  /** An `AllDayBand` chip. A different element and a different component from
+   *  `block` above — `commands::assemble_week` puts every `is_all_day` event in
+   *  the band and never in a day column, so this is the *only* way to reach an
+   *  all-day event's popover, and therefore its edit and delete. */
+  const chip = (page: Page, title: string) => page.locator('.chip').filter({ hasText: title });
   const newForm = (page: Page) => page.getByRole('dialog', { name: 'New event' });
   const editForm = (page: Page) => page.getByRole('dialog', { name: 'Edit event' });
   const confirmPanel = (page: Page) => page.getByRole('dialog', { name: 'Delete event' });
@@ -708,6 +714,67 @@ test.describe('App', () => {
     await expect
       .poll(async () => (await callsTo(page, 'sync_now')).length)
       .toBeGreaterThan(syncsBefore);
+  });
+
+  // Whole-branch review, finding 3: Task 10 wired `AllDayBand` chips into the
+  // same popover -> edit/delete route as `EventBlock` (`WeekGrid.svelte`,
+  // `onopen={openPopover}`), and nothing witnessed it end to end — searching
+  // this file for `all_day`/`all-day`/`AllDay` returned nothing, and
+  // `AllDayBand`'s own specs are screenshots and chip corners, which never
+  // click a chip at all.
+  //
+  // It matters more than an ordinary gap. An all-day event has no `EventBlock`
+  // to fall back on, so a chip is its whole surface; and the all-day edit path
+  // is exactly where this branch's *pinned* date-boundary defect lives
+  // (`eventform.spec.ts`), so the one route that reaches a known-shipped bug
+  // was the one route with no App-level witness. Both specs assert on
+  // `occurrenceStartMs`, for the reason the block above gives: it must be the
+  // chip's own day and never `detail.start_ms`, which here is the all-day
+  // series' DTSTART two days earlier.
+
+  test('editing from an all-day chip sends the chip\'s own day', async ({ page }) => {
+    await writable(page);
+    await chip(page, 'Diwali').click();
+    await expect(page.getByRole('dialog', { name: 'Diwali' })).toBeVisible();
+    await page.getByRole('button', { name: 'Edit' }).click();
+
+    // The form is anchored on the clicked day too — Wed 31 Jan, not the
+    // series' Mon 29 Jan — which is the same value one step earlier, and the
+    // step at which getting it wrong turns an untouched date into a two-day
+    // move of every following occurrence. `First day`, not `Date`: an all-day
+    // event's form renders the date pair under its own labels (see
+    // `EventForm.svelte`), which is itself a small proof that the all-day
+    // branch is the one on screen.
+    await expect(editForm(page)).toBeVisible();
+    await expect(editForm(page).getByLabel('First day', { exact: true }))
+      .toHaveValue('2024-01-31');
+
+    await editForm(page).getByRole('button', { name: 'Save' }).click();
+    await expect(editForm(page)).toHaveCount(0);
+
+    const [args] = await callsTo(page, 'update_event');
+    expect(args.occurrenceStartMs).toBe(APP_ALLDAY_OCCURRENCE);
+    expect(args.occurrenceStartMs).not.toBe(APP_ALLDAY_SERIES_DTSTART);
+  });
+
+  test('deleting from an all-day chip sends the chip\'s own day', async ({ page }) => {
+    await writable(page);
+    await chip(page, 'Diwali').click();
+    await expect(page.getByRole('dialog', { name: 'Diwali' })).toBeVisible();
+    await page.getByRole('button', { name: 'Delete' }).click();
+
+    await expect(confirmPanel(page)).toBeVisible();
+    await confirmPanel(page).getByRole('button', { name: 'Delete' }).click();
+    await expect(confirmPanel(page)).toHaveCount(0);
+
+    const [args] = await callsTo(page, 'delete_event_cmd');
+    // `'this'` is the confirmation's own default, and it is the scope that
+    // makes the day matter most: aimed at the DTSTART it removes the series'
+    // *first* occurrence rather than the one whose chip was clicked, and mails
+    // every guest about it.
+    expect(args.scope).toBe('this');
+    expect(args.occurrenceStartMs).toBe(APP_ALLDAY_OCCURRENCE);
+    expect(args.occurrenceStartMs).not.toBe(APP_ALLDAY_SERIES_DTSTART);
   });
 
   test('cancelling the confirmation deletes nothing', async ({ page }) => {
