@@ -72,10 +72,13 @@ pub(crate) fn changed_fields(before: &EventFields, after: &EventFields) -> Value
 
     // Times move as a pair. Google rejects a body that redefines one end of
     // an event without the other when the all-day flag is in play, and half a
-    // move is not a thing a user can mean.
+    // move is not a thing a user can mean. `tz` is in this trigger too: it
+    // never appears in the body by itself, but it changes what `dateTime`/
+    // `date` serialize to, so a zone-only edit must still resend both ends.
     if before.start_ms != after.start_ms
         || before.end_ms != after.end_ms
         || before.is_all_day != after.is_all_day
+        || before.tz != after.tz
     {
         body.insert(
             "start".into(),
@@ -166,13 +169,29 @@ mod tests {
     }
 
     /// Turning repetition off is `recurrence: null`, which Google reads as
-    /// "make this a single event".
+    /// "make this a single event". `Value`'s `Index` returns `Null` for a
+    /// *missing* key too, so the presence check is load-bearing: without it
+    /// this test cannot tell "sent null" from "never mentioned recurrence".
     #[test]
     fn repeat_set_to_never_sends_null() {
         let mut after = base();
         after.recurrence = Some(None);
         let body = changed_fields(&base(), &after);
+        assert!(body.get("recurrence").is_some(), "body was {body}");
         assert!(body["recurrence"].is_null());
+    }
+
+    /// A zone-only edit (same wall-clock times, different tz) still changes
+    /// what `dateTime`/`date` serialize to, so it must not be dropped just
+    /// because `start_ms`/`end_ms`/`is_all_day` are unchanged.
+    #[test]
+    fn a_timezone_only_change_still_sends_both_times() {
+        let mut after = base();
+        after.tz = "America/New_York".into();
+        let body = changed_fields(&base(), &after);
+        assert!(body.get("start").is_some(), "body was {body}");
+        assert!(body.get("end").is_some(), "body was {body}");
+        assert_eq!(body["start"]["timeZone"], "America/New_York");
     }
 
     #[test]
