@@ -745,6 +745,20 @@ const threeLanesBigYear = (): BigYearPayload => {
   return b;
 };
 
+/** The ribbon's §6 case: the first two rows fall before the synced window's
+ *  start, exactly as they do in real use — the window opens 180 days back, so
+ *  a ribbon anchored the previous December always begins outside it. Nothing
+ *  else distinguishes those days from an in-window day with nothing on it, so
+ *  without the hatch an unsynced stretch reads as "free". Mirrors `y2026`'s
+ *  unsynced January for the year grid. */
+const unsyncedBigYear = (): BigYearPayload => {
+  const b = emptyBigYear(2026, RIBBON_START, YEAR_2026_START, YEAR_2027_START);
+  for (const row of b.rows.slice(0, 2)) {
+    for (const d of row.days) d.unsynced = true;
+  }
+  return b;
+};
+
 export const FIXTURES: Record<string, Record<string, any>> = {
   WeekGrid: {
     empty: { week: emptyWeek() },
@@ -769,6 +783,7 @@ export const FIXTURES: Record<string, Record<string, any>> = {
     'two-pills': { ribbon: twoPillsBigYear() },
     'same-name-legend': { ribbon: sameNameLegendBigYear() },
     'three-lanes': { ribbon: threeLanesBigYear() },
+    unsynced: { ribbon: unsyncedBigYear() },
   },
   EventBlock: {
     // The duration ladder.

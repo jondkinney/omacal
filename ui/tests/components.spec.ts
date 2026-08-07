@@ -977,6 +977,21 @@ test.describe('BigYearRibbon', () => {
     expect(Math.abs(packedDays - quietDays)).toBeLessThan(1);
   });
 
+  test('days outside the synced window are hatched, not left blank', async ({ page }) => {
+    // §6: the window opens 180 days back, so a ribbon anchored the previous
+    // December always begins outside it. Nothing else distinguishes those days
+    // from an in-window day with nothing on it, so without this an unsynced
+    // stretch reads as "free".
+    await page.goto(show('unsynced'));
+    await expect(page.locator('.rrow').nth(0).locator('.rday.unsynced')).toHaveCount(28);
+    await expect(page.locator('.rrow').nth(1).locator('.rday.unsynced')).toHaveCount(28);
+    await expect(page.locator('.rrow').nth(2).locator('.rday.unsynced')).toHaveCount(0);
+    // The hatch is a real painted background, not just a class name.
+    const hatched = page.locator('.rday.unsynced').first();
+    expect(await hatched.evaluate((el) => getComputedStyle(el).backgroundImage))
+      .toContain('repeating-linear-gradient');
+  });
+
   test('two co-existing pills in one row each keep their own title', async ({ page }) => {
     // `y2026` and `crossing` never pack more than one pill per row, so `idx`
     // and `lane` never diverge there — a `pill_events[lane.idx]` /

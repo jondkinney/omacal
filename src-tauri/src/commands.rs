@@ -1172,6 +1172,41 @@ mod tests {
     }
 
     #[test]
+    fn an_all_day_event_dots_exactly_the_days_it_covers() {
+        // `only_all_day_events_dot_the_year_grid` above asserts that *no* day
+        // is dotted, so `has_all_day[d] = false` makes it pass harder rather
+        // than fail: it satisfies its own wording while being structurally
+        // incapable of noticing a year grid that has stopped dotting
+        // altogether. This is the positive half it needs to be read against.
+        //
+        // 15-17 March 2026, as Google sends an all-day span — the end is
+        // exclusive, so it is local midnight on the 18th. Well clear of the
+        // synced window's edge (which opens in February for this `now`), so
+        // this property and `unsynced` stay independent.
+        let tz = "Europe/Sofia";
+        let start = local_midnight_ms(jiff::civil::date(2026, 3, 15), tz);
+        let end = local_midnight_ms(jiff::civil::date(2026, 3, 18), tz);
+        let y = assemble_year(&[all_day_event(start, end)], 2026, 1_786_341_600_000, tz);
+
+        let march = &y.months[2];
+        assert_eq!(march.days[14].start_ms, start, "days[14] is the 15th");
+        let dotted: Vec<u32> =
+            march.days.iter().filter(|d| d.has_all_day).map(|d| d.day).collect();
+        assert_eq!(dotted, vec![15, 16, 17], "exactly the days the span covers");
+
+        for (i, m) in y.months.iter().enumerate() {
+            if i == 2 {
+                continue;
+            }
+            assert!(
+                m.days.iter().all(|d| !d.has_all_day),
+                "month {} dotted a day nothing covers",
+                i + 1
+            );
+        }
+    }
+
+    #[test]
     fn days_outside_the_synced_window_are_marked_unsynced() {
         // From Aug 2026 the window starts in Feb, so January of the *current*
         // year is already outside it — an empty January must not read as free.
@@ -1205,6 +1240,33 @@ mod tests {
         let b = assemble_big_year(&[], 2024, 1_704_067_200_000, "UTC");
         assert_eq!(b.rows[0].days[0].start_ms, 1_704_067_200_000, "the ribbon must open on 1 Jan itself");
         assert!(b.rows[0].days[0].in_year, "1 Jan 2024 belongs to the year it opens");
+    }
+
+    /// The ribbon's own §6 coverage. Nothing else asserted `RibbonDay.unsynced`
+    /// at all, so hardcoding it to `false` left all 267 tests green — and an
+    /// unsynced stretch with no hatch reads as "free", which is precisely the
+    /// reading this flag exists to prevent.
+    ///
+    /// A single ribbon can never be outside the window at both ends (392 days
+    /// against a 545-day window), so both edges take a ribbon each, from the
+    /// same "now" — Aug 2026, putting the window at roughly Feb 2026 to Aug
+    /// 2027. Both directions are asserted at both edges, so neither a
+    /// hardcoded `false` nor a hardcoded `true` survives.
+    #[test]
+    fn ribbon_days_outside_the_synced_window_are_marked_unsynced() {
+        const NOW: i64 = 1_786_341_600_000; // Aug 2026, as the tests above use
+
+        // Near edge. A 2026 ribbon anchors on Mon 29 Dec 2025, so it always
+        // opens before a window that only reaches back to February.
+        let b = assemble_big_year(&[], 2026, NOW, "Europe/Sofia");
+        assert!(b.rows[0].days[0].unsynced, "Mon 29 Dec 2025 is before now-180d");
+        assert!(!b.rows[13].days[27].unsynced, "Jan 2027 is still inside now+365d");
+
+        // Far edge. The next year's ribbon runs into Jan 2028, past a window
+        // that ends in Aug 2027.
+        let b = assemble_big_year(&[], 2027, NOW, "Europe/Sofia");
+        assert!(!b.rows[0].days[0].unsynced, "Mon 28 Dec 2026 is inside the window");
+        assert!(b.rows[13].days[27].unsynced, "Jan 2028 is past now+365d");
     }
 
     #[test]
