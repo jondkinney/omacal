@@ -95,6 +95,17 @@ export const createEvent = (calendarId: number, fields: EventInput) =>
  * did not touch Repeat" and the event's existing rule — which may be one this
  * app cannot express — is left alone.
  *
+ * **The invariant the whole thing rests on:** when the user has not touched
+ * the time, `fields.startMs` must equal `occurrenceStartMs` *exactly*. The
+ * Rust side reads a time change as the difference between the two and applies
+ * that movement to whatever resource the scope resolves to, so two equal
+ * values mean "no movement" and no `start`/`end` is sent at all. Pass
+ * `detail.start_ms` as the anchor — the mistake this file already warns about
+ * above — and a recurring event's untouched time reads as a move of weeks:
+ * with scope `'all'` that drags the series' first occurrence onto the edited
+ * date and drops everything before it. Both values must come from the same
+ * clicked block.
+ *
  * `scope` has no `'following'` arm yet; the command refuses one rather than
  * treating it as "this occurrence".
  */

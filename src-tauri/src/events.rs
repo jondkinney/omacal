@@ -684,14 +684,33 @@ pub(crate) fn edit_zone<'a>(is_all_day: bool, cal_tz: &'a str, event_tz: &'a str
 /// somewhere else entirely. Sending those instants to the master verbatim
 /// would move the series' DTSTART onto the edited occurrence's date and drop
 /// every occurrence before it. So a time change reaches the target as the
-/// *shift* the user made, applied to the target's own start, with the duration
-/// taken from the form. An untouched time is then a shift of zero, and the
-/// body carries no `start`/`end` at all.
+/// *movement* the user made, applied to the target's own start and end
+/// through [`crate::write::shifted_like`] — a calendar movement rather than a
+/// millisecond delta, because master and occurrence can sit on opposite sides
+/// of a daylight-saving transition. An untouched time is a movement of zero,
+/// and the body carries no `start`/`end` at all.
 ///
-/// `occurrence_start_ms` is that anchor only when the row actually has
+/// **The anchor is a constant across the 412 retry, and that is load
+/// bearing.** `target_start_ms` is re-read on the retry, so anchoring on it
+/// would make the movement absolute rather than relative: for a one-off whose
+/// time somebody else had just changed, the *absence* of a user edit would
+/// come back as the *presence* of a revert, rescheduling their move and
+/// mailing the guest list. Both arms below are values the retry cannot move —
+/// the clicked occurrence, or the row as it was loaded.
+///
+/// `occurrence_start_ms` is the anchor only when the row actually has
 /// occurrences. For a one-off it is redundant — the target *is* the event —
 /// and using it anyway would let a wrong value from the caller move an event
-/// nobody asked to move.
+/// nobody asked to move. `is_recurring` rather than `recurrence.is_some()`:
+/// a materialised exception carries no rule of its own but is still one
+/// occurrence of a series, and `"all"` from that row patches a master anchored
+/// somewhere else entirely.
+///
+/// `anchor_end` is derived rather than passed: the occurrence's own end is the
+/// target's end moved by the same span that separates the anchor from the
+/// target's start, which is precisely what an expansion of a series is. That
+/// keeps a *duration* change (the user lengthened the meeting) distinguishable
+/// from a *move*, and both correct across a transition.
 ///
 /// `before.recurrence` is `None` and must stay that way: `changed_fields`
 /// never reads it, because the touched/untouched signal for Repeat lives
@@ -719,15 +738,19 @@ pub(crate) fn edit_patch_body(
         recurrence: None,
     };
 
+    // The zone the *movement* is read in: the event as it stands, not as the
+    // form would leave it. A user toggling all-day is already resending both
+    // ends anyway, since `is_all_day` is in `changed_fields`' times trigger.
+    let zone = edit_zone(ev.is_all_day, cal_tz, &ev.start_tz);
     let anchor = if is_recurring(&ev.recurrence, &ev.recurring_event_id) {
         occurrence_start_ms
     } else {
-        target_start_ms
+        ev.start_utc
     };
-    let start_ms = target_start_ms + (after.start_ms - anchor);
+    let anchor_end = crate::write::shifted_like(anchor, target_start_ms, target_end_ms, zone);
     let after = crate::write::EventFields {
-        start_ms,
-        end_ms: start_ms + (after.end_ms - after.start_ms),
+        start_ms: crate::write::shifted_like(target_start_ms, anchor, after.start_ms, zone),
+        end_ms: crate::write::shifted_like(target_end_ms, anchor_end, after.end_ms, zone),
         tz: edit_zone(after.is_all_day, cal_tz, &ev.start_tz).to_string(),
         ..after.clone()
     };
@@ -737,17 +760,26 @@ pub(crate) fn edit_patch_body(
 
 /// One wire event as a store row, through the same mapping every sync uses.
 ///
-/// `to_stored` answers `None` for a tombstone and for times that will not
-/// parse. For a resource this app is about to patch, either is a reason to
-/// stop: the times it would have to guess at are the ones the request is built
-/// against.
+/// `to_stored` answers `None` for two unrelated reasons, and they get separate
+/// messages because only one of them is worth showing. A tombstone is the
+/// ordinary case — somebody deleted the occurrence between the popover opening
+/// and the save — and it is allowlisted in `errors.rs`, since a user who is
+/// told that knows exactly what happened. Times that will not parse are a
+/// shape nobody has seen; that one stays opaque rather than claiming something
+/// specific and being wrong about it.
+///
+/// Either way this stops instead of guessing: the times it would have to
+/// invent are the ones the request is built against.
 fn row_from_wire(
     wire: &omacal_google::model::Event,
     calendar_id: i64,
     cal_tz: &str,
 ) -> anyhow::Result<omacal_store::StoredEvent> {
+    if omacal_sync::is_tombstone(wire) {
+        anyhow::bail!("that occurrence is no longer on the calendar");
+    }
     omacal_sync::to_stored(wire, calendar_id, cal_tz)
-        .ok_or_else(|| anyhow::anyhow!("that occurrence is no longer on the calendar"))
+        .ok_or_else(|| anyhow::anyhow!("Google returned an event omacal could not read"))
 }
 
 /// `occurrence_start_ms` is the `start_ms` of the block the user actually
@@ -2661,6 +2693,399 @@ mod tests {
 
         let (row, _) = omacal_store::event_by_id(&state.pool, id).await.unwrap().unwrap();
         assert_eq!(row.summary.as_deref(), Some("Standup"), "demo mode wrote to the store");
+    }
+
+    /// The retry's other half, and the one the first version of this got
+    /// wrong. The user touched only the title; somebody else *moved* the
+    /// event in the meantime. The retry re-reads the target for its version,
+    /// so the target's start is not the same value it was on the first
+    /// attempt — and anchoring the movement on it would make the movement
+    /// absolute, turning the absence of a user edit into the presence of a
+    /// revert. The meeting would be rescheduled back and the guest list mailed
+    /// about it, which is the exact harm the retry exists to prevent.
+    ///
+    /// `a_stale_etag_retries_once_...` cannot catch this: its GET returns the
+    /// event at unchanged times, so an absolute anchor and a relative one give
+    /// the same answer there.
+    #[tokio::test]
+    async fn a_retry_after_someone_else_moved_the_event_does_not_reschedule_it_back() {
+        let mut ev = stored(vec![]);
+        ev.summary = Some("Brunch".into());
+        ev.start_utc = OCCURRENCE;
+        ev.end_utc = OCCURRENCE + HOUR;
+        let (pool, _id) = seeded_pool_on_cal(&mut ev, "UTC").await; // google_id "ev1", etag "old"
+
+        // Their move: one day later, after the form was already open.
+        let moved = OCCURRENCE + 24 * HOUR;
+
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/ev1"))
+            .and(wiremock::matchers::header("if-match", "\"old\""))
+            .respond_with(wiremock::ResponseTemplate::new(412))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/ev1"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "ev1", "status": "confirmed", "etag": "\"fresh\"",
+                "summary": "Brunch",
+                "start": {"dateTime": omacal_sync::to_rfc3339(moved)},
+                "end":   {"dateTime": omacal_sync::to_rfc3339(moved + HOUR)}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        // The title, and nothing else. A `start`/`end` here at all is the bug:
+        // matched as a whole document, so their move being re-sent as
+        // `OCCURRENCE` fails on this mock rather than passing quietly.
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/ev1"))
+            .and(wiremock::matchers::header("if-match", "\"fresh\""))
+            .and(wiremock::matchers::body_json(serde_json::json!({"summary": "Brunch (moved)"})))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "ev1", "status": "confirmed", "etag": "\"e3\"",
+                "summary": "Brunch (moved)",
+                "start": {"dateTime": omacal_sync::to_rfc3339(moved)},
+                "end":   {"dateTime": omacal_sync::to_rfc3339(moved + HOUR)}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        update_via_client(
+            &pool,
+            "all",
+            OCCURRENCE,
+            ev,
+            "cal@x.com",
+            "UTC",
+            form("Brunch (moved)", OCCURRENCE, OCCURRENCE + HOUR),
+            &client,
+        )
+        .await
+        .unwrap();
+    }
+
+    /// Defence in depth against the defect class this whole design exists for.
+    /// A one-off has no occurrences, so `occurrence_start_ms` names nothing —
+    /// and the anchor must be the event's own start, not whatever the caller
+    /// passed. Anchoring on the argument would let the very mistake Plan 2
+    /// shipped (handing a series' DTSTART where an occurrence's start belongs)
+    /// move an event nobody asked to move.
+    ///
+    /// The value below is deliberately wrong, which is the only way to tell
+    /// the two apart: everywhere else in this file the caller passes the right
+    /// one and both readings agree.
+    #[tokio::test]
+    async fn a_one_off_ignores_the_occurrence_anchor_and_takes_the_form_at_face_value() {
+        let mut ev = stored(vec![]);
+        ev.summary = Some("Lunch".into());
+        ev.start_utc = OCCURRENCE;
+        ev.end_utc = OCCURRENCE + HOUR;
+        let (pool, _id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+
+        // The user moved it an hour later. The body must say exactly that.
+        let expected = serde_json::json!({
+            "start": crate::write::event_time_json(OCCURRENCE + HOUR, false, "UTC"),
+            "end":   crate::write::event_time_json(OCCURRENCE + 2 * HOUR, false, "UTC"),
+        });
+
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/ev1"))
+            .and(wiremock::matchers::body_json(expected))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "ev1", "status": "confirmed", "etag": "\"e2\"", "summary": "Lunch",
+                "start": {"dateTime": omacal_sync::to_rfc3339(OCCURRENCE + HOUR)},
+                "end":   {"dateTime": omacal_sync::to_rfc3339(OCCURRENCE + 2 * HOUR)}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        update_via_client(
+            &pool,
+            "all",
+            DTSTART, // wrong on purpose: two weeks off, and irrelevant here
+            ev,
+            "cal@x.com",
+            "UTC",
+            form("Lunch", OCCURRENCE + HOUR, OCCURRENCE + 2 * HOUR),
+            &client,
+        )
+        .await
+        .unwrap();
+    }
+
+    /// The one branch nothing else reaches: `"all"` from a *materialised
+    /// exception*. It is the only path that fetches the master with
+    /// `get_event`, the only place outside the instance lookup where the
+    /// etag-provenance rule applies, and the only shape where the row's own
+    /// `recurrence` is `None` while the row is still one occurrence of a
+    /// series.
+    ///
+    /// That last part is why `is_recurring` and not `ev.recurrence.is_some()`:
+    /// read the second way, an exception is "not recurring", the anchor
+    /// becomes the row's own start, and a *title-only* edit sends the
+    /// exception's instant to a master anchored two weeks earlier — the
+    /// data-loss body, silent and green.
+    ///
+    /// The row's start and the clicked occurrence deliberately differ here (a
+    /// sync moved the exception after the grid painted, so the form still
+    /// holds what the user saw), which is the only way to tell the two
+    /// readings apart.
+    #[tokio::test]
+    async fn editing_all_events_from_an_exception_row_asks_the_master_and_anchors_on_the_click() {
+        let mut ev = stored(vec![]);
+        ev.google_id = "exception1".into();
+        ev.summary = Some("Standup".into());
+        ev.recurring_event_id = Some("master1".into());
+        ev.original_start_utc = Some(OCCURRENCE);
+        ev.start_utc = OCCURRENCE + 5 * HOUR; // moved since the grid painted
+        ev.end_utc = OCCURRENCE + 6 * HOUR;
+        ev.etag = Some("\"exception-etag\"".into());
+        let (pool, id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+
+        let server = wiremock::MockServer::start().await;
+        // Nothing here has the master in hand, and there is no version of it
+        // to condition on without asking.
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/master1"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "master1", "status": "confirmed", "etag": "\"master-etag\"",
+                "summary": "Standup",
+                "recurrence": ["RRULE:FREQ=WEEKLY"],
+                "start": {"dateTime": omacal_sync::to_rfc3339(DTSTART)},
+                "end":   {"dateTime": omacal_sync::to_rfc3339(DTSTART + HOUR)}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        // The master's own version, and a body with no times in it at all.
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/master1"))
+            .and(wiremock::matchers::header("if-match", "\"master-etag\""))
+            .and(wiremock::matchers::body_json(
+                serde_json::json!({"summary": "Standup (moved)"}),
+            ))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "master1", "status": "confirmed", "etag": "\"master-2\"",
+                "summary": "Standup (moved)",
+                "recurrence": ["RRULE:FREQ=WEEKLY"],
+                "start": {"dateTime": omacal_sync::to_rfc3339(DTSTART)},
+                "end":   {"dateTime": omacal_sync::to_rfc3339(DTSTART + HOUR)}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        update_via_client(
+            &pool,
+            "all",
+            OCCURRENCE, // what the user clicked, and what the form was filled from
+            ev,
+            "cal@x.com",
+            "UTC",
+            form("Standup (moved)", OCCURRENCE, OCCURRENCE + HOUR),
+            &client,
+        )
+        .await
+        .unwrap();
+
+        // `master1` is a different Google id than `exception1`, so the local
+        // exception row is left for the next sync rather than stamped with the
+        // master's state.
+        let (row, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
+        assert_eq!(
+            row.etag.as_deref(),
+            Some("\"exception-etag\""),
+            "the master's etag was stamped onto the exception's own row"
+        );
+    }
+
+    /// A wall clock in New York as an instant. `2026-03-08T02:00` is that
+    /// zone's spring-forward for 2026, which the two tests below sit either
+    /// side of.
+    fn ny(wall: &str) -> i64 {
+        wall.parse::<jiff::civil::DateTime>()
+            .unwrap()
+            .in_tz("America/New_York")
+            .unwrap()
+            .timestamp()
+            .as_millisecond()
+    }
+
+    /// The elapsed-time trap, end to end. Moving an occurrence from the
+    /// Saturday before a spring-forward to the Sunday after it is one day of
+    /// calendar time and 23 hours of elapsed time. The master is a month
+    /// earlier, on the winter side, so a millisecond delta arrives an hour
+    /// early and quietly moves a 09:00 series to 08:00 — for everybody, with
+    /// `sendUpdates=all`.
+    #[tokio::test]
+    async fn a_timed_shift_across_a_transition_keeps_the_series_time_of_day() {
+        let mut ev = weekly_master("RRULE:FREQ=WEEKLY");
+        ev.start_tz = "America/New_York".into();
+        ev.end_tz = "America/New_York".into();
+        ev.start_utc = ny("2026-02-07T09:00:00");
+        ev.end_utc = ny("2026-02-07T10:00:00");
+        let (pool, _id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+
+        let occurrence = ny("2026-03-07T09:00:00");
+        let moved = ny("2026-03-08T09:00:00");
+        assert_eq!(
+            moved - occurrence,
+            23 * HOUR,
+            "fixture check: the move must actually cross the transition"
+        );
+
+        let expected = serde_json::json!({
+            "start": crate::write::event_time_json(
+                ny("2026-02-08T09:00:00"), false, "America/New_York"),
+            "end":   crate::write::event_time_json(
+                ny("2026-02-08T10:00:00"), false, "America/New_York"),
+        });
+
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/master1"))
+            .and(wiremock::matchers::body_json(expected))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "master1", "status": "confirmed", "etag": "\"master-2\"",
+                "summary": "Standup",
+                "recurrence": ["RRULE:FREQ=WEEKLY"],
+                "start": {"dateTime": omacal_sync::to_rfc3339(ny("2026-02-08T09:00:00")),
+                          "timeZone": "America/New_York"},
+                "end":   {"dateTime": omacal_sync::to_rfc3339(ny("2026-02-08T10:00:00")),
+                          "timeZone": "America/New_York"}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        update_via_client(
+            &pool,
+            "all",
+            occurrence,
+            ev,
+            "cal@x.com",
+            "UTC",
+            form("Standup", moved, moved + HOUR),
+            &client,
+        )
+        .await
+        .unwrap();
+    }
+
+    /// The same trap on an all-day event, where it is worse: 23 hours from
+    /// midnight is 23:00 the same day, so the rendered `date` is the one the
+    /// event already has. The user's move vanishes — and a PATCH still goes
+    /// out, because the instants differ even though the dates do not, telling
+    /// every guest about a change that did not happen.
+    ///
+    /// All-day resolves against the *calendar's* zone (Google sends a bare
+    /// `date` with no zone of its own), so the calendar here is the New York
+    /// one and the event's stored `start_tz` is left elsewhere on purpose.
+    #[tokio::test]
+    async fn an_all_day_shift_across_a_transition_moves_to_the_next_date() {
+        let mut ev = weekly_master("RRULE:FREQ=WEEKLY");
+        ev.is_all_day = true;
+        ev.start_tz = "Europe/Sofia".into(); // must be ignored: all-day takes the calendar's
+        ev.start_utc = ny("2026-02-07T00:00:00");
+        ev.end_utc = ny("2026-02-08T00:00:00");
+        let (pool, _id) = seeded_pool_on_cal(&mut ev, "America/New_York").await;
+
+        let occurrence = ny("2026-03-08T00:00:00");
+        let moved = ny("2026-03-09T00:00:00");
+
+        let expected = serde_json::json!({
+            "start": {"date": "2026-02-08"},
+            "end":   {"date": "2026-02-09"},
+        });
+
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/master1"))
+            .and(wiremock::matchers::body_json(expected))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "master1", "status": "confirmed", "etag": "\"master-2\"",
+                "summary": "Standup",
+                "recurrence": ["RRULE:FREQ=WEEKLY"],
+                "start": {"date": "2026-02-08"},
+                "end":   {"date": "2026-02-09"}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        let mut after = form("Standup", moved, moved + 24 * HOUR);
+        after.is_all_day = true;
+        update_via_client(
+            &pool,
+            "all",
+            occurrence,
+            ev,
+            "cal@x.com",
+            "America/New_York",
+            after,
+            &client,
+        )
+        .await
+        .unwrap();
+    }
+
+    /// Editing an occurrence somebody has just deleted. Google answers the
+    /// lookup with a cancelled instance, which carries no usable times — and
+    /// the times of the resource being patched are what the request is built
+    /// against, so this stops rather than guessing. Named plainly for the
+    /// user, since it is a thing that genuinely happens.
+    #[tokio::test]
+    async fn editing_an_occurrence_that_has_been_cancelled_says_so_and_patches_nothing() {
+        let mut ev = weekly_master("RRULE:FREQ=WEEKLY");
+        let (pool, _id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/master1/instances"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [{"id": "master1_20260810T090000Z", "status": "cancelled",
+                           "etag": "\"gone\""}]
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        let err = update_via_client(
+            &pool,
+            "this",
+            OCCURRENCE,
+            ev,
+            "cal@x.com",
+            "UTC",
+            form("Standup (moved)", OCCURRENCE, OCCURRENCE + HOUR),
+            &client,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("no longer on the calendar"), "{err}");
+        assert_eq!(
+            crate::errors::user_facing(&err),
+            "that occurrence is no longer on the calendar"
+        );
+        assert!(
+            requests(&server).await.iter().all(|r| r.method.as_str() != "PATCH"),
+            "a cancelled occurrence was patched anyway"
+        );
     }
 
     /// A subscribed holiday calendar, or one shared with you read-only. The

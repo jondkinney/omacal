@@ -84,6 +84,15 @@ const SAFE_EXACT: &[&str] = &[
     // occurrence the local store has no exception row for yet — read as
     // OPAQUE instead of naming what happened.
     "could not find that occurrence on the calendar",
+    // src-tauri/src/events.rs — `row_from_wire`'s tombstone branch, reached
+    // when the occurrence being edited was deleted between the popover opening
+    // and the save. Fixed literal, no interpolation, raised with `bail!` and
+    // propagated by a bare `?` with no `.context(..)` anywhere on the way to
+    // `update_event`'s `.map_err(..)`. Deliberately narrower than the branch it
+    // replaced: an event whose *times* will not parse is a shape nobody has
+    // seen, and that one stays opaque rather than telling the user something
+    // specific that may not be true.
+    "that occurrence is no longer on the calendar",
 ];
 
 /// The generic replacement. Deliberately says where to look rather than
@@ -232,6 +241,7 @@ mod tests {
             "demo mode — there is nothing to create",
             "this calendar is not writable from omacal",
             "demo mode — there is nothing to save",
+            "that occurrence is no longer on the calendar",
         ];
         for expected in EXPECTED {
             assert!(

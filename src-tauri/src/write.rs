@@ -43,6 +43,61 @@ pub(crate) fn event_time_json(ms: i64, is_all_day: bool, tz: &str) -> Value {
     }
 }
 
+/// Where `target_ms` lands after the same *calendar* movement that takes
+/// `from_ms` to `to_ms`, read in `tz`.
+///
+/// Deliberately not `target_ms + (to_ms - from_ms)`. An edit is applied to a
+/// resource that may be anchored a long way from the occurrence the user was
+/// looking at — a series master months earlier — and a daylight-saving
+/// transition can sit between the two. A millisecond delta then carries the
+/// transition across with it: moving an occurrence from Saturday to Sunday
+/// over a spring-forward is 23 hours, and 23 hours added to a master on the
+/// other side of it arrives an hour early. For an all-day event that is worse
+/// than untidy — 23 hours from midnight is 23:00 the same day, so the whole
+/// move is silently discarded, while a PATCH still goes out with
+/// `sendUpdates=all` and mails every guest about a change that did not
+/// happen.
+///
+/// So the movement is measured *civilly*: the span between two wall clocks,
+/// which `jiff` balances into days plus a time of day, added to the target's
+/// own wall clock and only then resolved back to an instant. A day stays a
+/// day across a transition; an hour stays an hour.
+///
+/// The two short circuits are not optimisations, they are guarantees. Nothing
+/// moved means the target does not move, whatever `tz` says — that is what
+/// makes "an untouched time sends no `start`/`end`" exact rather than
+/// approximate. And when the target *is* the thing that moved (every one-off,
+/// and every resolved occurrence) the answer is the new instant itself, with
+/// no civil round trip that a repeated hour could shift.
+///
+/// An unresolvable zone falls back to the plain delta rather than failing, the
+/// same fallback philosophy as [`event_time_json`].
+pub(crate) fn shifted_like(target_ms: i64, from_ms: i64, to_ms: i64, tz: &str) -> i64 {
+    if to_ms == from_ms {
+        return target_ms;
+    }
+    if target_ms == from_ms {
+        return to_ms;
+    }
+
+    let civil = |ms: i64| -> Option<jiff::civil::DateTime> {
+        jiff::Timestamp::from_millisecond(ms).ok()?.in_tz(tz).ok().map(|z| z.datetime())
+    };
+    let moved = (|| -> Option<i64> {
+        let movement = civil(to_ms)? - civil(from_ms)?;
+        Some(
+            civil(target_ms)?
+                .checked_add(movement)
+                .ok()?
+                .in_tz(tz)
+                .ok()?
+                .timestamp()
+                .as_millisecond(),
+        )
+    })();
+    moved.unwrap_or_else(|| target_ms.saturating_add(to_ms.saturating_sub(from_ms)))
+}
+
 /// A PATCH body carrying only what actually changed.
 ///
 /// A field absent from a PATCH body means "leave it alone"; a field present
@@ -297,6 +352,104 @@ mod tests {
         let v = event_time_json(1_785_398_400_000, true, "Not/AZone");
         assert!(v["date"].is_string());
         assert_eq!(v["date"].as_str().unwrap().len(), 10);
+    }
+
+    /// A wall clock in New York as an instant. `2026-03-08T02:00` is that
+    /// zone's spring-forward for 2026, which is what the tests below sit
+    /// either side of.
+    fn ny(wall: &str) -> i64 {
+        wall.parse::<jiff::civil::DateTime>()
+            .unwrap()
+            .in_tz("America/New_York")
+            .unwrap()
+            .timestamp()
+            .as_millisecond()
+    }
+
+    /// The property `shifted_like` exists for. Moving an occurrence from the
+    /// Saturday before a spring-forward to the Sunday after it is 23 hours of
+    /// elapsed time but one day of calendar time. Applied to a master a month
+    /// earlier — on the winter side of the transition — the plain delta
+    /// arrives an hour early and the meeting silently moves to 08:00.
+    #[test]
+    fn a_day_stays_a_day_when_the_shift_crosses_a_daylight_saving_transition() {
+        let master = ny("2026-02-07T09:00:00");
+        let occurrence = ny("2026-03-07T09:00:00");
+        let moved = ny("2026-03-08T09:00:00");
+
+        assert_eq!(
+            moved - occurrence,
+            23 * 3_600_000,
+            "fixture check: this move must actually cross the transition, or the \
+             assertion below proves nothing"
+        );
+        assert_eq!(
+            shifted_like(master, occurrence, moved, "America/New_York"),
+            ny("2026-02-08T09:00:00"),
+            "a one-day move became 23 hours: the series would keep its time of day \
+             only on the side of the transition it was edited from"
+        );
+    }
+
+    /// The same shift, on an all-day event, where the damage is worse: 23
+    /// hours from midnight is 23:00 the same day, so `event_time_json` renders
+    /// the *original* date and the user's move vanishes — while the body still
+    /// differs in milliseconds, so a PATCH goes out and every guest is told
+    /// about a change that did not happen.
+    #[test]
+    fn an_all_day_shift_across_a_transition_lands_on_the_next_date_not_the_same_one() {
+        let master = ny("2026-02-07T00:00:00");
+        let occurrence = ny("2026-03-08T00:00:00");
+        let moved = ny("2026-03-09T00:00:00");
+
+        let shifted = shifted_like(master, occurrence, moved, "America/New_York");
+        assert_eq!(shifted, ny("2026-02-08T00:00:00"));
+        assert_eq!(
+            event_time_json(shifted, true, "America/New_York")["date"],
+            "2026-02-08",
+            "the move was dropped: the body would re-send the date the event already has"
+        );
+    }
+
+    /// The control. Without it the two tests above could pass for a reason
+    /// that has nothing to do with transitions — a function that always
+    /// returned "the same wall clock, one day on" would satisfy them both.
+    #[test]
+    fn an_ordinary_shift_with_no_transition_in_it_still_moves_by_what_the_user_did() {
+        let master = ny("2026-06-06T09:00:00");
+        let occurrence = ny("2026-07-04T09:00:00");
+
+        // A pure time-of-day change.
+        assert_eq!(
+            shifted_like(master, occurrence, occurrence + 90 * 60_000, "America/New_York"),
+            ny("2026-06-06T10:30:00")
+        );
+        // A day *and* a time-of-day change together.
+        assert_eq!(
+            shifted_like(master, occurrence, ny("2026-07-06T08:00:00"), "America/New_York"),
+            ny("2026-06-08T08:00:00")
+        );
+    }
+
+    /// Both short circuits, which are guarantees rather than optimisations —
+    /// see the doc comment. The first is what makes "an untouched time sends
+    /// nothing" exact; the second keeps every one-off and every resolved
+    /// occurrence away from a civil round trip that a repeated hour could
+    /// shift.
+    #[test]
+    fn nothing_moved_moves_nothing_and_a_target_that_is_itself_the_move_takes_the_new_instant() {
+        let target = ny("2026-02-07T09:00:00");
+        let from = ny("2026-03-07T09:00:00");
+        assert_eq!(shifted_like(target, from, from, "America/New_York"), target);
+        let to = ny("2026-03-08T09:00:00");
+        assert_eq!(shifted_like(from, from, to, "America/New_York"), to);
+    }
+
+    /// An unresolvable zone must not panic or swallow the movement; it falls
+    /// back to the plain delta, exactly as `event_time_json` falls back to UTC.
+    #[test]
+    fn an_unknown_timezone_falls_back_to_the_plain_delta() {
+        assert_eq!(shifted_like(1_000, 5_000, 8_000, "Not/AZone"), 4_000);
     }
 
     fn sample_input() -> EventInput {
