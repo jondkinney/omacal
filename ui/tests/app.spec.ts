@@ -204,6 +204,12 @@ test.describe('App', () => {
   // gone for good (DoD: "no disabled slots").
   test('all five views are reachable', async ({ page }) => {
     await page.goto(app('connected'));
+    // Wait on the buttons *existing* before asserting none are disabled. The
+    // disabled-count assertion alone is satisfied by an unmounted page — zero
+    // buttons are disabled when there are zero buttons — so it waited for
+    // nothing and the keypress below landed before `<svelte:window onkeydown>`
+    // had attached. Same mount race the two specs after this one guard against.
+    await expect(page.locator('.vswitch button')).toHaveCount(5);
     await expect(page.locator('.vswitch button[disabled]')).toHaveCount(0);
     await page.keyboard.press('4');
     await expect(page.locator('.ymonth')).toHaveCount(12);
