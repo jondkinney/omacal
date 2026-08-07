@@ -309,11 +309,11 @@ test.describe('the form’s civil↔instant boundary (characterised, not fixed)'
         // touching nothing but the title.
         const value = ef.valueFromDetail(detail, startMs, endMs);
         const sent = ef.toEventInput(value, value);
-        return { drift: sent.startMs - startMs };
+        return { drift: sent.when.startMs - startMs };
       });
 
       // WRONG. Correct: 0 — Task 9's anchoring invariant says an untouched
-      // time makes `fields.startMs` *exactly* `occurrenceStartMs`. It is out by
+      // time makes `fields.when.startMs` *exactly* `occurrenceStartMs`. It is out by
       // a full hour for 12 block starts a year in this zone, and the Rust side
       // reads that difference as a deliberate move: a start/end PATCH dragging
       // the meeting an hour earlier, with `sendUpdates=all` behind it, for
@@ -370,6 +370,12 @@ test.describe('the anchor’s precision (characterised, not fixed)', () => {
     // WRONG. Correct: 0. Task 9's invariant again — an untouched time must send
     // an anchor equal to `occurrenceStartMs` exactly, and 37 seconds of
     // difference is read as a move like any other.
-    expect(sent.startMs - startMs).toBe(-37_000);
+    //
+    // `when` is a union, so the timed arm has to be established before its
+    // fields can be read — which is the point of the union and worth spelling
+    // out rather than casting past.
+    expect(sent.when.kind).toBe('timed');
+    if (sent.when.kind !== 'timed') throw new Error('not a timed event');
+    expect(sent.when.startMs - startMs).toBe(-37_000);
   });
 });

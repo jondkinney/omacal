@@ -80,12 +80,33 @@ export type EventInput = {
   summary: string | null;
   location: string | null;
   description: string | null;
-  startMs: number;
-  endMs: number;
-  isAllDay: boolean;
+  when: WhenInput;
   tz: string;
   repeat?: string;
 };
+
+/**
+ * When the event happens, mirroring `write::WhenInput`. **An all-day event
+ * carries dates and no zone at all** — that is Google's own model, and the
+ * reason this is a union rather than three loose fields: the old shape passed
+ * an instant and a flag, and the two sides of the boundary turned the same date
+ * into an instant in *different* zones, so a date nobody touched came back
+ * looking moved.
+ *
+ * `kind` is the discriminant Rust reads (`#[serde(tag = "kind")]`), and every
+ * name here has to match the wire exactly — Rust deliberately carries no
+ * default, so a payload it cannot read fails the command rather than becoming a
+ * timed event at the epoch. `write.rs`'s
+ * `the_payload_the_ui_sends_deserializes_as_written` pins these strings from
+ * the other side.
+ *
+ * `endDate` is **exclusive** — the day after the last one — as on Google's wire
+ * and in the store. The form shows the inclusive last day, so exactly one
+ * conversion happens between the two, in `eventform.ts`.
+ */
+export type WhenInput =
+  | { kind: 'timed'; startMs: number; endMs: number }
+  | { kind: 'allDay'; startDate: string; endDate: string };
 
 /** A freshness check on an already-open popover, not a load — see `WeekGrid`,
  *  which fires this after paint and ignores a rejection. */

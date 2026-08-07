@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import {
   FIXED_NOW, FORM_FALLBACK_ID, FORM_NOW, FORM_UNWRITABLE_ID, FORM_UNWRITABLE_NAMES,
   MON, POPOVER_DETAILS, POPOVER_REFRESHED_DETAIL,
-  TRIP_END_MS, TRIP_FIRST_DAY, TRIP_LAST_DAY, popoverWeekWithResponse, YEAR_2026_NOW,
+  TRIP_END_DATE, TRIP_FIRST_DAY, TRIP_LAST_DAY, popoverWeekWithResponse, YEAR_2026_NOW,
 } from './fixtures';
 import { CALENDAR_SYNC_REMOVED } from './harness/tauri';
 
@@ -1273,8 +1273,9 @@ test.describe('EventForm', () => {
     await page.getByRole('button', { name: 'Create' }).click();
     const [saved] = await saves(page);
     // 09:30 on 12 Aug 2026, UTC — the project's `timezoneId`.
-    expect(saved.fields.startMs).toBe(Date.UTC(2026, 7, 12, 9, 30));
-    expect(saved.fields.endMs).toBe(Date.UTC(2026, 7, 12, 10, 0));
+    expect(saved.fields.when.kind).toBe('timed');
+    expect(saved.fields.when.startMs).toBe(Date.UTC(2026, 7, 12, 9, 30));
+    expect(saved.fields.when.endMs).toBe(Date.UTC(2026, 7, 12, 10, 0));
   });
 
   test('save is refused when the end is before the start', async ({ page }) => {
@@ -1377,8 +1378,12 @@ test.describe('EventForm', () => {
 
     await page.getByRole('button', { name: 'Save' }).click();
     const [saved] = await saves(page);
-    expect(saved.fields.isAllDay).toBe(true);
-    expect(saved.fields.endMs).toBe(TRIP_END_MS);
+    expect(saved.fields.when.kind).toBe('allDay');
+    // Still the exclusive end, now named as the date it always was. Playwright
+    // pins `timezoneId: 'UTC'`, so this is the same assertion in a different
+    // unit — which is exactly why the zone-crossing version of it belongs in a
+    // describe of its own, and does not exist yet.
+    expect(saved.fields.when.endDate).toBe(TRIP_END_DATE);
   });
 
   test('saving without touching Repeat sends no rule at all', async ({ page }) => {

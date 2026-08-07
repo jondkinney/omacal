@@ -12,35 +12,17 @@ pub(crate) struct EventFields {
     pub summary: Option<String>,
     pub location: Option<String>,
     pub description: Option<String>,
-    pub start_ms: i64,
-    pub end_ms: i64,
-    pub is_all_day: bool,
-    /// IANA zone the times are authored in.
+    /// When the event happens. One field rather than three, so that a date and
+    /// an all-day flag cannot disagree — see [`When`].
+    pub when: When,
+    /// IANA zone the times are authored in. Read by the timed arm alone; an
+    /// all-day event has no zone, which is what [`When`] enforces.
     pub tz: String,
     /// Three-state, and the distinction is the point:
     /// `None` — the user did not touch Repeat; omit `recurrence` entirely.
     /// `Some(None)` — the user chose Never; send `null`.
     /// `Some(Some(rule))` — send `[rule]`.
     pub recurrence: Option<Option<String>>,
-}
-
-/// Google's `start`/`end` object. All-day events carry `date`; timed events
-/// carry `dateTime` and `timeZone`. Sending both is rejected.
-///
-/// An unresolvable timestamp or zone must still produce a date rather than
-/// panic — the all-day branch falls back to the Unix epoch and then to UTC,
-/// same as the fallback philosophy used elsewhere for zone handling
-/// (`n_day_boundaries`, `local_midnight_ms` in `commands.rs`).
-pub(crate) fn event_time_json(ms: i64, is_all_day: bool, tz: &str) -> Value {
-    if is_all_day {
-        let ts = jiff::Timestamp::from_millisecond(ms).unwrap_or(jiff::Timestamp::UNIX_EPOCH);
-        let zoned = ts
-            .in_tz(tz)
-            .unwrap_or_else(|_| ts.in_tz("UTC").expect("UTC always resolves"));
-        json!({ "date": zoned.date().to_string() })
-    } else {
-        json!({ "dateTime": omacal_sync::to_rfc3339(ms), "timeZone": tz })
-    }
 }
 
 /// When an event happens.
@@ -51,7 +33,6 @@ pub(crate) fn event_time_json(ms: i64, is_all_day: bool, tz: &str) -> Value {
 /// `(ms, is_all_day, tz)` and the two sides of the boundary converted that date
 /// to an instant in *different* zones, which moved events nobody moved.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)] // wired up in Task 2, which retires `event_time_json`.
 pub(crate) enum When {
     Timed { start_ms: i64, end_ms: i64 },
     /// Both `yyyy-mm-dd`. `end_date` is **exclusive** — the day after the last
@@ -59,8 +40,87 @@ pub(crate) enum When {
     AllDay { start_date: String, end_date: String },
 }
 
+impl When {
+    /// Which of Google's two time shapes this is.
+    ///
+    /// Derived, never stored — that is the point of the enum, and it is why
+    /// this is a method rather than the field it replaced: the flag cannot
+    /// disagree with the times it describes. It exists for
+    /// [`crate::events::edit_zone`], which answers the same question for a
+    /// `StoredEvent` too and so still takes a bare `bool`.
+    pub(crate) fn is_all_day(&self) -> bool {
+        matches!(self, When::AllDay { .. })
+    }
+}
+
+/// The calendar date `ms` falls on, read in `tz`, as `yyyy-mm-dd`.
+///
+/// How an all-day event's *date* is recovered from the instant the store holds
+/// for it — and lossless for exactly one reason: the store holds midnight in
+/// the **calendar's** zone, because Google sends a bare `date` and
+/// `omacal_sync::resolve` falls back to `calendars.timezone`. Read back in that
+/// same zone it returns the date sync put in. Read in any other zone it is a
+/// day out on one side of midnight or the other, which is the defect this plan
+/// exists to close — so no caller may hand it the browser's zone.
+///
+/// An unresolvable timestamp or zone still produces a date rather than
+/// panicking: the Unix epoch, then UTC — the same fallback philosophy used
+/// elsewhere for zone handling (`n_day_boundaries`, `local_midnight_ms` in
+/// `commands.rs`).
+pub(crate) fn date_in_zone(ms: i64, tz: &str) -> String {
+    let ts = jiff::Timestamp::from_millisecond(ms).unwrap_or(jiff::Timestamp::UNIX_EPOCH);
+    ts.in_tz(tz)
+        .unwrap_or_else(|_| ts.in_tz("UTC").expect("UTC always resolves"))
+        .date()
+        .to_string()
+}
+
+/// Where `target` lands after the same movement that takes `from` to `to`,
+/// counted in whole days. All three are `yyyy-mm-dd`.
+///
+/// The date analogue of [`shifted_like`], and far shorter for the reason the
+/// plan exists: a date has no zone and no time of day, so there is no
+/// daylight-saving transition for a movement to drag across and no civil round
+/// trip to lose anything in.
+///
+/// The movement must be a count of **days** and never a count of months: "one
+/// month on", added to a target in a different month, is a different number of
+/// days and would move a series by one to three of them. `jiff`'s default
+/// largest unit for a date difference is already `Day`, so naming
+/// [`jiff::Unit::Day`] changes nothing today and no mutation of it fails a test
+/// — it is here to say what this depends on, and
+/// `a_date_moves_by_the_days_the_user_moved_it` pins the behaviour itself from
+/// the outside, whichever way it is reached.
+///
+/// `shifted_like`'s **first** short circuit is here and is a guarantee rather
+/// than an optimisation, exactly as it is there: nothing moved means the target
+/// does not move. It holds by string equality, before anything is parsed, which
+/// is what makes "an untouched date sends no `start`/`end`" exact rather than
+/// approximate.
+///
+/// Its **second** (`target == from` returns `to` unchanged) is deliberately
+/// absent: it exists there to keep a repeated hour out of a civil round trip,
+/// and `target + (to - from)` is already exactly `to` when `target == from`
+/// with nothing in between that could disagree.
+///
+/// A date that will not parse can only have come from the form, and it falls
+/// through to `to` — the user's own value — rather than to `target`. Both are
+/// wrong; this one is wrong *loudly*, since Google rejects a `date` that is not
+/// one. Falling back to `target` would produce an empty body instead and report
+/// a save that silently did nothing.
+pub(crate) fn shifted_date(target: &str, from: &str, to: &str) -> String {
+    if from == to {
+        return target.to_string();
+    }
+    let parse = |s: &str| s.parse::<jiff::civil::Date>().ok();
+    (|| -> Option<String> {
+        let movement = parse(to)?.since((jiff::Unit::Day, parse(from)?)).ok()?;
+        Some(parse(target)?.checked_add(movement).ok()?.to_string())
+    })()
+    .unwrap_or_else(|| to.to_string())
+}
+
 /// Google's `start` and `end` objects. `tz` is read only by the timed arm.
-#[allow(dead_code)] // wired up in Task 2, which retires `event_time_json`.
 pub(crate) fn when_json(when: &When, tz: &str) -> (Value, Value) {
     match when {
         When::AllDay { start_date, end_date } => (
@@ -102,7 +162,11 @@ pub(crate) fn when_json(when: &When, tz: &str) -> (Value, Value) {
 /// no civil round trip that a repeated hour could shift.
 ///
 /// An unresolvable zone falls back to the plain delta rather than failing, the
-/// same fallback philosophy as [`event_time_json`].
+/// same fallback philosophy as [`date_in_zone`].
+///
+/// This is the *instant* half. An all-day event moves through
+/// [`shifted_date`], where none of the above applies because a date carries no
+/// zone at all.
 pub(crate) fn shifted_like(target_ms: i64, from_ms: i64, to_ms: i64, tz: &str) -> i64 {
     if to_ms == from_ms {
         return target_ms;
@@ -159,23 +223,27 @@ pub(crate) fn changed_fields(before: &EventFields, after: &EventFields) -> Value
     text("description", &before.description, &after.description);
 
     // Times move as a pair. Google rejects a body that redefines one end of
-    // an event without the other when the all-day flag is in play, and half a
-    // move is not a thing a user can mean. `tz` is in this trigger too: it
-    // never appears in the body by itself, but it changes what `dateTime`/
-    // `date` serialize to, so a zone-only edit must still resend both ends.
-    if before.start_ms != after.start_ms
-        || before.end_ms != after.end_ms
-        || before.is_all_day != after.is_all_day
-        || before.tz != after.tz
-    {
-        body.insert(
-            "start".into(),
-            event_time_json(after.start_ms, after.is_all_day, &after.tz),
-        );
-        body.insert(
-            "end".into(),
-            event_time_json(after.end_ms, after.is_all_day, &after.tz),
-        );
+    // an event without the other when the two ends disagree about their value
+    // type, and half a move is not a thing a user can mean.
+    //
+    // **One comparison**, because [`When`] holds both ends and the shape
+    // together. An all-day date compares as a *string*, so a date nobody
+    // touched is equal on both sides with no instant and no zone anywhere near
+    // it — which is the whole reason the type exists. The three fields this
+    // replaced compared instants that the two sides of the boundary had built
+    // from the same date in *different* zones, so they could not be equal, and
+    // a title-only save moved the event a day with `sendUpdates=all`.
+    //
+    // `tz` is in this trigger too: it never appears in the body by itself, but
+    // it changes what a timed `dateTime` serializes to, so a zone-only edit
+    // must still resend both ends. It can say nothing about an all-day event —
+    // `when_json`'s date arm ignores `tz` — and in practice cannot fire alone
+    // for one either, since `events::edit_zone` puts both sides through the
+    // same rule.
+    if before.when != after.when || before.tz != after.tz {
+        let (start, end) = when_json(&after.when, &after.tz);
+        body.insert("start".into(), start);
+        body.insert("end".into(), end);
     }
 
     match &after.recurrence {
@@ -204,13 +272,37 @@ pub(crate) struct EventInput {
     pub summary: Option<String>,
     pub location: Option<String>,
     pub description: Option<String>,
-    pub start_ms: i64,
-    pub end_ms: i64,
-    pub is_all_day: bool,
+    pub when: WhenInput,
     pub tz: String,
     /// Absent when the user did not touch Repeat.
     #[serde(default)]
     pub repeat: Option<String>,
+}
+
+/// [`When`] as the UI sends it. A separate type for the same reason
+/// [`EventInput`] is separate from [`EventFields`]: the wire vocabulary is
+/// `serde`'s business and the domain type's is not. [`When`] deliberately
+/// derives no `Deserialize` at all, so there is exactly one way for a payload
+/// to become one and it goes through [`fields_from_input`].
+///
+/// **Internally tagged, with no `default` and no `untagged` fallback
+/// anywhere.** A payload that names neither shape — or names `allDay` and then
+/// sends instants — fails to deserialize and the command answers with an
+/// error, rather than quietly becoming a timed event at the Unix epoch and
+/// PATCHing it onto somebody's calendar.
+///
+/// Both `rename_all` attributes are load bearing and they do different jobs:
+/// `rename_all` camel-cases the *variant* names (`AllDay` → `allDay`),
+/// `rename_all_fields` the fields inside them (`start_date` → `startDate`).
+/// With only the first, `{"kind":"allDay","startDate":…}` — what the UI
+/// actually sends — does not deserialize at all. `ui/src/lib/eventdetail.ts`
+/// mirrors this shape, and `the_payload_the_ui_sends_deserializes_as_written`
+/// pins the exact strings on this side of it.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+pub(crate) enum WhenInput {
+    Timed { start_ms: i64, end_ms: i64 },
+    AllDay { start_date: String, end_date: String },
 }
 
 /// `"never"` maps to `Some(None)` — clear the rule — because [`rrule_for`]
@@ -221,9 +313,12 @@ pub(crate) fn fields_from_input(input: EventInput) -> EventFields {
         summary: input.summary,
         location: input.location,
         description: input.description,
-        start_ms: input.start_ms,
-        end_ms: input.end_ms,
-        is_all_day: input.is_all_day,
+        when: match input.when {
+            WhenInput::Timed { start_ms, end_ms } => When::Timed { start_ms, end_ms },
+            WhenInput::AllDay { start_date, end_date } => {
+                When::AllDay { start_date, end_date }
+            }
+        },
         tz: input.tz,
         recurrence: input.repeat.map(|r| rrule_for(&r)),
     }
@@ -405,12 +500,57 @@ mod tests {
             summary: Some("Standup".into()),
             location: None,
             description: None,
-            start_ms: 1_785_398_400_000,
-            end_ms: 1_785_400_200_000,
-            is_all_day: false,
+            when: When::Timed { start_ms: 1_785_398_400_000, end_ms: 1_785_400_200_000 },
             tz: "Europe/Sofia".into(),
             recurrence: None,
         }
+    }
+
+    /// [`base`] as an all-day event on `start`..`end` — `end` **exclusive**,
+    /// the day after the last one, as everywhere else. The `tz` it inherits is
+    /// deliberately left in place: an all-day event has no zone, and every
+    /// assertion below that passes while one is present is one more thing
+    /// proving the date never consults it.
+    fn all_day_fields(start: &str, end: &str) -> EventFields {
+        EventFields {
+            when: When::AllDay { start_date: start.into(), end_date: end.into() },
+            ..base()
+        }
+    }
+
+    /// The property the whole plan exists for: an all-day date that nobody
+    /// edited compares equal on both sides, so no `start`/`end` is sent at all.
+    ///
+    /// Under the old shape the two sides held *instants* built from that same
+    /// date in different zones — the store's calendar zone and the form's
+    /// browser zone — so they could not compare equal, and a title-only save
+    /// moved the event a day with `sendUpdates=all`.
+    #[test]
+    fn an_untouched_all_day_date_produces_an_empty_body() {
+        let before = all_day_fields("2026-08-10", "2026-08-11");
+        let after = all_day_fields("2026-08-10", "2026-08-11");
+        assert_eq!(changed_fields(&before, &after), serde_json::json!({}));
+    }
+
+    #[test]
+    fn a_changed_all_day_date_sends_both_dates() {
+        let before = all_day_fields("2026-08-10", "2026-08-11");
+        let after = all_day_fields("2026-08-12", "2026-08-13");
+        let body = changed_fields(&before, &after);
+        assert_eq!(body["start"], serde_json::json!({ "date": "2026-08-12" }));
+        assert_eq!(body["end"], serde_json::json!({ "date": "2026-08-13" }));
+    }
+
+    /// Switching an event between all-day and timed is a real change even when
+    /// the day is the same, and the two variants can never compare equal.
+    #[test]
+    fn changing_between_all_day_and_timed_always_sends_times() {
+        let before = all_day_fields("2026-08-10", "2026-08-11");
+        let mut after = before.clone();
+        after.when = When::Timed { start_ms: 1_785_398_400_000, end_ms: 1_785_402_000_000 };
+        let body = changed_fields(&before, &after);
+        assert!(body.get("start").is_some(), "body was {body}");
+        assert!(body["start"]["dateTime"].is_string());
     }
 
     /// The property the whole module exists for. A fortnightly meeting whose
@@ -447,7 +587,7 @@ mod tests {
     #[test]
     fn moving_either_end_sends_both_times() {
         let mut after = base();
-        after.end_ms += 900_000;
+        after.when = When::Timed { start_ms: 1_785_398_400_000, end_ms: 1_785_401_100_000 };
         let body = changed_fields(&base(), &after);
         assert!(body.get("start").is_some(), "body was {body}");
         assert!(body.get("end").is_some(), "body was {body}");
@@ -474,9 +614,9 @@ mod tests {
         assert!(body["recurrence"].is_null());
     }
 
-    /// A zone-only edit (same wall-clock times, different tz) still changes
-    /// what `dateTime`/`date` serialize to, so it must not be dropped just
-    /// because `start_ms`/`end_ms`/`is_all_day` are unchanged.
+    /// A zone-only edit (same wall clock, different `tz`) still changes what a
+    /// timed `dateTime` serializes to, so it must not be dropped just because
+    /// `when` is unchanged.
     #[test]
     fn a_timezone_only_change_still_sends_both_times() {
         let mut after = base();
@@ -487,30 +627,68 @@ mod tests {
         assert_eq!(body["start"]["timeZone"], "America/New_York");
     }
 
+    /// The instant→date derivation reads the zone it is handed, and that is
+    /// the whole of what makes the store's row and the body it produces agree:
+    /// the row holds midnight in the *calendar's* zone, so only that zone
+    /// returns the date sync put in. The two zones here are seven hours apart
+    /// in August, either side of the instant.
     #[test]
-    fn a_timed_event_sends_datetime_and_zone() {
-        let v = event_time_json(1_785_398_400_000, false, "Europe/Sofia");
-        assert!(v["dateTime"].is_string());
-        assert_eq!(v["timeZone"], "Europe/Sofia");
-        assert!(v.get("date").is_none());
-    }
-
-    /// All-day events use `date`, never `dateTime` — Google rejects the mix.
-    #[test]
-    fn an_all_day_event_sends_a_bare_date() {
-        let v = event_time_json(1_785_398_400_000, true, "Europe/Sofia");
-        assert!(v["date"].is_string());
-        assert_eq!(v["date"].as_str().unwrap().len(), 10);
-        assert!(v.get("dateTime").is_none());
+    fn a_date_is_read_in_the_zone_it_is_asked_for() {
+        // 2026-08-10T22:00:00-04:00 — still the 10th in New York, already the
+        // 11th in Sofia.
+        let ms = "2026-08-10T22:00:00[America/New_York]"
+            .parse::<jiff::Zoned>()
+            .unwrap()
+            .timestamp()
+            .as_millisecond();
+        assert_eq!(date_in_zone(ms, "America/New_York"), "2026-08-10");
+        assert_eq!(date_in_zone(ms, "Europe/Sofia"), "2026-08-11");
     }
 
     /// An unresolvable zone must fall back to UTC rather than panic — the
-    /// simplified fallback chain in `event_time_json` still has to hold this.
+    /// fallback chain in `date_in_zone` still has to hold this.
     #[test]
     fn an_unknown_timezone_falls_back_to_a_date_instead_of_panicking() {
-        let v = event_time_json(1_785_398_400_000, true, "Not/AZone");
-        assert!(v["date"].is_string());
-        assert_eq!(v["date"].as_str().unwrap().len(), 10);
+        let d = date_in_zone(1_785_398_400_000, "Not/AZone");
+        assert_eq!(d.len(), 10, "got {d}");
+        assert_eq!(d, date_in_zone(1_785_398_400_000, "UTC"));
+    }
+
+    /// A date movement is whole days and nothing else, so a series master
+    /// months away from the occurrence the user clicked moves by exactly what
+    /// they did. `shifted_like`'s daylight-saving hazard has no analogue here —
+    /// there is no zone to have a transition in.
+    #[test]
+    fn a_date_moves_by_the_days_the_user_moved_it() {
+        // Forwards, backwards, and across both a month and a year boundary.
+        assert_eq!(shifted_date("2026-01-05", "2026-08-10", "2026-08-11"), "2026-01-06");
+        assert_eq!(shifted_date("2026-01-05", "2026-08-10", "2026-08-09"), "2026-01-04");
+        assert_eq!(shifted_date("2026-01-31", "2026-08-10", "2026-08-11"), "2026-02-01");
+        assert_eq!(shifted_date("2025-12-31", "2026-08-10", "2026-08-11"), "2026-01-01");
+        // A movement of a calendar month is *days*, not "the same day next
+        // month": 31 days from 10 August, applied to a target in February,
+        // must be 31 days there too.
+        assert_eq!(shifted_date("2026-02-01", "2026-08-10", "2026-09-10"), "2026-03-04");
+    }
+
+    /// The short circuit, which is a guarantee: nothing moved moves nothing,
+    /// and it holds before anything is parsed. This is what makes "an untouched
+    /// date sends no `start`/`end`" exact.
+    #[test]
+    fn a_date_that_did_not_move_moves_nothing() {
+        assert_eq!(shifted_date("2026-01-05", "2026-08-10", "2026-08-10"), "2026-01-05");
+        // Even for input no parser would accept — the target is returned
+        // untouched rather than the comparison failing open.
+        assert_eq!(shifted_date("2026-01-05", "not a date", "not a date"), "2026-01-05");
+    }
+
+    /// A date that will not parse belongs to the form, and it is passed
+    /// through rather than swallowed: Google rejects it and the user is told.
+    /// Returning the target instead would build an empty body and report a save
+    /// that did nothing.
+    #[test]
+    fn an_unparseable_date_is_sent_on_rather_than_silently_dropped() {
+        assert_eq!(shifted_date("2026-01-05", "2026-08-10", "not a date"), "not a date");
     }
 
     #[test]
@@ -571,13 +749,19 @@ mod tests {
         );
     }
 
-    /// The same shift, on an all-day event, where the damage is worse: 23
-    /// hours from midnight is 23:00 the same day, so `event_time_json` renders
-    /// the *original* date and the user's move vanishes — while the body still
-    /// differs in milliseconds, so a PATCH goes out and every guest is told
-    /// about a change that did not happen.
+    /// The same shift measured from midnight, where a plain delta is worse
+    /// than untidy: 23 hours from midnight is 23:00 the *same* day, so the date
+    /// derived from it is the one the event already had and the move vanishes.
+    ///
+    /// **Still a live path, in a place worth naming.** An all-day event's own
+    /// dates no longer travel through `shifted_like` — they go through
+    /// [`shifted_date`], which has no zone to have a transition in. But
+    /// `events::edit_patch_body` derives the clicked occurrence's *end* with
+    /// `shifted_like`, from a pair of midnights, and then reads a date off it
+    /// with [`date_in_zone`]. A millisecond delta there lands at 23:00 the
+    /// previous day and the whole comparison shifts by one.
     #[test]
-    fn an_all_day_shift_across_a_transition_lands_on_the_next_date_not_the_same_one() {
+    fn a_shift_across_a_transition_lands_on_the_next_date_not_the_same_one() {
         let master = ny("2026-02-07T00:00:00");
         let occurrence = ny("2026-03-08T00:00:00");
         let moved = ny("2026-03-09T00:00:00");
@@ -585,9 +769,10 @@ mod tests {
         let shifted = shifted_like(master, occurrence, moved, "America/New_York");
         assert_eq!(shifted, ny("2026-02-08T00:00:00"));
         assert_eq!(
-            event_time_json(shifted, true, "America/New_York")["date"],
+            date_in_zone(shifted, "America/New_York"),
             "2026-02-08",
-            "the move was dropped: the body would re-send the date the event already has"
+            "the move was dropped: the date derived from this instant is the one the \
+             event already has"
         );
     }
 
@@ -626,7 +811,7 @@ mod tests {
     }
 
     /// An unresolvable zone must not panic or swallow the movement; it falls
-    /// back to the plain delta, exactly as `event_time_json` falls back to UTC.
+    /// back to the plain delta, exactly as `date_in_zone` falls back to UTC.
     #[test]
     fn an_unknown_timezone_falls_back_to_the_plain_delta() {
         assert_eq!(shifted_like(1_000, 5_000, 8_000, "Not/AZone"), 4_000);
@@ -637,9 +822,10 @@ mod tests {
             summary: Some("Standup".into()),
             location: None,
             description: None,
-            start_ms: 1_785_398_400_000,
-            end_ms: 1_785_400_200_000,
-            is_all_day: false,
+            when: WhenInput::Timed {
+                start_ms: 1_785_398_400_000,
+                end_ms: 1_785_400_200_000,
+            },
             tz: "Europe/Sofia".into(),
             repeat: None,
         }
@@ -767,7 +953,7 @@ mod tests {
     }
 
     /// The all-day date is read in the zone it is *stored* against, the same
-    /// one `event_time_json` renders the `start` of the very same write in.
+    /// one [`date_in_zone`] derives the `start` of the very same write from.
     /// Reading it in UTC instead is a day out for every zone whose midnight
     /// falls on the other side of it — `Pacific/Auckland` (UTC+12) is midday
     /// the *previous* day in UTC, so the series would keep an occurrence the
@@ -841,5 +1027,67 @@ mod tests {
             fields_from_input(input).recurrence,
             Some(Some("RRULE:FREQ=WEEKLY".into()))
         );
+    }
+
+    /// The exact JSON `ui/src/lib/eventdetail.ts` sends, written out as a
+    /// string rather than built from the type — so this fails if either
+    /// `rename_all` attribute is dropped, which is the whole failure mode worth
+    /// pinning. `rename_all` alone leaves the fields snake_case and the all-day
+    /// payload below stops deserializing; `rename_all_fields` alone leaves the
+    /// variants `Timed`/`AllDay` and neither does.
+    ///
+    /// Both arms, because the two names differ in different places.
+    #[test]
+    fn the_payload_the_ui_sends_deserializes_as_written() {
+        let timed: EventInput = serde_json::from_str(
+            r#"{"summary":"Standup","location":null,"description":null,
+                "when":{"kind":"timed","startMs":1785398400000,"endMs":1785400200000},
+                "tz":"Europe/Sofia"}"#,
+        )
+        .expect("the timed payload the UI sends must deserialize");
+        assert_eq!(
+            fields_from_input(timed).when,
+            When::Timed { start_ms: 1_785_398_400_000, end_ms: 1_785_400_200_000 }
+        );
+
+        let all_day: EventInput = serde_json::from_str(
+            r#"{"summary":"Berlin trip","location":null,"description":null,
+                "when":{"kind":"allDay","startDate":"2026-08-10","endDate":"2026-08-11"},
+                "tz":"Europe/Sofia"}"#,
+        )
+        .expect("the all-day payload the UI sends must deserialize");
+        assert_eq!(
+            fields_from_input(all_day).when,
+            When::AllDay { start_date: "2026-08-10".into(), end_date: "2026-08-11".into() }
+        );
+    }
+
+    /// The reason `when` is tagged and carries no `default` anywhere: a payload
+    /// that does not say which shape it is, or says one and sends the other,
+    /// must fail loudly at the boundary. Defaulting would make it a timed event
+    /// at the Unix epoch and PATCH that onto somebody's calendar with
+    /// `sendUpdates=all`.
+    #[test]
+    fn a_payload_that_names_no_shape_or_the_wrong_one_is_refused() {
+        let cases = [
+            // No `kind` at all — the shape the old `EventInput` accepted.
+            r#"{"summary":null,"location":null,"description":null,
+                "when":{"startMs":1785398400000,"endMs":1785400200000},"tz":"UTC"}"#,
+            // A `kind` nothing implements.
+            r#"{"summary":null,"location":null,"description":null,
+                "when":{"kind":"floating","startMs":1,"endMs":2},"tz":"UTC"}"#,
+            // `allDay`, with a timed payload underneath it.
+            r#"{"summary":null,"location":null,"description":null,
+                "when":{"kind":"allDay","startMs":1785398400000,"endMs":1785400200000},
+                "tz":"UTC"}"#,
+            // `when` missing entirely.
+            r#"{"summary":null,"location":null,"description":null,"tz":"UTC"}"#,
+        ];
+        for case in cases {
+            assert!(
+                serde_json::from_str::<EventInput>(case).is_err(),
+                "this deserialized instead of failing: {case}"
+            );
+        }
     }
 }

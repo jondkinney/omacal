@@ -887,7 +887,10 @@ const TRIP_END_EXCLUSIVE = TRIP_START + 3 * 24 * H;
 /** The last day a person would name: Wednesday 12 Aug. */
 export const TRIP_LAST_DAY = '2026-08-12';
 export const TRIP_FIRST_DAY = '2026-08-10';
-export const TRIP_END_MS = TRIP_END_EXCLUSIVE;
+/** The same exclusive end as `TRIP_END_EXCLUSIVE`, named as the date it is —
+ *  which is what an all-day `EventInput` now carries. Thursday, one day past
+ *  the last one a person would name. */
+export const TRIP_END_DATE = '2026-08-13';
 
 // --- App-level create, edit and delete ------------------------------------
 //

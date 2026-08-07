@@ -338,18 +338,40 @@ export const endAfterStart = (value: EventFormValue): boolean => {
  * titled with an empty string rather than untitled.
  */
 export function toEventInput(value: EventFormValue, initial: EventFormValue): EventInput {
-  const [startMs, endMs] = instantsOf(value);
   const blank = (s: string) => (s.trim() === '' ? null : s);
   return {
     summary: blank(value.title),
     location: blank(value.location),
     description: blank(value.description),
-    startMs,
-    endMs,
-    isAllDay: value.isAllDay,
+    when: whenOf(value),
     tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
     ...(value.repeat === initial.repeat ? {} : { repeat: value.repeat }),
   };
+}
+
+/**
+ * The `WhenInput` a value names.
+ *
+ * **The all-day arm is still the old, lossy conversion, deliberately.** It
+ * takes the dates back off the instants `instantsOf` built from them, in the
+ * browser's zone, which is precisely the round trip the plan exists to remove —
+ * and precisely what the Rust side used to do at the far end of the wire. Only
+ * the *shape* moved here; the values are the ones this file has always sent, so
+ * the defect stays exactly where it was and stays pinned by the specs that name
+ * it.
+ *
+ * The cure is one task away and is a whole change of its own: `value.date` and
+ * `value.endDate` go straight out as `startDate`/`endDate`, with the
+ * inclusive→exclusive conversion done once through `addDays` and no instant
+ * anywhere. It needs `EventDetail` to carry the calendar's own dates first,
+ * which it does not yet.
+ */
+function whenOf(value: EventFormValue): EventInput['when'] {
+  const [startMs, endMs] = instantsOf(value);
+  if (value.isAllDay) {
+    return { kind: 'allDay', startDate: dateOf(startMs), endDate: dateOf(endMs) };
+  }
+  return { kind: 'timed', startMs, endMs };
 }
 
 // --- Showing an RRULE in words -------------------------------------------

@@ -639,7 +639,7 @@ async fn create_impl(
 /// `cal_tz` is the *calendar's own* stored timezone (`calendars.timezone`,
 /// via `calendar_for_write`), deliberately not `fields.tz` — the zone the
 /// event happens to be authored in. For a timed event the two never diverge
-/// in practice: `event_time_json` sends `dateTime` with an explicit offset,
+/// in practice: `when_json` sends `dateTime` with an explicit offset,
 /// `resolve` (in `omacal-sync`) parses that offset directly and never
 /// consults `cal_tz` at all. An all-day event is the case that makes them
 /// diverge: Google's wire format for `start`/`end` there is a bare `date`
@@ -648,6 +648,12 @@ async fn create_impl(
 /// all-day row on this calendar against `calendars.timezone`. Passing
 /// `fields.tz` here instead would store this one row at a different instant
 /// than the very next sync recomputes it at, until sync corrects it.
+///
+/// `fields.tz` is still handed to `when_json`, and for an all-day create it is
+/// now inert rather than merely unused: [`crate::write::When::AllDay`] carries
+/// the date the user picked and `when_json`'s date arm never looks at a zone.
+/// The date that goes out is the date the form sent, and `cal_tz` alone decides
+/// which instant it is stored at.
 ///
 /// Returns the local row id rather than an `EventDetail`: reading the
 /// freshly-written row back needs the `AppState` [`event_detail_impl`] takes,
@@ -662,10 +668,8 @@ async fn create_via_client(
     client: &omacal_google::CalendarClient,
 ) -> anyhow::Result<i64> {
     let f = &fields;
-    let mut body = serde_json::json!({
-        "start": crate::write::event_time_json(f.start_ms, f.is_all_day, &f.tz),
-        "end":   crate::write::event_time_json(f.end_ms,   f.is_all_day, &f.tz),
-    });
+    let (start, end) = crate::write::when_json(&f.when, &f.tz);
+    let mut body = serde_json::json!({ "start": start, "end": end });
     if let Some(s) = &f.summary     { body["summary"]     = s.clone().into(); }
     if let Some(s) = &f.location    { body["location"]    = s.clone().into(); }
     if let Some(s) = &f.description { body["description"] = s.clone().into(); }
@@ -775,22 +779,22 @@ pub(crate) fn edit_patch_body(
     cal_tz: &str,
     after: &crate::write::EventFields,
 ) -> serde_json::Value {
+    // The zone the *movement* is read in, and the one the before side is
+    // described in: the event as it stands, not as the form would leave it. A
+    // user toggling all-day is already resending both ends anyway, since the
+    // two `When` variants can never compare equal.
+    let zone = edit_zone(ev.is_all_day, cal_tz, &ev.start_tz);
+
     let before = crate::write::EventFields {
         summary: ev.summary.clone(),
         location: ev.location.clone(),
         description: ev.description.clone(),
-        start_ms: target_start_ms,
-        end_ms: target_end_ms,
-        is_all_day: ev.is_all_day,
-        tz: edit_zone(ev.is_all_day, cal_tz, &ev.start_tz).to_string(),
+        when: when_of(ev.is_all_day, target_start_ms, target_end_ms, zone),
+        tz: zone.to_string(),
         // `None`, always — `changed_fields` never reads this side. See above.
         recurrence: None,
     };
 
-    // The zone the *movement* is read in: the event as it stands, not as the
-    // form would leave it. A user toggling all-day is already resending both
-    // ends anyway, since `is_all_day` is in `changed_fields`' times trigger.
-    let zone = edit_zone(ev.is_all_day, cal_tz, &ev.start_tz);
     let anchor = if is_recurring(&ev.recurrence, &ev.recurring_event_id) {
         occurrence_start_ms
     } else {
@@ -798,13 +802,101 @@ pub(crate) fn edit_patch_body(
     };
     let anchor_end = crate::write::shifted_like(anchor, target_start_ms, target_end_ms, zone);
     let after = crate::write::EventFields {
-        start_ms: crate::write::shifted_like(target_start_ms, anchor, after.start_ms, zone),
-        end_ms: crate::write::shifted_like(target_end_ms, anchor_end, after.end_ms, zone),
-        tz: edit_zone(after.is_all_day, cal_tz, &ev.start_tz).to_string(),
+        when: shifted_when(
+            &after.when,
+            target_start_ms,
+            target_end_ms,
+            anchor,
+            anchor_end,
+            zone,
+        ),
+        tz: edit_zone(after.when.is_all_day(), cal_tz, &ev.start_tz).to_string(),
         ..after.clone()
     };
 
     crate::write::changed_fields(&before, &after)
+}
+
+/// The resource being patched, as a [`crate::write::When`].
+///
+/// An all-day row is described by the **date** it falls on rather than the
+/// instant the store holds, and that derivation is lossless for one reason
+/// only: `zone` here is [`edit_zone`]'s answer, which for an all-day event is
+/// the *calendar's* zone — the same one `omacal_sync::resolve` built the
+/// instant with. Read in any other zone the date comes back a day out on one
+/// side of midnight, which is the whole defect this plan closes.
+fn when_of(is_all_day: bool, start_ms: i64, end_ms: i64, zone: &str) -> crate::write::When {
+    if is_all_day {
+        crate::write::When::AllDay {
+            start_date: crate::write::date_in_zone(start_ms, zone),
+            end_date: crate::write::date_in_zone(end_ms, zone),
+        }
+    } else {
+        crate::write::When::Timed { start_ms, end_ms }
+    }
+}
+
+/// The form's `when`, re-expressed in the target resource's own coordinates.
+///
+/// This is Plan 5's anchoring rule, and it is the reason a title-only save on a
+/// series sends no times at all: what reaches the target is the *movement* the
+/// user made, applied to the target's own start and end — never the form's
+/// values verbatim. Sent verbatim to a series master anchored months earlier,
+/// they would drag its DTSTART onto the clicked occurrence's date and drop
+/// every occurrence before it. See [`edit_patch_body`]'s doc comment for the
+/// anchor's own provenance and why it must survive the 412 retry unchanged.
+///
+/// Both arms measure the same movement; only the units differ, and the
+/// difference is the point of this plan.
+///
+/// * **Timed** — instants, through [`crate::write::shifted_like`], which
+///   measures the movement *civilly* so a daylight-saving transition between
+///   the anchor and the target cannot turn a day into 23 hours.
+/// * **All-day** — dates, through [`crate::write::shifted_date`], which is
+///   whole days and no zone at all. `zone` reaches this arm only to name the
+///   dates the target and the anchor already sit on, never to build one.
+///
+/// The arm is chosen by the **form's** variant, not the row's, so the two
+/// mixed cases fall out rather than needing a case of their own: turning
+/// all-day off leaves a real pair of instants to shift, and turning it on
+/// shifts the dates those instants fall on. Either way the variant differs
+/// from the before side, so both ends are resent — which is correct, since the
+/// event is being redefined.
+///
+/// One residual, worth stating rather than discovering. For a *timed* row the
+/// form's date is still the browser's reading of the row's instant, so toggling
+/// all-day on from a zone east or west of the event's own can name the
+/// neighbouring day. That is the display half of the same boundary, closed for
+/// all-day rows by this plan's later tasks and out of scope for timed ones —
+/// §3 of the design keeps instants for those deliberately. It is bounded: the
+/// result is still a shift relative to the anchor, so a series' start can move
+/// by a day but can never land on the clicked occurrence.
+fn shifted_when(
+    form: &crate::write::When,
+    target_start_ms: i64,
+    target_end_ms: i64,
+    anchor: i64,
+    anchor_end: i64,
+    zone: &str,
+) -> crate::write::When {
+    match form {
+        crate::write::When::Timed { start_ms, end_ms } => crate::write::When::Timed {
+            start_ms: crate::write::shifted_like(target_start_ms, anchor, *start_ms, zone),
+            end_ms: crate::write::shifted_like(target_end_ms, anchor_end, *end_ms, zone),
+        },
+        crate::write::When::AllDay { start_date, end_date } => crate::write::When::AllDay {
+            start_date: crate::write::shifted_date(
+                &crate::write::date_in_zone(target_start_ms, zone),
+                &crate::write::date_in_zone(anchor, zone),
+                start_date,
+            ),
+            end_date: crate::write::shifted_date(
+                &crate::write::date_in_zone(target_end_ms, zone),
+                &crate::write::date_in_zone(anchor_end, zone),
+                end_date,
+            ),
+        },
+    }
 }
 
 /// One wire event as a store row, through the same mapping every sync uses.
@@ -1340,11 +1432,9 @@ async fn split_series(
     }
 
     // ---- 1. The tail. -----------------------------------------------------
-    let zone = edit_zone(after.is_all_day, cal_tz, &ev.start_tz);
-    let mut body = serde_json::json!({
-        "start": crate::write::event_time_json(after.start_ms, after.is_all_day, zone),
-        "end":   crate::write::event_time_json(after.end_ms,   after.is_all_day, zone),
-    });
+    let zone = edit_zone(after.when.is_all_day(), cal_tz, &ev.start_tz);
+    let (start, end) = crate::write::when_json(&after.when, zone);
+    let mut body = serde_json::json!({ "start": start, "end": end });
     if let Some(s) = &after.summary     { body["summary"]     = s.clone().into(); }
     if let Some(s) = &after.location    { body["location"]    = s.clone().into(); }
     if let Some(s) = &after.description { body["description"] = s.clone().into(); }
@@ -1379,10 +1469,10 @@ async fn split_series(
     // is the one that has a plausible-looking wrong answer sitting next to it.
     // RFC 5545 requires `UNTIL` to carry the same value type as the `DTSTART`
     // of the rule it belongs to, and this body is `recurrence` alone — the
-    // master keeps whatever `start` it already had. The tail's flag
-    // (`after.is_all_day`, twenty lines up) is a different event's, and the two
+    // master keeps whatever `start` it already had. The tail's shape
+    // (`after.when`, twenty lines up) is a different event's, and the two
     // genuinely diverge: splitting an all-day series into a timed remainder is
-    // an ordinary thing for a user to do, and taking the tail's flag there
+    // an ordinary thing for a user to do, and taking the tail's shape there
     // writes a date-time `UNTIL` onto a series whose `DTSTART` is a bare date.
     //
     // The zone is inert and is passed for shape only: `edit_zone`'s all-day arm
@@ -2902,12 +2992,25 @@ mod tests {
             summary: Some("Lunch".into()),
             location: None,
             description: None,
-            start_ms: 1_786_442_400_000,
-            end_ms: 1_786_446_000_000,
-            is_all_day: false,
+            when: crate::write::When::Timed {
+                start_ms: 1_786_442_400_000,
+                end_ms: 1_786_446_000_000,
+            },
             tz: "Europe/Sofia".into(),
             recurrence: Some(Some("RRULE:FREQ=WEEKLY".into())),
         }
+    }
+
+    /// The `start` and `end` a timed pair renders to, through the very
+    /// function the request builders use.
+    ///
+    /// Built rather than written out, deliberately: an expectation spelling
+    /// `{"dateTime": …, "timeZone": …}` by hand is a second copy of the wire
+    /// format, and the two would drift. Going through `when_json` means a
+    /// change to the shape moves every expectation with it — while still
+    /// binding the *values*, which is what these tests are actually about.
+    fn timed_json(start_ms: i64, end_ms: i64, tz: &str) -> (serde_json::Value, serde_json::Value) {
+        crate::write::when_json(&crate::write::When::Timed { start_ms, end_ms }, tz)
     }
 
     /// Demo mode must reach neither Google nor the real database. Same guard
@@ -2959,9 +3062,10 @@ mod tests {
     #[tokio::test]
     async fn a_created_event_is_stored_locally() {
         let fields = sample_fields();
+        let (start, end) = crate::write::when_json(&fields.when, &fields.tz);
         let expected_body = serde_json::json!({
-            "start": crate::write::event_time_json(fields.start_ms, fields.is_all_day, &fields.tz),
-            "end":   crate::write::event_time_json(fields.end_ms,   fields.is_all_day, &fields.tz),
+            "start": start,
+            "end":   end,
             "summary": "Lunch",
             "recurrence": ["RRULE:FREQ=WEEKLY"],
         });
@@ -3005,11 +3109,22 @@ mod tests {
     async fn an_all_day_create_resolves_against_the_calendars_own_timezone_not_the_authoring_one() {
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("POST"))
+            // The other half of the same property, and only bindable since the
+            // form began sending dates: the body carries the date the user
+            // picked, with no `timeZone` and no trace of the authoring zone.
+            // Without this the test could only ever speak for `to_stored`.
+            .and(wiremock::matchers::body_json(serde_json::json!({
+                "start": {"date": "2026-08-10"},
+                "end":   {"date": "2026-08-11"},
+                "summary": "Lunch",
+                "recurrence": ["RRULE:FREQ=WEEKLY"],
+            })))
             .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "id": "g-allday", "status": "confirmed", "etag": "\"e1\"",
                 "start": {"date": "2026-08-10"},
                 "end":   {"date": "2026-08-11"}
             })))
+            .expect(1)
             .mount(&server)
             .await;
 
@@ -3018,7 +3133,10 @@ mod tests {
         let client = omacal_google::CalendarClient::new(server.uri(), "tok");
 
         let mut fields = sample_fields();
-        fields.is_all_day = true;
+        fields.when = crate::write::When::AllDay {
+            start_date: "2026-08-10".into(),
+            end_date: "2026-08-11".into(),
+        };
         fields.tz = "America/New_York".into(); // the authoring zone — must be ignored
 
         let id = create_via_client(&pool, cal, "cal@x.com", "Pacific/Auckland", fields, &client)
@@ -3131,11 +3249,27 @@ mod tests {
             summary: Some(summary.into()),
             location: None,
             description: None,
-            start_ms,
-            end_ms,
-            is_all_day: false,
+            when: crate::write::When::Timed { start_ms, end_ms },
             tz: "Europe/Sofia".into(),
             recurrence: None,
+        }
+    }
+
+    /// [`form`]'s all-day sibling: the dates the form now sends instead of a
+    /// pair of instants. `end` is **exclusive**, the day after the last one, as
+    /// on the wire and in the store.
+    ///
+    /// It keeps `form`'s `tz` — the machine's, not the calendar's — on purpose.
+    /// An all-day event has no zone, and every assertion that passes with a
+    /// foreign one sitting here is one more thing proving the dates never
+    /// consult it.
+    fn all_day_form(summary: &str, start: &str, end: &str) -> crate::write::EventFields {
+        crate::write::EventFields {
+            when: crate::write::When::AllDay {
+                start_date: start.into(),
+                end_date: end.into(),
+            },
+            ..form(summary, 0, 0)
         }
     }
 
@@ -3507,10 +3641,8 @@ mod tests {
         // from it fails here too.
         let (pool, _id) = seeded_pool_on_cal(&mut ev, "Pacific/Auckland").await;
 
-        let expected = serde_json::json!({
-            "start": crate::write::event_time_json(DTSTART + HOUR, false, "America/New_York"),
-            "end":   crate::write::event_time_json(DTSTART + 2 * HOUR, false, "America/New_York"),
-        });
+        let (start, end) = timed_json(DTSTART + HOUR, DTSTART + 2 * HOUR, "America/New_York");
+        let expected = serde_json::json!({ "start": start, "end": end });
 
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("PATCH"))
@@ -3670,133 +3802,198 @@ mod tests {
             .as_millisecond()
     }
 
-    /// **A defect, pinned rather than fixed. The assertions below are the
-    /// WRONG answer, and each says what the right one is.** Do not "make this
-    /// pass" — it already passes. Fixing the defect must change these
-    /// expectations, deliberately, which is the whole reason it is written
-    /// this way round.
+    /// One all-day row, for the tests either side of the boundary. Stored the
+    /// way sync stores one: midnight in the **calendar's** zone, because Google
+    /// returns a bare `date` and `omacal_sync::resolve` falls back to
+    /// `calendars.timezone`.
+    fn all_day_row(start: &str, end: &str, cal_tz: &str) -> omacal_store::StoredEvent {
+        let mut ev = stored(vec![]);
+        ev.google_id = "allday1".into();
+        ev.summary = Some("Berlin trip".into());
+        ev.is_all_day = true;
+        ev.start_utc = midnight_in(start, cal_tz);
+        ev.end_utc = midnight_in(end, cal_tz);
+        ev
+    }
+
+    /// **The defect this plan closes, now asserted the right way round.** It
+    /// was pinned here for eight tasks as
+    /// `bug_an_untouched_all_day_date_moves_a_day_when_the_calendar_zone_is_not_the_browsers`,
+    /// asserting `2026-08-09` on purpose and naming `2026-08-10` as correct at
+    /// every line. Those expectations are inverted below, deliberately, which
+    /// is the whole reason it was written that way round.
     ///
-    /// **What happens:** an all-day event, saved with only its title changed,
-    /// moves a day and mails every guest (`sendUpdates=all`).
+    /// **What used to happen:** an all-day event, saved with only its title
+    /// changed, moved a day and mailed every guest (`sendUpdates=all`).
     ///
     /// **Why.** An all-day event has no instant — it has a *date*. Both sides
-    /// of this boundary turn that date into an instant, and they use different
-    /// zones to do it:
+    /// of this boundary turned that date into an instant, in different zones:
+    /// the store held midnight in the *calendar's*, the form built midnight in
+    /// the *browser's*. A date nobody touched came back as a different instant,
+    /// the times trigger fired, and the instant was rendered back to a `date`
+    /// in [`edit_zone`]'s zone — the calendar's — landing a day before.
     ///
-    /// * The **store** holds midnight in the *calendar's* zone. That is not
-    ///   incidental: Google returns an all-day `start` as a bare `date` with
-    ///   no zone, so `omacal_sync::resolve` falls back to `calendars.timezone`,
-    ///   and [`create_via_client`] writes against the same zone on purpose so
-    ///   the row it stores is the one the next sync recomputes.
-    /// * The **form** builds midnight in the *browser's* zone, because
-    ///   `eventform.ts` has nothing else to build it in — the whole UI reads
-    ///   instants through `new Date(ms)`, and `CalendarRow` does not carry
-    ///   `calendars.timezone` to the UI at all.
+    /// **What closes it** is that the form no longer sends an instant at all.
+    /// `EventInput` carries a `date` for an all-day event, which is Google's
+    /// own model, and `crate::write::When` makes the old triple
+    /// unrepresentable: there is no zone on the all-day arm to convert in, and
+    /// nothing to convert. The two sides now compare *strings*.
     ///
-    /// So a date that nobody touched comes back as a different instant, and
-    /// the two-line consequence is in `changed_fields` and `event_time_json`:
-    /// the times trigger fires because the instants differ, and the instant is
-    /// then rendered back to a `date` in [`edit_zone`]'s zone — the calendar's
-    /// — which lands on the day before.
-    ///
-    /// **Not caused by Task 9, but first reachable through it.** `edit_zone`
-    /// and the instant-only `EventInput` predate the form; nothing could send
-    /// an all-day edit until there was something to send it from. The suite
-    /// could not have caught it either: Playwright runs at `timezoneId: 'UTC'`
-    /// and every Rust fixture before this one used `"UTC"` for both zones, so
-    /// the two coordinate systems coincided everywhere.
-    ///
-    /// **Where the boundary belongs** — for whoever fixes it. `EventInput`
-    /// should carry a *date* for an all-day event rather than an instant, so
-    /// that no zone conversion happens on this path at all; that is Google's
-    /// own model, and it is the only version where the round trip cannot lose.
-    /// The narrower alternative is to expose `calendars.timezone` to the UI so
-    /// the form builds its all-day instants in the same zone the store does.
-    /// Both hold Task 5's line that an all-day write uses the calendar's zone;
-    /// only the first also fixes the *display* half, where a browser zone west
-    /// of the calendar's already renders the wrong day before anybody saves.
+    /// The browser's zone is still here, on `after.tz`, and is exactly the
+    /// point: it differs from the calendar's by seven hours in August, and the
+    /// body must come out the same as if it did not exist. `edit_patch_body`
+    /// replaces it with [`edit_zone`]'s answer, and `when_json`'s date arm
+    /// never reads a zone at all.
     #[test]
-    fn bug_an_untouched_all_day_date_moves_a_day_when_the_calendar_zone_is_not_the_browsers() {
+    fn an_untouched_all_day_date_sends_no_times_when_the_calendar_zone_is_not_the_browsers() {
         // August, so New York is UTC-4 and Sofia UTC+3: seven hours apart, and
         // the calendar is the western of the two.
         const CAL_TZ: &str = "America/New_York";
         const BROWSER_TZ: &str = "Europe/Sofia";
 
-        // The row as sync stored it: midnight in the calendar's zone.
-        let mut ev = stored(vec![]);
-        ev.google_id = "allday1".into();
-        ev.summary = Some("Berlin trip".into());
-        ev.is_all_day = true;
-        ev.start_utc = midnight_in("2026-08-10", CAL_TZ);
-        ev.end_utc = midnight_in("2026-08-11", CAL_TZ);
+        let ev = all_day_row("2026-08-10", "2026-08-11", CAL_TZ);
+        assert_ne!(
+            ev.start_utc,
+            midnight_in("2026-08-10", BROWSER_TZ),
+            "fixture check: the two zones must genuinely disagree about this \
+             date's instant, or the assertions below prove nothing"
+        );
 
-        // What the form sends after the user edits the title and nothing else.
-        // `2026-08-10` is what it displayed — correct, in this direction — and
-        // midnight on it is built in the browser's zone.
-        let after = crate::write::EventFields {
-            summary: Some("Berlin trip (booked)".into()),
-            location: None,
-            description: None,
-            start_ms: midnight_in("2026-08-10", BROWSER_TZ),
-            end_ms: midnight_in("2026-08-11", BROWSER_TZ),
-            is_all_day: true,
-            tz: BROWSER_TZ.into(),
-            recurrence: None,
-        };
+        // What the form sends after the user edits the title and nothing else:
+        // the dates it displayed, with the browser's zone alongside them.
+        let mut after = all_day_form("Berlin trip (booked)", "2026-08-10", "2026-08-11");
+        after.tz = BROWSER_TZ.into();
 
         let body = edit_patch_body(&ev, ev.start_utc, ev.end_utc, ev.start_utc, CAL_TZ, &after);
 
         assert_eq!(body["summary"], "Berlin trip (booked)", "the edit the user actually made");
         assert!(
-            body.get("start").is_some(),
-            "CORRECT would be no `start` at all — the date did not change, and \
-             `changed_fields` omits an untouched time. It fires because the two \
-             sides built the same date into different instants."
+            body.get("start").is_none(),
+            "the date did not change, so no `start` may be sent — this is the defect: {body}"
         );
-        assert_eq!(
-            body["start"]["date"], "2026-08-09",
-            "WRONG, and this is the harm: correct is 2026-08-10. The trip moves \
-             to the day before, and the PATCH goes out with sendUpdates=all."
-        );
-        assert_eq!(
-            body["end"]["date"], "2026-08-10",
-            "WRONG for the same reason: correct is 2026-08-11."
-        );
+        assert!(body.get("end").is_none(), "no `end` either: {body}");
     }
 
-    /// The same defect's control arm, and the reason the suite stayed green
+    /// The old defect's control arm, and the reason the suite stayed green
     /// through eight tasks: with one zone in play the two coordinate systems
-    /// coincide, the instants match, and the body carries the title alone.
+    /// coincided and the body carried the title alone.
     ///
-    /// It is here so the test above cannot be misread as "`edit_patch_body`
-    /// always resends times" — the machinery is right, the coordinates are not.
+    /// It stays because it is the *other* half of the pair. On its own the test
+    /// above could be satisfied by an `edit_patch_body` that never sends times
+    /// at all; this one has always demanded the machinery work, and
+    /// [`a_changed_all_day_date_sends_the_dates_the_user_picked`] demands it
+    /// still notice a real change.
     #[test]
     fn an_untouched_all_day_date_sends_no_times_when_both_zones_agree() {
         const TZ: &str = "America/New_York";
 
-        let mut ev = stored(vec![]);
-        ev.google_id = "allday1".into();
-        ev.summary = Some("Berlin trip".into());
-        ev.is_all_day = true;
-        ev.start_utc = midnight_in("2026-08-10", TZ);
-        ev.end_utc = midnight_in("2026-08-11", TZ);
-
-        let after = crate::write::EventFields {
-            summary: Some("Berlin trip (booked)".into()),
-            location: None,
-            description: None,
-            start_ms: midnight_in("2026-08-10", TZ),
-            end_ms: midnight_in("2026-08-11", TZ),
-            is_all_day: true,
-            tz: TZ.into(),
-            recurrence: None,
-        };
+        let ev = all_day_row("2026-08-10", "2026-08-11", TZ);
+        let mut after = all_day_form("Berlin trip (booked)", "2026-08-10", "2026-08-11");
+        after.tz = TZ.into();
 
         let body = edit_patch_body(&ev, ev.start_utc, ev.end_utc, ev.start_utc, TZ, &after);
 
         assert_eq!(body["summary"], "Berlin trip (booked)");
         assert!(body.get("start").is_none(), "an untouched date must send no start: {body}");
         assert!(body.get("end").is_none(), "an untouched date must send no end: {body}");
+    }
+
+    /// The control the two above need: a date the user *did* change must reach
+    /// Google as the date they picked, in a bare `date` with no `timeZone`
+    /// beside it — from a browser seven hours away from the calendar.
+    ///
+    /// Without this, "sends no times" is satisfiable by sending no times ever.
+    #[test]
+    fn a_changed_all_day_date_sends_the_dates_the_user_picked() {
+        const CAL_TZ: &str = "America/New_York";
+
+        let ev = all_day_row("2026-08-10", "2026-08-11", CAL_TZ);
+        let mut after = all_day_form("Berlin trip", "2026-08-12", "2026-08-14");
+        after.tz = "Europe/Sofia".into();
+
+        let body = edit_patch_body(&ev, ev.start_utc, ev.end_utc, ev.start_utc, CAL_TZ, &after);
+
+        assert_eq!(body["start"], serde_json::json!({ "date": "2026-08-12" }), "{body}");
+        assert_eq!(body["end"], serde_json::json!({ "date": "2026-08-14" }), "{body}");
+    }
+
+    /// Plan 5's anchoring rule, in the date domain — and the harm it exists to
+    /// prevent is at its worst here.
+    ///
+    /// The form is pre-filled from the **clicked** occurrence, seven months
+    /// after the master's own dates. A title-only save with scope `"all"` must
+    /// send no dates at all: sent verbatim they would drag the series' DTSTART
+    /// onto the clicked date and drop every occurrence before it, with
+    /// `sendUpdates=all` behind it.
+    ///
+    /// **`Pacific/Auckland` and not New York, and that is load bearing.** This
+    /// is also the one test that can catch a date derived in UTC rather than in
+    /// the calendar's own zone. New York cannot: it is west of UTC, so midnight
+    /// there is 04:00Z *the same day* and the two derivations agree. Auckland
+    /// is UTC+12, so midnight there is midday the **previous** day in UTC — and
+    /// a UTC derivation then puts the master's before-side a day behind its
+    /// after-side, so an untouched save sends dates. Asserted as a fixture
+    /// check below rather than left to the reader.
+    #[test]
+    fn a_title_only_edit_of_an_all_day_series_sends_no_dates() {
+        const CAL_TZ: &str = "Pacific/Auckland";
+
+        let mut ev = all_day_row("2026-01-05", "2026-01-06", CAL_TZ);
+        ev.recurrence = Some("RRULE:FREQ=WEEKLY".into());
+        assert_eq!(
+            jiff::Timestamp::from_millisecond(ev.start_utc).unwrap().to_string(),
+            "2026-01-04T11:00:00Z",
+            "fixture check: the stored instant must fall on the *previous* date in UTC, or \
+             a date derived in UTC instead of the calendar's zone passes this unnoticed"
+        );
+
+        // The occurrence the user clicked, months down the series.
+        let occurrence = midnight_in("2026-08-10", CAL_TZ);
+        let mut after = all_day_form("Berlin trip (booked)", "2026-08-10", "2026-08-11");
+        after.tz = "Europe/Sofia".into();
+
+        let body = edit_patch_body(&ev, ev.start_utc, ev.end_utc, occurrence, CAL_TZ, &after);
+
+        assert_eq!(body["summary"], "Berlin trip (booked)");
+        assert!(
+            body.get("start").is_none(),
+            "the master's DTSTART would move seven months onto the clicked date: {body}"
+        );
+        assert!(body.get("end").is_none(), "{body}");
+    }
+
+    /// The same series, actually moved: the master takes the **shift** — one
+    /// day — not the clicked occurrence's own dates.
+    ///
+    /// This is the assertion the test above cannot make. Together they pin that
+    /// the arithmetic is relative: `2026-01-06`, not `2026-08-11` (the form's
+    /// value sent verbatim) and not `2026-01-05` (the movement dropped).
+    #[test]
+    fn moving_an_all_day_series_shifts_the_master_by_the_days_the_user_moved() {
+        const CAL_TZ: &str = "Pacific/Auckland";
+
+        let mut ev = all_day_row("2026-01-05", "2026-01-06", CAL_TZ);
+        ev.recurrence = Some("RRULE:FREQ=WEEKLY".into());
+
+        let occurrence = midnight_in("2026-08-10", CAL_TZ);
+        // The user drags the clicked occurrence one day on, and lengthens it to
+        // two days — so start and end move by different amounts.
+        let mut after = all_day_form("Berlin trip", "2026-08-11", "2026-08-13");
+        after.tz = "Europe/Sofia".into();
+
+        let body = edit_patch_body(&ev, ev.start_utc, ev.end_utc, occurrence, CAL_TZ, &after);
+
+        assert_eq!(
+            body["start"],
+            serde_json::json!({ "date": "2026-01-06" }),
+            "the master moved by one day, which is what the user did: {body}"
+        );
+        assert_eq!(
+            body["end"],
+            serde_json::json!({ "date": "2026-01-08" }),
+            "the master's end moved by two days — one for the move, one for the \
+             extra day of length: {body}"
+        );
     }
 
     /// A scope this command does not implement must be refused rather than
@@ -3966,10 +4163,8 @@ mod tests {
         let (pool, _id) = seeded_pool_on_cal(&mut ev, "UTC").await;
 
         // The user moved it an hour later. The body must say exactly that.
-        let expected = serde_json::json!({
-            "start": crate::write::event_time_json(OCCURRENCE + HOUR, false, "UTC"),
-            "end":   crate::write::event_time_json(OCCURRENCE + 2 * HOUR, false, "UTC"),
-        });
+        let (start, end) = timed_json(OCCURRENCE + HOUR, OCCURRENCE + 2 * HOUR, "UTC");
+        let expected = serde_json::json!({ "start": start, "end": end });
 
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("PATCH"))
@@ -4122,12 +4317,12 @@ mod tests {
             "fixture check: the move must actually cross the transition"
         );
 
-        let expected = serde_json::json!({
-            "start": crate::write::event_time_json(
-                ny("2026-02-08T09:00:00"), false, "America/New_York"),
-            "end":   crate::write::event_time_json(
-                ny("2026-02-08T10:00:00"), false, "America/New_York"),
-        });
+        let (start, end) = timed_json(
+            ny("2026-02-08T09:00:00"),
+            ny("2026-02-08T10:00:00"),
+            "America/New_York",
+        );
+        let expected = serde_json::json!({ "start": start, "end": end });
 
         let server = wiremock::MockServer::start().await;
         wiremock::Mock::given(wiremock::matchers::method("PATCH"))
@@ -4161,17 +4356,29 @@ mod tests {
         .unwrap();
     }
 
-    /// The same trap on an all-day event, where it is worse: 23 hours from
-    /// midnight is 23:00 the same day, so the rendered `date` is the one the
-    /// event already has. The user's move vanishes — and a PATCH still goes
-    /// out, because the instants differ even though the dates do not, telling
-    /// every guest about a change that did not happen.
+    /// The same trap on an all-day series, one level down from where it used
+    /// to sit.
+    ///
+    /// The dates themselves no longer touch an instant — the form sends them
+    /// and `crate::write::shifted_date` moves them in whole days. **One piece
+    /// of instant arithmetic survives on this path**: `edit_patch_body` derives
+    /// the clicked occurrence's own end (`anchor_end`) by moving the anchor by
+    /// the target's span, and then reads a *date* off it. That is the value
+    /// every all-day end is compared against.
+    ///
+    /// So the fixture is a **fall-back**, not a spring-forward. 24 hours after
+    /// midnight on a 25-hour day is 23:00 the *same* day, so a plain
+    /// millisecond delta names the wrong date for the occurrence's end — and
+    /// the user, who touched nothing but the title, gets an `end` a day later
+    /// than the master's, PATCHed with `sendUpdates=all`. A spring-forward
+    /// hides it: 24 hours into a 23-hour day is 01:00 the next day, which is
+    /// the right date by luck.
     ///
     /// All-day resolves against the *calendar's* zone (Google sends a bare
     /// `date` with no zone of its own), so the calendar here is the New York
     /// one and the event's stored `start_tz` is left elsewhere on purpose.
     #[tokio::test]
-    async fn an_all_day_shift_across_a_transition_moves_to_the_next_date() {
+    async fn a_title_only_all_day_edit_across_a_fall_back_still_sends_no_dates() {
         let mut ev = weekly_master("RRULE:FREQ=WEEKLY");
         ev.is_all_day = true;
         ev.start_tz = "Europe/Sofia".into(); // must be ignored: all-day takes the calendar's
@@ -4179,8 +4386,76 @@ mod tests {
         ev.end_utc = ny("2026-02-08T00:00:00");
         let (pool, _id) = seeded_pool_on_cal(&mut ev, "America/New_York").await;
 
-        let occurrence = ny("2026-03-08T00:00:00");
-        let moved = ny("2026-03-09T00:00:00");
+        let occurrence = ny("2026-11-01T00:00:00");
+        assert_eq!(
+            ny("2026-11-02T00:00:00") - occurrence,
+            25 * HOUR,
+            "fixture check: the clicked occurrence must sit on a fall-back day, or this \
+             proves nothing about the arithmetic it is aimed at"
+        );
+        assert_eq!(
+            ev.end_utc - ev.start_utc,
+            24 * HOUR,
+            "fixture check: the master's own span must have no transition in it, so the \
+             only place one can enter is the anchor"
+        );
+
+        // `body_json` compares the whole document, so this is the assertion:
+        // the title goes out and nothing else does. A `start` of any value —
+        // right date or wrong — fails to match, and the unmatched request is
+        // answered with a bare 404 that fails the `unwrap` below as well.
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/master1"))
+            .and(wiremock::matchers::body_json(
+                serde_json::json!({ "summary": "Standup (booked)" }),
+            ))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "master1", "status": "confirmed", "etag": "\"master-2\"",
+                "summary": "Standup (booked)",
+                "recurrence": ["RRULE:FREQ=WEEKLY"],
+                "start": {"date": "2026-02-07"},
+                "end":   {"date": "2026-02-08"}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        // The user changed the title and nothing else. The form is pre-filled
+        // from the clicked occurrence, so it carries that occurrence's dates.
+        let after = all_day_form("Standup (booked)", "2026-11-01", "2026-11-02");
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        update_via_client(
+            &pool,
+            "all",
+            occurrence,
+            ev,
+            "cal@x.com",
+            "America/New_York",
+            after,
+            &client,
+        )
+        .await
+        .unwrap();
+    }
+
+    /// The control for the test above: the same series, on the same fall-back
+    /// day, actually moved. Without it "sends no dates" is satisfiable by a
+    /// function that never sends dates.
+    ///
+    /// The master moves by the one day the user moved the occurrence, not to
+    /// the occurrence's own date nine months later.
+    #[tokio::test]
+    async fn an_all_day_series_moved_across_a_fall_back_shifts_the_master_by_one_day() {
+        let mut ev = weekly_master("RRULE:FREQ=WEEKLY");
+        ev.is_all_day = true;
+        ev.start_tz = "Europe/Sofia".into();
+        ev.start_utc = ny("2026-02-07T00:00:00");
+        ev.end_utc = ny("2026-02-08T00:00:00");
+        let (pool, _id) = seeded_pool_on_cal(&mut ev, "America/New_York").await;
+
+        let occurrence = ny("2026-11-01T00:00:00");
 
         let expected = serde_json::json!({
             "start": {"date": "2026-02-08"},
@@ -4203,8 +4478,7 @@ mod tests {
             .await;
 
         let client = omacal_google::CalendarClient::new(server.uri(), "tok");
-        let mut after = form("Standup", moved, moved + 24 * HOUR);
-        after.is_all_day = true;
+        let after = all_day_form("Standup", "2026-11-02", "2026-11-03");
         update_via_client(
             &pool,
             "all",
@@ -4396,8 +4670,8 @@ mod tests {
             .and(wiremock::matchers::path("/calendars/cal%40x.com/events"))
             .and(wiremock::matchers::query_param("sendUpdates", "all"))
             .and(wiremock::matchers::body_json(serde_json::json!({
-                "start": crate::write::event_time_json(OCCURRENCE, false, "UTC"),
-                "end":   crate::write::event_time_json(OCCURRENCE + HOUR, false, "UTC"),
+                "start": timed_json(OCCURRENCE, OCCURRENCE + HOUR, "UTC").0,
+                "end":   timed_json(OCCURRENCE, OCCURRENCE + HOUR, "UTC").1,
                 "summary": "Standup (from here)",
                 "recurrence": ["RRULE:FREQ=WEEKLY"],
                 "attendees": expected_guests(),
@@ -4614,7 +4888,7 @@ mod tests {
         let body: serde_json::Value = serde_json::from_slice(&post.body).unwrap();
         assert_eq!(
             body["start"],
-            crate::write::event_time_json(clicked, false, "UTC"),
+            timed_json(clicked, clicked + HOUR, "UTC").0,
             "the tail did not take the moved occurrence's own start, which is the whole of \
              what this split changes: {body}"
         );
@@ -4920,12 +5194,9 @@ mod tests {
         let sent = requests(&server).await;
         let post = sent.iter().find(|r| r.method.as_str() == "POST").expect("no create");
         let body: serde_json::Value = serde_json::from_slice(&post.body).unwrap();
-        assert_eq!(
-            body["start"],
-            crate::write::event_time_json(moved, false, "UTC"),
-            "the tail did not start where the user put it: {body}"
-        );
-        assert_eq!(body["end"], crate::write::event_time_json(moved + HOUR, false, "UTC"));
+        let (start, end) = timed_json(moved, moved + HOUR, "UTC");
+        assert_eq!(body["start"], start, "the tail did not start where the user put it: {body}");
+        assert_eq!(body["end"], end);
         // The truncation is still aimed at the *clicked* occurrence, not at
         // where the user moved it to: everything before the block they acted on
         // must stay in the original series.
@@ -5326,8 +5597,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let mut after = form("On call", occurrence, occurrence + 24 * HOUR);
-        after.is_all_day = true;
+        let after = all_day_form("On call", "2026-08-10", "2026-08-11");
 
         let client = omacal_google::CalendarClient::new(server.uri(), "tok");
         update_via_client(
@@ -5364,17 +5634,16 @@ mod tests {
     /// that can tell: an all-day series split into a *timed* remainder.
     ///
     /// Every other fixture in this file has the master and the tail agreeing on
-    /// `is_all_day`, so `master_row.is_all_day` and `after.is_all_day` are the
-    /// same value and either one produces a passing test. They are not the same
-    /// rule. The truncation patches `recurrence` alone, so the master keeps the
-    /// bare-date `start` it already had, and RFC 5545 requires its `UNTIL` to
-    /// stay a bare date — whatever the user chose for the new event.
+    /// their shape, so `master_row.is_all_day` and `after.when.is_all_day()`
+    /// are the same value and either one produces a passing test. They are not
+    /// the same rule. The truncation patches `recurrence` alone, so the master
+    /// keeps the bare-date `start` it already had, and RFC 5545 requires its
+    /// `UNTIL` to stay a bare date — whatever the user chose for the new event.
     ///
-    /// `isAllDay` is a required absolute field on every `updateEvent` call, so
-    /// this is reachable the moment the UI ships the scope: toggle "All day"
-    /// off, pick "this and following", and a rule built from the form's flag
-    /// puts `UNTIL=20260809T115959Z` on a series whose `DTSTART` is
-    /// `VALUE=DATE`.
+    /// `when` is a required absolute field on every `updateEvent` call, so this
+    /// is reachable the moment the UI ships the scope: toggle "All day" off,
+    /// pick "this and following", and a rule built from the form's shape puts
+    /// `UNTIL=20260809T115959Z` on a series whose `DTSTART` is `VALUE=DATE`.
     #[tokio::test]
     async fn the_until_follows_the_masters_value_type_not_the_new_series() {
         let midnight = |wall: &str| {
@@ -5433,7 +5702,10 @@ mod tests {
 
         // The user turned "All day" off and gave the remainder real times.
         let after = form("On call", occurrence + 9 * HOUR, occurrence + 10 * HOUR);
-        assert!(!after.is_all_day, "fixture check: the tail must be timed, or this proves nothing");
+        assert!(
+            !after.when.is_all_day(),
+            "fixture check: the tail must be timed, or this proves nothing"
+        );
 
         let client = omacal_google::CalendarClient::new(server.uri(), "tok");
         update_via_client(
@@ -5503,8 +5775,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let mut after = form("Standup (from here)", OCCURRENCE, OCCURRENCE + 24 * HOUR);
-        after.is_all_day = true;
+        let after = all_day_form("Standup (from here)", "2026-08-10", "2026-08-11");
 
         let client = omacal_google::CalendarClient::new(server.uri(), "tok");
         update_via_client(&pool, "following", OCCURRENCE, ev, "cal@x.com", "UTC", after, &client)
@@ -5667,7 +5938,7 @@ mod tests {
         // the moved time, not the slot.
         let post = sent.iter().find(|r| r.method.as_str() == "POST").expect("no create");
         let created: serde_json::Value = serde_json::from_slice(&post.body).unwrap();
-        assert_eq!(created["start"], crate::write::event_time_json(clicked, false, "UTC"));
+        assert_eq!(created["start"], timed_json(clicked, clicked + HOUR, "UTC").0);
     }
 
     /// The same rule at the other end of the series: an occurrence dragged

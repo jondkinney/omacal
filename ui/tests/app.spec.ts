@@ -644,7 +644,7 @@ test.describe('App', () => {
     // Task 9's anchoring invariant, asserted at the only place both values
     // exist together: an untouched time means these two are equal *exactly*,
     // because the Rust side reads any difference between them as a move.
-    expect(args.fields.startMs).toBe(args.occurrenceStartMs);
+    expect(args.fields.when.startMs).toBe(args.occurrenceStartMs);
 
     // And the edit is followed by a sync, not just a local re-read. This is
     // the *edit* path's own witness: it shares `refreshAfterWrite` with the
