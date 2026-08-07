@@ -539,6 +539,15 @@ pub struct BigYearPayload {
 pub struct LegendEntry {
     pub name: String,
     pub color: Option<String>,
+    /// The calendar this entry names. `assemble_big_year` has no calendar
+    /// list to draw a real `name` from — its signature takes only
+    /// `&[StoredEvent]`, deliberately, so it stays pure over the same shape
+    /// every other assembler in this file does — so `name` starts out as a
+    /// placeholder and `get_big_year` resolves it against `list_calendars`
+    /// afterwards. Typed here rather than parsed back out of the placeholder
+    /// string, so that join has a real key instead of a format contract two
+    /// files would otherwise share silently.
+    pub calendar_id: i64,
 }
 
 /// The Monday on or before `year`-01-01, at local midnight in `tz` — the
@@ -647,11 +656,12 @@ pub fn assemble_big_year(events: &[StoredEvent], year: i32, now_ms: i64, tz: &st
             // `StoredEvent` carries no calendar name: `calendars.summary`
             // exists (see `omacal_store::calendars::CalendarRow`) but
             // `SELECT_COLS` never joins it in, and this function's signature
-            // takes no calendars list to join it from here either. A real
-            // label needs one of those to change; flagged in the task
-            // report rather than silently invented.
+            // takes no calendars list to join it from here either. `name`
+            // stays a placeholder here; `get_big_year` resolves it against
+            // `list_calendars` by `calendar_id` below.
             name: format!("Calendar {cid}"),
             color,
+            calendar_id: cid,
         })
         .collect();
 

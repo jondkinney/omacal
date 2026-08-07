@@ -942,4 +942,16 @@ test.describe('BigYearRibbon', () => {
     await page.locator('.pill').first().click();
     expect(await page.evaluate(() => (window as any).__lastOpen)).toBeTruthy();
   });
+
+  test('two co-existing pills in one row each keep their own title', async ({ page }) => {
+    // `y2026` and `crossing` never pack more than one pill per row, so `idx`
+    // and `lane` never diverge there — a `pill_events[lane.idx]` /
+    // `pill_events[lane.lane]` mix-up would still pass every other spec in
+    // this file. Same guard as MonthGrid's `two-bars` spec.
+    await page.goto(show('two-pills'));
+    const pills = page.locator('.pill');
+    await expect(pills).toHaveCount(2);
+    await expect(pills.nth(0)).toContainText('Berlin trip');
+    await expect(pills.nth(1)).toContainText('Team offsite');
+  });
 });

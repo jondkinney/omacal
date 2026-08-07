@@ -665,6 +665,36 @@ const crossingBigYear = (): BigYearPayload => {
   return b;
 };
 
+/** Two co-existing pills in one row, deliberately with `idx` and `lane`
+ *  diverging for both entries — same shape as `MonthGrid`'s `twoBarsMonth`,
+ *  guarding the same `pill_events[lane.idx]` / `pill_events[lane.lane]`
+ *  mix-up for this component. Neither `bigYear2026` nor `crossingBigYear`
+ *  above ever packs more than one pill per row, where `idx === lane` always
+ *  holds and a mix-up would render the right title by coincidence — this is
+ *  the only fixture built to catch it. `pack_lanes` sorts longest-first:
+ *  Berlin trip (added second, `idx: 1`) is the longer, overlapping span, so
+ *  it claims lane 0 ahead of the shorter Team offsite (added first,
+ *  `idx: 0`), which is pushed to lane 1. */
+const twoPillsBigYear = (): BigYearPayload => {
+  const b = emptyBigYear(2026, RIBBON_START, YEAR_2026_START, YEAR_2027_START);
+
+  const teamOffsite = ev({
+    title: 'Team offsite', is_all_day: true, color: '#2dd4bf',
+    start_ms: RIBBON_START + 4 * 24 * H, end_ms: RIBBON_START + 6 * 24 * H,
+  });
+  const berlinTrip = ev({
+    title: 'Berlin trip', is_all_day: true, color: '#5b8def',
+    start_ms: RIBBON_START + 3 * 24 * H, end_ms: RIBBON_START + 7 * 24 * H,
+  });
+  b.rows[0].pill_events = [teamOffsite, berlinTrip];
+  b.rows[0].pills = [
+    { idx: 1, lane: 0, start_col: 3, end_col: 6, cont_left: false, cont_right: false },
+    { idx: 0, lane: 1, start_col: 4, end_col: 5, cont_left: false, cont_right: false },
+  ];
+
+  return b;
+};
+
 export const FIXTURES: Record<string, Record<string, any>> = {
   WeekGrid: {
     empty: { week: emptyWeek() },
@@ -686,6 +716,7 @@ export const FIXTURES: Record<string, Record<string, any>> = {
   BigYearRibbon: {
     y2026: { ribbon: bigYear2026() },
     crossing: { ribbon: crossingBigYear() },
+    'two-pills': { ribbon: twoPillsBigYear() },
   },
   EventBlock: {
     // The duration ladder.
