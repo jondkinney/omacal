@@ -1073,6 +1073,111 @@ export const appWritableWeek = (): WeekPayload => {
  *  but it has to be a well-shaped `EventDetail` to satisfy the command's type. */
 export const CREATED_DETAIL: EventDetail = detail({ id: 9001, title: 'Lunch' });
 
+// --- An all-day event on a calendar east of the display --------------------
+//
+// Plan 7's closing witness: the grid, the popover and the edit form must all
+// name the **same** day for an all-day event whose calendar is in a different
+// zone from the display — and it must be the *calendar's* day.
+//
+// Every other fixture in this file is a UTC calendar shown in a UTC browser,
+// where a stored midnight, the column it falls in and the date it reads back
+// as are all the same thing and an agreement spec would pass vacuously. This
+// one separates all three:
+//
+//   * the calendar is `Pacific/Auckland` (UTC+12 through August), so its
+//     midnight falls on the **previous** UTC date. That is what witnesses the
+//     *calendar-zone* side.
+//   * the display — and this fixture's spec's browser — is `Europe/Sofia`
+//     (UTC+3 through August), so a column's own midnight is still the previous
+//     day in UTC. That is what witnesses the *display-zone* side; a UTC display
+//     witnesses neither, because there a column's date is the same read in any
+//     zone.
+//
+// `America/New_York` would witness neither: at UTC-4 a midnight is 04:00Z on
+// the same date, so both derivations agree (it is the zone that witnesses the
+// *end* of a span, which is a Rust-side claim and is covered there).
+//
+// **The numbers below are the Rust suite's own**, carried over verbatim from
+// `commands.rs`'s all-day placement tests rather than recomputed here — the
+// same rule `BUSY_DAY_START_MS` above follows, and for the same reason: a
+// second derivation of a boundary value is exactly what this branch exists to
+// delete. `assemble_week` produces this payload for this stored event; see
+// `an_auckland_event_rendered_in_sofia_lands_on_the_monday_both_of_them_name`,
+// which pins the same rule one week earlier.
+
+/** Wed 12 Aug 2026 00:00 `Pacific/Auckland` — `2026-08-11T12:00:00Z`. What the
+ *  store holds for an all-day event on that calendar: midnight in the
+ *  **calendar's** zone, which is a day earlier read anywhere west of it. */
+export const XZONE_STORED_START = 1_786_449_600_000;
+/** Thu 13 Aug 2026 00:00 `Pacific/Auckland` — the **exclusive** end Google
+ *  sends and the store keeps, so this one-day event covers 12 Aug only. */
+export const XZONE_STORED_END = 1_786_536_000_000;
+/** Mon 10 Aug 2026 00:00 `Europe/Sofia` — `2026-08-09T21:00:00Z`, still Sunday
+ *  in UTC. The week the app opens on with its clock frozen inside it. */
+export const XZONE_WEEK_START = 1_786_309_200_000;
+/** The one day this event is on, in its own calendar's zone. The day the chip,
+ *  the popover and the form must all agree on. */
+export const XZONE_DAY = '2026-08-12';
+/** The day the *display* reads the stored instant on — Sofia and UTC both say
+ *  Tue 11 Aug. The column the chip used to be drawn under. */
+export const XZONE_DISPLAY_MISREADING = '2026-08-11';
+export const XZONE_ID = 4245;
+/** Mon 10 Aug 2026 12:00 `Europe/Sofia`. Inside the week above, so
+ *  `weekStart(new Date(anchorMs))` lands on `XZONE_WEEK_START` — and on a
+ *  *different* day from the chip's, so the today-highlight never shares a
+ *  column with the thing under test. */
+export const XZONE_NOW = XZONE_WEEK_START + 12 * H;
+
+const XZONE_CHIP: UiEvent = ev({
+  id: XZONE_ID, title: 'Berlin trip', is_all_day: true, color: '#e2a03f',
+  start_ms: XZONE_STORED_START, end_ms: XZONE_STORED_END,
+});
+
+/** The detail behind that chip. `start_date`/`end_date` are written as the
+ *  literal `2026-08-12` and deliberately **not** through `utcDate()`: that
+ *  helper reads an instant back in UTC, which for this event is 11 Aug. These
+ *  are what `write::all_day_span_dates` answers for these two instants in
+ *  `Pacific/Auckland` — the same derivation `all_day_columns` places the chip
+ *  with, which is why the two cannot drift apart.
+ *
+ *  `end_date` is the **inclusive** last day, so a one-day event names the same
+ *  date twice. Non-recurring, so `detail.start_ms` *is* the chip's own
+ *  `start_ms` and `occurrenceDate` shifts by zero days: the occurrence trap is
+ *  covered by `APP_ALLDAY_ID` above, and this fixture isolates the zone.
+ *
+ *  `can_edit: true` explicitly — `detail()`'s own default is `false`, so
+ *  without it the Edit control never renders and the form half of the
+ *  agreement cannot be reached at all. */
+POPOVER_DETAILS[XZONE_ID] = detail({
+  id: XZONE_ID, title: 'Berlin trip', can_edit: true,
+  calendar_id: APP_PRIMARY_CALENDAR_ID,
+  is_all_day: true,
+  start_ms: XZONE_STORED_START, end_ms: XZONE_STORED_END,
+  start_date: XZONE_DAY, end_date: XZONE_DAY,
+});
+
+/** The Sofia week Mon 10 - Sun 16 Aug 2026 with that one Auckland chip in it.
+ *
+ *  Seven columns exactly 24 hours apart: August has no transition in either
+ *  zone, so `n_day_boundaries` returns even days and the fixture may step by a
+ *  constant rather than re-deriving midnights.
+ *
+ *  `start_col: 2` / `end_col: 2` — column 2 is Wed 12 Aug in Sofia, the date
+ *  the event's own calendar keeps it on. The stored instant falls in **column
+ *  1** (Tue 11 Aug 21:00 - Wed 12 Aug 21:00 UTC is column 2's span; the
+ *  instant is 12:00Z on the 11th, inside column 1's), which is where the chip
+ *  used to be drawn — and its exclusive end fell in column 2, so the old
+ *  placement drew a *two-column* bar under Tue **and** Wed for a one-day
+ *  event. That is the payload this fixture's spec is written to reject. */
+export const crossZoneWeek = (): WeekPayload => {
+  const w = emptyWeekAt(XZONE_WEEK_START);
+  w.all_day_events = [XZONE_CHIP];
+  w.all_day = [
+    { idx: 0, lane: 0, start_col: 2, end_col: 2, cont_left: false, cont_right: false },
+  ];
+  return w;
+};
+
 export const FIXTURES: Record<string, Record<string, any>> = {
   WeekGrid: {
     empty: { week: emptyWeek() },

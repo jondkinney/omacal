@@ -15,7 +15,8 @@ import type { Calendar } from '../../src/lib/calendars';
 import type { EventDetail } from '../../src/lib/eventdetail';
 import {
   labelledWeek, weekLabel, APP_FIVE_MIN_AGO, POPOVER_DETAILS, busyDayMonth,
-  appWritableWeek, APP_WRITE_CALENDARS, CREATED_DETAIL,
+  appWritableWeek, APP_WRITE_CALENDARS, CREATED_DETAIL, crossZoneWeek,
+  XZONE_WEEK_START,
 } from '../fixtures';
 
 /** What the real `get_palette` returns; the same fallback_dark values. */
@@ -301,6 +302,21 @@ function getWeek(scenario: string, weekStartMs: number): Promise<WeekPayload> {
   // below: its specs pin literal instants, and none of them needs the payload
   // to match the week it requested.
   if (scenario === 'writable') return Promise.resolve(appWritableWeek());
+  // `cross-zone` is the one scenario where the week actually asked for is part
+  // of the claim: its payload's columns are `Europe/Sofia` midnights, and it
+  // only describes what is on screen if the app requested that same Monday.
+  // Answering unconditionally would let a browser in the wrong zone — or an
+  // `App` that opened on a different week — read this fixture's columns against
+  // a header that had moved, with the agreement spec none the wiser. So it
+  // refuses rather than substitutes, and the spec asserts the request too.
+  if (scenario === 'cross-zone') {
+    if (weekStartMs !== XZONE_WEEK_START) {
+      return Promise.reject(
+        `cross-zone: asked for week ${weekStartMs}, fixture is ${XZONE_WEEK_START}`,
+      );
+    }
+    return Promise.resolve(crossZoneWeek());
+  }
   return Promise.resolve(labelledWeek(weekStartMs));
 }
 
@@ -422,7 +438,11 @@ export function installTauriStub(scenario: string): Harness {
       // assertion undisturbed. CalendarPopover specs never take this path —
       // they mount the component directly with fixture props instead.
       case 'get_calendars':
-        if (scenario === 'writable') return APP_WRITE_CALENDARS;
+        // `cross-zone` needs a writable list for the same reason `writable`
+        // does: without one the form's calendar select has nothing to seed
+        // from and Save refuses, so the edit half of its agreement spec could
+        // never run.
+        if (scenario === 'writable' || scenario === 'cross-zone') return APP_WRITE_CALENDARS;
         return scenario === 'sign-in-adds-account' && signedIn
           ? SIGNED_IN_CALENDARS
           : ([] as Calendar[]);

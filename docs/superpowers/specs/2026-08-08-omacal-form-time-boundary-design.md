@@ -229,6 +229,38 @@ and the form converts a consistent error into a visible self-contradiction.
 Closing it means bucketing all-day events by their calendar's zone rather than
 the display zone — a change in `commands.rs`, not in the form. Its own plan.
 
+**CLOSED** by `docs/superpowers/plans/2026-08-08-omacal-all-day-placement.md`
+(branch `feat/7-allday-placement`). An all-day event is placed by **matching
+dates** — its own two dates, read in its calendar's zone via
+`write::all_day_span_dates`, against each column's civil date in the display
+zone. That is the same derivation the popover and the form already read, so the
+three cannot drift apart again; `commands::date_column` carries the reasoning and
+the instant-bucketing `signed_column` this section names is **deleted** rather
+than left beside it. The grid↔popover↔form agreement now has an app-level
+witness of its own: `app.spec.ts`'s "an all-day event on a calendar east of the
+display", a `Pacific/Auckland` event in a `Europe/Sofia` browser, which asserts
+that the column the chip is drawn in and the day its popover names are the same
+day and that both are the calendar's.
+
+Two things this section did not say, found while closing it:
+
+1. **Four assemblers bucketed all-day events, not the one named here.**
+   `assemble_days` and `assemble_month` shifted the chip a column, as described;
+   `assemble_big_year` drew a ribbon pill twice across a row boundary; and
+   `assemble_year` was a **second defect in the same place** — it dotted days by
+   instant *overlap* (`iv.start_ms < bounds[d + 1] && iv.end_ms > bounds[d]`),
+   which is worse than a shift. Auckland's one-day 10 Aug overlaps both 9 Aug
+   12:00–24:00 and 10 Aug 00:00–12:00 in UTC, so the year grid dotted **two
+   days** for a one-day event. A reader taking this section at its word would
+   have fixed the week grid and shipped the year grid still wrong.
+2. **The zone pairing is asymmetric, and this section's zones only witness half
+   of it.** `Pacific/Auckland` (+12) separates the calendar-zone side but not the
+   end of a span — its exclusive end is 12:00 on the previous UTC day, where the
+   old and new derivations agree. `America/New_York` (−4) separates a span's end
+   but not the calendar-zone side. And a UTC display separates neither display
+   side, so `Europe/Sofia` is load-bearing in this section's repro rather than
+   incidental to it.
+
 ### 7.2 Toggling All day *off* can leave a form Save refuses
 
 `endDate` is the **inclusive** last day, so a single-day all-day event names the
