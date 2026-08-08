@@ -1,5 +1,9 @@
 # Running omacal on macOS
 
+For Omarchy Linux, see [`running-on-omarchy.md`](running-on-omarchy.md) — the
+setup is the same except for token storage, which needs a Secret Service
+provider there.
+
 ## Prerequisites
 
 - **Rust** (stable), via [rustup](https://rustup.rs).
@@ -111,8 +115,13 @@ the loopback listener. Close it and retry.
 
 ## What is not built yet
 
-Day, month and year views; the filmstrip toggle; keyboard navigation; creating
-and editing events; RSVP from the app; notifications; and the tray. This build
-is a read-only week view with live sync. Attendees are parsed only far enough
-to read your own RSVP status — the attendee list itself is not persisted, so
-guest counts are not shown anywhere in the UI.
+Notifications and the tray. Editing the guest list — you can see who is coming,
+but omacal never adds or removes anyone. Drag to create, move or resize. Search.
+Per-calendar colour overrides. Offline writes: a save needs the network and says
+so rather than queueing.
+
+Two known display defects are recorded in
+`docs/superpowers/specs/2026-08-08-omacal-form-time-boundary-design.md` §7 —
+all-day placement in the grid uses the system zone rather than the calendar's,
+and a time typed into a daylight-saving spring-forward gap refuses to save
+without saying why. Neither loses data.
