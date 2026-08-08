@@ -264,9 +264,21 @@ function statusFor(scenario: string): AppStatus {
     // "Connect Google Calendar" path rather than "Add account" — Task 7's
     // picker opens after either.
     case 'sign-in-adds-account':
-      return { accounts: [], last_sync_ms: null, demo: false };
+      return { accounts: [], last_sync_ms: null, demo: false, overlay_titlebar: false };
+    // A macOS window whose controls are drawn over the webview. The default
+    // below is the other platform — Omarchy, where they have a strip of their
+    // own — which is also what every scenario that predates this one wants,
+    // since none of them is about the title bar.
+    case 'overlay-titlebar':
+      return {
+        accounts: ['me@x.com'], last_sync_ms: APP_FIVE_MIN_AGO, demo: false,
+        overlay_titlebar: true,
+      };
     default:
-      return { accounts: ['me@x.com'], last_sync_ms: APP_FIVE_MIN_AGO, demo: false };
+      return {
+        accounts: ['me@x.com'], last_sync_ms: APP_FIVE_MIN_AGO, demo: false,
+        overlay_titlebar: false,
+      };
   }
 }
 
@@ -514,7 +526,11 @@ export function installTauriStub(scenario: string): Harness {
         if (scenario === 'no-config') return Promise.reject(NO_CONFIG_ERROR);
         if (scenario === 'sign-in-adds-account') {
           signedIn = true;
-          status = { accounts: ['new@x.com'], last_sync_ms: null, demo: false };
+          // Spread, not a fresh literal: signing in changes who is connected,
+          // and nothing about the window it is connected from. Rebuilding the
+          // object from scratch would quietly reset `overlay_titlebar` to
+          // whatever this line happened to say.
+          status = { ...status, accounts: ['new@x.com'], last_sync_ms: null };
           return 'new@x.com';
         }
         return 'me@x.com';

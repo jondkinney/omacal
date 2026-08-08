@@ -1240,3 +1240,166 @@ test.describe('App: a view claims the height the window leaves it', () => {
     expect(viewBox).toBeCloseTo(720 - APP_CHROME_PX, 0);
   });
 });
+
+/**
+ * One band, not two.
+ *
+ * Reported from the running app, beside macOS Calendar: omacal had a dead
+ * title strip with "omacal" centred in it and then its own header underneath,
+ * where Calendar has a single band with the traffic lights inline. The fix is
+ * `titleBarStyle: "Overlay"` plus `hiddenTitle` in `tauri.conf.json`, which
+ * takes the strip away — and takes the only thing the window could be dragged
+ * by with it, and leaves macOS drawing its three controls *over* the top-left
+ * of the webview.
+ *
+ * So there are two properties here and they pull in opposite directions: on
+ * macOS the header has to start clear of those controls, and on Linux it must
+ * not, because `titleBarStyle` is a macOS-only key and Omarchy still has its
+ * controls in a strip of their own. Reserving room there is a dead ~60px gap.
+ * `status.overlay_titlebar` is the one thing `ui/src` knows about either
+ * platform; `src-tauri/src/status.rs` decides it, and
+ * `overlay_reserves_room_only_on_macos` there is the other half of this pair.
+ *
+ * At App level rather than in `components.spec.ts` because the geometry is the
+ * subject: what has to clear the controls is the title's distance from the
+ * *window's* left edge, and a `Header` mounted on its own has no `main` around
+ * it and so no gutter to measure against.
+ */
+test.describe('App: one band, not two', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.clock.setFixedTime(APP_NOW);
+  });
+
+  /**
+   * How far into the webview macOS's own window controls reach, in CSS pixels
+   * from its top-left corner.
+   *
+   * Measured, not taken on trust — the figure this replaced was a guess of 78.
+   * An `NSWindow` built exactly as tao builds this app's (`.fullSizeContentView`
+   * with `titlebarAppearsTransparent`, which is what tauri-runtime-wry maps
+   * `TitleBarStyle::Overlay` to) reports its close, minimise and zoom buttons at
+   * x 7..21, 27..41 and 47..61, all of them y 6..22, on macOS 26.3.1. So 61 is
+   * where the last of them ends.
+   *
+   * Deliberately not read from `Header.svelte`'s own padding: that number is
+   * what the fix *does*, and this one is the fact it has to be right about.
+   */
+  const CONTROLS_RIGHT_PX = 61;
+
+  /** Close enough to touching the zoom button to read as a mistake. */
+  const MIN_CLEARANCE_PX = 8;
+
+  /** The x the app's own gutter puts content at — `main`'s padding, and on
+   *  Linux the whole of what stands between the window edge and the title. */
+  const gutterLeft = (page: Page) =>
+    page.locator('main').evaluate((el) => {
+      const box = el.getBoundingClientRect();
+      return box.left + parseFloat(getComputedStyle(el).paddingLeft);
+    });
+
+  const leftOf = (page: Page, sel: string) =>
+    page.locator(sel).evaluate((el) => el.getBoundingClientRect().left);
+
+  test('the title clears the window controls drawn over it', async ({ page }) => {
+    await page.goto(app('overlay-titlebar'));
+    await expect(page.locator('h1')).toBeVisible();
+
+    const titleLeft = await leftOf(page, 'h1');
+    expect(
+      titleLeft,
+      `the month title starts at x=${titleLeft}, under macOS's own window controls`,
+    ).toBeGreaterThanOrEqual(CONTROLS_RIGHT_PX + MIN_CLEARANCE_PX);
+
+    // And the room is made *inside* the header rather than by indenting the
+    // whole app: the grid below keeps the gutter every other view is drawn to.
+    expect(titleLeft).toBeGreaterThan(await gutterLeft(page));
+  });
+
+  test('no room is reserved when the window controls have a strip of their own', async ({ page }) => {
+    await page.goto(app());
+    await expect(page.locator('h1')).toBeVisible();
+
+    const gutter = await gutterLeft(page);
+    // The premise, without which the assertion below is satisfied by an app
+    // that insets *everything* by 76px and still leaves Omarchy a dead gap:
+    // the gutter itself has to sit inside the span macOS's controls would
+    // occupy, so "flush with the gutter" is genuinely "no room reserved".
+    expect(gutter, 'the app gutter is already past where the controls would be')
+      .toBeLessThan(CONTROLS_RIGHT_PX);
+    expect(
+      await leftOf(page, 'h1'),
+      'Omarchy has a dead gap at the left of its header',
+    ).toBeCloseTo(gutter, 1);
+  });
+
+  /**
+   * With the title bar gone there is nothing left to move the window by except
+   * what the DOM names. Tauri's injected handler (its own
+   * `window/scripts/drag.js`) walks the composed path from whatever was
+   * pressed and gives up at the first interactive element, so a drag handle is
+   * only a handle if it is not itself a control — and a control that became one
+   * would stop being clickable.
+   */
+  test('the header is a drag handle, and none of its controls is', async ({ page }) => {
+    await page.goto(app());
+    await expect(page.locator('h1')).toBeVisible();
+
+    const handles = await page.evaluate(() => {
+      const header = document.querySelector('header')!;
+      const all = [
+        ...(header.hasAttribute('data-tauri-drag-region') ? [header] : []),
+        ...header.querySelectorAll<HTMLElement>('[data-tauri-drag-region]'),
+      ];
+      return all.map((el) => {
+        const b = el.getBoundingClientRect();
+        return { tag: el.tagName, width: b.width, height: b.height };
+      });
+    });
+
+    // Tauri's own list of what blocks a drag, from the script named above.
+    const CLICKABLE = ['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'LABEL', 'SUMMARY'];
+    const draggable = handles.filter(
+      (h) => !CLICKABLE.includes(h.tag) && h.width > 0 && h.height > 0,
+    );
+    expect(draggable.length, `the window cannot be moved: handles are ${JSON.stringify(handles)}`)
+      .toBeGreaterThan(0);
+
+    const controls = handles.filter((h) => CLICKABLE.includes(h.tag));
+    expect(controls, 'a header control was turned into a drag handle and stopped clicking')
+      .toEqual([]);
+  });
+
+  /**
+   * The trap that `data-tauri-drag-region="deep"` would spring. `deep` hands
+   * the whole subtree over, and `CalendarPopover`'s panel opens *inside* the
+   * header — so its account labels, calendar names and hint text would drag
+   * the window rather than be read. Only the panel's own buttons and
+   * checkboxes would still work.
+   *
+   * `writable`, because the default scenario's `get_calendars` answers with an
+   * empty list and the popover then never renders at all.
+   */
+  test('the calendar panel is text to read, not somewhere to drag the window from', async ({ page }) => {
+    await page.goto(app('writable'));
+    await page.getByRole('button', { name: /^Calendars/ }).click();
+    await expect(page.locator('.panel')).toBeVisible();
+
+    const offenders = await page.locator('.panel').evaluate((panel) => {
+      const named: string[] = [];
+      // Up to and including <header>: an ancestor marked `deep` above the
+      // panel is what would swallow it.
+      for (let n: HTMLElement | null = panel as HTMLElement; n; n = n.parentElement) {
+        if (n.getAttribute('data-tauri-drag-region') === 'deep') named.push(`deep on ${n.tagName}`);
+        if (n.tagName === 'HEADER') break;
+      }
+      // And nothing inside the panel may be a handle in its own right.
+      if (panel.hasAttribute('data-tauri-drag-region')) named.push('the panel itself');
+      for (const el of panel.querySelectorAll('[data-tauri-drag-region]')) {
+        named.push(`.panel ${el.tagName}`);
+      }
+      return named;
+    });
+
+    expect(offenders).toEqual([]);
+  });
+});

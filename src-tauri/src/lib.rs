@@ -44,9 +44,30 @@ pub struct AppState {
     pub tokens: tokio::sync::Mutex<std::collections::HashMap<String, CachedTokens>>,
 }
 
+/// The title bar style the shipped `tauri.conf.json` actually asked for.
+///
+/// Read back off the resolved config rather than restated here, so the window
+/// and the header cannot disagree about whether the controls overlay the
+/// content — see `status::controls_overlay_content`. `first()`, because this
+/// app has exactly one window and the config's own list is what defines it;
+/// a config with no window at all cannot have an overlaid title bar, and
+/// `TitleBarStyle`'s default (`Visible`) says so.
+fn configured_title_bar_style(app: &tauri::AppHandle) -> tauri::TitleBarStyle {
+    app.config().app.windows.first().map(|w| w.title_bar_style).unwrap_or_default()
+}
+
 #[tauri::command]
-async fn get_status(state: tauri::State<'_, AppState>) -> Result<status::AppStatus, String> {
-    status::read_status(&state.pool, state.demo).await.map_err(|e| e.to_string())
+async fn get_status(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<status::AppStatus, String> {
+    // `cfg!`, not a runtime probe: this is decided when the binary is built,
+    // and the Omarchy build and the macOS build are different binaries.
+    let overlay = status::controls_overlay_content(
+        configured_title_bar_style(&app),
+        cfg!(target_os = "macos"),
+    );
+    status::read_status(&state.pool, state.demo, overlay).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
