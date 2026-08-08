@@ -58,6 +58,53 @@ test.describe('WeekGrid', () => {
     expect(pct).toBeCloseTo(100 * (10.5 / 24), 1);
   });
 
+  /**
+   * The current-time line reads `--now`, and `--error` cannot touch it.
+   *
+   * This is the whole reason task #52 was not a `sed`. `#e2564a` was written
+   * literally in six places, and two of them were this line and its dot —
+   * the same hex meaning something completely different from "something went
+   * wrong". Collapsing all six onto one `--error` would have coupled them:
+   * a theme wanting a calmer "now" indicator would have silently restyled
+   * every error message in the app, and nothing would have failed.
+   *
+   * So the assertion is not that the line is red. It is that moving `--error`
+   * leaves it alone and moving `--now` does not.
+   */
+  test('the current-time line follows --now and is untouched by --error', async ({ page }) => {
+    await page.clock.setFixedTime(WEEK_NOW_INSIDE);
+    await page.goto(show('WeekGrid', 'empty'));
+    const line = page.locator('.now');
+    await expect(line).toHaveCount(1);
+
+    const lineColour = () =>
+      line.evaluate((el) => getComputedStyle(el).getPropertyValue('border-top-color'));
+    // `::before` is the 7px dot, and it takes the same variable — read
+    // separately, because a rule that moved the line and left the dot behind
+    // is exactly the kind of half-done change this is here to catch.
+    const dotColour = () =>
+      line.evaluate((el) => getComputedStyle(el, '::before').getPropertyValue('background-color'));
+    const setVar = (name: string, value: string) =>
+      page.evaluate(([n, v]) => document.documentElement.style.setProperty(n, v), [name, value]);
+
+    // Same reasoning as the header's: no golden renders this line, because
+    // every fixture here is a week that does not contain today. Without this
+    // assertion `--now` could be published as any colour at all and the whole
+    // suite would stay green.
+    expect(await lineColour(), 'the current-time colour changed value').toBe('rgb(226, 86, 74)');
+
+    const before = await lineColour();
+    const dotBefore = await dotColour();
+
+    await setVar('--error', 'rgb(0, 255, 0)');
+    expect(await lineColour(), '--error reached the current-time line').toBe(before);
+    expect(await dotColour(), '--error reached the current-time dot').toBe(dotBefore);
+
+    await setVar('--now', 'rgb(0, 0, 255)');
+    expect(await lineColour(), 'the line does not read --now').toBe('rgb(0, 0, 255)');
+    expect(await dotColour(), 'the dot does not read --now').toBe('rgb(0, 0, 255)');
+  });
+
   // The other half of the pair, and the one the baselines rest on.
   test('neither mark is drawn for a week that does not contain today', async ({ page }) => {
     await page.goto(show('WeekGrid', 'empty'));
@@ -642,6 +689,56 @@ test.describe('Header', () => {
     await page.goto(show('Header', 'demo'));
     await expect(page.getByRole('button', { name: 'Add account' })).toHaveCount(0);
     await expect(page.getByRole('button', { name: /Connect/ })).toHaveCount(0);
+  });
+
+  /**
+   * The error banner and the DEMO DATA badge read their colours from
+   * `--error` and `--demo`, and not from anywhere else.
+   *
+   * Overriding the variable at runtime, rather than comparing the rendered
+   * colour against a known hex. The comparison is what a first pass at this
+   * did, and it is worthless here: `#e2564a` written literally in the
+   * stylesheet produces exactly the same `rgb(226, 86, 74)` as
+   * `var(--error)` resolving to it, so the assertion passes just as happily
+   * against the code this replaced. Only moving the variable and watching the
+   * element follow can tell the two apart.
+   */
+  test('the error banner and the demo badge follow their own variables', async ({ page }) => {
+    await page.goto(show('Header', 'error-and-demo'));
+    const err = page.locator('.err');
+    const demo = page.locator('.demo');
+    await expect(err).toHaveText('Sync failed.');
+    await expect(demo).toHaveText('DEMO DATA');
+
+    const colour = (l: typeof err, prop: string) =>
+      l.evaluate((el, p) => getComputedStyle(el).getPropertyValue(p), prop);
+    const setVar = (name: string, value: string) =>
+      page.evaluate(([n, v]) => document.documentElement.style.setProperty(n, v), [name, value]);
+
+    // The value, before the wiring. Neither of these elements appears in any
+    // screenshot golden — every `header-*` fixture has `error: null`, so `.err`
+    // is never rendered into one — which means nothing else in the suite would
+    // notice `setPalette` publishing the wrong colour. The override below
+    // cannot: it proves where the colour comes from, and passes whatever the
+    // resolved value is.
+    expect(await colour(err, 'color'), 'the error colour changed value').toBe('rgb(226, 86, 74)');
+    expect(await colour(demo, 'color'), 'the demo badge colour changed value')
+      .toBe('rgb(226, 160, 63)');
+
+    const demoBefore = await colour(demo, 'color');
+    const tintBefore = await colour(err, 'background-color');
+
+    await setVar('--error', 'rgb(0, 255, 0)');
+    expect(await colour(err, 'color'), 'the banner does not read --error').toBe('rgb(0, 255, 0)');
+    // The 9% wash is `color-mix`ed from the same variable rather than carried
+    // as a second one, so it has to move too — and it is the half a colour
+    // assertion on the text alone would miss.
+    expect(await colour(err, 'background-color'), 'the banner tint does not follow --error')
+      .not.toBe(tintBefore);
+    expect(await colour(demo, 'color'), '--error reached the DEMO DATA badge').toBe(demoBefore);
+
+    await setVar('--demo', 'rgb(0, 0, 255)');
+    expect(await colour(demo, 'color'), 'the badge does not read --demo').toBe('rgb(0, 0, 255)');
   });
 });
 

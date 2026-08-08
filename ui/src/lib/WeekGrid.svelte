@@ -475,8 +475,8 @@
           pointer-events: none; }
 
   /* The loudest thing on screen, deliberately. */
-  .now { position: absolute; left: 0; right: 0; border-top: 1.5px solid #e2564a; z-index: 5;
+  .now { position: absolute; left: 0; right: 0; border-top: 1.5px solid var(--now); z-index: 5;
          pointer-events: none; }
   .now::before { content: ''; position: absolute; left: -3px; top: -3.5px;
-                 width: 7px; height: 7px; border-radius: 50%; background: #e2564a; }
+                 width: 7px; height: 7px; border-radius: 50%; background: var(--now); }
 </style>

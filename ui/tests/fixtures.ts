@@ -1475,6 +1475,14 @@ export const FIXTURES: Record<string, Record<string, any>> = {
     'connected-demo': header({ accounts: ['demo@omacal.local'], last_sync_ms: FIVE_MIN_AGO, demo: true, overlay_titlebar: false }),
     'busy-disconnected': header({ accounts: [], last_sync_ms: null, demo: false, overlay_titlebar: false }, true),
     'busy-connected': header({ accounts: ['me@x.com'], last_sync_ms: FIVE_MIN_AGO, demo: false, overlay_titlebar: false }, true),
+    // The only fixture that renders the error banner *and* the DEMO DATA badge
+    // at once, so one mount witnesses both `--error` and `--demo`. No
+    // screenshot is taken of it — it exists for the computed-colour spec, which
+    // overrides those variables at runtime and watches what moves.
+    'error-and-demo': {
+      ...header({ accounts: [], last_sync_ms: null, demo: true, overlay_titlebar: false }),
+      error: 'Sync failed.' as string | null,
+    },
   },
   CalendarPopover: {
     'two-accounts': {

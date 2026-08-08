@@ -321,7 +321,7 @@
             background: color-mix(in srgb, var(--text) 6%, transparent); }
 
   .err { font-size: 10.5px; line-height: 1.4; margin: 0; padding: 6px 8px; border-radius: 5px;
-         color: #e2564a; background: color-mix(in srgb, #e2564a 9%, transparent); }
+         color: var(--error); background: color-mix(in srgb, var(--error) 9%, transparent); }
 
   .actions { display: flex; gap: 6px; justify-content: flex-end; margin-top: 2px; }
   .actions button { font: inherit; font-size: 11.5px; cursor: pointer;

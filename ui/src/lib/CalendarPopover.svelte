@@ -207,7 +207,7 @@
   .note { font-size: 10.5px; color: var(--muted); line-height: 1.4;
           margin: 8px 6px 0; padding: 6px 8px; border-radius: 5px;
           background: color-mix(in srgb, var(--text) 6%, transparent); }
-  .note.err { color: #e2564a; background: color-mix(in srgb, #e2564a 9%, transparent); }
+  .note.err { color: var(--error); background: color-mix(in srgb, var(--error) 9%, transparent); }
 
   .hint { font-size: 9.5px; color: var(--muted); opacity: .8; line-height: 1.45;
           margin: 8px 6px 2px; }
