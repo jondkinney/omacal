@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 import {
   FIXED_NOW, FORM_FALLBACK_ID, FORM_NOW, FORM_UNWRITABLE_ID, FORM_UNWRITABLE_NAMES,
   MON, MONTH_2026_NOW, POPOVER_DETAILS, POPOVER_REFRESHED_DETAIL,
@@ -1221,6 +1221,73 @@ test.describe('BigYearRibbon', () => {
     await expect(page.locator('.pill.cont')).toHaveCount(2);
   });
 
+  // ---- a title appears once, not on every row ------------------------------
+
+  /** `crossingBigYear`'s span, which is the only text either of its pills
+   *  could carry. Read from one place so "the head has it" and "the tail does
+   *  not" cannot drift apart. */
+  const CROSSING_TITLE = 'Sun-Tue trip';
+
+  test('a title is printed once, on the segment that starts the run', async ({ page }) => {
+    // `crossing` is one event across a row boundary: `rows[0]` holds the head
+    // (columns 25-27, `cont_right`) and `rows[1]` the tail (columns 0-1,
+    // `cont_left`), in that DOM order. A three-row conference used to print its
+    // name three times.
+    await page.goto(show('crossing'));
+    const pills = page.locator('.pill');
+    await expect(pills).toHaveCount(2);
+    await expect(pills.nth(0)).toHaveText(CROSSING_TITLE);
+    // Bare, which also covers the `‹` that used to be the tail's first
+    // characters — an empty segment cannot be carrying a chevron.
+    await expect(pills.nth(1)).toHaveText('');
+  });
+
+  test('a bare continuation is still a pill: it spans its days and it opens', async ({ page }) => {
+    // The other half of "shows no text": everything else about the segment is
+    // unchanged. Without this, deleting the tail element outright would satisfy
+    // the spec above.
+    await page.goto(show('crossing'));
+    const tail = page.locator('.pill.cl');
+
+    // Two of the row's twenty-eight columns, because the span runs into day 2 —
+    // measured against a day in the same row rather than written as a pixel
+    // count, so it stays true at any width. The fill is what carries the run
+    // now that the text is gone, so a tail collapsed to nothing would be the
+    // whole feature lost.
+    const tailBox = (await tail.boundingBox())!;
+    const dayBox = (await page.locator('.rrow').nth(1).locator('.rday').first().boundingBox())!;
+    expect(tailBox.width).toBeGreaterThan(dayBox.width);
+    expect(tailBox.width).toBeLessThan(3 * dayBox.width);
+
+    await tail.click();
+    expect(await page.evaluate(() => (window as any).__lastOpen?.event?.title))
+      .toBe(CROSSING_TITLE);
+  });
+
+  test('a continuation segment still has an accessible name', async ({ page }) => {
+    // The regression the change above would otherwise have shipped: the tail's
+    // only content *was* the title, so it became a `<button>` with nothing in
+    // it, and a control with no name is unreachable by name to anything driving
+    // the app through the accessibility tree.
+    //
+    // Both assertions are here on purpose and only the first one bites if the
+    // `aria-label` is removed. Measured, by deleting the label and running the
+    // `getByRole` line ahead of the other: it still finds both buttons, in
+    // WebKit and in Chromium — `title` is also on the element and both engines
+    // fall back to it for the accessible name. So the second line cannot be
+    // this test's witness, which is exactly the reason the attribute is
+    // asserted directly rather than through the name.
+    //
+    // It is still worth having: it is the one that says the name genuinely
+    // resolves in each engine, rather than that an attribute is spelled right.
+    // The point of the label is that the name stops depending on a fallback the
+    // two engines are free to disagree about, and only one of these two lines
+    // can see that the fallback is gone.
+    await page.goto(show('crossing'));
+    await expect(page.locator('.pill.cl')).toHaveAttribute('aria-label', CROSSING_TITLE);
+    await expect(page.getByRole('button', { name: CROSSING_TITLE, exact: true })).toHaveCount(2);
+  });
+
   test('the legend names each calendar that has a pill', async ({ page }) => {
     await page.goto(show('y2026'));
     await expect(page.locator('.legend .item')).toHaveCount(2);
@@ -1243,6 +1310,114 @@ test.describe('BigYearRibbon', () => {
     await page.goto(show('y2026'));
     await page.locator('.pill').first().click();
     expect(await page.evaluate(() => (window as any).__lastOpen)).toBeTruthy();
+  });
+
+  // ---- solid pills: choosing an ink against the fill, not against the theme --
+  //
+  // `foregroundFor` itself is tabled in `ink.spec.ts`, in Node and without a
+  // browser context. What is left here is the part that is genuinely about CSS:
+  // that the ink it picks reaches the pill, that the fill really is the
+  // calendar's colour at full strength, and that the two edge cases the solid
+  // fill created — an unparseable `--cal`, and a continuation marker that used
+  // to be drawn in the fill's own colour — still leave something readable.
+
+  /** Theme variables as the engine computes them.
+   *
+   *  `rgba(0,0,0,.88)` and `rgba(0, 0, 0, 0.88)` are one colour and two
+   *  strings, so a spec comparing a pill's computed `color` against
+   *  `theme.ts`'s literal would be failing on serialisation rather than on the
+   *  property. Putting both sides through the same probe normalises that.
+   *
+   *  Resolved rather than copied so these tests say "the ink the theme
+   *  publishes for a light fill" and not "rgba(0, 0, 0, 0.88)". A copy of those
+   *  literals here would be a second place that knows them, which is the thing
+   *  `theme.ts` exists to prevent. */
+  const resolveInks = (page: Page, vars: string[]) => page.evaluate((vs: string[]) => {
+    const probe = document.createElement('span');
+    document.body.appendChild(probe);
+    const out = vs.map((v) => {
+      probe.style.color = v;
+      return getComputedStyle(probe).color;
+    });
+    probe.remove();
+    return out;
+  }, vars);
+
+  test('a pale fill and a dark one on the same row take different inks', async ({ page }) => {
+    // The rendered half of `ink.spec.ts`: that the decision reaches the pill at
+    // all. Both pills are in one row, which is the arrangement that makes a
+    // fixed `color:` impossible — omacal shows Google's pale yellow beside its
+    // dark blue, and a single foreground fails one of them.
+    await page.goto(show('pill-inks'));
+    const pills = page.locator('.pill');
+    await expect(pills).toHaveCount(3);
+
+    const [light, dark] = await resolveInks(page, ['var(--ink-on-light)', 'var(--ink-on-dark)']);
+    // Without this the two assertions below could both hold with one ink.
+    expect(light).not.toBe(dark);
+
+    const ink = (n: number) => pills.nth(n).evaluate((el) => getComputedStyle(el).color);
+    expect(await ink(0)).toBe(light); // #f6bf26, pale
+    expect(await ink(1)).toBe(dark);  // #3f51b5, dark
+
+    // …and that the fill really is the calendar's colour at full strength,
+    // which is what makes the ink question exist at all. Under the old 16%
+    // wash both pills' backgrounds were within a few percent of the theme's
+    // own and this would read `rgba(…, 0.16)`.
+    const fill = await pills.nth(0).evaluate((el) => getComputedStyle(el).backgroundColor);
+    expect(fill).toBe('rgb(246, 191, 38)');
+  });
+
+  test('an unreadable colour is still readable', async ({ page }) => {
+    // `ev.color` is non-nullable and `to_ui` only ever produces a hex, so this
+    // is not a payload the backend sends — it is the guard on `foregroundFor`
+    // being called during a render, where a throw takes the whole ribbon down
+    // rather than one pill.
+    //
+    // The claim about *why* `var(--text)` is the right fallback is checked
+    // here, not reasoned about: `background: var(--cal)` with a value the
+    // browser cannot parse is invalid at computed-value time, so the
+    // declaration drops to `transparent` and what shows behind the text is the
+    // app's own background — which is exactly the surface `--text` is legible
+    // on. If an engine ever resolved that differently the fallback would be
+    // wrong, and this is what would say so.
+    await page.goto(show('pill-inks'));
+    const broken = page.locator('.pill').nth(2);
+    await expect(broken).toHaveAttribute('title', 'Unreadable');
+
+    const seen = await broken.evaluate((el) => ({
+      color: getComputedStyle(el).color,
+      background: getComputedStyle(el).backgroundColor,
+    }));
+    const [text] = await resolveInks(page, ['var(--text)']);
+    // The fill the browser could not paint, and so the surface the text is
+    // really sitting on: the app's own background, not the calendar's colour.
+    expect(seen.background).toBe('rgba(0, 0, 0, 0)');
+    expect(seen.color).toBe(text);
+    // …and `--text` is not one of the two inks, so this is a genuinely
+    // different branch rather than the light/dark decision landing somewhere
+    // that happens to be legible.
+    const [light, dark] = await resolveInks(page, ['var(--ink-on-light)', 'var(--ink-on-dark)']);
+    expect([light, dark]).not.toContain(text);
+  });
+
+  test('a continuation edge stays visible against a solid fill', async ({ page }) => {
+    // The dashed left edge is what says "this started earlier". It used to be
+    // `border-left-style: dashed` over `border-left: 2px solid var(--cal)`,
+    // which worked against a 16% wash and paints nothing at all against a fill
+    // that *is* `--cal`: same colour, same colour, no marker. Asserted against
+    // the pill's own background rather than against a named colour, so it
+    // stays the right question if either end ever changes.
+    await page.goto(show('crossing'));
+    const tail = page.locator('.pill.cl');
+    await expect(tail).toHaveCount(1);
+
+    const edge = await tail.evaluate((el) => {
+      const s = getComputedStyle(el);
+      return { color: s.borderLeftColor, style: s.borderLeftStyle, background: s.backgroundColor };
+    });
+    expect(edge.style).toBe('dashed');
+    expect(edge.color).not.toBe(edge.background);
   });
 
   // Task 10. The ribbon's day strip carried no click handler at all before
@@ -1283,12 +1458,12 @@ test.describe('BigYearRibbon', () => {
     await page.goto(show('three-lanes'));
     const packed = page.locator('.rrow').first();
 
-    // `RESERVED_PILL_LANES` (2) trims the CSS budget below `PILL_LANE_CAP`
-    // (3, `pack_lanes`'s own cap) — reservation and cap are deliberately not
-    // the same number any more, so this is what proves the split didn't
-    // quietly become a cap of its own: all three of this row's genuinely
-    // overlapping spans still render, the row just grows past its reserved
-    // budget to fit the one it doesn't have a track for.
+    // At this suite's 720p viewport the reservation (`--lanes`) is two, which
+    // trims the CSS budget below `PILL_LANE_CAP` (3, `pack_lanes`'s own cap) —
+    // reservation and cap are deliberately not the same number, so this is what
+    // proves the split didn't quietly become a cap of its own: all three of
+    // this row's genuinely overlapping spans still render, the row just grows
+    // past its reserved budget to fit the one it doesn't have a track for.
     await expect(packed.locator('.pill')).toHaveCount(3);
 
     // The strip has to be tall enough to *hold* a day, which is a stronger
@@ -1317,12 +1492,25 @@ test.describe('BigYearRibbon', () => {
     expect(packedDays).toBeGreaterThanOrEqual(oneDay);
   });
 
+  // ---- the reservation follows the height the window actually has ----------
+
+  /** How many lane tracks `.pills` reserves, read off a row with no pills at
+   *  all — so it is the reservation being measured and not the content. The
+   *  computed `grid-template-rows` of a grid container is its resolved track
+   *  list, which is what "reserved" means here. */
+  const reservedLanes = (page: Page, rrow: number) => page
+    .locator('.rrow').nth(rrow).locator('.pills')
+    .evaluate((el) => getComputedStyle(el).gridTemplateRows.split(/\s+/).length);
+
+  /** `.rows` scrolling, in pixels. `<= 0` is "fourteen rows on one screen". */
+  const rowsOverflow = (page: Page) => page.locator('.rows')
+    .evaluate((el) => el.scrollHeight - el.clientHeight);
+
   test('all fourteen rows fit on one screen with no scroll', async ({ page }) => {
     // The design doc's own promise for this view (spec §4): "Big Year — one
-    // screen, the whole year." `RESERVED_PILL_LANES`'s comment explains the
-    // budget this depends on. Pinned so that budget can't drift back out of
-    // reach without a spec noticing, the way the original 3-lane reservation
-    // did.
+    // screen, the whole year." Pinned so the budget it depends on can't drift
+    // back out of reach without a spec noticing, the way the original fixed
+    // 3-lane reservation did.
     //
     // The container is 620px of `.rows` at the suite's default 1280x720
     // viewport (`devices['Desktop Chrome']`/`['Desktop Safari']` in
@@ -1334,12 +1522,80 @@ test.describe('BigYearRibbon', () => {
     // reads the box `App` genuinely leaves a view, which
     // `app.spec.ts`'s "a standalone view gets the same box the app gives it"
     // pins to the real thing — so this is a claim about 720p in the app and
-    // not only about the harness. Three reserved lanes rather than two would
-    // still fail it, which is what it is for.
+    // not only about the harness.
+    //
+    // 720p is below the 771px at which a third lane fits, so this is also the
+    // regression net for the reservation not creeping up: pinned to a constant
+    // three, `.rows` overflows here by exactly 51px (measured, and the number
+    // this fails with). It deliberately does *not* also assert the lane count.
+    // Three lanes at 720p always overflow, so a lane-count line here could
+    // never fail on its own — it would be a passenger, and the reservation at
+    // the small end is claimed where it can be seen instead: "a tall window
+    // levels the busiest row", whose 720p half needs the bulge that only two
+    // reserved lanes produce.
     await page.goto(show('y2026'));
     await expect(page.locator('.rrow')).toHaveCount(14);
-    const overflow = await page.locator('.rows').evaluate((el) => el.scrollHeight - el.clientHeight);
-    expect(overflow).toBeLessThanOrEqual(0);
+    expect(await rowsOverflow(page)).toBeLessThanOrEqual(0);
+  });
+
+  test('a window tall enough for a third lane reserves one', async ({ page }) => {
+    // The other end. 771px is the measured height at which fourteen rows of
+    // three reserved lanes plus the legend first fit — `.pills`'s own comment
+    // has the arithmetic and how it was measured. Set one pixel above it rather
+    // than exactly on it: this spec is about the reservation being taken when
+    // there is room, and sitting on the boundary would make it a spec about the
+    // boundary, which the pair below is for.
+    await page.setViewportSize({ width: 1280, height: 772 });
+    await page.goto(show('y2026'));
+    await expect(page.locator('.rrow')).toHaveCount(14);
+    expect(await reservedLanes(page, 2)).toBe(3);
+    // §4 still holds here — taking the third lane must not cost the promise it
+    // was traded against in the first place.
+    expect(await rowsOverflow(page)).toBeLessThanOrEqual(0);
+  });
+
+  test('the third lane is taken exactly where it starts fitting', async ({ page }) => {
+    // The threshold itself, from both sides, one pixel apart. A spec that only
+    // checked a tall window and a short one would pass for a threshold anywhere
+    // between them; this is what says the number is 771 and not "somewhere
+    // around 800".
+    await page.goto(show('y2026'));
+
+    await page.setViewportSize({ width: 1280, height: 771 });
+    expect(await reservedLanes(page, 2)).toBe(3);
+    expect(await rowsOverflow(page)).toBeLessThanOrEqual(0);
+
+    await page.setViewportSize({ width: 1280, height: 770 });
+    expect(await reservedLanes(page, 2)).toBe(2);
+    expect(await rowsOverflow(page)).toBeLessThanOrEqual(0);
+  });
+
+  test('a tall window levels the busiest row with the quiet ones', async ({ page }) => {
+    // Why the third lane is worth reserving at all: uniform rows. Levelling
+    // every row's height was Big Year's original property, and a fixed
+    // reservation of two gave it up at every window size to keep §4 at the
+    // small end. A tall window does not have to pay that.
+    //
+    // `three-lanes-exact` is three genuinely overlapping spans with nothing
+    // folded away — the busiest shape a three-lane reservation can level. (Its
+    // neighbour `three-lanes` also overflows, so its strip carries a fourth
+    // implicit track for the "+N more" line and stands proud of a quiet row
+    // whatever the reservation is.)
+    await page.goto(show('three-lanes-exact'));
+    const packed = page.locator('.rrow').nth(0).locator('.pills');
+    const quiet = page.locator('.rrow').nth(1).locator('.pills');
+    await expect(page.locator('.rrow').nth(0).locator('.pill')).toHaveCount(3);
+
+    await page.setViewportSize({ width: 1280, height: 772 });
+    expect((await packed.boundingBox())!.height).toBe((await quiet.boundingBox())!.height);
+
+    // …and at 720p it does bulge, which is the compromise the small end still
+    // makes. Asserted rather than left implied: without it, a reservation stuck
+    // at three would satisfy the line above and this test would be claiming a
+    // property of the *layout* rather than of the window.
+    await page.setViewportSize({ width: 1280, height: 720 });
+    expect((await packed.boundingBox())!.height)
+      .toBeGreaterThan((await quiet.boundingBox())!.height);
   });
 
   // The reported defect, at the one place App's own specs cannot see it: its
