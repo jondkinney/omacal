@@ -681,7 +681,7 @@ mod tests {
             recurring_event_id: None, original_start_utc: None,
             status: "confirmed".into(),
             self_response: Some("accepted".into()), conference_uri: None,
-            color_hex: None,
+            color_hex: None, calendar_timezone: "UTC".into(),
             description: None, etag: None, sequence: 0, organizer_email: None,
             attendees: Vec::new(),
         }

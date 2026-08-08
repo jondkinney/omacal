@@ -2296,7 +2296,8 @@ mod tests {
             start_tz: "UTC".into(), end_tz: "UTC".into(), is_all_day: false,
             recurrence: None, recurring_event_id: None, original_start_utc: None,
             status: "confirmed".into(), self_response: Some("needsAction".into()),
-            conference_uri: None, color_hex: None, description: None,
+            conference_uri: None, color_hex: None, calendar_timezone: "UTC".into(),
+            description: None,
             etag: Some("\"old\"".into()), sequence: 1, organizer_email: None,
             attendees,
         }

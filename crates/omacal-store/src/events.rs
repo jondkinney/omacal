@@ -32,6 +32,13 @@ pub struct StoredEvent {
     /// on `calendars`, not `events`, so `upsert_event` neither reads nor writes
     /// it; a hand-built `StoredEvent` on the write path leaves it `None`.
     pub color_hex: Option<String>,
+    /// The owning calendar's own `timezone`, joined in by `events_in_window`
+    /// alongside `color_hex`. **Not** `start_tz`/`end_tz` above — those are the
+    /// zone a *timed* event was authored in, which for an all-day event is
+    /// whatever sync happened to fall back to. This is the zone Google's bare
+    /// `date` was resolved against for an all-day event, and the only one that
+    /// buckets it back onto the right calendar day.
+    pub calendar_timezone: String,
     pub description: Option<String>,
     pub etag: Option<String>,
     pub sequence: i64,
@@ -65,7 +72,7 @@ pub struct Attendee {
 const SELECT_COLS: &str = "e.id, e.calendar_id, e.google_id, e.summary, e.location,
      e.start_utc, e.end_utc, e.start_tz, e.end_tz, e.is_all_day, e.recurrence,
      e.recurring_event_id, e.original_start_utc,
-     e.status, e.self_response, e.conference_uri, c.color_hex,
+     e.status, e.self_response, e.conference_uri, c.color_hex, c.timezone,
      e.description, e.etag, e.sequence, e.organizer_email, e.attendees_json";
 
 fn row_to_event(row: &sqlx::sqlite::SqliteRow) -> StoredEvent {
@@ -87,6 +94,7 @@ fn row_to_event(row: &sqlx::sqlite::SqliteRow) -> StoredEvent {
         self_response: row.get("self_response"),
         conference_uri: row.get("conference_uri"),
         color_hex: row.get("color_hex"),
+        calendar_timezone: row.get("timezone"),
         description: row.get("description"),
         etag: row.get("etag"),
         sequence: row.get("sequence"),
@@ -231,15 +239,16 @@ pub async fn delete_series(
 ///
 /// `c.google_id` is aliased: `SELECT_COLS` already selects the *event's* own
 /// `google_id` as `e.google_id`, and an unaliased second column of the same
-/// name would collide when read back by name. `c.timezone` needs no alias —
-/// `events` has no column of that name; the event's own zones are `start_tz`
-/// and `end_tz`, and they are a different fact (see [`event_by_id`]).
+/// name would collide when read back by name. `c.timezone` needs no such
+/// alias and no separate selection at all any more — `SELECT_COLS` already
+/// carries it as `StoredEvent::calendar_timezone`, so this query only adds
+/// the two columns that field doesn't cover.
 async fn event_row_for_write(
     pool: &SqlitePool,
     id: i64,
 ) -> anyhow::Result<Option<(StoredEvent, String, String, String, String)>> {
     let sql = format!(
-        "SELECT {SELECT_COLS}, c.access_role, c.google_id AS cal_google_id, c.timezone,
+        "SELECT {SELECT_COLS}, c.access_role, c.google_id AS cal_google_id,
                 a.email AS account_email
          FROM events e
          JOIN calendars c ON c.id = e.calendar_id
@@ -250,9 +259,10 @@ async fn event_row_for_write(
     Ok(row.map(|r| {
         let access_role: String = r.get("access_role");
         let cal_google_id: String = r.get("cal_google_id");
-        let cal_timezone: String = r.get("timezone");
         let account_email: String = r.get("account_email");
-        (row_to_event(&r), access_role, cal_google_id, account_email, cal_timezone)
+        let ev = row_to_event(&r);
+        let cal_timezone = ev.calendar_timezone.clone();
+        (ev, access_role, cal_google_id, account_email, cal_timezone)
     }))
 }
 
@@ -458,7 +468,7 @@ mod tests {
             recurring_event_id: None, original_start_utc: None,
             status: "confirmed".into(),
             self_response: Some("accepted".into()), conference_uri: None,
-            color_hex: None,
+            color_hex: None, calendar_timezone: "Europe/Sofia".into(),
             description: None, etag: None, sequence: 0, organizer_email: None,
             attendees: Vec::new(),
         }
@@ -679,6 +689,7 @@ mod tests {
             recurring_event_id: Some("master".into()), original_start_utc: Some(1_500),
             status: "tentative".into(), self_response: Some("needsAction".into()),
             conference_uri: Some("https://meet/x".into()), color_hex: None,
+            calendar_timezone: "Europe/Sofia".into(),
             description: None, etag: None, sequence: 0, organizer_email: None,
             attendees: Vec::new(),
         };
@@ -788,6 +799,39 @@ mod tests {
         assert!(out[0].color_hex.is_none());
     }
 
+    /// The zone `assemble_days` needs to bucket an all-day event by the right
+    /// day: the stored instant is midnight in the *calendar's* zone, and
+    /// bucketing it against day boundaries in any other zone lands the chip
+    /// under the wrong date.
+    ///
+    /// `seed`'s calendar and `ev`'s event both say `Europe/Sofia`, which would
+    /// let either column pass as the other, so this fixture moves the
+    /// *calendar* to `Pacific/Auckland` and gives the *event* its own
+    /// `start_tz` of `UTC` — reading `e.start_tz` by mistake then answers
+    /// `UTC` and fails here rather than shipping.
+    #[tokio::test]
+    async fn events_in_window_returns_the_calendars_own_timezone_not_the_events() {
+        let pool = connect_memory().await.unwrap();
+        let cal = seed(&pool).await;
+        sqlx::query("UPDATE calendars SET timezone = 'Pacific/Auckland' WHERE id = ?1")
+            .bind(cal)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let mut e = ev(cal, "a", 1000, 2000);
+        e.start_tz = "UTC".into();
+        upsert_event(&pool, &e).await.unwrap();
+
+        let out = events_in_window(&pool, 0, 5000).await.unwrap();
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            out[0].start_tz, "UTC",
+            "fixture check: the event's own zone must differ from its calendar's, or this \
+             test cannot tell the two columns apart"
+        );
+        assert_eq!(out[0].calendar_timezone, "Pacific/Auckland");
+    }
+
     #[tokio::test]
     async fn hiding_a_calendar_does_not_stop_it_syncing() {
         let pool = connect_memory().await.unwrap();
@@ -846,6 +890,7 @@ mod tests {
             self_response: Some("needsAction".into()),
             conference_uri: None,
             color_hex: None,
+            calendar_timezone: "Europe/Sofia".into(),
             description: Some("Sprint sync.".into()),
             etag: Some("\"etag-1\"".into()),
             sequence: 3,

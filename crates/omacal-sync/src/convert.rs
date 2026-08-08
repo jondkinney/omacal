@@ -98,6 +98,9 @@ pub fn to_stored(ev: &Event, calendar_id: i64, cal_tz: &str) -> Option<StoredEve
         conference_uri: ev.hangout_link.clone(),
         // Joined in from `calendars` on read; nothing to write here.
         color_hex: None,
+        // Also joined in on read, so this write is inert — but `cal_tz` is
+        // already on hand, so there is no reason to leave it wrong.
+        calendar_timezone: cal_tz.to_string(),
         description: ev.description.clone(),
         etag: ev.etag.clone(),
         sequence: ev.sequence,
@@ -156,6 +159,7 @@ pub fn to_cancelled_exception(ev: &Event, calendar_id: i64, cal_tz: &str) -> Opt
         self_response: None,
         conference_uri: None,
         color_hex: None,
+        calendar_timezone: cal_tz.to_string(),
         // A tombstone carries little more than its id, so these are usually
         // absent — mapped the same way as `to_stored` rather than hardcoded,
         // so nothing is silently dropped if Google ever sends more.

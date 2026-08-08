@@ -154,7 +154,7 @@ mod tests {
             start_tz: "UTC".into(), end_tz: "UTC".into(), is_all_day: false,
             recurrence: None, recurring_event_id: None, original_start_utc: None,
             status: "confirmed".into(), self_response: None, conference_uri: None,
-            color_hex: None,
+            color_hex: None, calendar_timezone: "UTC".into(),
             description: None, etag: None, sequence: 0, organizer_email: None,
             attendees: Vec::new(),
         }
