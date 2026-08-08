@@ -129,8 +129,15 @@
 {/if}
 
 <style>
+  /* `padding-top`, moved here out of `App`'s `main` — see the comment there
+     for why it is layout-neutral. A drag region covers its own box and
+     nothing above it, so this is what carries the top edge of the window into
+     something the user can grab; as `main` padding the same 14px was dead,
+     and it is the first strip anyone reaches for to move a window. Padding
+     rather than margin, deliberately: a margin is outside the element and
+     would be dead in exactly the same way. */
   header { display: flex; align-items: center; justify-content: space-between;
-           gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+           gap: 12px; padding-top: 14px; margin-bottom: 12px; flex-wrap: wrap; }
   /* Room for macOS's close/minimise/zoom buttons, which `titleBarStyle:
      "Overlay"` draws *over* this webview rather than in a strip above it.
      Without it the month title renders underneath them.

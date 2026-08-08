@@ -1370,6 +1370,52 @@ test.describe('App: one band, not two', () => {
   });
 
   /**
+   * And it has to reach the very top of the window, which is a separate thing
+   * from existing.
+   *
+   * A drag region covers its own box and nothing above it. `main` used to hold
+   * 14px of `padding-top` above the header, so the topmost strip of the
+   * window — the first place anyone puts the cursor to move a window, and on
+   * macOS the strip the traffic lights themselves sit in — belonged to `main`
+   * and did nothing. The header carries that padding now.
+   *
+   * The width half matters as much as the top half: a handle that reaches y=0
+   * and is 120px wide is the title on its own, which is not a title bar.
+   */
+  test('a drag handle reaches the top edge of the window', async ({ page }) => {
+    await page.goto(app());
+    await expect(page.locator('h1')).toBeVisible();
+
+    const CLICKABLE = ['A', 'BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'LABEL', 'SUMMARY'];
+    const { topmost, viewportWidth } = await page.evaluate((clickable) => {
+      const header = document.querySelector('header')!;
+      const all = [
+        ...(header.hasAttribute('data-tauri-drag-region') ? [header] : []),
+        ...header.querySelectorAll<HTMLElement>('[data-tauri-drag-region]'),
+      ];
+      const boxes = all
+        .filter((el) => !clickable.includes(el.tagName))
+        .map((el) => {
+          const b = el.getBoundingClientRect();
+          return { tag: el.tagName, top: b.top, width: b.width };
+        })
+        .sort((x, y) => x.top - y.top);
+      return { topmost: boxes[0] ?? null, viewportWidth: window.innerWidth };
+    }, CLICKABLE);
+
+    expect(topmost, 'there is no non-interactive drag handle at all').not.toBeNull();
+    expect(
+      topmost!.top,
+      `the top ${topmost!.top}px of the window cannot be grabbed to move it`,
+    ).toBeLessThanOrEqual(0.5);
+    // Not the full width: `main`'s horizontal gutter is still `main`'s, and the
+    // outermost pixels of a window are its resize edge anyway. Half is enough
+    // to tell a band from a label.
+    expect(topmost!.width, 'the only handle reaching the top is too narrow to be a title bar')
+      .toBeGreaterThan(viewportWidth / 2);
+  });
+
+  /**
    * The trap that `data-tauri-drag-region="deep"` would spring. `deep` hands
    * the whole subtree over, and `CalendarPopover`'s panel opens *inside* the
    * header — so its account labels, calendar names and hint text would drag
