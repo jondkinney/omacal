@@ -2,17 +2,68 @@ import { test, expect, type Page } from '@playwright/test';
 import {
   FIXED_NOW, FORM_FALLBACK_ID, FORM_NOW, FORM_UNWRITABLE_ID, FORM_UNWRITABLE_NAMES,
   MON, MONTH_2026_NOW, POPOVER_DETAILS, POPOVER_REFRESHED_DETAIL,
-  TRIP_END_DATE, TRIP_FIRST_DAY, TRIP_LAST_DAY, popoverWeekWithResponse, YEAR_2026_NOW,
+  TRIP_END_DATE, TRIP_FIRST_DAY, TRIP_LAST_DAY, popoverWeekWithResponse,
+  WEEK_NOW, WEEK_NOW_INSIDE, YEAR_2026_NOW,
 } from './fixtures';
 import { CALENDAR_SYNC_REMOVED } from './harness/tauri';
 
 const show = (c: string, f: string) => `/tests/harness/index.html?c=${c}&f=${f}`;
 
 test.describe('WeekGrid', () => {
+  // `WeekGrid` reads the real clock three times — `todayStart` at mount (the
+  // accent day-number pill and the `.col.today` tint), `nowMs` for the
+  // current-time line, and `Date.now()` again for where the grid opens
+  // scrolled to. Every fixture here is anchored on `MON`, a Monday in 2024, so
+  // none of those marks rendered into the two committed baselines — but only
+  // because the *run date* fell outside that week, which nothing asserted.
+  //
+  // Freezing it makes that a property of the suite rather than of the calendar.
+  // Before `page.goto`, because the component reads the clock at mount; same
+  // mechanism as `MonthGrid`'s `MONTH_2026_NOW` and `YearGrid`'s
+  // `YEAR_2026_NOW` above.
+  test.beforeEach(async ({ page }) => {
+    await page.clock.setFixedTime(WEEK_NOW);
+  });
+
   test('renders an empty week', async ({ page }) => {
     await page.goto(show('WeekGrid', 'empty'));
     await expect(page.locator('.col')).toHaveCount(7);
     await expect(page).toHaveScreenshot('weekgrid-empty.png');
+  });
+
+  // Without this, `WEEK_NOW` is unfalsifiable: a `WeekGrid` that had lost the
+  // today-highlight and the current-time line entirely would satisfy every
+  // other spec in this block and both baselines, because none of them ever
+  // renders a week containing today. Moving the clock *into* `MON`'s week is
+  // what makes "the goldens show no today marks" a statement about the clock
+  // rather than about the component being incapable of drawing them.
+  test('the today-highlight and the current-time line appear when today is on screen', async ({ page }) => {
+    await page.clock.setFixedTime(WEEK_NOW_INSIDE);
+    await page.goto(show('WeekGrid', 'empty'));
+    await expect(page.locator('.col')).toHaveCount(7);
+
+    // Wednesday, and *only* Wednesday: a component that flagged every column
+    // would pass a check aimed at one of them.
+    const flagged: number[] = [];
+    for (let i = 0; i < 7; i++) {
+      if ((await page.locator('.col').nth(i).getAttribute('class'))?.includes('today')) flagged.push(i);
+    }
+    expect(flagged, 'exactly the third column is today').toEqual([2]);
+
+    // And the line is drawn at the hour it is, not merely present: 10:30 of a
+    // 24-hour day is 43.75% down the column.
+    const line = page.locator('.now');
+    await expect(line).toHaveCount(1);
+    const pct = await line.evaluate((el) => parseFloat((el as HTMLElement).style.top));
+    expect(pct).toBeCloseTo(100 * (10.5 / 24), 1);
+  });
+
+  // The other half of the pair, and the one the baselines rest on.
+  test('neither mark is drawn for a week that does not contain today', async ({ page }) => {
+    await page.goto(show('WeekGrid', 'empty'));
+    await expect(page.locator('.col')).toHaveCount(7);
+    await expect(page.locator('.col.today')).toHaveCount(0);
+    await expect(page.locator('.now')).toHaveCount(0);
   });
 
   // Task 10. Exactly on the 10:00 line, which is where somebody aims to make a
