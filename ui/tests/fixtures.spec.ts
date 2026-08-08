@@ -55,10 +55,13 @@ test.describe('the hand-written month fixtures describe payloads assemble_month 
   });
 
   test('every fixture is six rows of seven abutting days', () => {
-    // Repeated in each looping test rather than left to the one above: with an
-    // empty sweep `checked` and `months.length * 42` are both zero and the
-    // count assertion at the bottom passes. Every test here has to fail on its
-    // own when there is nothing to sweep.
+    // Repeated in every looping test rather than left to the one above, and
+    // two different holes need it. With an *empty* sweep `checked` and
+    // `months.length * 42` are both zero and the count at the bottom passes.
+    // With a *partial* one — `months.slice(0, 1)` — both counts agree as well,
+    // and the per-fixture `checked > 0` floors in the later tests are satisfied
+    // by one fixture out of three. Only a floor on `months.length` catches
+    // that, so each test carries its own.
     expect(months.length).toBeGreaterThanOrEqual(3);
     let checked = 0;
     for (const [name, m] of months) {
@@ -96,29 +99,54 @@ test.describe('the hand-written month fixtures describe payloads assemble_month 
     expect(checked).toBe(months.length * 42);
   });
 
-  test('every fixture dims one contiguous run of in-month days', () => {
+  test('every fixture dims exactly the days of the year and month it claims', () => {
     expect(months.length).toBeGreaterThanOrEqual(3); // see above
     for (const [name, m] of months) {
+      // The month it claims to be is one a grid can be built for.
+      expect(m.month, name).toBeGreaterThanOrEqual(1);
+      expect(m.month, name).toBeLessThanOrEqual(12);
+
+      const inMonth = cellsOf(m)
+        .map((c, i) => (c.in_month ? i : -1))
+        .filter((i) => i >= 0);
       // `in_month` is `start_ms >= month_start_ms && start_ms < next_month_start_ms`
       // against strictly increasing cells, so the in-month days are one
       // unbroken run — a fixture that dimmed a day in the middle of its own
       // month, or lit one either side of it, could not have come from there.
-      const inMonth = cellsOf(m)
-        .map((c, i) => (c.in_month ? i : -1))
-        .filter((i) => i >= 0);
       expect(inMonth.length, `${name} has no in-month days`).toBeGreaterThanOrEqual(28);
       expect(inMonth.length, `${name} has more in-month days than a month has`)
         .toBeLessThanOrEqual(31);
       expect(inMonth, `${name}'s in-month days are not contiguous`).toEqual(
         Array.from({ length: inMonth.length }, (_, i) => inMonth[0] + i),
       );
-      // The month it claims to be is one a grid can be built for.
-      expect(m.month, name).toBeGreaterThanOrEqual(1);
-      expect(m.month, name).toBeLessThanOrEqual(12);
+
+      // …and the run is the month the payload *says* it is. Everything above
+      // is satisfied by any 28-31 day run anywhere in the grid: a fixture
+      // claiming `month: 7` while dimming August's 31 days is contiguous, the
+      // right length, and a legal month number. `year` was not read at all.
+      //
+      // This is `commands.rs:433` itself, which is the whole predicate rather
+      // than a consequence of it. The two above are kept because they name
+      // their own failure shapes; this one is the strong form.
+      const monthStart = Date.UTC(m.year, m.month - 1, 1);
+      // A month index of 12 rolls into January of the next year, which is
+      // exactly `assemble_month`'s own `if month == 12` branch.
+      const nextMonthStart = Date.UTC(m.year, m.month, 1);
+      for (const [k, cell] of cellsOf(m).entries()) {
+        // The boundary above is a UTC one, and these fixtures are UTC grids —
+        // `fixtures.ts` says so, and `playwright.config.ts` pins the browser to
+        // UTC for the same reason. Asserted rather than assumed: a month
+        // fixture built in a real zone must fail *here*, with a reason, rather
+        // than be compared against a boundary that does not apply to it.
+        expect(cell.start_ms % (24 * H), `${name} cell ${k} is not a UTC midnight`).toBe(0);
+        expect(cell.in_month, `${name} cell ${k} is dimmed against ${m.year}-${m.month}`)
+          .toBe(cell.start_ms >= monthStart && cell.start_ms < nextMonthStart);
+      }
     }
   });
 
   test('every timed event sits in the cell carrying it, in start order', () => {
+    expect(months.length).toBeGreaterThanOrEqual(3); // see above
     let checked = 0;
     for (const [name, m] of months) {
       for (const [r, row] of m.rows.entries()) {
@@ -157,6 +185,7 @@ test.describe('the hand-written month fixtures describe payloads assemble_month 
   });
 
   test('every bar indexes an event that exists and stays inside its row', () => {
+    expect(months.length).toBeGreaterThanOrEqual(3); // see above
     let checked = 0;
     for (const [name, m] of months) {
       for (const [r, row] of m.rows.entries()) {

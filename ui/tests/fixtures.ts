@@ -1139,12 +1139,28 @@ export const CREATED_DETAIL: EventDetail = detail({ id: 9001, title: 'Lunch' });
 /** The generated payload, named as the type the app's own `invoke<WeekPayload>`
  *  promises.
  *
- *  The cast earns its keep: `tsc` infers the JSON's literal shape, and an
- *  assertion between two object types that share no overlap is an error rather
- *  than a widening. So a Rust-side *rename* — `all_day` becoming `allDay`, a
- *  field dropped — fails `npm run check` on this line (measured), before the
- *  Rust golden test is even reached. What it cannot see is a value moving
- *  inside an unchanged shape; that is the Rust test's job. */
+ *  The cast is a **second** net, and a narrower one than it looks. Measured, on
+ *  a Rust-side `#[serde(rename = "allDay")]`:
+ *
+ *  * with the file as committed, `npm run check` is **exit 0**. The JSON has not
+ *    moved, so `tsc` sees nothing to object to. The Rust golden test is the
+ *    first and only thing that catches a rename — which is the better design,
+ *    not the worse one.
+ *  * `tsc` fires only *after* someone regenerates, and that is the case it is
+ *    genuinely good for: a regenerated file whose shape no longer matches the
+ *    types the app reads it through.
+ *
+ *  It also does not see every shape change. Measured after regeneration: a
+ *  renamed field fails (TS2352), a **removed** field fails, an **added** one
+ *  passes entirely. And the removal is caught by accident — every array in this
+ *  particular file is empty, so `events` and `placed` infer as `never[]`, and it
+ *  is that, not the missing field, that blocks the reverse direction of the
+ *  comparability check. A populated golden file would infer real element types
+ *  and a removal would slip through (confirmed on an isolated repro). Worth
+ *  knowing when the first golden file with timed events lands.
+ *
+ *  A value moving inside an unchanged shape it never sees at all. That is the
+ *  Rust test's job, and the Rust test is the one to rely on. */
 const XZONE_GOLDEN = crossZoneWeekGolden as WeekPayload;
 
 /** Wed 12 Aug 2026 00:00 `Pacific/Auckland` — `2026-08-11T12:00:00Z`. What the
