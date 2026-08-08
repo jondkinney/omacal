@@ -111,6 +111,31 @@ const emptyWeekAt = (weekStartMs: number): WeekPayload => ({
 
 const emptyWeek = (): WeekPayload => emptyWeekAt(MON);
 
+/**
+ * An `AllDayBand` props fixture lifted back into the `WeekPayload` it is a
+ * projection of, so `fixtures.spec.ts`'s lane sweep can hold it to the same
+ * invariants as every other payload.
+ *
+ * Exact rather than a contortion: `WeekGrid` hands `AllDayBand` these three
+ * fields and nothing else, unchanged —
+ *
+ *     lanes={week.all_day} events={week.all_day_events} overflow={week.overflow}
+ *
+ * (`WeekGrid.svelte:344-349`) — so a props fixture *is* three fields of a week
+ * payload with the rest of the week dropped. Putting them back on an otherwise
+ * empty seven-day week restores exactly what was dropped and invents nothing:
+ * the day columns the sweep needs for its column-bound checks are the same
+ * seven every other fixture here has.
+ */
+export const bandAsWeek = (
+  p: { lanes: Lane[]; events: UiEvent[]; overflow: number[] },
+): WeekPayload => ({
+  ...emptyWeek(),
+  all_day: p.lanes,
+  all_day_events: p.events,
+  overflow: p.overflow,
+});
+
 const populatedWeek = (): WeekPayload => {
   const w = emptyWeek();
   // Monday: a single 60-minute meeting.
@@ -1419,12 +1444,44 @@ export const FIXTURES: Record<string, Record<string, any>> = {
       overflow: [],
       onopen: noop,
     },
-    overflow: {
-      lanes: populatedWeek().all_day,
-      events: populatedWeek().all_day_events,
-      overflow: [2, 3],
-      onopen: noop,
-    },
+    // A band that really overflows, described the way `pack_lanes` would
+    // actually have produced it.
+    //
+    // It used to carry `populatedWeek()`'s two events with `overflow: [2, 3]`,
+    // which indexed nothing: `overflow` holds segment indices
+    // (`lanes.rs:79`), and there were only entries 0 and 1 to point at. That
+    // rendered correctly by luck — `AllDayBand` reads `overflow.length` and
+    // never dereferences the indices — and would have become a lie the moment
+    // "+2 more" needed to say *which* two.
+    //
+    // So: four events. The two that fit are packed into the two lanes the week
+    // band allows, and the two that did not are named by index. Both of the
+    // overflowed pair span Mon–Tue, which is what makes them overflow rather
+    // than land in a lane: lane 0 is occupied across Mon–Wed and lane 1 across
+    // Mon–Tue, so there is no free lane over that span and `max_lanes` is 2.
+    // Their widths (2 columns) are also no wider than the packed pair's, so
+    // `pack_lanes`' widest-first sort (`lanes.rs:55`) really would have reached
+    // them last — an overflowed segment wider than a packed one would be a
+    // payload that sort could not emit.
+    //
+    // Deliberately *not* `overflow: [0, 1]`, which would resolve but describe
+    // an event both packed and overflowed — forbidden by `lanes.rs:70`'s
+    // `continue 'next` against `:79`, and asserted by the sweep.
+    overflow: (() => {
+      const w = populatedWeek();
+      return {
+        lanes: w.all_day,
+        events: [
+          ...w.all_day_events,
+          ev({ title: 'Diwali', is_all_day: true, color: '#c084fc',
+               start_ms: MON, end_ms: MON + 2 * 24 * H }),
+          ev({ title: 'Audit window', is_all_day: true, color: '#f472b6',
+               start_ms: MON, end_ms: MON + 2 * 24 * H }),
+        ],
+        overflow: [2, 3],
+        onopen: noop,
+      };
+    })(),
     empty: { lanes: [], events: [], overflow: [], onopen: noop },
     // Every corner state a chip can be in, one per lane, so a spec can
     // snapshot each chip on its own at zero tolerance. `cont_left` flattens
