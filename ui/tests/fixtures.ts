@@ -561,6 +561,25 @@ const augustMonth = (): MonthPayload => {
  *  rather than by a test. */
 const BUSY_DAY_START_MS = AUG_GRID_START + 14 * 24 * H;
 
+/** Monday 10 Aug 2026 **14:00** UTC — the instant every `MonthGrid` spec
+ *  freezes the page clock to.
+ *
+ *  `MonthGrid` computes its `todayStart` from `new Date()`, while all three of
+ *  its fixtures are the same fixed August 2026 grid, so without a frozen clock
+ *  the today-highlight is untestable *and* the whole spec block depends on the
+ *  run date. Same reasoning and same mechanism as `YEAR_2026_NOW` for
+ *  `YearGrid`.
+ *
+ *  Derived from `BUSY_DAY_START_MS`, so it names the grid's own cell — row 2,
+ *  column 0 — rather than carrying a second copy of that date that could drift
+ *  from it.
+ *
+ *  Deliberately *not* midnight. `MonthGrid` truncates the instant to its day
+ *  with `setHours(0, 0, 0, 0)` before comparing it to a cell boundary; frozen
+ *  on a day boundary, that truncation could be deleted outright with every
+ *  spec still green. */
+export const MONTH_2026_NOW = BUSY_DAY_START_MS + 14 * H;
+
 /** Two co-existing bars in the same row, deliberately with `idx` and `lane`
  *  diverging for both entries. `pack_lanes` sorts bars longest-first: Berlin
  *  trip (added second, `idx: 1`) is the longer, overlapping span, so it
