@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import type { MonthPayload, WeekPayload } from '../src/lib/api';
 import {
-  FIXTURES, busyDayMonth, labelledWeek, appWritableWeek, crossZoneWeek, APP_MON,
+  FIXTURES, bandAsWeek, busyDayMonth, labelledWeek, appWritableWeek, crossZoneWeek, APP_MON,
 } from './fixtures';
 
 // The fixtures themselves are under test here.
@@ -278,7 +278,54 @@ const weeks: [string, WeekPayload][] = [
   ['app:labelled-next', labelledWeek(APP_MON + 7 * 24 * H)],
   ['app:writable', appWritableWeek()],
   ['app:cross-zone', crossZoneWeek()],
+  // `AllDayBand`'s own props fixtures, lifted back into the payload they are a
+  // projection of — see `bandAsWeek`. They were outside this sweep until one of
+  // them was found describing a band whose `overflow` indexed nothing, which is
+  // exactly the class of defect the sweep exists to catch; being a different
+  // *shape* was never a reason to be a different *standard*.
+  //
+  // `corners` is not here, and that is a ruling rather than an oversight — see
+  // `BAND_NOT_SWEPT` below.
+  ...(['populated', 'overflow', 'empty'] as const).map(
+    (n) => [`band:${n}`, bandAsWeek(FIXTURES.AllDayBand[n])] as [string, WeekPayload],
+  ),
 ];
+
+/**
+ * The one `AllDayBand` fixture the lane sweep cannot hold to its invariants,
+ * named here so the exemption is a decision on the record rather than a gap.
+ *
+ * `corners` puts four chips in lanes 0-3 and gives two of them `cont_right`
+ * while they end in column 1. Both are things `pack_lanes` cannot emit: the
+ * week band packs at `max_lanes = 2` (`commands.rs:342`), and `cont_right` is
+ * set by the clip and only by the clip, so it implies the chip reaches the last
+ * column (`lanes.rs:45-48`). Swept, it would fail on both.
+ *
+ * It is still the right fixture. Its job is to put each of the four corner
+ * states — round/round, flat-left, flat-right, flat/flat — on screen *at once
+ * and in isolation*, so `AllDayBand chip corners` can snapshot each chip on its
+ * own at zero tolerance against a WKWebView artifact that squares the corners
+ * away from a one-sided border. One lane per state is what makes them
+ * separately framable; two lanes cannot show four states, and no real payload
+ * puts all four on one band anyway.
+ *
+ * So the choice was to weaken the sweep, or destroy a fixture that guards a
+ * real rendering bug, or exempt it explicitly. This is the third. Unlike the
+ * `overflow` fixture it replaces in this role, nothing downstream can be misled
+ * by it: it is consumed by four screenshot specs and by nothing that reads an
+ * index.
+ */
+const BAND_NOT_SWEPT = ['corners'] as const;
+
+test('the AllDayBand props fixtures are swept unless deliberately exempt', () => {
+  // The exemption above is only honest while it stays exhaustive. A fifth
+  // fixture added to `FIXTURES.AllDayBand` and quietly left out of both lists
+  // is precisely how `overflow` sat unswept, so this fails rather than lets it.
+  const all = Object.keys(FIXTURES.AllDayBand).sort();
+  const swept = weeks.filter(([n]) => n.startsWith('band:')).map(([n]) => n.slice(5));
+  expect([...swept, ...BAND_NOT_SWEPT].sort(), 'an AllDayBand fixture is neither swept nor exempt')
+    .toEqual(all);
+});
 
 /**
  * The three fixtures whose day columns are deliberately **not** derived from
@@ -640,12 +687,15 @@ test.describe('the hand-written week fixtures describe payloads assemble_days co
 
       // `overflow` holds the indices that did not fit, sorted (lanes.rs:79, 84)
       // — and a segment is placed *or* overflowed, never both (lanes.rs:70's
-      // `continue 'next` against :79). **No week fixture overflows today**, so
-      // this loop is empty and the `checked` floor below does not cover it;
-      // its own proof is a mutation that adds an entry. It is swept anyway
-      // because `AllDayBand`'s own `overflow` fixture — a different shape, not
-      // a `WeekPayload`, and out of this sweep — already carries indices that
-      // index nothing, so this is a defect the file has demonstrably produced.
+      // `continue 'next` against :79).
+      //
+      // This loop used to be empty for every fixture, and the comment here
+      // said so: the one payload that overflowed was `AllDayBand`'s own props
+      // fixture, excused as "a different shape, not a `WeekPayload`, and out of
+      // this sweep" — while carrying `overflow: [2, 3]` against two events, so
+      // both indices named nothing. It is swept now (`bandAsWeek`, and the
+      // `band:*` entries in the table above), and it is the fixture that makes
+      // these two assertions run at all.
       expect(w.overflow, `${name}'s overflow is not sorted`).toEqual([...w.overflow].sort((a, b) => a - b));
       for (const i of w.overflow) {
         expect(w.all_day_events[i], `${name} overflow ${i} indexes nothing`).toBeDefined();
