@@ -120,8 +120,12 @@ but omacal never adds or removes anyone. Drag to create, move or resize. Search.
 Per-calendar colour overrides. Offline writes: a save needs the network and says
 so rather than queueing.
 
-Two known display defects are recorded in
-`docs/superpowers/specs/2026-08-08-omacal-form-time-boundary-design.md` §7 —
-all-day placement in the grid uses the system zone rather than the calendar's,
-and a time typed into a daylight-saving spring-forward gap refuses to save
-without saying why. Neither loses data.
+One known display defect is recorded in
+`docs/superpowers/specs/2026-08-08-omacal-form-time-boundary-design.md` §7: a
+time typed into a daylight-saving spring-forward gap refuses to save without
+saying why. It loses no data.
+
+§7 used to list a second — all-day events placed in the grid by your system zone
+rather than the calendar's, so a calendar in a distant timezone drew a chip a day
+out. That is fixed (§7.1 is closed): an all-day event now goes where its own
+calendar's date puts it, in all four grids.
