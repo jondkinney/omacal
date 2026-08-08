@@ -354,12 +354,28 @@ test.describe('EventBlock duration ladder', () => {
   });
 });
 
+// The frame is `.ev`, not `#app`, and that is the whole point of these four.
+//
+// `#app` here is the 220x480 box `mount.svelte.ts` gives an absolutely
+// positioned block. The block itself is `placed(0.2, 15 / 1440)` — 1.042% of
+// that height, so **1,100 of the golden's 105,600 pixels**. Against the
+// `maxDiffPixelRatio: 0.01` this suite used to run, the allowance was 1,056:
+// the entire subject of the screenshot could be erased and the assertion came
+// within 44 pixels of still passing. A golden that cannot notice its subject
+// disappearing is not witnessing anything.
+//
+// Framing the element instead makes every pixel in the image a pixel of the
+// thing under test, which is what `AllDayBand chip corners` below already does
+// and for the same reason. What these four witness is unchanged and is stated
+// by `EventBlock.svelte` itself: "State is carried by the fill, so it survives
+// at 15 minutes tall." At this size there is no room for the title or the meta
+// line, so the fill, the dashed ring and the spine are the whole of it.
 test.describe('EventBlock RSVP states at 15 minutes', () => {
   for (const state of ['accepted', 'needsAction', 'tentative', 'declined']) {
     test(`${state} is visually distinct`, async ({ page }) => {
       await page.goto(show('EventBlock', `rsvp-${state}-15`));
       await expect(page.locator('.ev')).toHaveClass(new RegExp(state));
-      await expect(page.locator('#app')).toHaveScreenshot(`rsvp-${state}-15.png`);
+      await expect(page.locator('.ev')).toHaveScreenshot(`rsvp-${state}-15.png`);
     });
   }
 
