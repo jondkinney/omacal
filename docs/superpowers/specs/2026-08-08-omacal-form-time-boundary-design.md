@@ -92,17 +92,61 @@ Google's own model — an all-day event is `start.date`, not `start.dateTime` �
 and it is the only version where the round trip cannot lose, because no zone
 conversion happens on that path at all.
 
-For timed events the instant stays, and `toMs` gains explicit handling for the
-two civil times it currently cannot represent:
+For timed events the instant stays. Sub-minute precision is **deliberately
+discarded**, not preserved: the form has no seconds field, so a user editing a
+09:00:37 meeting cannot express the 37 seconds. The rule is that discarding it
+must not then read as a *move* — **an untouched time must send no `start`/`end`
+at all.**
 
-- **ambiguous** (repeated hour) — resolve to the **first** pass, and say so.
-- **nonexistent** (skipped hour) — resolve forward to the first valid instant,
-  and move the end by the same civil span rather than leaving it.
+### The mechanism, corrected during Plan 6 Task 5
 
-Sub-minute precision is **deliberately discarded**, not preserved: the form has
-no seconds field, so a user editing a 09:00:37 meeting cannot express the 37
-seconds. The rule is that discarding it must not then read as a *move* — an
-untouched time must send no `start`/`end` at all.
+The rule above is unchanged and is the load-bearing sentence. The **mechanism**
+this section originally prescribed for it was wrong, and is recorded here rather
+than quietly replaced, because the wrong version reads plausibly and a future
+reader following it would reintroduce the defect it was meant to close.
+
+**What this said:** "`toMs` gains explicit handling: **ambiguous** (repeated
+hour) — resolve to the **first** pass, and say so."
+
+**Why that is wrong.** Defect 2.2 *is* an untouched second-pass start being
+re-derived to the first pass. Making that resolution explicit does not close
+the drift; it makes the drift deliberate and documents it. The event still
+moves an hour, still with `sendUpdates=all` behind it, and now on purpose. A
+resolver cannot help here at all: **no rule over civil fields can recover which
+pass an instant came from**, because the civil pair does not carry it.
+
+**What ships instead — the pass-through.** A form value remembers the instants
+its civil fields were **read off** (`sourceStartMs`/`sourceEndMs`), and each
+side is sent as that instant whenever the pair beside it still reads as it.
+Nothing is resolved, because nothing is re-derived: an untouched time is sent
+as the instant it arrived as, which satisfies this section's stated rule
+exactly and closes 2.2 for both the repeated hour and the discarded seconds in
+one move. `instantOf`, under `whenOf` in `ui/src/lib/eventform.ts`, is the
+whole of it. It is deliberately a question about the **value alone** and not
+about the form's `initial` — see that function's own comment.
+
+**The nonexistent (skipped) hour**, likewise corrected. This said "resolve
+forward to the first valid instant, and move the end by the same civil span".
+No resolver ships, and the clause is amended to describe what actually happens:
+`new Date(y, m, d, h, min)` **normalises a skipped civil time forward by the
+size of the gap** — 00:30 on a day whose midnight is skipped by an hour becomes
+01:30, not the first valid instant (01:00). Two consequences, both deliberate:
+
+- **A create is re-anchored rather than resolved.** `blankValue` moving its
+  default onto a chosen day rebuilds the value from the instant that pair names
+  (`blankValueAt(toMs(date, start))`), so both fields and both source instants
+  come off one instant again and the end follows the start by a real half hour.
+  On America/Santiago 6 Sep 2026 that is 01:30–02:00, saveable. Normalisation is
+  load-bearing here, not tolerated: the value has no earlier instant to fall
+  back on.
+- **A time the user *typed* into a skipped hour is not moved for them, and is
+  not yet reported either.** Typing 00:30 and 01:30 on that day leaves both
+  fields showing what was typed while both name 01:30, so Save goes dead with no
+  field visibly wrong. Characterised, not fixed — `eventform.spec.ts`, "the
+  form's civil↔instant boundary". Closing it needs the form to *say* the time
+  does not exist on that date; silently advancing the start would contradict the
+  per-side ruling this plan already made, that an incoherent pair is refused
+  honestly rather than repaired by moving a field the user did not touch.
 
 ### Blast radius
 
@@ -158,3 +202,51 @@ Recorded during Plan 5's final round and **not** part of this plan:
 splitting from an exception whose only difference is an RSVP discards that RSVP
 for the whole tail — the same "the split carries the master's view, not the
 exception's" seam.
+
+## 7. Known residuals after implementation
+
+Added after the whole-branch review, which found §3's "rejected alternative"
+paragraph misleading on one point: it lists wrong grid placement as a cost of the
+*rejected* approach, which reads as though the shipped one avoids it. It does not.
+
+### 7.1 The grid and the popover now disagree about an all-day event's day
+
+`commands::assemble_days` buckets all-day events with
+`signed_column(&bounds, iv.start_ms)`, where `bounds` comes from
+`n_day_boundaries(start_ms, n, tz)` and `tz` is `lib.rs::display_tz` — the
+**system** zone. The stored instant is midnight in the **calendar's** zone.
+
+Display `Europe/Sofia` (+3), calendar `Pacific/Auckland` (+12), an all-day event
+on 10 Aug: the stored start `2026-08-09T12:00Z` falls inside Sofia's 9 Aug
+bounds, so the chip is drawn under **Sun 9**, while its own popover says
+**Mon, Aug 10** and the form opens on **2026-08-10**.
+
+**Pre-existing placement bug. This plan did not cause it and there is no data
+risk — the writes are now correct where before they were wrong.** But before
+Tasks 4 and 6 all three surfaces were wrong *together*, so closing the popover
+and the form converts a consistent error into a visible self-contradiction.
+
+Closing it means bucketing all-day events by their calendar's zone rather than
+the display zone — a change in `commands.rs`, not in the form. Its own plan.
+
+### 7.2 Toggling All day *off* can leave a form Save refuses
+
+`endDate` is the **inclusive** last day, so a single-day all-day event names the
+same date twice; both midnights then read as the same clock and the span is zero.
+Save is refused with `12:00 → 12:00` on screen.
+
+The UTC-browser/UTC-calendar case is byte-identical to pre-branch behaviour. The
+foreign-calendar case **changed**: it previously produced a *saveable* 24-hour
+event on the wrong two days, and is now refused. Refusing is the better of the
+two, and the wrong value is visible rather than silent — but it is the same
+failure family this plan was chartered to close, reachable in two clicks, and
+**none of the four all-day↔timed toggle combinations has a TypeScript-level
+spec**. `valueFromDetail`'s comment says the toggle-off answers "coincide", which
+is true of the two conversions and reads as a claim the resulting value is sound.
+It is not.
+
+### 7.3 A time typed into a skipped hour
+
+Characterised, not fixed — see §3. Closing it needs the form to *say* the time
+does not exist on that date, and the check must **not** live in `toMs`, where the
+re-anchored create path would meet it and break.

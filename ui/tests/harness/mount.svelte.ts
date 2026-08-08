@@ -62,6 +62,17 @@ if (name === 'App') {
   if (!props) {
     target.textContent = `no fixture ${name}/${fixture}`;
   } else {
+    // The fixture's own props, reachable from a spec.
+    //
+    // So that a spec can assert **its fixture's premise** — that two instants
+    // really are 169 hours apart, that this browser really does read a stored
+    // midnight as the neighbouring day — against the one copy of those numbers
+    // rather than a second one typed into the spec beside it. Both halves of
+    // that matter: a fixture that quietly stopped straddling a transition would
+    // otherwise leave its spec passing vacuously, and a spec carrying its own
+    // copy of the instants can be right about a fixture that has changed under
+    // it. Read-only by convention; nothing here mutates it.
+    (window as any).__fixtureProps = props;
     // EventBlock is absolutely positioned; give it a sized relative parent.
     if (name === 'EventBlock') {
       target.style.position = 'relative';

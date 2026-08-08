@@ -310,7 +310,7 @@ mod tests {
             .fetch_one(&pool)
             .await
             .unwrap();
-        let (ev, access_role) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
+        let (ev, access_role, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
 
         assert!(ev.description.is_some(), "nothing for descriptionSegments to render");
         assert_eq!(access_role, "owner", "the demo data must match a real writable calendar");

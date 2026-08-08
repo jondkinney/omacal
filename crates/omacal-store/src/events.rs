@@ -223,20 +223,24 @@ pub async fn delete_series(
 }
 
 /// The query behind both [`event_by_id`] and [`event_for_write`]: one event
-/// row, its calendar's `access_role`, the calendar's own `google_id`, and the
-/// email of the account that owns it. The last two need a second join beyond
-/// `calendars` — they live on `accounts` — because an RSVP has to know which
-/// account's access token to use, not just whether the calendar is writable.
+/// row, its calendar's `access_role`, the calendar's own `timezone` and
+/// `google_id`, and the email of the account that owns it. The last needs a
+/// second join beyond `calendars` — it lives on `accounts` — because an RSVP
+/// has to know which account's access token to use, not just whether the
+/// calendar is writable.
 ///
 /// `c.google_id` is aliased: `SELECT_COLS` already selects the *event's* own
 /// `google_id` as `e.google_id`, and an unaliased second column of the same
-/// name would collide when read back by name.
+/// name would collide when read back by name. `c.timezone` needs no alias —
+/// `events` has no column of that name; the event's own zones are `start_tz`
+/// and `end_tz`, and they are a different fact (see [`event_by_id`]).
 async fn event_row_for_write(
     pool: &SqlitePool,
     id: i64,
-) -> anyhow::Result<Option<(StoredEvent, String, String, String)>> {
+) -> anyhow::Result<Option<(StoredEvent, String, String, String, String)>> {
     let sql = format!(
-        "SELECT {SELECT_COLS}, c.access_role, c.google_id AS cal_google_id, a.email AS account_email
+        "SELECT {SELECT_COLS}, c.access_role, c.google_id AS cal_google_id, c.timezone,
+                a.email AS account_email
          FROM events e
          JOIN calendars c ON c.id = e.calendar_id
          JOIN accounts a ON a.id = c.account_id
@@ -246,22 +250,39 @@ async fn event_row_for_write(
     Ok(row.map(|r| {
         let access_role: String = r.get("access_role");
         let cal_google_id: String = r.get("cal_google_id");
+        let cal_timezone: String = r.get("timezone");
         let account_email: String = r.get("account_email");
-        (row_to_event(&r), access_role, cal_google_id, account_email)
+        (row_to_event(&r), access_role, cal_google_id, account_email, cal_timezone)
     }))
 }
 
-/// One event plus its calendar's `access_role`, by row id.
+/// One event plus its calendar's `access_role` and its calendar's own
+/// `timezone`, by row id.
 ///
-/// The role travels alongside the event rather than being a second query the
-/// caller makes itself, because the two are only ever needed together: an
-/// `EventDetail` cannot decide whether to show RSVP controls from the event
-/// row alone.
+/// Both travel alongside the event rather than being a second query the caller
+/// makes itself, because they are only ever needed together with it: an
+/// `EventDetail` cannot decide whether to show RSVP controls from the event row
+/// alone, and it cannot say what *date* an all-day event falls on from it
+/// either. The store holds an instant for one, and which date that instant is
+/// depends entirely on the zone it is read in — the calendar's, because that is
+/// the one sync resolved Google's bare `date` against. Read in any other zone
+/// it is a day out on one side of midnight or the other.
+///
+/// The zone costs nothing to carry: the query behind this already joins
+/// `calendars` for the role, so `c.timezone` is one more column on a row
+/// already being fetched. A second `calendar_for_write` lookup would be a
+/// second round trip on a path — the event popover opening — that runs on every
+/// click.
+///
+/// **Not** the event's own `start_tz`/`end_tz`. Those are the zones a *timed*
+/// event was authored in, which for an all-day event is whatever sync happened
+/// to fall back to; the calendar's zone is the one Google's `date` was resolved
+/// against and the only one that reads it back unchanged.
 pub async fn event_by_id(
     pool: &SqlitePool,
     id: i64,
-) -> anyhow::Result<Option<(StoredEvent, String)>> {
-    Ok(event_row_for_write(pool, id).await?.map(|(ev, role, _, _)| (ev, role)))
+) -> anyhow::Result<Option<(StoredEvent, String, String)>> {
+    Ok(event_row_for_write(pool, id).await?.map(|(ev, role, _, _, tz)| (ev, role, tz)))
 }
 
 /// One event plus everything an RSVP write needs beyond it: the calendar's
@@ -272,7 +293,9 @@ pub async fn event_for_write(
     pool: &SqlitePool,
     id: i64,
 ) -> anyhow::Result<Option<(StoredEvent, String, String, String)>> {
-    event_row_for_write(pool, id).await
+    Ok(event_row_for_write(pool, id)
+        .await?
+        .map(|(ev, role, cal_google_id, account_email, _)| (ev, role, cal_google_id, account_email)))
 }
 
 /// How many materialised exceptions of `master_google_id` override an
@@ -959,9 +982,34 @@ mod tests {
         let cal = seed(&pool).await;
         let id = upsert_event(&pool, &ev(cal, "a", 1000, 2000)).await.unwrap();
 
-        let (got, access_role) = event_by_id(&pool, id).await.unwrap().expect("event exists");
+        let (got, access_role, _) = event_by_id(&pool, id).await.unwrap().expect("event exists");
         assert_eq!(got.google_id, "a");
         assert_eq!(access_role, "owner", "seed()'s calendar is owned");
+    }
+
+    /// The zone an all-day event's *date* is read in, all the way at the far
+    /// end of this: `event_detail_impl` derives `EventDetail::start_date` in
+    /// it, and read in any other zone that date is a day out on one side of
+    /// midnight or the other.
+    ///
+    /// The calendar's own `timezone` column, never the event's `start_tz`.
+    /// `seed`'s calendar and `ev`'s event both say `Europe/Sofia`, which would
+    /// let either column pass as the other, so this fixture moves the
+    /// *calendar* somewhere else — reading `e.start_tz` by mistake then answers
+    /// Sofia and fails here rather than shipping.
+    #[tokio::test]
+    async fn event_by_id_returns_the_calendars_own_timezone_not_the_events() {
+        let pool = connect_memory().await.unwrap();
+        let cal = seed(&pool).await;
+        sqlx::query("UPDATE calendars SET timezone = 'America/New_York' WHERE id = ?1")
+            .bind(cal).execute(&pool).await.unwrap();
+        let id = upsert_event(&pool, &ev(cal, "a", 1000, 2000)).await.unwrap();
+
+        let (got, _, cal_tz) = event_by_id(&pool, id).await.unwrap().expect("event exists");
+        assert_eq!(got.start_tz, "Europe/Sofia",
+            "fixture check: the event's own zone must differ from its calendar's, or this \
+             test cannot tell the two columns apart");
+        assert_eq!(cal_tz, "America/New_York");
     }
 
     #[tokio::test]
@@ -972,7 +1020,7 @@ mod tests {
             .bind(cal).execute(&pool).await.unwrap();
         let id = upsert_event(&pool, &ev(cal, "a", 1000, 2000)).await.unwrap();
 
-        let (_, access_role) = event_by_id(&pool, id).await.unwrap().expect("event exists");
+        let (_, access_role, _) = event_by_id(&pool, id).await.unwrap().expect("event exists");
         assert_eq!(access_role, "reader");
     }
 
@@ -996,7 +1044,7 @@ mod tests {
         let (_cal_on_b, cal_on_a) = seed_two_accounts(&pool).await;
         let id = upsert_event(&pool, &ev(cal_on_a, "a", 1000, 2000)).await.unwrap();
 
-        let (got, access_role) = event_by_id(&pool, id).await.unwrap().expect("event exists");
+        let (got, access_role, _) = event_by_id(&pool, id).await.unwrap().expect("event exists");
         assert_eq!(got.calendar_id, cal_on_a);
         assert_eq!(access_role, "owner",
             "must be cal_on_a's own role, not a calendar that merely shares an id with it");

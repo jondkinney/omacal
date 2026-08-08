@@ -7,7 +7,7 @@
 // three-state `repeat` — are testable as functions rather than only through a
 // rendered form.
 
-import type { EventDetail, EventInput } from './eventdetail';
+import type { EventDetail, EventInput, WhenInput } from './eventdetail';
 
 /** Which occurrences an edit applies to. Mirrors `update_event`'s own scopes. */
 export type Scope = 'this' | 'all' | 'following';
@@ -53,29 +53,74 @@ export const CUSTOM_REPEAT = 'custom';
 
 /**
  * Everything the form edits, in the shapes its inputs actually hold — dates as
- * `yyyy-mm-dd` and times as `HH:MM`, never milliseconds. Converting to instants
- * is `toEventInput`'s job and happens once, on save.
+ * `yyyy-mm-dd` and times as `HH:MM`. Converting to instants is `whenOf`'s job
+ * and happens once, on save.
+ *
+ * The two `source…Ms` fields are the exception, and are not editable state: see
+ * their own comment for why a value has to remember what its civil fields were
+ * read off.
  */
 export type EventFormValue = {
   title: string;
-  /** `yyyy-mm-dd`, in the browser's own zone. */
+  /**
+   * `yyyy-mm-dd`.
+   *
+   * For a **timed** event, the browser's reading of the start instant — which
+   * day an instant falls on is a question about the reader, and the reader is
+   * who is looking at the form.
+   *
+   * For an **all-day** event, the day the *calendar* keeps the event on,
+   * carried here from `EventDetail.start_date` and never derived from an
+   * instant. An all-day event has no instant to read: the one the store holds
+   * is midnight in the calendar's zone, and any other zone reads it as the
+   * neighbouring day.
+   */
   date: string;
   /**
    * `yyyy-mm-dd`. For an all-day event this is the **inclusive** last day — the
    * day the user would point at and call the end.
    *
    * Google's wire format is exclusive (`end.date` is the day *after* the last
-   * one), and so is the store's `end_utc`. The conversion happens in
-   * `valueFromDetail` and `toEventInput`, once each, rather than being carried
-   * around: a form that showed the exclusive date would read a day long, and
-   * one that sent the inclusive date would silently shorten every all-day
-   * event it saved.
+   * one), and so is the store's `end_utc`. Exactly one conversion sits between
+   * the two, in `whenOf`, on the way out. Nothing converts on the way in:
+   * `EventDetail.end_date` is already the inclusive day, worked out once on the
+   * Rust side. A form that showed the exclusive date would read a day long, and
+   * one that sent the inclusive date would silently shorten every all-day event
+   * it saved.
    */
   endDate: string;
   /** `HH:MM`, 24-hour. Ignored when `isAllDay`. */
   start: string;
   /** `HH:MM`, 24-hour. Ignored when `isAllDay`. */
   end: string;
+  /**
+   * The instants `date`+`start` and `endDate`+`end` were **read off**, or
+   * `null` when they were not read off anything — a value assembled from two
+   * sources (`blankValue` moving a default onto a chosen day) or typed from
+   * nothing has no earlier instant behind it.
+   *
+   * Not editable state, and the only numbers on a type that otherwise holds
+   * civil strings. They are here because the reading is lossy in **both**
+   * directions and re-deriving what nobody touched therefore *moves* the event:
+   *
+   *   - `HH:MM` cannot say 09:00:37, so a start with seconds comes back 37
+   *     seconds early;
+   *   - a repeated wall-clock hour names two instants an hour apart with one
+   *     `yyyy-mm-dd HH:MM` between them, and `toMs` resolves that pair to the
+   *     earlier — a full hour early, for 12 block starts a year in
+   *     `Europe/Sofia`, 12 in `America/New_York`, 6 in `Australia/Lord_Howe`.
+   *
+   * `write::shifted_like` short-circuits only on an *exact* match, so a
+   * difference of any size is applied as a real move: renaming a meeting sends
+   * a start/end PATCH dragging it an hour earlier, with `sendUpdates=all`
+   * behind it.
+   *
+   * `whenOf` sends one of these unchanged exactly when the civil fields beside
+   * it still read as it — see `instantOf`. Nothing compares them against the
+   * form's `initial`, which is deliberate; that comment says why.
+   */
+  sourceStartMs: number | null;
+  sourceEndMs: number | null;
   isAllDay: boolean;
   location: string;
   description: string;
@@ -131,16 +176,6 @@ export function toMs(date: string, time: string): number {
   const [hh, mm] = (time || '00:00').split(':').map(Number);
   if ([y, m, d, hh, mm].some((n) => !Number.isFinite(n))) return NaN;
   return new Date(y, m - 1, d, hh, mm, 0, 0).getTime();
-}
-
-/** Local midnight on the day after `date` — the exclusive end Google wants for
- *  an all-day event whose last day is `date`. Built by asking for day + 1 and
- *  letting `Date` normalise it, so month ends and daylight-saving transitions
- *  are the platform's problem rather than arithmetic on milliseconds. */
-function midnightAfter(date: string): number {
-  const [y, m, d] = date.split('-').map(Number);
-  if ([y, m, d].some((n) => !Number.isFinite(n))) return NaN;
-  return new Date(y, m - 1, d + 1, 0, 0, 0, 0).getTime();
 }
 
 // --- Date arithmetic on dates, not on instants ----------------------------
@@ -204,6 +239,12 @@ export const nextHalfHour = (nowMs: number): number =>
  * site: a 23:30 event ends at 00:00 the following morning, and an `endDate` left
  * on the start's own day makes `endAfterStart` refuse a form the user never got
  * wrong.
+ *
+ * Both instants are kept as well as read, because a create has the same
+ * boundary as an edit: half an hour from 03:30 lands on a 03:00 that is *later*
+ * across a fall-back, and re-parsing the pair `dateOf`/`timeOf` just produced
+ * puts the end half an hour before the start — a form that opens already
+ * refusing to save with no field on it visibly wrong. See `sourceStartMs`.
  */
 export function blankValueAt(startMs: number, calendarId: number | null): EventFormValue {
   const endMs = startMs + HALF_HOUR_MS;
@@ -213,6 +254,8 @@ export function blankValueAt(startMs: number, calendarId: number | null): EventF
     endDate: dateOf(endMs),
     start: timeOf(startMs),
     end: timeOf(endMs),
+    sourceStartMs: startMs,
+    sourceEndMs: endMs,
     isAllDay: false,
     location: '',
     description: '',
@@ -234,13 +277,41 @@ export function blankValueAt(startMs: number, calendarId: number | null): EventF
  * and moves it to that day, which is what pressing `n` on next Tuesday and
  * getting "next Tuesday at the next half hour" means.
  *
- * The move goes through `shiftedEndDate` rather than assigning both dates the
- * same value, so the day the end lands on is preserved along with the time. The
- * version that wrote `endDate: date` was wrong for half an hour every evening:
- * asked for a new event between 23:00 and 23:30 it offered 23:30–00:00 with
- * both dates on today, which `endAfterStart` reads as an end twenty-three and a
- * half hours *before* the start — a form that opens already refusing to save,
- * and no field on it visibly wrong.
+ * **The move re-anchors: it asks what the moved pair names, and rebuilds the
+ * whole value from that instant.** Not `{ ...at, date }` with the end date
+ * shifted alongside, which is what this used to do and which built a value from
+ * two sources — a day from one place, a clock from another, and a pair that was
+ * therefore read off no instant at all. Two things went wrong with that, one of
+ * them shipped for eight tasks:
+ *
+ *   - a pair naming **no instant** on the chosen day. Where a zone's midnight is
+ *     skipped — America/Santiago 6 Sep 2026, Africa/Cairo 24 Apr 2026 — asking
+ *     for a new event just after midnight offered 00:30–01:00, and 00:30 does
+ *     not exist that day. Re-parsing normalised the *start* forward to 01:30
+ *     while the end stayed at 01:00: a form that opened already refusing to
+ *     save, half an hour backwards, and no field on it visibly wrong. Rebuilding
+ *     from `toMs(date, start)` gives 01:30–02:00 instead — half an hour, forward,
+ *     saveable — because the end is derived from the start's own instant rather
+ *     than left where a separate string put it.
+ *   - the two source instants going stale. Nothing had to *clear* them, because
+ *     `instantOf` asks whether an instant still reads as the fields beside it,
+ *     and a moved date stops reading as one — so they were silently ignored
+ *     rather than used, and every time on this path was re-derived. Re-anchoring
+ *     makes them true again instead: both come off the very instant the moved
+ *     pair names.
+ *
+ * The day the end lands on is preserved by construction, which is what the
+ * `shiftedEndDate` call here used to be for. The version before that wrote
+ * `endDate: date` and was wrong for half an hour every evening: asked for a new
+ * event between 23:00 and 23:30 it offered 23:30–00:00 with both dates on today,
+ * which `endAfterStart` reads as an end twenty-three and a half hours *before*
+ * the start. `blankValueAt` reads the end date off the end instant, so that
+ * case — and the fall-back case where the half hour after 23:30 is a *different*
+ * civil hour — come out right without a second rule.
+ *
+ * Passing today's own day moves nothing, and re-anchoring then returns exactly
+ * what `blankValueAt` already built. That is not a case to special-case; it is
+ * the same arithmetic with a zero in it.
  */
 export function blankValue(
   nowMs: number,
@@ -249,8 +320,85 @@ export function blankValue(
 ): EventFormValue {
   const at = blankValueAt(nextHalfHour(nowMs), calendarId);
   if (dayStartMs === undefined) return at;
-  const date = dateOf(dayStartMs);
-  return { ...at, date, endDate: shiftedEndDate(at.date, date, at.endDate) };
+  return blankValueAt(toMs(dateOf(dayStartMs), at.start), calendarId);
+}
+
+/**
+ * One of an all-day detail's own dates, moved onto the occurrence that was
+ * actually clicked.
+ *
+ * `date` is `detail.start_date` or `detail.end_date`, and `rowMs` is the
+ * instant on the *same side of the same row*: `detail.start_ms` or
+ * `detail.end_ms`. Both describe **the store row**, which for a recurring
+ * series is the master — its dates are the series' DTSTART, not the day on
+ * screen. `occurrenceMs` is the clicked block's own instant on that side.
+ *
+ * Taking `detail.start_date` verbatim would be `detail.start_ms` all over
+ * again — the mistake `updateEvent`'s doc comment spends a paragraph on, and
+ * the one §4 of the design names under "what must not regress". A daily all-day
+ * series clicked on its third day would open the form showing its *first*, and
+ * a title-only save would send that difference as a deliberate two-day move of
+ * the occurrence, with `sendUpdates=all` behind it. `app.spec.ts`'s "editing
+ * from an all-day chip sends the chip's own day" is the witness.
+ *
+ * The distance is measured between two instants on the same side of the same
+ * event, both midnight in the same — the calendar's — zone, so the subtraction
+ * has no zone in it at all and `Math.round` has only to absorb a daylight-saving
+ * hour between two otherwise whole days. That is **not** the half-day slack
+ * this file used to apply to a *single* instant read in a *foreign* zone: that
+ * one silently absorbed the zone offset itself, which is how a trip's last day
+ * came out right while its first day was a day early, and how a one-day trip
+ * was saved as a two-day one.
+ *
+ * `Math.round` rather than `floor` or `ceil`, and the difference is not
+ * cosmetic: a series straddling a spring-forward is 95 hours across four days
+ * and `floor` answers three, a fall-back is 97 and `ceil` answers five. Either
+ * opens the form a day off the chip that was clicked. Both are pinned, one
+ * fixture each, in `eventform.spec.ts`.
+ *
+ * The bound it works within, stated rather than left to be discovered: rounding
+ * recovers the right number of days while the offset changes by strictly less
+ * than 12 hours between the two instants. Every daylight-saving transition is
+ * inside that by an order of magnitude; a zone *redefinition* need not be.
+ * `Pacific/Apia` moved from UTC−11 to UTC+13 in December 2011 — 30 December
+ * never existed there — and this returns `2012-01-02` for a chip whose civil
+ * date is `2012-01-03`. Historical and exotic, and not a UI artefact: the same
+ * instants come out of `recur.rs`. Left unhandled deliberately, because the
+ * alternative is civil date arithmetic in a zone this browser does not know.
+ *
+ * Each side is measured on its own rather than sharing one shift, because the
+ * clicked block's `endMs` is carried for exactly that reason — see
+ * `Occurrence`'s doc comment in `eventdetail.ts`.
+ *
+ * Exported, and used outside this module by exactly one other caller:
+ * `EventPopover` asks the same question the form does — *which day is the block
+ * I clicked on* — and answered it its own way until Task 6, with
+ * `toLocaleDateString(detail.start_ms)`. That is both halves of this function's
+ * reason for existing gone at once: a browser-zone reading of a date that has
+ * no instant, taken off the **master's** row. The popover and the form then
+ * disagreed on screen. One authority for the question, not two, is why this is
+ * exported rather than copied — and living here rather than in `eventdetail.ts`
+ * keeps `addDays` and the date-arithmetic block above it together.
+ *
+ * A `null` date on an all-day event is **not a case to handle**.
+ * `event_detail_impl` fills both for every `is_all_day` row and neither for any
+ * other, and the only substitute available here is a date derived from an
+ * instant in the browser's zone — precisely the defect this function was
+ * rewritten to remove. A `?? dateOf(startMs)` would keep that path alive with
+ * every test green, so a detail that cannot be true throws instead of being
+ * quietly accommodated.
+ */
+export function occurrenceDate(date: string | null, rowMs: number, occurrenceMs: number): string {
+  // `!date`, not `=== null`. The type says `string | null`, but the type is a
+  // claim about the wire, and the failure this guard exists to report is
+  // exactly the one that falsifies it: a field that stops arriving under this
+  // name reaches here as `undefined`, which `=== null` waves through — and
+  // `addDays` then throws from somewhere else, with a message about splitting a
+  // string rather than about a malformed detail. The diagnostic is the point.
+  if (!date) {
+    throw new Error('an all-day event with no date: an EventDetail carries both or neither');
+  }
+  return addDays(date, Math.round((occurrenceMs - rowMs) / DAY_MS));
 }
 
 /**
@@ -263,6 +411,30 @@ export function blankValue(
  * the clicked block's times already (it needs them for `occurrenceStartMs`
  * anyway); this function is not able to work them out and does not try.
  *
+ * **An all-day event's dates are read, never derived.** They arrive on the
+ * detail already in the calendar's own zone, and this browser does not know
+ * what that zone is: `dateOf(startMs)` answers in the *browser's*, which for
+ * any user east of the calendar is the previous day. See `EventDetail`'s
+ * `start_date` for the whole shape of that defect. `occurrenceDate` above is
+ * the only thing done to them, and it moves the day, never the zone.
+ *
+ * **The two instants are kept as well as read**, on both arms. For a timed
+ * event that is the whole of Task 5's fix: `timeOf` cannot carry the seconds and
+ * a repeated wall-clock hour cannot be re-parsed back to the pass it came from,
+ * so a time nobody edited has to travel as the instant it arrived as. See
+ * `sourceStartMs` and `instantOf`.
+ *
+ * On the **all-day** arm they are inert rather than special-cased, and that is
+ * worth a sentence because a reader will look for the missing `is_all_day ?`
+ * here. `whenOf`'s all-day arm sends dates and never asks, so the only path
+ * that could ask is the user toggling All day *off* — and there the two answers
+ * coincide. `instantOf` passes an instant through only when this browser reads
+ * it as exactly the date and time beside it, and a stored midnight that reads
+ * that way is one `toMs` rebuilds identically. (The lone exception is a browser
+ * zone whose midnight is itself repeated, where the stored instant is the more
+ * faithful of the two.) A `null` on this arm would say something truer about
+ * the type and change no behaviour, at the cost of a branch no test can reach.
+ *
  * `guestCount` excludes the signed-in user's own attendee row: `sendUpdates=all`
  * mails the other guests, and telling somebody they are about to notify
  * themselves is just wrong.
@@ -274,13 +446,19 @@ export function valueFromDetail(
 ): EventFormValue {
   return {
     title: detail.title ?? '',
-    date: dateOf(startMs),
-    // Inclusive: the exclusive end is midnight, and stepping back half a day
-    // rather than a whole one lands at noon on the previous day — the same
-    // date whichever side of a daylight-saving transition it falls.
-    endDate: dateOf(detail.is_all_day ? endMs - DAY_MS / 2 : endMs),
+    date: detail.is_all_day
+      ? occurrenceDate(detail.start_date, detail.start_ms, startMs)
+      : dateOf(startMs),
+    // Inclusive on both arms, and inclusive already on the all-day one:
+    // `end_date` is the last day a person would point at, worked out from the
+    // exclusive `end_ms` once, on the Rust side, in the calendar's zone.
+    endDate: detail.is_all_day
+      ? occurrenceDate(detail.end_date, detail.end_ms, endMs)
+      : dateOf(endMs),
     start: timeOf(startMs),
     end: timeOf(endMs),
+    sourceStartMs: startMs,
+    sourceEndMs: endMs,
     isAllDay: detail.is_all_day,
     location: detail.location ?? '',
     // Verbatim. Never through `sanitize.ts`: that module exists for *rendering*
@@ -297,28 +475,92 @@ export function valueFromDetail(
   };
 }
 
-/** The instants a value names: `[startMs, endMs]`, with the all-day end pushed
- *  out to the exclusive midnight Google expects. Either may be `NaN` while the
- *  user is mid-edit — `endAfterStart` is what every caller checks. */
-export function instantsOf(value: EventFormValue): [number, number] {
+/**
+ * The instant a form's civil pair names: `source` itself when the pair is still
+ * `source`'s own reading, and `toMs`'s answer otherwise.
+ *
+ * The whole of the pass-through, in one expression, and deliberately a question
+ * about the **value alone** rather than about the form's `initial`. `dateOf`
+ * and `timeOf` are exactly what put `date` and `time` there, so "this pair
+ * still reads as `source`" and "the user has not touched this time" are the
+ * same statement — and asking it locally also answers it correctly for a time
+ * that was edited and then typed back, which a comparison against `initial`
+ * would call a change and re-derive.
+ *
+ * Living here, under `whenOf`, rather than in `toEventInput` is what keeps
+ * `endAfterStart` honest: the Save guard asks `whenOf` too, so it judges the
+ * very instants that will be sent. A pass-through one layer higher would leave
+ * an event running 03:30 to 03:00 across a fall-back — thirty real minutes —
+ * refused by a button reading a re-derived span of minus thirty.
+ *
+ * Each side is asked on its own, because each is a function of exactly two
+ * civil fields and nothing else. Editing the end must not drag the start
+ * through a round trip that loses its seconds or its pass.
+ */
+const instantOf = (source: number | null, date: string, time: string): number =>
+  source !== null && dateOf(source) === date && timeOf(source) === time
+    ? source
+    : toMs(date, time);
+
+/**
+ * The `WhenInput` a value names — **dates for an all-day event, instants for a
+ * timed one, and never a translation between the two.**
+ *
+ * There is no `instantsOf` any more, and that is the point of this plan rather
+ * than a tidy-up: an all-day form value has no instants, in this browser or
+ * anywhere else it could be asked. The version this replaces built a local
+ * midnight from each date and then read the dates back off those instants, a
+ * browser→browser round trip that returned the same answer in every ordinary
+ * case and a different one across a daylight-saving transition — and which
+ * existed only because the wire used to carry instants.
+ *
+ * The one conversion on the all-day arm is inclusive→exclusive: the form shows
+ * the last day a person would point at, Google's `end.date` is the day after
+ * it. `addDays` does that on whole days, once, with no zone in it.
+ *
+ * The timed arm goes through `instantOf` rather than `toMs` alone, so a time
+ * nobody edited is sent as the instant it was read off instead of re-parsed
+ * out of a civil pair that cannot express it. Read that function for why the
+ * check belongs here and not in `toEventInput`.
+ *
+ * Either instant on the timed arm may be `NaN` while the user is mid-edit, and
+ * either date on the all-day arm may be unparseable for the same reason.
+ * `endAfterStart` is what every caller checks before any of it is sent.
+ */
+export function whenOf(value: EventFormValue): WhenInput {
   if (value.isAllDay) {
-    return [toMs(value.date, '00:00'), midnightAfter(value.endDate)];
+    return { kind: 'allDay', startDate: value.date, endDate: addDays(value.endDate, 1) };
   }
-  return [toMs(value.date, value.start), toMs(value.endDate, value.end)];
+  return {
+    kind: 'timed',
+    startMs: instantOf(value.sourceStartMs, value.date, value.start),
+    endMs: instantOf(value.sourceEndMs, value.endDate, value.end),
+  };
 }
 
 /**
  * Whether a value's end is strictly after its start.
  *
- * One rule for both modes, because the exclusive all-day end makes it one rule:
- * a single-day all-day event ends a whole day after it starts, so "the same
- * day" passes, and only an end date genuinely before the start date fails.
- * A half-typed date gives `NaN`, which every comparison answers `false` to —
- * "not yet valid" and "invalid" are the same thing to a Save button.
+ * Asked of the very values `whenOf` will send, in the units it will send them
+ * in, so the guard cannot pass a form that the wire then reads differently.
+ *
+ * The all-day end is exclusive by the time it gets here, which is what makes
+ * "the same day" pass: a single-day all-day event starts on the 10th and ends
+ * on the 11th. Only a last day genuinely *before* the first fails.
+ *
+ * Dates go through `utcOf` rather than being compared as strings. Both order
+ * two well-formed `yyyy-mm-dd`s correctly, but `utcOf` also answers `NaN` for
+ * one the user has not finished typing, and every comparison against `NaN` is
+ * `false` — the same answer a Save button wants for "not yet valid" and
+ * "invalid" alike. Compared as strings, an unparseable date reaches here as
+ * `addDays`' `'NaN-NaN-NaN'`, which sorts *after* every real date and would
+ * enable Save on a half-typed one.
  */
 export const endAfterStart = (value: EventFormValue): boolean => {
-  const [startMs, endMs] = instantsOf(value);
-  return endMs > startMs;
+  const when = whenOf(value);
+  return when.kind === 'allDay'
+    ? utcOf(when.endDate) > utcOf(when.startDate)
+    : when.endMs > when.startMs;
 };
 
 /**
@@ -333,20 +575,23 @@ export const endAfterStart = (value: EventFormValue): boolean => {
  * taking a "touched" flag from the caller is deliberate: a flag can be
  * forgotten, and the failure is silent and irreversible.
  *
+ * **`repeat` is the only field `initial` decides.** The other thing that turns
+ * on "did the user touch this" — whether a time is sent as the instant it came
+ * from or re-derived from a civil pair — deliberately does *not* ask `initial`,
+ * and does not happen here. It is `instantOf`, under `whenOf`, so that the Save
+ * guard and the wire cannot disagree about what a form contains.
+ *
  * Empty strings become `null`, not `""`: `changed_fields` sends a `null` to
  * clear a field, and an empty summary sent as `""` would leave a Google event
  * titled with an empty string rather than untitled.
  */
 export function toEventInput(value: EventFormValue, initial: EventFormValue): EventInput {
-  const [startMs, endMs] = instantsOf(value);
   const blank = (s: string) => (s.trim() === '' ? null : s);
   return {
     summary: blank(value.title),
     location: blank(value.location),
     description: blank(value.description),
-    startMs,
-    endMs,
-    isAllDay: value.isAllDay,
+    when: whenOf(value),
     tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
     ...(value.repeat === initial.repeat ? {} : { repeat: value.repeat }),
   };

@@ -204,6 +204,14 @@ const cal = (o: Partial<Calendar> & { id: number; account_email: string; summary
   ...o,
 });
 
+/** A fixture instant as the `yyyy-mm-dd` its calendar keeps it on.
+ *
+ *  Every all-day fixture here sits at **UTC** midnight, so the calendar these
+ *  fixtures describe is a UTC one and `toISOString` reads the date back
+ *  exactly. Deliberately not `dateOf`, which answers in whatever zone the
+ *  reader is in — the very substitution `valueFromDetail` no longer makes. */
+const utcDate = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
+
 const attendee = (o: Partial<Attendee> & { email: string }): Attendee => ({
   display_name: null,
   response_status: 'needsAction',
@@ -220,6 +228,20 @@ const detail = (o: Partial<EventDetail> & { id: number }): EventDetail => ({
   conference_uri: null,
   start_ms: MON + 9 * H,
   end_ms: MON + 9 * H + 30 * 60_000,
+  // `null` on both, matching `is_all_day: false` below — the Rust side sends
+  // dates for an all-day event and for nothing else, and sends both or neither.
+  //
+  // **Every all-day fixture must therefore override both**, and they all do.
+  // The pairing `is_all_day: true` with these defaults is a shape
+  // `event_detail_impl` cannot produce, and it used to sit in four fixtures
+  // here — which mattered, because a null-defaulting fixture invites a
+  // defensive `detail.start_date ?? dateOf(start_ms)` in `valueFromDetail`,
+  // and that fallback is the browser-zone derivation this branch exists to
+  // delete. It would have kept the defect alive with every spec green.
+  // `valueFromDetail` throws on a null date rather than substituting one, so a
+  // fixture that forgets them fails loudly at import instead.
+  start_date: null,
+  end_date: null,
   is_all_day: false,
   is_recurring: false,
   recurrence: null,
@@ -397,6 +419,10 @@ const ALLDAY_RECURRING: UiEvent = ev({
 POPOVER_DETAILS[80] = detail({
   id: 80, title: 'Team off-site', is_all_day: true,
   start_ms: MON, end_ms: MON + 24 * H,
+  // The dates `event_detail_impl` derives for this row. `end_date` is the
+  // **inclusive** last day, so a one-day event names the same date twice —
+  // never `end_ms`'s own date, which is the exclusive midnight after it.
+  start_date: utcDate(MON), end_date: utcDate(MON),
   attendees: [
     attendee({ email: 'ana@x.com', display_name: 'Ana', response_status: 'accepted' }),
     attendee({ email: 'me@x.com', is_self: true }),
@@ -408,6 +434,11 @@ POPOVER_DETAILS[81] = detail({
   // `POPOVER_DETAILS[42]` sets for the timed path, which the all-day path
   // reaches through entirely different markup and so has to prove separately.
   start_ms: ALLDAY_SERIES_DTSTART, end_ms: ALLDAY_SERIES_DTSTART + 24 * H,
+  // The **master's** dates, therefore, and not the clicked chip's — derived
+  // from the row above, which is the DTSTART. Same trap one field over:
+  // `valueFromDetail` has to move them onto the occurrence it is given, or a
+  // form opened from the third chip shows the first day of the series.
+  start_date: utcDate(ALLDAY_SERIES_DTSTART), end_date: utcDate(ALLDAY_SERIES_DTSTART),
   attendees: [attendee({ email: 'me@x.com', is_self: true })],
 });
 
@@ -887,7 +918,10 @@ const TRIP_END_EXCLUSIVE = TRIP_START + 3 * 24 * H;
 /** The last day a person would name: Wednesday 12 Aug. */
 export const TRIP_LAST_DAY = '2026-08-12';
 export const TRIP_FIRST_DAY = '2026-08-10';
-export const TRIP_END_MS = TRIP_END_EXCLUSIVE;
+/** The same exclusive end as `TRIP_END_EXCLUSIVE`, named as the date it is —
+ *  which is what an all-day `EventInput` now carries. Thursday, one day past
+ *  the last one a person would name. */
+export const TRIP_END_DATE = '2026-08-13';
 
 // --- App-level create, edit and delete ------------------------------------
 //
@@ -996,6 +1030,14 @@ POPOVER_DETAILS[APP_ALLDAY_ID] = detail({
   is_all_day: true,
   is_recurring: true, recurrence: 'RRULE:FREQ=DAILY', repeat: 'daily',
   start_ms: APP_ALLDAY_SERIES_DTSTART, end_ms: APP_ALLDAY_SERIES_DTSTART + 24 * H,
+  // The **master's** own dates — Mon 29 Jan — because that is what the backend
+  // derives from the row above, and the clicked chip is Wed 31 Jan. The gap is
+  // the point: `valueFromDetail` must move these onto the occurrence it is
+  // given, and `app.spec.ts`'s "editing from an all-day chip sends the chip's
+  // own day" asserts the form shows 2024-01-31. Taking `start_date` verbatim
+  // is `detail.start_ms` all over again and fails there.
+  start_date: utcDate(APP_ALLDAY_SERIES_DTSTART),
+  end_date: utcDate(APP_ALLDAY_SERIES_DTSTART),
   attendees: [
     attendee({ email: 'ana@x.com', display_name: 'Ana', response_status: 'accepted' }),
     attendee({ email: 'me@x.com', is_self: true }),
@@ -1177,7 +1219,8 @@ export const FIXTURES: Record<string, Record<string, any>> = {
           attendee({ email: 'petya@x.com', response_status: 'declined' }),
         ],
       }),
-      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, occurrenceEndMs: MON + 9 * H + 30 * 60_000,
+      onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
     },
     // The raw description is already entity-encoded, as a hostile calendar
     // invite's would be — `descriptionSegments` decodes it back to the
@@ -1187,7 +1230,8 @@ export const FIXTURES: Record<string, Record<string, any>> = {
     // `<script>` element — exactly the regression Step 7 breaks on purpose.
     'nasty-description': {
       detail: detail({ id: 2, description: '&lt;script&gt;alert(1)&lt;/script&gt;' }),
-      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, occurrenceEndMs: MON + 9 * H + 30 * 60_000,
+      onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
     },
     recurring: {
       detail: detail({
@@ -1195,7 +1239,8 @@ export const FIXTURES: Record<string, Record<string, any>> = {
         is_recurring: true,
         attendees: [attendee({ email: 'me@x.com', is_self: true })],
       }),
-      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, occurrenceEndMs: MON + 9 * H + 30 * 60_000,
+      onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
     },
     readonly: {
       detail: detail({
@@ -1207,13 +1252,15 @@ export const FIXTURES: Record<string, Record<string, any>> = {
           attendee({ email: 'petya@x.com', response_status: 'declined' }),
         ],
       }),
-      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, occurrenceEndMs: MON + 9 * H + 30 * 60_000,
+      onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
     },
     // The harness's `respond_to_event` stub rejects for this scenario name —
     // see tests/harness/tauri.ts.
     'respond-fails': {
       detail: detail({ id: 5, attendees: [attendee({ email: 'me@x.com', is_self: true })] }),
-      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, occurrenceEndMs: MON + 9 * H + 30 * 60_000,
+      onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
     },
     // `detail.start_ms` is the series DTSTART (Monday); the block actually
     // clicked is the fourth occurrence (Thursday) — the trap named in the
@@ -1227,7 +1274,8 @@ export const FIXTURES: Record<string, Record<string, any>> = {
         start_ms: SERIES_DTSTART,
         attendees: [attendee({ email: 'me@x.com', is_self: true })],
       }),
-      anchor: ANCHOR, occurrenceStartMs: FOURTH_OCCURRENCE, onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
+      anchor: ANCHOR, occurrenceStartMs: FOURTH_OCCURRENCE, occurrenceEndMs: FOURTH_OCCURRENCE + 30 * 60_000,
+      onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
     },
     // Non-recurring, so the backend really does write back (unlike the
     // bare-master "this one" case above) — the harness's `respond_to_event`
@@ -1239,7 +1287,8 @@ export const FIXTURES: Record<string, Record<string, any>> = {
         id: 7,
         attendees: [attendee({ email: 'me@x.com', is_self: true, response_status: 'needsAction' })],
       }),
-      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, occurrenceEndMs: MON + 9 * H + 30 * 60_000,
+      onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
     },
     // `can_edit: true` *explicitly*: `detail()`'s own default is `false`, and
     // it is false so that a spec asserting the controls are shown fails until
@@ -1248,7 +1297,59 @@ export const FIXTURES: Record<string, Record<string, any>> = {
     // between them the two discriminate in both directions.
     editable: {
       detail: detail({ id: 8, title: 'Board prep', can_edit: true }),
-      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, occurrenceEndMs: MON + 9 * H + 30 * 60_000,
+      onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
+    },
+    // --- Task 6's sweep: the `when` line, which read the master's instants --
+    //
+    // Both of these separate `detail.start_ms` from the clicked block's own,
+    // which is the only way `.when` can be caught reading the wrong one — every
+    // fixture above has them equal, and the line was unpinned for five plans.
+    //
+    // A **timed series across a fall-back**. Sofia's clocks go back at 04:00 on
+    // 25 Oct 2026, so 09:00 there is UTC+3 before that Sunday and UTC+2 after.
+    // The occurrence therefore sits **169 hours** past the master, not 168, and
+    // a UTC browser reads the two as 06:00 and 07:00 — the master's clock is an
+    // hour off the block the grid drew from `UiEvent.start_ms`. The offsets are
+    // written into the literals rather than looked up from the zone: an instant
+    // computed *from* `Europe/Sofia` would be 09:00 there by construction and
+    // could never disagree with the fixture's own claim.
+    'recurring-across-a-fall-back': {
+      detail: detail({
+        id: 9, title: 'Standup', is_recurring: true, can_edit: true,
+        start_ms: Date.parse('2026-10-19T09:00:00+03:00'),
+        end_ms: Date.parse('2026-10-19T09:30:00+03:00'),
+      }),
+      anchor: ANCHOR,
+      occurrenceStartMs: Date.parse('2026-10-26T09:00:00+02:00'),
+      occurrenceEndMs: Date.parse('2026-10-26T09:30:00+02:00'),
+      onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
+    },
+    // An **all-day series on a calendar east of the browser**, which is both
+    // residuals of that line in one fixture. `start_ms` is midnight in
+    // `Pacific/Auckland` (UTC+12), so it falls on the *previous* UTC date —
+    // the "absolute derivation" condition this branch's ledger states — and
+    // the clicked chip is the **fourth** day of the series, three whole days
+    // past the master's own. Read the instant in any zone and the answer is
+    // wrong; take the detail's date verbatim and the answer is the master's.
+    //
+    // Its spec runs in an `America/New_York` browser, which is what makes the
+    // third mutation on that line visible too: a `yyyy-mm-dd` rebuilt through
+    // `Date.UTC` and then formatted *without* `timeZone: 'UTC'` lands a day
+    // early for every reader west of UTC, and cannot be seen from a UTC one.
+    'all-day-series-east-of-the-browser': {
+      detail: detail({
+        id: 10, title: 'Berlin trip', is_all_day: true, is_recurring: true,
+        start_ms: Date.parse('2026-08-10T00:00:00+12:00'),
+        end_ms: Date.parse('2026-08-11T00:00:00+12:00'),
+        // The **master's** dates, `end_date` inclusive — so a one-day
+        // occurrence names the same day twice.
+        start_date: '2026-08-10', end_date: '2026-08-10',
+      }),
+      anchor: ANCHOR,
+      occurrenceStartMs: Date.parse('2026-08-13T00:00:00+12:00'),
+      occurrenceEndMs: Date.parse('2026-08-14T00:00:00+12:00'),
+      onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
     },
   },
   DeleteConfirm: {
@@ -1366,7 +1467,12 @@ export const FIXTURES: Record<string, Record<string, any>> = {
       anchor: ANCHOR,
       initial: editing(
         detail({ id: 14, title: 'Berlin trip', is_all_day: true, can_edit: true,
-                 start_ms: TRIP_START, end_ms: TRIP_END_EXCLUSIVE }),
+                 start_ms: TRIP_START, end_ms: TRIP_END_EXCLUSIVE,
+                 // Inclusive last day on `end_date` — Wednesday, not the
+                 // Thursday `end_ms` names — which is the whole reason this
+                 // scenario exists and now arrives already made rather than
+                 // being worked out from an instant.
+                 start_date: TRIP_FIRST_DAY, end_date: TRIP_LAST_DAY }),
         TRIP_START, TRIP_END_EXCLUSIVE,
       ),
       calendars: FORM_CALENDARS,

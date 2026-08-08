@@ -3,12 +3,14 @@
   import { onMount, tick } from 'svelte';
   import { placePopover, type Rect } from './position';
   import { descriptionSegments } from './sanitize';
+  import { occurrenceDate } from './eventform';
   import { respondToEvent, type Attendee, type EventDetail } from './eventdetail';
 
   let {
     detail,
     anchor,
     occurrenceStartMs,
+    occurrenceEndMs,
     onclose,
     onresponded,
     onedit,
@@ -21,6 +23,16 @@
      *  `detail.start_ms`. Threaded through from `WeekGrid` alongside
      *  `anchor`, both sourced from the same `UiEvent`. */
     occurrenceStartMs: number;
+    /** The clicked block's own `end_ms`, and here for the same reason its
+     *  start is: `detail.end_ms` is the **master's** for a series, so a
+     *  standup shown from `detail` reads the DTSTART's clock — an hour out
+     *  from the block on the grid beside it for every occurrence on the far
+     *  side of a daylight-saving transition, and on the master's date for
+     *  every occurrence at all. Both call sites already hold this value; they
+     *  build an `{ detail, startMs, endMs }` occurrence out of it for Edit and
+     *  Delete. Required, not optional, so a third call site cannot quietly
+     *  reintroduce the master's times by omission. */
+    occurrenceEndMs: number;
     onclose: () => void;
     /** Told the response that just landed, so the caller can restyle the
      *  block that was clicked without waiting for the next sync — the
@@ -53,8 +65,58 @@
 
   const hhmm = (ms: number) =>
     new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
-  const yyyymmdd = (ms: number) =>
-    new Date(ms).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+
+  const DAY_FORMAT: Intl.DateTimeFormatOptions =
+    { weekday: 'short', month: 'short', day: 'numeric' };
+
+  /** The day an **instant** falls on, read in the browser's zone — right for a
+   *  timed event, whose start genuinely is an instant and whose reader is
+   *  whoever is looking at the screen. */
+  const dayOfInstant = (ms: number) => new Date(ms).toLocaleDateString([], DAY_FORMAT);
+
+  /** The day a `yyyy-mm-dd` names, read in **no** zone.
+   *
+   *  Built through `Date.UTC` and rendered with `timeZone: 'UTC'` — both
+   *  halves, and the second is the one that is easy to forget: a UTC instant
+   *  formatted without it is put straight back through the browser's zone and
+   *  lands a day early for every user west of it. The same pair, for the same
+   *  reason, as `untilInWords` in `eventform.ts`.
+   *
+   *  An all-day event has no instant to read. The one the store holds is
+   *  midnight in the **calendar's** zone, and this browser does not know what
+   *  that zone is; reading it here is how this line used to show "Sun, Aug 9"
+   *  for a trip the form beside it opened on `2026-08-10`. */
+  const dayOfDate = (date: string) => {
+    const [y, m, d] = date.split('-').map(Number);
+    return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString([], { ...DAY_FORMAT, timeZone: 'UTC' });
+  };
+
+  /**
+   * The day this popover is about — **the clicked block's**, never the row's.
+   *
+   * Both arms take the occurrence, and the all-day arm takes it as a *date*:
+   * `occurrenceDate` moves the detail's own `start_date` onto the clicked block
+   * by the whole-day distance between two instants on the same side of the same
+   * event. That is the form's answer to the same question, from the same
+   * function, so the two cannot drift apart on screen again — see its comment in
+   * `eventform.ts` for why the subtraction has no zone in it.
+   *
+   * Only the first day, for a multi-day all-day event, which is what this line
+   * has always shown. Widening it to a range is a display question, not a
+   * boundary one, and is not this task's.
+   *
+   * One consequence worth stating, since `detail` is a live prop and these two
+   * are not: the after-paint `refresh_event` no longer moves this line. It
+   * never legitimately could — for a series `detail` carries the *master's*
+   * instants, so a refresh moved the popover onto a day the block beneath it
+   * was not on — and a genuine time change reaches the screen the way every
+   * other one does, when the grid reloads.
+   */
+  const day = $derived(
+    detail.is_all_day
+      ? dayOfDate(occurrenceDate(detail.start_date, detail.start_ms, occurrenceStartMs))
+      : dayOfInstant(occurrenceStartMs),
+  );
 
   // A neutral default so `.pop` renders (and so `offsetWidth`/`offsetHeight`
   // are measurable at all) before `onMount` below can place it for real.
@@ -187,8 +249,8 @@
 >
   <h2>{detail.title ?? '(no title)'}</h2>
   <p class="when">
-    {yyyymmdd(detail.start_ms)}{#if !detail.is_all_day}
-      &nbsp;· {hhmm(detail.start_ms)}–{hhmm(detail.end_ms)}{/if}
+    {day}{#if !detail.is_all_day}
+      &nbsp;· {hhmm(occurrenceStartMs)}–{hhmm(occurrenceEndMs)}{/if}
   </p>
 
   {#if segments.length}

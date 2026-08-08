@@ -17,6 +17,31 @@ export type EventDetail = {
   conference_uri: string | null;
   start_ms: number;
   end_ms: number;
+  /**
+   * The first day an all-day event covers, `yyyy-mm-dd`, already read in the
+   * **calendar's** zone. `null` for a timed event, which has no date of its own.
+   *
+   * Read it; never derive one from `start_ms` here. The store holds an instant
+   * for an all-day event too — midnight in the calendar's zone, because Google
+   * sends a bare `date` and sync resolves it against `calendars.timezone` — and
+   * this browser has no idea what that zone is. `dateOf(start_ms)` answers in
+   * the *browser's* zone, which for any user east of the calendar is the
+   * previous day: a trip on the 10th opens the form showing the 9th, and Save
+   * writes a two-day event starting the 9th to every guest with
+   * `sendUpdates=all`.
+   */
+  start_date: string | null;
+  /**
+   * The **last** day an all-day event covers — the day the user would point at
+   * — `yyyy-mm-dd`, in the same zone as `start_date` and `null` on the same
+   * condition.
+   *
+   * **Inclusive**, unlike `end_ms` and unlike the `endDate` a write sends: both
+   * of those are the exclusive midnight *after* the last day. This is the form's
+   * own `endDate` shape, so it goes straight into a form value with no arithmetic
+   * — a single-day event reports the same date twice.
+   */
+  end_date: string | null;
   is_all_day: boolean;
   is_recurring: boolean;
   /** The raw `RRULE`, carried through unchanged so the UI can show a rule it
@@ -80,12 +105,33 @@ export type EventInput = {
   summary: string | null;
   location: string | null;
   description: string | null;
-  startMs: number;
-  endMs: number;
-  isAllDay: boolean;
+  when: WhenInput;
   tz: string;
   repeat?: string;
 };
+
+/**
+ * When the event happens, mirroring `write::WhenInput`. **An all-day event
+ * carries dates and no zone at all** — that is Google's own model, and the
+ * reason this is a union rather than three loose fields: the old shape passed
+ * an instant and a flag, and the two sides of the boundary turned the same date
+ * into an instant in *different* zones, so a date nobody touched came back
+ * looking moved.
+ *
+ * `kind` is the discriminant Rust reads (`#[serde(tag = "kind")]`), and every
+ * name here has to match the wire exactly — Rust deliberately carries no
+ * default, so a payload it cannot read fails the command rather than becoming a
+ * timed event at the epoch. `write.rs`'s
+ * `the_payload_the_ui_sends_deserializes_as_written` pins these strings from
+ * the other side.
+ *
+ * `endDate` is **exclusive** — the day after the last one — as on Google's wire
+ * and in the store. The form shows the inclusive last day, so exactly one
+ * conversion happens between the two, in `eventform.ts`.
+ */
+export type WhenInput =
+  | { kind: 'timed'; startMs: number; endMs: number }
+  | { kind: 'allDay'; startDate: string; endDate: string };
 
 /** A freshness check on an already-open popover, not a load — see `WeekGrid`,
  *  which fires this after paint and ignores a rejection. */
