@@ -1221,6 +1221,73 @@ test.describe('BigYearRibbon', () => {
     await expect(page.locator('.pill.cont')).toHaveCount(2);
   });
 
+  // ---- a title appears once, not on every row ------------------------------
+
+  /** `crossingBigYear`'s span, which is the only text either of its pills
+   *  could carry. Read from one place so "the head has it" and "the tail does
+   *  not" cannot drift apart. */
+  const CROSSING_TITLE = 'Sun-Tue trip';
+
+  test('a title is printed once, on the segment that starts the run', async ({ page }) => {
+    // `crossing` is one event across a row boundary: `rows[0]` holds the head
+    // (columns 25-27, `cont_right`) and `rows[1]` the tail (columns 0-1,
+    // `cont_left`), in that DOM order. A three-row conference used to print its
+    // name three times.
+    await page.goto(show('crossing'));
+    const pills = page.locator('.pill');
+    await expect(pills).toHaveCount(2);
+    await expect(pills.nth(0)).toHaveText(CROSSING_TITLE);
+    // Bare, which also covers the `‹` that used to be the tail's first
+    // characters — an empty segment cannot be carrying a chevron.
+    await expect(pills.nth(1)).toHaveText('');
+  });
+
+  test('a bare continuation is still a pill: it spans its days and it opens', async ({ page }) => {
+    // The other half of "shows no text": everything else about the segment is
+    // unchanged. Without this, deleting the tail element outright would satisfy
+    // the spec above.
+    await page.goto(show('crossing'));
+    const tail = page.locator('.pill.cl');
+
+    // Two of the row's twenty-eight columns, because the span runs into day 2 —
+    // measured against a day in the same row rather than written as a pixel
+    // count, so it stays true at any width. The fill is what carries the run
+    // now that the text is gone, so a tail collapsed to nothing would be the
+    // whole feature lost.
+    const tailBox = (await tail.boundingBox())!;
+    const dayBox = (await page.locator('.rrow').nth(1).locator('.rday').first().boundingBox())!;
+    expect(tailBox.width).toBeGreaterThan(dayBox.width);
+    expect(tailBox.width).toBeLessThan(3 * dayBox.width);
+
+    await tail.click();
+    expect(await page.evaluate(() => (window as any).__lastOpen?.event?.title))
+      .toBe(CROSSING_TITLE);
+  });
+
+  test('a continuation segment still has an accessible name', async ({ page }) => {
+    // The regression the change above would otherwise have shipped: the tail's
+    // only content *was* the title, so it became a `<button>` with nothing in
+    // it, and a control with no name is unreachable by name to anything driving
+    // the app through the accessibility tree.
+    //
+    // Both assertions are here on purpose and only the first one bites if the
+    // `aria-label` is removed. Measured, by deleting the label and running the
+    // `getByRole` line ahead of the other: it still finds both buttons, in
+    // WebKit and in Chromium — `title` is also on the element and both engines
+    // fall back to it for the accessible name. So the second line cannot be
+    // this test's witness, which is exactly the reason the attribute is
+    // asserted directly rather than through the name.
+    //
+    // It is still worth having: it is the one that says the name genuinely
+    // resolves in each engine, rather than that an attribute is spelled right.
+    // The point of the label is that the name stops depending on a fallback the
+    // two engines are free to disagree about, and only one of these two lines
+    // can see that the fallback is gone.
+    await page.goto(show('crossing'));
+    await expect(page.locator('.pill.cl')).toHaveAttribute('aria-label', CROSSING_TITLE);
+    await expect(page.getByRole('button', { name: CROSSING_TITLE, exact: true })).toHaveCount(2);
+  });
+
   test('the legend names each calendar that has a pill', async ({ page }) => {
     await page.goto(show('y2026'));
     await expect(page.locator('.legend .item')).toHaveCount(2);

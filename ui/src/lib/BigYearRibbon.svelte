@@ -79,6 +79,26 @@
         <div class="pills" style="--lanes:{RESERVED_PILL_LANES}">
           {#each row.pills as lane (`${lane.idx}:${lane.lane}`)}
             {@const ev = row.pill_events[lane.idx]}
+            <!-- The title goes on the head segment only. An event running past
+                 day 28 produces one `Lane` per row it touches, and each used to
+                 carry the full title: a three-row conference printed its name
+                 three times, once per row, which is noise rather than
+                 information. Both references print it once at the start and
+                 leave the continuation bars bare — the colour and the unbroken
+                 run are what say it is the same event.
+
+                 So `aria-label`, explicitly, rather than leaning on `title`.
+                 A continuation's only content was the title, and a `<button>`
+                 with no content is a button with no name. `title` is *usually*
+                 promoted to the accessible name, but it is a fallback and the
+                 two engines do not have to agree on it; a control's name is
+                 not a thing to leave to "usually".
+
+                 The `‹` marker went with the title. It said "this started
+                 earlier", which was worth saying beside a title and is not
+                 worth saying alone: a lone chevron on a solid fill reads as a
+                 glyph, not a hint. `.pill.cl`'s squared corner and contrasting
+                 left edge were built for exactly this and now carry it. -->
             <button
               class="pill"
               class:cont={lane.cont_left || lane.cont_right}
@@ -91,8 +111,9 @@
                 --ink:{foregroundFor(ev.color)};
               "
               title={ev.title}
+              aria-label={ev.title}
               onclick={(e) => openPill(ev, e)}
-            >{lane.cont_left ? '‹ ' : ''}{ev.title}</button>
+            >{lane.cont_left ? '' : ev.title}</button>
           {/each}
           {#if row.overflow.length}
             <!-- A span, not a button: like `MonthRow.bar_overflow`, these
