@@ -13,6 +13,7 @@ import DeleteConfirm from '../../src/lib/DeleteConfirm.svelte';
 import * as eventform from '../../src/lib/eventform';
 import { FIXTURES } from '../fixtures';
 import { installTauriStub } from './tauri';
+import { VIEW_BOX_CSS } from './viewbox';
 
 // The form's pure date functions, reachable from a spec.
 //
@@ -48,6 +49,29 @@ const COMPONENTS: Record<string, any> = {
   EventPopover, EventForm, DeleteConfirm,
 };
 const target = document.getElementById('app')!;
+
+/**
+ * The four views that size themselves off their parent rather than off the
+ * window, and so cannot be mounted into a bare `<div>`.
+ *
+ * Each is a `flex: 1` item now (see any one of their stylesheets). In the app
+ * that resolves against `App`'s `main`; here there is no `main`, so this
+ * reproduces the one thing about it those views actually read — a column flex
+ * container of the height `App` leaves them. Without it `flex: 1` is inert,
+ * every view falls back to its own content height, and the specs that measure
+ * one go quiet rather than red: `BigYearRibbon`'s "fourteen rows fit with no
+ * scroll" would be comparing a container against the contents that *defined*
+ * its height, and could never fail.
+ *
+ * Height only. Nothing sets a width, a padding or an offset, so the views keep
+ * the full-bleed 1280px they have always been measured and screenshotted at.
+ */
+const FILL_HEIGHT_VIEWS = new Set(['WeekGrid', 'MonthGrid', 'YearGrid', 'BigYearRibbon']);
+if (FILL_HEIGHT_VIEWS.has(name)) {
+  target.style.display = 'flex';
+  target.style.flexDirection = 'column';
+  target.style.height = VIEW_BOX_CSS;
+}
 
 if (name === 'App') {
   // App is the whole application, not a leaf: it takes no props, and every

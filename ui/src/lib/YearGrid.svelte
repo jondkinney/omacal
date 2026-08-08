@@ -44,8 +44,14 @@
 </div>
 
 <style>
+  /* This component's only root, so `flex: 1` claims everything App's `main`
+     has left below the header — replacing a `calc(100vh - 150px)` that left
+     79px of a 1080-tall window unused. Twelve months scroll inside it rather
+     than pushing the window, and `overflow-y` is what buys that: a flex item
+     whose overflow is not `visible` has no automatic minimum size, so no
+     `min-height: 0` is needed beside it. Measured at 400px and at 720p. */
   .ygrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px;
-           padding: 4px; overflow-y: auto; height: calc(100vh - 150px); }
+           padding: 4px; overflow-y: auto; flex: 1; }
 
   .ymonth { display: flex; flex-direction: column; gap: 4px; }
   .mname { font-size: 11px; font-weight: 600; color: var(--text);

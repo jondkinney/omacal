@@ -137,7 +137,12 @@
   .head span { text-align: center; font-size: 10px; color: var(--muted);
                letter-spacing: .05em; }
 
-  .grid { display: flex; flex-direction: column; height: calc(100vh - 150px); }
+  /* `flex: 1` against App's `main`, not a guess at what surrounds it — the
+     day-name row above is content-sized, so this takes the rest. No
+     `min-height: 0`: every `.mrow` below already carries one, which makes this
+     box's own min-content height zero, so it shrinks freely on a short window
+     without one. Measured at 400px. */
+  .grid { display: flex; flex-direction: column; flex: 1; }
   .mrow { flex: 1; display: flex; flex-direction: column; min-height: 0;
           border-top: 1px solid var(--hairline); }
   .mrow:first-child { border-top: 0; }

@@ -151,9 +151,31 @@
 </div>
 
 <style>
-  .ribbon { display: flex; flex-direction: column; gap: 8px; padding: 4px; }
+  /* `min-height: 0` is load-bearing here and nowhere else in this file.
+     Unlike `.rows` below, this box has no `overflow` of its own, so it keeps
+     the automatic minimum size a flex item has by default and refuses to
+     shrink below its fourteen rows. Measured on a 400px-tall window with it
+     removed: `.ribbon` comes out 539px against the 337px available, overflows
+     `main`, and carries the last rows off the bottom of the screen with no
+     scroller to reach them — which is precisely the short-viewport case Plan 4
+     settled. */
+  .ribbon { display: flex; flex-direction: column; gap: 8px; padding: 4px;
+            flex: 1; min-height: 0; }
 
-  .rows { display: flex; flex-direction: column; height: calc(100vh - 190px); overflow-y: auto; }
+  /* `flex: 1` inside `.ribbon`, which is itself `flex: 1` inside App's `main`:
+     the legend below takes the height it needs and the rows take the rest.
+     What this replaced was `calc(100vh - 190px)`, and the 190 was the reported
+     defect — the real chrome is nothing like that, so a 1080-tall window was
+     left with 123px of nothing under the fourteenth row.
+
+     No `min-height: 0` on this one: `overflow-y: auto` already means it has no
+     automatic minimum size, so it shrinks and scrolls without one — measured,
+     adding it changes no geometry at 400px or at 720p. `.ribbon` above does
+     need its own, for the reason stated there. And note this is the *scroll
+     container*: `.rrow` below keeps its automatic minimum deliberately, which
+     is the opposite arrangement and the reason a short window scrolls the
+     rows rather than flattening them. */
+  .rows { display: flex; flex-direction: column; flex: 1; overflow-y: auto; }
   /* No `min-height: 0` — that let a row shrink below its own contents, and
      `.pills` is the taller of the two children, so the day strip is what
      absorbed the shortfall: a fully packed row squeezed `.rdays` to zero and
