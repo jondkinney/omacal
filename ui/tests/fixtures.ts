@@ -705,7 +705,16 @@ const y2026 = (): YearPayload => {
  *  is a permanent failure waiting for 2027-01-01, for reasons unconnected to
  *  any code change. Clear of both January (all marked `unsynced`) and 15
  *  March (the dotted day), so the three specs stay independent. */
-export const YEAR_2026_NOW = Date.UTC(2026, 5, 10); // Wed 10 Jun 2026
+/** Wed 10 Jun 2026 **14:00** UTC — what every `YearGrid` spec freezes to.
+ *
+ *  Not midnight, for the reason `MONTH_2026_NOW` is not: `YearGrid` truncates
+ *  the instant to its day with `setHours(0, 0, 0, 0)` before comparing it to a
+ *  day's `start_ms`, and while this constant *was* midnight that truncation
+ *  could be deleted outright with the whole suite still green — the frozen
+ *  instant already was the day boundary, so the comparison matched either way.
+ *  Verified: with the old value, removing `setHours` from `YearGrid.svelte`
+ *  left all ten specs in the block passing. */
+export const YEAR_2026_NOW = Date.UTC(2026, 5, 10, 14);
 
 // Big Year ribbon. 1 Jan 2026 is a Thursday in UTC (same as the Rust suite's
 // own Europe/Sofia computation for the same year), so the Monday on or

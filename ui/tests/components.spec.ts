@@ -1137,19 +1137,37 @@ test.describe('YearGrid', () => {
     await expect(page.locator('.yday.dotted')).toHaveCount(1);
   });
 
-  test('today is a filled disc', async ({ page }) => {
+  test('today is a filled disc, on the right day and no other', async ({ page }) => {
     // `YearGrid` reads the real wall clock; `y2026` is a fixed calendar year,
     // so the clock must be frozen to an instant inside it — same pattern as
     // `FIXED_NOW` for the Header specs above — or this becomes a permanent
     // failure the moment the real date rolls past 2026. That freeze is the
     // `beforeEach` at the top of this block.
     //
-    // Note what this asserts and what it does not: exactly one day is a disc,
-    // but not *which* day. `MonthGrid`'s own today spec above compares the
-    // whole cell vector and so pins both; the equivalent here would be the
-    // twelve-month vector.
+    // This was `expect('.yday.today').toHaveCount(1)`, which pinned *how many*
+    // discs and not *which day*: shift the highlight a day and the count is
+    // still exactly 1, so the spec passed while the grid marked the wrong
+    // date. The month-by-month vector below pins both at once — the same
+    // treatment `MonthGrid`'s today spec gets, in the shape this grid has.
+    //
+    // Read per month rather than as one flat 365-long list because that is the
+    // claim worth making: *no other month* has a disc, and June's is the 10th.
+    // A flat day-of-year index would say the same thing in a number nobody can
+    // check by eye.
     await page.goto(show('y2026'));
-    await expect(page.locator('.yday.today')).toHaveCount(1);
+    const months = page.locator('.ymonth');
+    // Retried, so it also establishes the component mounted — and it is what
+    // makes the fixed loop bound below cover every month there is. `YearGrid`
+    // takes its payload as a prop and renders in one pass, so once the twelve
+    // months are here, so is every `.yday` inside them.
+    await expect(months).toHaveCount(12);
+
+    const flagged: string[][] = [];
+    for (let i = 0; i < 12; i++) {
+      flagged.push(await months.nth(i).locator('.yday.today').allTextContents());
+    }
+    // `YEAR_2026_NOW` is Wed 10 Jun 2026, so June — index 5 — and nothing else.
+    expect(flagged).toEqual([[], [], [], [], [], ['10'], [], [], [], [], [], []]);
   });
 
   test('unsynced days are distinct from empty ones', async ({ page }) => {
