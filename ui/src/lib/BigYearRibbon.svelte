@@ -18,34 +18,11 @@
   // The data cap: `pack_lanes(&segments, 28, 3)` (commands.rs) never packs a
   // fourth overlapping span into a lane, folding it into `overflow` instead.
   // This is a limit on what the assembler *packs*, not on what the strip
-  // *reserves* — see `RESERVED_PILL_LANES` below for that distinction — and
-  // it's what the "+N more" row's own position (`grid-row:{cap + 1}`) reads
-  // off: the row just past the highest lane a pill can occupy. Mirrors
-  // `MonthGrid`'s `MAX_BAR_LANES`.
+  // *reserves* — the reservation is `--lanes` in the stylesheet below, and it
+  // is a different number on purpose — and it's what the "+N more" row's own
+  // position (`grid-row:{cap + 1}`) reads off: the row just past the highest
+  // lane a pill can occupy. Mirrors `MonthGrid`'s `MAX_BAR_LANES`.
   const PILL_LANE_CAP = 3;
-  // The layout budget: how many lane tracks `.pills` reserves up front via
-  // `grid-template-rows`, so a row with no pills — the common case — doesn't
-  // collapse to a different height than every other row. Deliberately less
-  // than `PILL_LANE_CAP`: reserving all three (the original fix) kept every
-  // row's height identical, but at 12px a lane that is 3 × 12px + the 15px
-  // day strip in all fourteen rows, which no longer fits one screen (spec
-  // §4's "one screen, the whole year") below about 973px of viewport height.
-  // Two reserved lanes at 10px, with `.pills`'s own top/bottom padding
-  // dropped too, keeps a quiet or lightly-packed row at a uniform ~37px
-  // (15px day strip + 21px pill strip: 2 × 10px lanes + a 1px gap between
-  // them, plus the row's own 1px top border) — measured, not just added up:
-  // the padding had to go too, since 15px + 2 × 10px alone still overshoots
-  // the ~530px container at 1280×720 by about 15px once borders and the
-  // strip's own gap are counted. 14 × ~37px fits with room to spare. A row
-  // that actually needs its third lane still gets it — `pack_lanes` still
-  // caps at `PILL_LANE_CAP`, nothing is dropped — it just grows past the
-  // reserved budget for that one row, the same way an overflowing row
-  // already grows to fit its "+N more" line today. Levelling every row's
-  // height, including the busiest one, was Big Year's original property;
-  // fitting on one screen at all took priority when they collided, and a row
-  // that pays the height cost is rare — three genuinely overlapping all-day
-  // spans in the same 28-day stretch.
-  const RESERVED_PILL_LANES = 2;
 
   const MONTH_NAMES = [
     'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
@@ -76,7 +53,11 @@
   <div class="rows">
     {#each ribbon.rows as row, r (r)}
       <div class="rrow">
-        <div class="pills" style="--lanes:{RESERVED_PILL_LANES}">
+        <!-- No `--lanes` here. The reservation is a question about how much
+             height the window has, which the stylesheet can answer and this
+             cannot; an inline custom property would also beat the media query
+             that answers it. See `.pills` below. -->
+        <div class="pills">
           {#each row.pills as lane (`${lane.idx}:${lane.lane}`)}
             {@const ev = row.pill_events[lane.idx]}
             <!-- The title goes on the head segment only. An event running past
@@ -209,15 +190,53 @@
   .rrow:first-child { border-top: 0; }
 
   /* `grid-template-rows`, not `grid-auto-rows`, for the reserved lanes
-     themselves: explicit tracks exist whether or not a pill occupies them,
-     so the strip is `--lanes` (`RESERVED_PILL_LANES`) tall in every row that
-     stays within budget. `grid-auto-rows` is the same 10px for whatever goes
-     beyond that: a row's third, uncapped-but-unreserved lane, and the one
-     implicit track the "+N more" row adds when a row overflows — both grow
-     the row rather than being clipped, same mechanism, same size. */
+     themselves: explicit tracks exist whether or not a pill occupies them, so
+     the strip is `--lanes` tall in every row that stays within budget, and a
+     quiet row — the common case — does not collapse to a different height than
+     its neighbours. `grid-auto-rows` is the same 10px for whatever goes beyond
+     that: a lane past the reservation, and the one implicit track the "+N more"
+     row adds when a row overflows. Both grow the row rather than being clipped;
+     same mechanism, same size.
+
+     `--lanes` is the *reservation*, and it is deliberately not `PILL_LANE_CAP`.
+     The cap is what `pack_lanes` will pack (three); the reservation is what the
+     layout pays for up front. Where they differ, a row that genuinely needs its
+     third lane still gets it and simply grows past the budget — nothing is
+     dropped.
+
+     How many to reserve is a question about the window, so it is asked here and
+     not in the script: an inline `style="--lanes:…"` is what this used to be,
+     and a declaration in a `style` attribute beats any stylesheet rule, media
+     query included. Nothing needs measuring at runtime for it either. A view's
+     box is the viewport minus `App`'s chrome, a fixed 63px
+     (`tests/harness/viewbox.ts`), so a viewport-height query *is* a query about
+     the height the ribbon has — which makes a `ResizeObserver`, with a live
+     subscription and a teardown to get right, the more expensive way to learn
+     the same fact.
+
+     The threshold is measured, at 10px lanes, in both engines, and they agree
+     to the pixel. Fourteen rows reserving three lanes need 671px of `.rows`:
+     each row is 47px (15px day strip + 32px pill strip — 3 × 10px and two 1px
+     gaps) with a 1px top border on all but the first. Around that sit the
+     legend at 21px, this element's 8px of gap and padding, and App's 63px:
+     63 + 4 + 671 + 8 + 21 + 4 = 771. Measured by stepping the viewport a pixel
+     at a time against `.rows`'s own overflow: 771 is the first height that
+     fits and 770 overflows by exactly 1px, in WebKit and in Chromium. Two lanes
+     fit from 617px, and at 720p three lanes overflow by 51px — which is why the
+     reservation below 771 is two, and why the old fixed reservation of two
+     existed at all.
+
+     Do not read the 21px legend as a constant. It is one line of legend, which
+     is what a handful of calendars comes to; a wrapped second line costs 23px
+     (measured), and at 771 exactly that scrolls. No fixed threshold can prevent
+     that — a third line would cost 23px again — so the measured one-line height
+     is what this uses, and a taller legend does what it already does today:
+     `.rows` scrolls, which is what its `overflow-y` is for. */
   .pills { display: grid; grid-template-columns: repeat(28, 1fr);
+           --lanes: 2;
            grid-template-rows: repeat(var(--lanes), 10px);
            grid-auto-rows: 10px; gap: 1px 0; }
+  @media (min-height: 771px) { .pills { --lanes: 3; } }
 
   /* Solid, not a 16% wash. Fourteen rows of pastel smudge is what the ribbon
      read as; a bar of the calendar's actual colour is what makes the year

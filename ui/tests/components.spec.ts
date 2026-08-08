@@ -1458,12 +1458,12 @@ test.describe('BigYearRibbon', () => {
     await page.goto(show('three-lanes'));
     const packed = page.locator('.rrow').first();
 
-    // `RESERVED_PILL_LANES` (2) trims the CSS budget below `PILL_LANE_CAP`
-    // (3, `pack_lanes`'s own cap) — reservation and cap are deliberately not
-    // the same number any more, so this is what proves the split didn't
-    // quietly become a cap of its own: all three of this row's genuinely
-    // overlapping spans still render, the row just grows past its reserved
-    // budget to fit the one it doesn't have a track for.
+    // At this suite's 720p viewport the reservation (`--lanes`) is two, which
+    // trims the CSS budget below `PILL_LANE_CAP` (3, `pack_lanes`'s own cap) —
+    // reservation and cap are deliberately not the same number, so this is what
+    // proves the split didn't quietly become a cap of its own: all three of
+    // this row's genuinely overlapping spans still render, the row just grows
+    // past its reserved budget to fit the one it doesn't have a track for.
     await expect(packed.locator('.pill')).toHaveCount(3);
 
     // The strip has to be tall enough to *hold* a day, which is a stronger
@@ -1492,12 +1492,25 @@ test.describe('BigYearRibbon', () => {
     expect(packedDays).toBeGreaterThanOrEqual(oneDay);
   });
 
+  // ---- the reservation follows the height the window actually has ----------
+
+  /** How many lane tracks `.pills` reserves, read off a row with no pills at
+   *  all — so it is the reservation being measured and not the content. The
+   *  computed `grid-template-rows` of a grid container is its resolved track
+   *  list, which is what "reserved" means here. */
+  const reservedLanes = (page: Page, rrow: number) => page
+    .locator('.rrow').nth(rrow).locator('.pills')
+    .evaluate((el) => getComputedStyle(el).gridTemplateRows.split(/\s+/).length);
+
+  /** `.rows` scrolling, in pixels. `<= 0` is "fourteen rows on one screen". */
+  const rowsOverflow = (page: Page) => page.locator('.rows')
+    .evaluate((el) => el.scrollHeight - el.clientHeight);
+
   test('all fourteen rows fit on one screen with no scroll', async ({ page }) => {
     // The design doc's own promise for this view (spec §4): "Big Year — one
-    // screen, the whole year." `RESERVED_PILL_LANES`'s comment explains the
-    // budget this depends on. Pinned so that budget can't drift back out of
-    // reach without a spec noticing, the way the original 3-lane reservation
-    // did.
+    // screen, the whole year." Pinned so the budget it depends on can't drift
+    // back out of reach without a spec noticing, the way the original fixed
+    // 3-lane reservation did.
     //
     // The container is 620px of `.rows` at the suite's default 1280x720
     // viewport (`devices['Desktop Chrome']`/`['Desktop Safari']` in
@@ -1509,12 +1522,80 @@ test.describe('BigYearRibbon', () => {
     // reads the box `App` genuinely leaves a view, which
     // `app.spec.ts`'s "a standalone view gets the same box the app gives it"
     // pins to the real thing — so this is a claim about 720p in the app and
-    // not only about the harness. Three reserved lanes rather than two would
-    // still fail it, which is what it is for.
+    // not only about the harness.
+    //
+    // 720p is below the 771px at which a third lane fits, so this is also the
+    // regression net for the reservation not creeping up: pinned to a constant
+    // three, `.rows` overflows here by exactly 51px (measured, and the number
+    // this fails with). It deliberately does *not* also assert the lane count.
+    // Three lanes at 720p always overflow, so a lane-count line here could
+    // never fail on its own — it would be a passenger, and the reservation at
+    // the small end is claimed where it can be seen instead: "a tall window
+    // levels the busiest row", whose 720p half needs the bulge that only two
+    // reserved lanes produce.
     await page.goto(show('y2026'));
     await expect(page.locator('.rrow')).toHaveCount(14);
-    const overflow = await page.locator('.rows').evaluate((el) => el.scrollHeight - el.clientHeight);
-    expect(overflow).toBeLessThanOrEqual(0);
+    expect(await rowsOverflow(page)).toBeLessThanOrEqual(0);
+  });
+
+  test('a window tall enough for a third lane reserves one', async ({ page }) => {
+    // The other end. 771px is the measured height at which fourteen rows of
+    // three reserved lanes plus the legend first fit — `.pills`'s own comment
+    // has the arithmetic and how it was measured. Set one pixel above it rather
+    // than exactly on it: this spec is about the reservation being taken when
+    // there is room, and sitting on the boundary would make it a spec about the
+    // boundary, which the pair below is for.
+    await page.setViewportSize({ width: 1280, height: 772 });
+    await page.goto(show('y2026'));
+    await expect(page.locator('.rrow')).toHaveCount(14);
+    expect(await reservedLanes(page, 2)).toBe(3);
+    // §4 still holds here — taking the third lane must not cost the promise it
+    // was traded against in the first place.
+    expect(await rowsOverflow(page)).toBeLessThanOrEqual(0);
+  });
+
+  test('the third lane is taken exactly where it starts fitting', async ({ page }) => {
+    // The threshold itself, from both sides, one pixel apart. A spec that only
+    // checked a tall window and a short one would pass for a threshold anywhere
+    // between them; this is what says the number is 771 and not "somewhere
+    // around 800".
+    await page.goto(show('y2026'));
+
+    await page.setViewportSize({ width: 1280, height: 771 });
+    expect(await reservedLanes(page, 2)).toBe(3);
+    expect(await rowsOverflow(page)).toBeLessThanOrEqual(0);
+
+    await page.setViewportSize({ width: 1280, height: 770 });
+    expect(await reservedLanes(page, 2)).toBe(2);
+    expect(await rowsOverflow(page)).toBeLessThanOrEqual(0);
+  });
+
+  test('a tall window levels the busiest row with the quiet ones', async ({ page }) => {
+    // Why the third lane is worth reserving at all: uniform rows. Levelling
+    // every row's height was Big Year's original property, and a fixed
+    // reservation of two gave it up at every window size to keep §4 at the
+    // small end. A tall window does not have to pay that.
+    //
+    // `three-lanes-exact` is three genuinely overlapping spans with nothing
+    // folded away — the busiest shape a three-lane reservation can level. (Its
+    // neighbour `three-lanes` also overflows, so its strip carries a fourth
+    // implicit track for the "+N more" line and stands proud of a quiet row
+    // whatever the reservation is.)
+    await page.goto(show('three-lanes-exact'));
+    const packed = page.locator('.rrow').nth(0).locator('.pills');
+    const quiet = page.locator('.rrow').nth(1).locator('.pills');
+    await expect(page.locator('.rrow').nth(0).locator('.pill')).toHaveCount(3);
+
+    await page.setViewportSize({ width: 1280, height: 772 });
+    expect((await packed.boundingBox())!.height).toBe((await quiet.boundingBox())!.height);
+
+    // …and at 720p it does bulge, which is the compromise the small end still
+    // makes. Asserted rather than left implied: without it, a reservation stuck
+    // at three would satisfy the line above and this test would be claiming a
+    // property of the *layout* rather than of the window.
+    await page.setViewportSize({ width: 1280, height: 720 });
+    expect((await packed.boundingBox())!.height)
+      .toBeGreaterThan((await quiet.boundingBox())!.height);
   });
 
   // The reported defect, at the one place App's own specs cannot see it: its

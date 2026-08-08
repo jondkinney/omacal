@@ -918,11 +918,13 @@ const twoPillsBigYear = (): BigYearPayload => {
  *  empty on purpose, so a spec can compare the two and see the day strip is
  *  the same height in both regardless — `.rdays` sits at its own protected
  *  minimum whether or not `.pills` beside it grows past its reservation
- *  (`RESERVED_PILL_LANES`, `BigYearRibbon.svelte`), which this row's own
+ *  (`--lanes`, `BigYearRibbon.svelte`'s stylesheet), which this row's own
  *  third lane and overflow both do. Also registered so a spec can prove
  *  `pack_lanes`'s cap and the strip's *reservation* are different numbers on
- *  purpose: all three packed pills still render even though only two lanes'
- *  worth of height is reserved for them. */
+ *  purpose: at the suite's 720p viewport the reservation is two, and all three
+ *  packed pills still render regardless — the row grows rather than dropping
+ *  one. `threeLanesExactBigYear` below is the same shape without the overflow,
+ *  for the question this one cannot answer. */
 const threeLanesBigYear = (): BigYearPayload => {
   const b = emptyBigYear(2026, RIBBON_START, YEAR_2026_START, YEAR_2027_START);
 
@@ -944,6 +946,43 @@ const threeLanesBigYear = (): BigYearPayload => {
   ];
   // `pack_lanes` caps at three, so the fourth overlapping span is folded away.
   b.rows[0].overflow = [3];
+
+  return b;
+};
+
+/** Row 0 packed to exactly three lanes and **not** overflowing, next to rows
+ *  with no pills at all.
+ *
+ *  `threeLanesBigYear` above cannot answer the question this one is for. Its
+ *  row also overflows, so its pill strip carries a fourth implicit track for
+ *  the "+N more" line and stands taller than a quiet row's whatever the
+ *  reservation is — which makes it useless for asking whether the reservation
+ *  levelled the row. Three lanes with nothing folded away is the busiest shape
+ *  that a three-lane reservation can actually level, and levelling it is the
+ *  whole point of taking the third lane when the window can afford it.
+ *
+ *  The three spans genuinely overlap — 2-12, 4-9 and 6-8 all cover days 6-8 —
+ *  so `pack_lanes` really would put them in three lanes rather than packing
+ *  two of them into one. A fixture of three disjoint spans would sit in a
+ *  single lane and could not witness anything about lane budgets. */
+const threeLanesExactBigYear = (): BigYearPayload => {
+  const b = emptyBigYear(2026, RIBBON_START, YEAR_2026_START, YEAR_2027_START);
+
+  const span = (id: number, title: string, color: string, from: number, to: number) => ev({
+    id, title, is_all_day: true, color,
+    start_ms: RIBBON_START + from * 24 * H, end_ms: RIBBON_START + (to + 1) * 24 * H,
+  });
+
+  b.rows[0].pill_events = [
+    span(940, 'Berlin trip', '#5b8def', 2, 12),
+    span(941, 'Rahul on leave', '#e2a03f', 4, 9),
+    span(942, 'Team offsite', '#2dd4bf', 6, 8),
+  ];
+  b.rows[0].pills = [
+    { idx: 0, lane: 0, start_col: 2, end_col: 12, cont_left: false, cont_right: false },
+    { idx: 1, lane: 1, start_col: 4, end_col: 9, cont_left: false, cont_right: false },
+    { idx: 2, lane: 2, start_col: 6, end_col: 8, cont_left: false, cont_right: false },
+  ];
 
   return b;
 };
@@ -1330,6 +1369,7 @@ export const FIXTURES: Record<string, Record<string, any>> = {
     'two-pills': { ribbon: twoPillsBigYear() },
     'same-name-legend': { ribbon: sameNameLegendBigYear() },
     'three-lanes': { ribbon: threeLanesBigYear() },
+    'three-lanes-exact': { ribbon: threeLanesExactBigYear() },
     'pill-inks': { ribbon: pillInksBigYear() },
     unsynced: { ribbon: unsyncedBigYear() },
   },
