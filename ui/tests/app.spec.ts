@@ -13,6 +13,7 @@ import {
   XZONE_DISPLAY_MISREADING,
 } from './fixtures';
 import { NO_CONFIG_ERROR } from './harness/tauri';
+import { APP_CHROME_PX } from './harness/viewbox';
 
 const WEEK = 7 * 24 * 3_600_000;
 /** The week the app opens on, and the one a click on › moves to. */
@@ -1052,5 +1053,190 @@ test.describe('App: an all-day event on a calendar east of the display', () => {
     // browser keeps its last day" (New York calendar, Tokyo browser) is the
     // test that does catch it, and it fails under exactly that mutation.
     await expect(form.getByLabel('Last day', { exact: true })).toHaveValue(XZONE_DAY);
+  });
+});
+
+/**
+ * Height, and who is entitled to it.
+ *
+ * Reported from the running app: on a tall display Big Year stopped about 95px
+ * short of the bottom of the window. There was no flex chain — `main` had a
+ * padding and nothing else, `html`/`body`/`#app` had no height rules at all,
+ * and each view sized itself off the window with its own guess at what
+ * surrounded it (`calc(100vh - 150px)` in three of them, `- 190px` in the
+ * ribbon). Measured against `c76de53` at 1920x1080, every one of those guesses
+ * was too big, and by a different amount: Week left 42px of the window
+ * unclaimed, Month 69px, Year 79px and Big Year 123px with no legend on it.
+ * None of the figures moved with the viewport, which is the signature of a
+ * constant rather than a layout.
+ *
+ * These live at App level rather than in `components.spec.ts` because the
+ * chrome is the whole subject: a view mounted on its own has no `Header` above
+ * it and no `main` around it, so it is the one place the property cannot be
+ * observed. `components.spec.ts`'s BigYearRibbon block covers what App's own
+ * `get_big_year` stub cannot — a ribbon with a legend under its rows.
+ */
+test.describe('App: a view claims the height the window leaves it', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.clock.setFixedTime(APP_NOW);
+  });
+
+  /**
+   * The last y-coordinate a view is entitled to: the bottom of the *window*,
+   * less `main`'s own `padding-bottom`, which is the only thing allowed to sit
+   * below a view.
+   *
+   * Measured against `window.innerHeight`, and never against `main`'s own box.
+   * A first pass at these specs did the latter — `main.getBoundingClientRect()
+   * .bottom - paddingBottom`, which reads like the same thing and is not. With
+   * the old rules reinstated `main` has no height of its own; it is a block
+   * element sized by its contents, so "the bottom of `main`" is *defined* by
+   * wherever the view happens to stop, and the difference between the two is
+   * zero for any view whatsoever — including one leaving 123px of the window
+   * empty underneath it. Measured, rather than reasoned about after the fact:
+   * against that reference six of these seven specs passed with the defect
+   * fully reinstated.
+   */
+  const mainContentBottom = (page: Page) =>
+    page.locator('main').evaluate(
+      (el) => window.innerHeight - parseFloat(getComputedStyle(el).paddingBottom),
+    );
+
+  const bottomOf = (page: Page, sel: string) =>
+    page.locator(sel).evaluate((el) => el.getBoundingClientRect().bottom);
+
+  /**
+   * Open the app at `size` and switch to the view `key` selects.
+   *
+   * The `h1` wait is not decoration. `App` listens for keys on
+   * `<svelte:window>`, so the listener does not exist until it has mounted, and
+   * a `press` issued before that is delivered to a page that drops it — the
+   * view never changes and the spec then times out waiting for a selector that
+   * belongs to the view it asked for. Every other keyboard spec in this file
+   * happens to await something first; these had nothing to await, which is how
+   * it surfaced here rather than there.
+   */
+  async function open(page: Page, size: { width: number; height: number }, key: string) {
+    await page.setViewportSize(size);
+    await page.goto(app());
+    await expect(page.locator('h1')).toBeVisible();
+    await page.keyboard.press(key);
+  }
+
+  /** A tall window — the shape the defect was reported on. Any height well
+   *  clear of what the old constants subtracted works; the point is that the
+   *  slack below a view used to be the same number at every size. */
+  const TALL = { width: 1280, height: 1600 };
+
+  // Each view's last root element, which is the one that has to reach the
+  // bottom, plus something inside it to wait on. `.body` for Week rather than
+  // `.grid`, because WeekGrid has three roots and two of them carry `.grid` —
+  // the day-name row and the scroller; the wait is on the inner selector for
+  // the same reason, since `.grid` is ambiguous until Month is actually on
+  // screen and a strict-mode violation is a confusing way to learn that.
+  const LAST_ROOT: Array<[string, string, string, string]> = [
+    ['Week', '2', '.body', '.col'],
+    ['Month', '3', '.grid', '.mrow'],
+    ['Year', '4', '.ygrid', '.ymonth'],
+  ];
+
+  for (const [name, key, sel, ready] of LAST_ROOT) {
+    test(`${name} reaches the bottom of a tall window`, async ({ page }) => {
+      await open(page, TALL, key);
+      await expect(page.locator(ready).first()).toBeVisible();
+      // Signed on purpose in the message: positive is the defect (a view
+      // stopping short), negative would be a view overflowing `main`, and the
+      // two want different fixes.
+      const slack = (await mainContentBottom(page)) - (await bottomOf(page, sel));
+      expect(Math.abs(slack)).toBeLessThanOrEqual(1);
+    });
+  }
+
+  // Big Year gets its own rather than joining the loop above, because reaching
+  // the bottom is only half of it: `.ribbon` could fill the window while
+  // `.rows` inside it stayed at its old 530px and left the slack one level
+  // further in. This follows it all the way to the fourteenth row.
+  test('Big Year fills a tall window down to its last row', async ({ page }) => {
+    await open(page, TALL, '5');
+    await expect(page.locator('.rrow')).toHaveCount(14);
+
+    // `.ribbon`'s own padding is the one thing entitled to sit below the last
+    // row. Read off the element rather than written here as a 4, so this says
+    // "nothing but the padding" instead of "nothing but four pixels".
+    const pad = await page.locator('.ribbon').evaluate(
+      (el) => parseFloat(getComputedStyle(el).paddingBottom),
+    );
+    const lastRowBottom = await page.locator('.rrow').last().evaluate(
+      (el) => el.getBoundingClientRect().bottom,
+    );
+    // 123px before this changed, at every window height; `pad` (4px) after.
+    const unclaimed = (await mainContentBottom(page)) - lastRowBottom;
+    expect(unclaimed).toBeLessThanOrEqual(pad + 1);
+  });
+
+  // Plan 4 settled this after a long argument and it is not to be traded away
+  // for the fix above: a window too short for fourteen rows scrolls them
+  // rather than squeezing them until the day strips disappear.
+  //
+  // 400px, and not the 720p the requirement is usually stated at, because at
+  // 720p there is now nothing to observe. The ribbon used to be handed 530px
+  // of rows there against fourteen rows' own 539px minimum, so every row sat
+  // clamped at its minimum and 720p *was* the squeeze; claiming the real
+  // height moves that to 649px and the rows simply fit. A 720p version of this
+  // spec was written first and then deleted, because it could not fail:
+  // measured against three separate mutations — `.ribbon` losing its
+  // `min-height: 0`, `.rrow`/`.rdays` gaining one, and the pre-fix
+  // `calc(100vh - 190px)` reinstated — it passed against all three. App's own
+  // `get_big_year` stub returns a ribbon with no pills on it at all, so there
+  // is nothing there that a row can be crushed *by*. That 720p still holds is
+  // covered where the fixtures to make it bite live: `components.spec.ts`'s
+  // "all fourteen rows fit on one screen with no scroll", against a mount box
+  // this file's last spec pins to the app's own.
+  //
+  // Here the scroll is real, and this does fail — measured — the moment
+  // `.ribbon` loses its `min-height: 0`: `.ribbon` refuses to shrink below its
+  // fourteen rows, overflows `main`, and the rows run off the bottom of the
+  // screen with no scroller to reach them.
+  test('a window too short for the ribbon scrolls it rather than crushing it', async ({ page }) => {
+    await open(page, { width: 1280, height: 400 }, '5');
+    await expect(page.locator('.rrow')).toHaveCount(14);
+
+    const overflow = await page.locator('.rows').evaluate((el) => el.scrollHeight - el.clientHeight);
+    expect(overflow).toBeGreaterThan(0); // it genuinely has to scroll here
+
+    await page.locator('.rows').evaluate((el) => { el.scrollTop = el.scrollHeight; });
+    const reached = await page.evaluate(() => {
+      const rows = document.querySelector('.rows')!.getBoundingClientRect();
+      const last = document.querySelectorAll('.rrow')[13]!.getBoundingClientRect();
+      return last.bottom - rows.bottom;
+    });
+    expect(Math.abs(reached)).toBeLessThanOrEqual(1);
+    // Nothing here asserts the day strips are un-crushed as well, deliberately.
+    // The obvious extra line — the strip being at least as tall as the day it
+    // draws — could not be shown to fail on its own at this size: giving
+    // `.rdays` a `min-height: 0` leaves it at 15px anyway, because `.rrow`
+    // still refuses to shrink below its own contents, and giving `.rrow` one
+    // too trips the reachability line above first. The crush has a spec that
+    // does bite, against a fixture with pills in it to do the crushing:
+    // `components.spec.ts`'s "a fully packed row keeps its day strip".
+  });
+
+  // `tests/harness/viewbox.ts` carries the one chrome constant left anywhere,
+  // because a view mounted standalone has no `Header` to measure and `flex: 1`
+  // against a bare `<div>` does nothing. This is what stops it going stale: the
+  // app derives the same box at layout time and never states it, so the two can
+  // only be compared by measuring the real thing. `.ribbon` is
+  // `BigYearRibbon`'s only root and is `flex: 1`, so its height *is* the box
+  // `main` leaves a view.
+  //
+  // If this fails, `Header` has changed height (a wrapped row, a new control)
+  // and `APP_CHROME_PX` is the number to update — not this expectation.
+  test('a standalone view gets the same box the app gives it', async ({ page }) => {
+    await open(page, { width: 1280, height: 720 }, '5');
+    await expect(page.locator('.rrow')).toHaveCount(14);
+    const viewBox = await page.locator('.ribbon').evaluate(
+      (el) => el.getBoundingClientRect().height,
+    );
+    expect(viewBox).toBeCloseTo(720 - APP_CHROME_PX, 0);
   });
 });

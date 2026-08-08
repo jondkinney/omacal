@@ -743,7 +743,27 @@
 {/if}
 
 <style>
+  /* The flex chain every view hangs off, and the whole of this app's opinion
+     about height.
+
+     Each of the four views used to size itself with `calc(100vh - <a guess at
+     what surrounds it>)` — 150px in three of them, 190px in the ribbon — and
+     every guess was too big. Measured at 1920x1080 before this changed: Week
+     left 42px of the window unclaimed below its last hour, Month 69px, Year
+     79px, and Big Year 123px with no legend on it (~95px with one, which is
+     what got reported). The guesses could not have been right for long
+     anyway: `Header`'s own height is whatever its buttons and its
+     `flex-wrap` come to, and it grows by a whole error banner the moment
+     anything fails.
+
+     So nothing here names a chrome height. `main` fills the window, `Header`
+     takes what it needs, and the view takes the rest — see each view's own
+     `flex: 1` for the other half of it. */
+  :global(html), :global(body), :global(#app) { height: 100%; }
   :global(body) { background: var(--bg); color: var(--text); margin: 0;
                   font-family: -apple-system, 'SF Pro Text', Inter, system-ui, sans-serif; }
-  main { padding: 14px 16px; }
+  /* `border-box` is load-bearing: without it the 28px of vertical padding
+     lands *outside* the 100%, and the window scrolls by exactly that much. */
+  main { padding: 14px 16px; box-sizing: border-box; height: 100%;
+         display: flex; flex-direction: column; }
 </style>

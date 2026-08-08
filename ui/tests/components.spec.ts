@@ -1291,35 +1291,81 @@ test.describe('BigYearRibbon', () => {
     // budget to fit the one it doesn't have a track for.
     await expect(packed.locator('.pill')).toHaveCount(3);
 
-    expect((await packed.locator('.rdays').boundingBox())!.height).toBeGreaterThan(0);
-
-    // And the day strip is the same height in a packed row as in an empty
-    // one: `.rdays` sits at its own protected minimum regardless of how tall
-    // `.pills` grows beside it — true even here, where this row's third lane
-    // and overflow both exceed `RESERVED_PILL_LANES`'s budget and grow the
-    // row past it (see that constant's own comment). Without *any* lane
-    // reservation, a quiet row's `.pills` collapses toward nothing instead,
-    // and its `.rdays` inflates to absorb the slack — so the two diverge.
-    const quiet = page.locator('.rrow').nth(2);
+    // The strip has to be tall enough to *hold* a day, which is a stronger
+    // statement than "not zero" and the one that actually distinguishes the
+    // two renderings: under the bug `.rdays` measured 0 while the `.rday`
+    // inside it still measured its own 15px, so the days were being drawn
+    // somewhere other than inside the strip that owns them. Read off the day
+    // rather than written here as a number, so it stays true if the day's own
+    // font or padding ever changes; and asserted *about* the strip, never
+    // about the day, for the reason the comment above gives.
+    //
+    // This assertion used to read `|packed - quiet| < 1` — the packed row's
+    // strip and a quiet row's within a pixel of each other — and that was
+    // never a property of this layout. It held because `.rows` was pinned at
+    // `calc(100vh - 190px)`, 530px at this suite's 720p viewport, which is
+    // *less* than fourteen rows' own combined minimum (539px here). Every row
+    // was therefore clamped to its minimum and the two agreed by force. Now
+    // that `.rows` claims the height genuinely available to it (649px) the
+    // quiet rows have room to grow into and the packed one, still held at its
+    // 58px minimum by four lanes of pills, does not: 15px against 23.5px,
+    // measured in both engines. Uniform row heights were the squeeze talking;
+    // the day strip surviving a packed row is the property.
     const packedDays = (await packed.locator('.rdays').boundingBox())!.height;
-    const quietDays = (await quiet.locator('.rdays').boundingBox())!.height;
-    expect(Math.abs(packedDays - quietDays)).toBeLessThan(1);
+    const oneDay = (await packed.locator('.rday').first().boundingBox())!.height;
+    expect(oneDay).toBeGreaterThan(0); // guards the line below against 0 >= 0
+    expect(packedDays).toBeGreaterThanOrEqual(oneDay);
   });
 
   test('all fourteen rows fit on one screen with no scroll', async ({ page }) => {
     // The design doc's own promise for this view (spec §4): "Big Year — one
     // screen, the whole year." `RESERVED_PILL_LANES`'s comment explains the
-    // budget this depends on: 14 rows at a uniform ~35px fit inside the
-    // ~530px container the suite's default 1280x720 viewport gives `.rows`
-    // (`devices['Desktop Chrome']`/`['Desktop Safari']` in
-    // playwright.config.ts — no `setViewportSize` here, same as every other
-    // spec in this file). Pinned so that budget can't drift back out of
+    // budget this depends on. Pinned so that budget can't drift back out of
     // reach without a spec noticing, the way the original 3-lane reservation
     // did.
+    //
+    // The container is 620px of `.rows` at the suite's default 1280x720
+    // viewport (`devices['Desktop Chrome']`/`['Desktop Safari']` in
+    // playwright.config.ts — no `setViewportSize` here, same as every other
+    // spec in this file), against fourteen rows' own ~539px minimum. It used
+    // to be 530px, which is *less* than that minimum: the ribbon was pinned at
+    // `calc(100vh - 190px)` and this spec passed only because a fourteen-row
+    // ribbon with one pill per row is a hair under what 530px holds. It now
+    // reads the box `App` genuinely leaves a view, which
+    // `app.spec.ts`'s "a standalone view gets the same box the app gives it"
+    // pins to the real thing — so this is a claim about 720p in the app and
+    // not only about the harness. Three reserved lanes rather than two would
+    // still fail it, which is what it is for.
     await page.goto(show('y2026'));
     await expect(page.locator('.rrow')).toHaveCount(14);
     const overflow = await page.locator('.rows').evaluate((el) => el.scrollHeight - el.clientHeight);
     expect(overflow).toBeLessThanOrEqual(0);
+  });
+
+  // The reported defect, at the one place App's own specs cannot see it: its
+  // `get_big_year` stub returns an empty legend, so the App-level height specs
+  // in `app.spec.ts` only ever exercise a ribbon with nothing under its rows.
+  // The legend is what made the old rule *look* nearly right — `100vh - 190px`
+  // was 150px of guessed chrome plus 40px reserved for a legend that is not
+  // 40px tall — and it is why the number the user reported (~95px short) was
+  // smaller than the 123px this leaves with no legend at all. Nothing reserves
+  // anything now: `.legend` takes what it needs, `.rows` takes the rest, and
+  // the two together reach the bottom of the box the parent gave the ribbon.
+  test('the rows take whatever the legend does not', async ({ page }) => {
+    await page.goto(show('y2026'));
+    await expect(page.locator('.legend .item')).toHaveCount(2);
+    // Measured against the mount container rather than the window: this
+    // component no longer knows anything about the window, which is the fix.
+    const gap = await page.evaluate(() => {
+      const box = document.getElementById('app')!.getBoundingClientRect();
+      return box.bottom - document.querySelector('.legend')!.getBoundingClientRect().bottom;
+    });
+    // `.ribbon`'s own padding, and nothing else — read off the element so this
+    // says "nothing but the padding" rather than "nothing but four pixels".
+    const pad = await page.locator('.ribbon').evaluate(
+      (el) => parseFloat(getComputedStyle(el).paddingBottom),
+    );
+    expect(gap).toBeCloseTo(pad, 0);
   });
 
   test('days outside the synced window are hatched, not left blank', async ({ page }) => {

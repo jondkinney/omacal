@@ -423,7 +423,15 @@
 
 <style>
   .grid { display: grid; grid-template-columns: 44px repeat(var(--cols), 1fr); }
-  .body { height: calc(100vh - 150px); overflow-y: auto; position: relative; }
+  /* The last of this component's three roots, and the only one that stretches:
+     the day-name row and the all-day band above it are content-sized, so
+     `flex: 1` here means "the rest of whatever App's `main` has left", rather
+     than the `calc(100vh - 150px)` guess this replaced. It shrinks below its
+     1200px of columns and scrolls them rather than pushing the window, and
+     `overflow-y` is what buys that: a flex item whose overflow is not
+     `visible` has no automatic minimum size, so no `min-height: 0` is needed
+     beside it. Measured — adding one moves nothing, at 400px or at 720p. */
+  .body { flex: 1; overflow-y: auto; position: relative; }
 
   .head { text-align: center; font-size: 10px; color: var(--muted);
           letter-spacing: .05em; padding-bottom: 8px; }
