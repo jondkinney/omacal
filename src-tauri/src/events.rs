@@ -102,34 +102,18 @@ pub(crate) fn is_recurring(recurrence: &Option<String>, recurring_event_id: &Opt
 }
 
 /// The two dates an all-day event covers, read in the **calendar's** zone
-/// `cal_tz`: the first day it covers and the **inclusive** last one, both
-/// `yyyy-mm-dd`. `None` for a timed event, which has no dates — see
+/// `cal_tz`. `None` for a timed event, which has no dates — see
 /// [`EventDetail::start_date`].
 ///
-/// The last day is one civil day back from `end_utc`'s date, because `end_utc`
-/// is the exclusive end: midnight *after* the last day, as on Google's wire.
-/// Deliberately not the date of `end_utc` minus some slack — `valueFromDetail`
-/// steps back half a day, and half a day of slack silently absorbs a wrong
-/// zone, which is how the end came out right by accident while the start was a
-/// day early. A civil day back from the exclusive date is the same answer in
-/// every zone and across every daylight-saving transition, since a date carries
-/// no time of day for a transition to move.
-///
-/// A date that will not parse or has no yesterday falls through to `start`
-/// rather than panicking, the same fallback philosophy as
-/// [`crate::write::date_in_zone`], which cannot produce one anyway: it answers
-/// a real date for every input, valid or not.
+/// The derivation itself is [`crate::write::all_day_span_dates`], shared with
+/// the grid so the day the chip is drawn under and the day the popover names
+/// cannot drift apart. All this adds is the "is it all-day at all" gate, which
+/// is the only part the grid does not want.
 fn all_day_dates(event: &omacal_store::StoredEvent, cal_tz: &str) -> Option<(String, String)> {
     if !event.is_all_day {
         return None;
     }
-    let start = crate::write::date_in_zone(event.start_utc, cal_tz);
-    let last = crate::write::date_in_zone(event.end_utc, cal_tz)
-        .parse::<jiff::civil::Date>()
-        .ok()
-        .and_then(|exclusive| exclusive.yesterday().ok())
-        .map_or_else(|| start.clone(), |d| d.to_string());
-    Some((start, last))
+    Some(crate::write::all_day_span_dates(event.start_utc, event.end_utc, cal_tz))
 }
 
 #[tauri::command]
@@ -2296,7 +2280,8 @@ mod tests {
             start_tz: "UTC".into(), end_tz: "UTC".into(), is_all_day: false,
             recurrence: None, recurring_event_id: None, original_start_utc: None,
             status: "confirmed".into(), self_response: Some("needsAction".into()),
-            conference_uri: None, color_hex: None, description: None,
+            conference_uri: None, color_hex: None, calendar_timezone: "UTC".into(),
+            description: None,
             etag: Some("\"old\"".into()), sequence: 1, organizer_email: None,
             attendees,
         }

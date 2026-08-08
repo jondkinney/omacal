@@ -236,26 +236,62 @@ fn timed_column(bounds: &[i64], iv: &Interval) -> Option<usize> {
         .or_else(|| (iv.start_ms < bounds[0] && iv.end_ms > bounds[0]).then_some(0))
 }
 
-/// Column index that may fall outside `0..bounds.len() - 1`, for all-day
-/// spans that begin before or end after this window. Only the sign matters to
-/// `pack_lanes`, which turns it into a continuation flag, so approximating the
-/// days beyond the window's edges with fixed 24-hour arithmetic is harmless.
+/// Each column's own civil date in the **display** zone, `yyyy-mm-dd` — the
+/// left-hand side of every all-day comparison. One entry per column, so
+/// `bounds` contributes its first `n` entries and not its trailing end.
+fn column_dates(bounds: &[i64], tz: &str) -> Vec<String> {
+    bounds[..bounds.len() - 1]
+        .iter()
+        .map(|&ms| crate::write::date_in_zone(ms, tz))
+        .collect()
+}
+
+/// The column a *date* belongs in: the one whose own date is the same string.
 ///
-/// Note that no test pins the out-of-window *magnitude*, only its sign:
-/// `pack_lanes` reads the sign and clips the value to the row, so a test would
-/// be asserting a number nothing downstream consumes. Any caller that starts
-/// reading how far outside the window a column falls — a continuation marker
-/// that counts days, say — needs its own coverage here first.
-fn signed_column(bounds: &[i64], ms: i64) -> i32 {
-    let n = bounds.len() - 1;
-    let end = bounds[n];
-    if ms < bounds[0] {
-        -(((bounds[0] - ms - 1) / DAY_MS) + 1) as i32
-    } else if ms >= end {
-        n as i32 + ((ms - end) / DAY_MS) as i32
-    } else {
-        (bounds.partition_point(|&b| b <= ms) - 1) as i32
+/// This is the whole of all-day placement, and it is a string comparison
+/// deliberately. An all-day event has a date, not an instant — the store holds
+/// midnight in the **calendar's** zone, which for a foreign calendar is a
+/// different instant from midnight in the display zone and often a different
+/// day. Bucketing that instant against display-zone boundaries drew a
+/// Pacific/Auckland event under the previous day of a Europe/Sofia week, while
+/// the event's own popover and edit form named the right one. Comparing
+/// instants against day boundaries is what went wrong in three separate defects
+/// on this project; comparing a date to a date cannot. This is now the only
+/// column rule for an all-day event in any of the four grids — the
+/// instant-bucketing `signed_column` it replaced is gone rather than left
+/// beside it, so there is nothing to copy by mistake.
+///
+/// Out-of-window dates return `-1` or `n`. Only the *sign* is read downstream —
+/// `pack_lanes` turns it into a continuation flag and clips the value to the row
+/// — so those two say everything a caller may act on, and no test pins the
+/// magnitude, because a test would be asserting a number nothing consumes. Any
+/// caller that starts reading *how far* outside the window a column falls — a
+/// continuation marker that counts days, say — needs its own coverage here
+/// first. `yyyy-mm-dd` orders lexicographically exactly as dates order, so the
+/// comparison needs no parsing.
+fn date_column(col_dates: &[String], date: &str) -> i32 {
+    if let Some(i) = col_dates.iter().position(|d| d == date) {
+        return i as i32;
     }
+    match col_dates.first() {
+        Some(first) if date < first.as_str() => -1,
+        // Past the window — and also the answer for a window with no columns
+        // at all, where `pack_lanes` discards every segment and the value is
+        // inert.
+        _ => col_dates.len() as i32,
+    }
+}
+
+/// The `Segment` columns for one all-day occurrence: its own two dates, read in
+/// its **calendar's** zone, matched against the display zone's column dates.
+///
+/// The dates come from `write::all_day_span_dates`, the same derivation the
+/// popover and the edit form read, so the day a chip is drawn under and the day
+/// the event says it is on cannot drift apart.
+fn all_day_columns(src: &StoredEvent, iv: &Interval, col_dates: &[String]) -> (i32, i32) {
+    let (start_date, last_date) =
+        crate::write::all_day_span_dates(iv.start_ms, iv.end_ms, &src.calendar_timezone);
+    (date_column(col_dates, &start_date), date_column(col_dates, &last_date))
 }
 
 /// Turns stored events into `n` laid-out day columns plus the all-day band.
@@ -263,9 +299,16 @@ fn signed_column(bounds: &[i64], ms: i64) -> i32 {
 /// `start_ms` is midnight in `tz` on the window's first day; `tz` is the
 /// display zone. All day-boundary maths flows through `n_day_boundaries`, so
 /// a window containing a DST transition lays out correctly.
+///
+/// The two kinds of event are bucketed by two different rules, deliberately. A
+/// timed event is an instant, so it belongs to the column that contains it in
+/// the display zone (`timed_column`). An all-day event is a *date*, so it goes
+/// where its own calendar's date matches a column's (`all_day_columns`) — see
+/// `date_column` for why anything else misplaces it.
 pub fn assemble_days(events: &[StoredEvent], start_ms: i64, n: usize, tz: &str) -> WeekPayload {
     let bounds = n_day_boundaries(start_ms, n, tz);
     let end_ms = bounds[n];
+    let col_dates = column_dates(&bounds, tz);
 
     let mut day_events: Vec<Vec<UiEvent>> = vec![Vec::new(); n];
     let mut all_day_events: Vec<UiEvent> = Vec::new();
@@ -287,10 +330,7 @@ pub fn assemble_days(events: &[StoredEvent], start_ms: i64, n: usize, tz: &str) 
                 continue;
             }
             if src.is_all_day {
-                let start_col = signed_column(&bounds, iv.start_ms);
-                // Google's all-day end is exclusive, so the last covered day is
-                // one millisecond before it.
-                let end_col = signed_column(&bounds, iv.end_ms - 1);
+                let (start_col, end_col) = all_day_columns(src, &iv, &col_dates);
                 segments.push(Segment { idx: all_day_events.len(), start_col, end_col });
                 all_day_events.push(to_ui(src, iv.start_ms, iv.end_ms));
             } else if let Some(col) = timed_column(&bounds, &iv) {
@@ -338,6 +378,9 @@ pub fn assemble_month(events: &[StoredEvent], year: i32, month: u32, tz: &str) -
 
     let grid_start_ms = month_grid_start_ms(year, month, tz);
     let bounds = n_day_boundaries(grid_start_ms, 42, tz);
+    // All 42 at once, then sliced per row — the same relationship `row_bounds`
+    // has with `bounds`, and a row's seven column dates are its own seven.
+    let grid_dates = column_dates(&bounds, tz);
 
     let month_start_ms = local_midnight_ms(date(year as i16, month as i8, 1), tz);
     let (next_year, next_month) = if month == 12 { (year + 1, 1) } else { (year, month + 1) };
@@ -348,6 +391,7 @@ pub fn assemble_month(events: &[StoredEvent], year: i32, month: u32, tz: &str) -
     let rows = (0..6)
         .map(|r| {
             let row_bounds = &bounds[r * 7..=r * 7 + 7];
+            let row_dates = &grid_dates[r * 7..r * 7 + 7];
             let row_start = row_bounds[0];
             let row_end = row_bounds[7];
 
@@ -366,10 +410,7 @@ pub fn assemble_month(events: &[StoredEvent], year: i32, month: u32, tz: &str) -
                         continue;
                     }
                     if src.is_all_day {
-                        let start_col = signed_column(row_bounds, iv.start_ms);
-                        // Google's all-day end is exclusive, so the last
-                        // covered day is one millisecond before it.
-                        let end_col = signed_column(row_bounds, iv.end_ms - 1);
+                        let (start_col, end_col) = all_day_columns(src, &iv, row_dates);
                         segments.push(Segment { idx: bar_events.len(), start_col, end_col });
                         bar_events.push(to_ui(src, iv.start_ms, iv.end_ms));
                     } else if let Some(col) = timed_column(row_bounds, &iv) {
@@ -448,6 +489,18 @@ pub(crate) fn year_start_ms(year: i32, tz: &str) -> i64 {
 /// (`n_day_boundaries`), exactly as `assemble_month` finds a row's — so a
 /// DST transition inside any month still lands every day on its own local
 /// midnight rather than sliding by an hour.
+///
+/// A day is dotted when **its own date falls inside the event's inclusive date
+/// span**, both sides read the way `date_column` reads them: the day's date in
+/// the display zone, the span's two dates in the **calendar's** zone. It used
+/// to dot on an *instant* overlap — `start_ms < bounds[d + 1] && end_ms >
+/// bounds[d]` — which for a foreign calendar is worse than the shift the other
+/// grids had. An Auckland one-day event is stored across noon of a UTC day, so
+/// it overlapped two of them and dotted **both**: one day rendered as two.
+/// A range and not `date_column`'s two endpoints because every day in between
+/// is dotted too, and because a span lying entirely outside the month must dot
+/// nothing — which comparing dates gives for free and clamping two
+/// out-of-window sentinels does not.
 pub fn assemble_year(events: &[StoredEvent], year: i32, now_ms: i64, tz: &str) -> YearPayload {
     use jiff::civil::date;
 
@@ -460,6 +513,8 @@ pub fn assemble_year(events: &[StoredEvent], year: i32, now_ms: i64, tz: &str) -
             let days_in_month = first.days_in_month() as usize;
             let month_start_ms = local_midnight_ms(first, tz);
             let bounds = n_day_boundaries(month_start_ms, days_in_month, tz);
+            // One entry per day, so it lines up with `has_all_day` exactly.
+            let day_dates = column_dates(&bounds, tz);
             let lead_blanks = first.weekday().to_monday_zero_offset() as usize;
 
             let mut has_all_day = vec![false; days_in_month];
@@ -479,9 +534,16 @@ pub fn assemble_year(events: &[StoredEvent], year: i32, now_ms: i64, tz: &str) -
                     if suppressed.contains(&(src.calendar_id, src.google_id.as_str(), iv.start_ms)) {
                         continue;
                     }
-                    for d in 0..days_in_month {
-                        if iv.start_ms < bounds[d + 1] && iv.end_ms > bounds[d] {
-                            has_all_day[d] = true;
+                    let (first_date, last_date) = crate::write::all_day_span_dates(
+                        iv.start_ms,
+                        iv.end_ms,
+                        &src.calendar_timezone,
+                    );
+                    for (dotted, day_date) in has_all_day.iter_mut().zip(&day_dates) {
+                        if day_date.as_str() >= first_date.as_str()
+                            && day_date.as_str() <= last_date.as_str()
+                        {
+                            *dotted = true;
                         }
                     }
                 }
@@ -579,11 +641,19 @@ pub(crate) fn big_year_start_ms(year: i32, tz: &str) -> i64 {
 /// row drifts the weekends diagonally instead, which quietly defeats the
 /// view's entire purpose. See
 /// `every_row_puts_its_weekends_in_the_same_columns`.
+///
+/// Pills are placed by date (`all_day_columns`), the same rule as the week and
+/// month grids — see `date_column`. Bucketing the stored instant against the
+/// display zone's day boundaries, which this did, drew a foreign calendar's
+/// one-day event as two pills: the end of one row and the start of the next.
 pub fn assemble_big_year(events: &[StoredEvent], year: i32, now_ms: i64, tz: &str) -> BigYearPayload {
     use jiff::civil::date;
 
     let ribbon_start_ms = big_year_start_ms(year, tz);
     let bounds = n_day_boundaries(ribbon_start_ms, 392, tz);
+    // All 392 at once, then sliced per row — the same relationship `row_bounds`
+    // has with `bounds`, and exactly how `assemble_month` feeds its rows.
+    let ribbon_dates = column_dates(&bounds, tz);
 
     let year_start_ms = local_midnight_ms(date(year as i16, 1, 1), tz);
     let next_year_start_ms = local_midnight_ms(date((year + 1) as i16, 1, 1), tz);
@@ -597,6 +667,7 @@ pub fn assemble_big_year(events: &[StoredEvent], year: i32, now_ms: i64, tz: &st
     let rows = (0..14)
         .map(|r| {
             let row_bounds = &bounds[r * 28..=r * 28 + 28];
+            let row_dates = &ribbon_dates[r * 28..r * 28 + 28];
             let row_start = row_bounds[0];
             let row_end = row_bounds[28];
 
@@ -615,10 +686,7 @@ pub fn assemble_big_year(events: &[StoredEvent], year: i32, now_ms: i64, tz: &st
                         continue;
                     }
                     if src.is_all_day {
-                        let start_col = signed_column(row_bounds, iv.start_ms);
-                        // Google's all-day end is exclusive, so the last
-                        // covered day is one millisecond before it.
-                        let end_col = signed_column(row_bounds, iv.end_ms - 1);
+                        let (start_col, end_col) = all_day_columns(src, &iv, row_dates);
                         segments.push(Segment { idx: pill_events.len(), start_col, end_col });
                         pill_calendars.push((src.calendar_id, src.color_hex.clone()));
                         pill_events.push(to_ui(src, iv.start_ms, iv.end_ms));
@@ -681,7 +749,7 @@ mod tests {
             recurring_event_id: None, original_start_utc: None,
             status: "confirmed".into(),
             self_response: Some("accepted".into()), conference_uri: None,
-            color_hex: None,
+            color_hex: None, calendar_timezone: "UTC".into(),
             description: None, etag: None, sequence: 0, organizer_email: None,
             attendees: Vec::new(),
         }
@@ -940,7 +1008,48 @@ mod tests {
         // This is the guard that Day is genuinely the week engine at n=1 rather
         // than a parallel implementation that will drift. If someone later
         // "optimises" assemble_days for the n=1 case, this fails.
-        let evs = vec![ev("standup", MON + 9 * 3_600_000, MON + 9 * 3_600_000 + 30 * 60_000, false)];
+        //
+        // It carries all-day events as well as the timed one because
+        // `assemble_days` runs **two** placement rules, not one: a timed event
+        // is an instant and goes through `timed_column`, an all-day event is a
+        // date and goes through `all_day_columns`. A timed-only fixture covered
+        // both while they were the same rule; it leaves the second unguarded
+        // now that they are not, and an `n == 1` special case putting every
+        // all-day chip in column 0 passed the whole committed suite.
+        //
+        // **The pair is what makes it bite, not the all-day event on its own.**
+        // One Auckland event really is on the shared day, so a rule that always
+        // answers column 0 gets it right by accident. The other is on the
+        // *next* day, yet its stored instant still falls inside the one-day
+        // window — so it reaches placement and has to be rejected *there*, on
+        // its date. Drop it and the mutation survives.
+        let standup = ev("standup", MON + 9 * 3_600_000, MON + 9 * 3_600_000 + 30 * 60_000, false);
+        let on_the_shared_day = all_day_event(
+            AUCKLAND,
+            midnight_ms(AUCKLAND, 2026, 8, 3),
+            midnight_ms(AUCKLAND, 2026, 8, 4),
+        );
+        let on_the_next_day = all_day_event(
+            AUCKLAND,
+            midnight_ms(AUCKLAND, 2026, 8, 4),
+            midnight_ms(AUCKLAND, 2026, 8, 5),
+        );
+
+        // The premise, without which the two rules cannot be told apart: the
+        // second event's stored instant lands on the *shared* day in the
+        // display zone, while its own calendar calls it the day after.
+        assert_eq!(
+            crate::write::date_in_zone(on_the_next_day.start_utc, "Europe/Sofia"),
+            "2026-08-03",
+            "the display zone reads it as the shared day"
+        );
+        assert_eq!(
+            crate::write::date_in_zone(on_the_next_day.start_utc, AUCKLAND),
+            "2026-08-04",
+            "while its own calendar calls it the next one"
+        );
+
+        let evs = vec![standup, on_the_shared_day, on_the_next_day];
 
         let week = assemble_days(&evs, MON, 7, "Europe/Sofia");
         let day = assemble_days(&evs, week.days[0].start_ms, 1, "Europe/Sofia");
@@ -952,6 +1061,25 @@ mod tests {
             day.days[0].events.len(),
             week.days[0].events.len(),
             "the same day assembled alone and as part of a week disagreed"
+        );
+
+        // The all-day band — the half a timed fixture cannot see. A lane that
+        // covers column 0 is clipped to start there, so `start_col == 0` is
+        // exactly "covers the shared day".
+        //
+        // Counted from `all_day` and never from `all_day_events`: the latter
+        // collects every occurrence that reached placement, *including* those
+        // placed outside the window, so it is 2 either way and would assert
+        // nothing at all.
+        let week_chips_on_the_shared_day = week.all_day.iter().filter(|l| l.start_col == 0).count();
+        assert_eq!(
+            week_chips_on_the_shared_day, 1,
+            "exactly one of the two Auckland events belongs to the shared day"
+        );
+        assert_eq!(
+            day.all_day.len(),
+            week_chips_on_the_shared_day,
+            "the all-day band disagreed about the day they share"
         );
     }
 
@@ -966,12 +1094,308 @@ mod tests {
         }
     }
 
-    fn all_day_event(start: i64, end: i64) -> omacal_store::StoredEvent {
-        ev(&format!("allday_{start}"), start, end, true)
+    /// An all-day event on a calendar whose own zone is `cal_tz`.
+    ///
+    /// The zone is not decoration. An all-day event's ends are stored as local
+    /// midnight **in the calendar's zone** — Google sends a bare `date` and
+    /// `omacal_sync::resolve` resolves it against `calendars.timezone` — and
+    /// that is the only zone the date reads back correctly in. A fixture whose
+    /// instants are one zone's midnights while its `calendar_timezone` names
+    /// another describes an event that cannot exist, and would let a placement
+    /// bug hide behind it.
+    fn all_day_event(cal_tz: &str, start: i64, end: i64) -> omacal_store::StoredEvent {
+        let mut e = ev(&format!("allday_{start}"), start, end, true);
+        e.calendar_timezone = cal_tz.into();
+        e
     }
 
     fn timed_event(start: i64, end: i64) -> omacal_store::StoredEvent {
         ev(&format!("timed_{start}"), start, end, false)
+    }
+
+    /// Local midnight on a civil date in `zone`, as epoch milliseconds — how
+    /// sync stores an all-day event's ends, and the only shape a fixture for
+    /// one may take.
+    fn midnight_ms(zone: &str, y: i16, mo: i8, d: i8) -> i64 {
+        jiff::civil::date(y, mo, d)
+            .at(0, 0, 0, 0)
+            .in_tz(zone)
+            .unwrap()
+            .timestamp()
+            .as_millisecond()
+    }
+
+    /// UTC+12 through August, so its midnight falls on the *previous* UTC date.
+    /// That is what lets a fixture see a placement reading the stored instant
+    /// instead of the date. A calendar zone equal to the display zone cannot.
+    const AUCKLAND: &str = "Pacific/Auckland";
+    /// UTC-4 through August — the mirror image, and needed for a reason the
+    /// arithmetic gives rather than symmetry: see
+    /// `an_all_day_events_last_day_comes_from_its_own_calendars_zone`.
+    const NEW_YORK: &str = "America/New_York";
+
+    /// The defect this plan exists to close, in the week grid.
+    ///
+    /// An all-day event has a *date*, not an instant. The store holds midnight
+    /// in the **calendar's** zone; bucketing that instant against the
+    /// **display** zone's day boundaries draws the chip on whichever day
+    /// happens to contain it there. Auckland is UTC+12 in August, so 5 Aug is
+    /// stored as 2026-08-04T12:00Z and the chip was drawn under Tue 4 — while
+    /// the event's own popover said Wed 5 and the edit form opened on
+    /// 2026-08-05.
+    #[test]
+    fn an_all_day_event_lands_on_its_own_calendars_date_not_the_displays() {
+        let start = midnight_ms(AUCKLAND, 2026, 8, 5);
+        let end = midnight_ms(AUCKLAND, 2026, 8, 6); // Google's end is exclusive
+
+        // The fixture's own premise, asserted rather than assumed: a calendar
+        // zone that agrees with the display about the date cannot see this
+        // defect at all, so a fixture that stopped separating would pass
+        // vacuously.
+        assert_eq!(start, 1_785_844_800_000, "2026-08-05 00:00 Auckland is 2026-08-04T12:00Z");
+        assert_eq!(crate::write::date_in_zone(start, AUCKLAND), "2026-08-05");
+        assert_eq!(
+            crate::write::date_in_zone(start, "UTC"),
+            "2026-08-04",
+            "the display zone must read a different date, or this test proves nothing"
+        );
+
+        let w = assemble_week(&[all_day_event(AUCKLAND, start, end)], MON, "UTC");
+
+        assert_eq!(w.all_day.len(), 1, "one event, one chip");
+        assert_eq!(w.all_day[0].start_col, 2, "Wed 5 Aug is column 2 of the week opening Mon 3");
+        assert_eq!(w.all_day[0].end_col, 2, "a one-day event covers one column");
+        assert!(!w.all_day[0].cont_left, "it does not begin before the week");
+        assert!(!w.all_day[0].cont_right, "nor run past it");
+        assert_eq!(w.days[2].start_ms, MON + 2 * DAY, "and column 2 really is Wed 5 Aug");
+    }
+
+    /// The same rule over a span: it runs from its start date's column to its
+    /// **inclusive** end date's column, both read in the calendar's zone.
+    #[test]
+    fn a_multi_day_all_day_event_spans_its_own_calendars_dates() {
+        // Wed 5 - Fri 7 Aug inclusive on the Auckland calendar; the end Google
+        // sends is the exclusive 8th.
+        let start = midnight_ms(AUCKLAND, 2026, 8, 5);
+        let end = midnight_ms(AUCKLAND, 2026, 8, 8);
+        assert_eq!(
+            crate::write::date_in_zone(start, "UTC"),
+            "2026-08-04",
+            "premise: the display zone reads the start a day early"
+        );
+
+        let w = assemble_week(&[all_day_event(AUCKLAND, start, end)], MON, "UTC");
+
+        assert_eq!(w.all_day.len(), 1);
+        assert_eq!(w.all_day[0].start_col, 2, "Wed 5 Aug");
+        assert_eq!(w.all_day[0].end_col, 4, "Fri 7 Aug, inclusive");
+        assert!(!w.all_day[0].cont_left);
+        assert!(!w.all_day[0].cont_right);
+    }
+
+    /// `AUCKLAND` cannot witness the *end* of a span, so this fixture is not
+    /// symmetry — it closes a survivor the arithmetic leaves open.
+    ///
+    /// At UTC+12 the stored exclusive end is 12:00 on the previous UTC day, and
+    /// one millisecond back from it is still that same UTC day: exactly the
+    /// date the calendar's own zone gives. The old `end_ms - 1` bucketing and
+    /// the date derivation agree there, so an Auckland-only fixture would leave
+    /// the end unguarded. A calendar *west* of the display separates them: New
+    /// York is UTC-4 in August, so a span through Fri 7 Aug ends at
+    /// 2026-08-08T04:00Z, and a millisecond back from that is Saturday.
+    #[test]
+    fn an_all_day_events_last_day_comes_from_its_own_calendars_zone() {
+        let start = midnight_ms(NEW_YORK, 2026, 8, 5);
+        let end = midnight_ms(NEW_YORK, 2026, 8, 8);
+
+        // The premise, both halves of it.
+        assert_eq!(
+            crate::write::date_in_zone(end - 1, "UTC"),
+            "2026-08-08",
+            "a millisecond before the stored end is Saturday in the display zone"
+        );
+        assert_eq!(
+            crate::write::date_in_zone(end, NEW_YORK),
+            "2026-08-08",
+            "while the calendar's own exclusive end is the 8th, so its last covered day is the 7th"
+        );
+
+        let w = assemble_week(&[all_day_event(NEW_YORK, start, end)], MON, "UTC");
+
+        assert_eq!(w.all_day.len(), 1);
+        assert_eq!(w.all_day[0].start_col, 2, "Wed 5 Aug");
+        assert_eq!(
+            w.all_day[0].end_col, 4,
+            "Fri 7 Aug — not Sat 8, which the stored instant suggests"
+        );
+        assert!(!w.all_day[0].cont_right);
+    }
+
+    /// The other half of the fix, and it has to be witnessed on its own rather
+    /// than inferred from the absence of a failure.
+    ///
+    /// A timed event genuinely *is* an instant, so it belongs to the day the
+    /// display zone puts that instant on. Same calendar and the very same
+    /// instant as `an_all_day_event_lands_on_its_own_calendars_date_not_the_displays`
+    /// — Auckland's 5 Aug midnight, which UTC calls Tue 4 Aug 12:00. It must
+    /// stay in Tuesday's column while the all-day chip moves to Wednesday's.
+    #[test]
+    fn a_timed_event_on_the_same_calendar_still_follows_the_display_zone() {
+        let start = midnight_ms(AUCKLAND, 2026, 8, 5);
+        let mut e = timed_event(start, start + 3_600_000);
+        e.calendar_timezone = AUCKLAND.into();
+
+        let w = assemble_week(std::slice::from_ref(&e), MON, "UTC");
+        assert_eq!(w.days[1].events.len(), 1, "Tue 4 Aug UTC is where that instant falls");
+        assert!(w.days[2].events.is_empty(), "it must not follow the all-day rule to Wednesday");
+        assert_eq!(w.days.iter().map(|d| d.events.len()).sum::<usize>(), 1);
+        assert!(w.all_day.is_empty(), "and it is not an all-day chip");
+
+        // The month grid's timed path is the same claim and takes the same
+        // mutation, so it is asserted here rather than left to inference.
+        let m = assemble_month(&[e], 2026, 8, "UTC");
+        // Row 1 of the August 2026 UTC grid is Mon 3 - Sun 9 Aug.
+        assert_eq!(m.rows[1].cells[1].timed.len(), 1, "Tue 4 Aug is column 1");
+        assert!(m.rows[1].cells[2].timed.is_empty());
+    }
+
+    /// The two grids must name the same day for the same event — the month
+    /// buckets all-day events through its own copy of the placement, so a fix
+    /// applied to one and not the other is a grid that disagrees with itself.
+    #[test]
+    fn the_month_grid_places_an_all_day_event_where_the_week_grid_does() {
+        let start = midnight_ms(AUCKLAND, 2026, 8, 5);
+        let end = midnight_ms(AUCKLAND, 2026, 8, 6);
+        let evs = vec![all_day_event(AUCKLAND, start, end)];
+
+        let w = assemble_week(&evs, MON, "UTC");
+        let m = assemble_month(&evs, 2026, 8, "UTC");
+
+        // August 2026 opens on a Saturday, so the UTC grid runs Mon 27 Jul -
+        // Sun 6 Sep and its row 1 is exactly the week under test.
+        assert_eq!(m.rows[1].cells[0].start_ms, w.days[0].start_ms, "row 1 is the Mon 3 Aug week");
+
+        assert_eq!(m.rows[1].bars.len(), 1, "the month draws the chip once");
+        assert_eq!(m.rows[1].bars[0].start_col, 2, "Wed 5 Aug is column 2");
+        assert_eq!(m.rows[1].bars[0].end_col, 2);
+        // Then that the two agree. The absolute columns above are what stops
+        // two wrong-but-equal answers passing this.
+        assert_eq!(m.rows[1].bars[0].start_col, w.all_day[0].start_col);
+        assert_eq!(m.rows[1].bars[0].end_col, w.all_day[0].end_col);
+        // "And in no other row" belongs to
+        // `an_all_day_event_on_a_row_boundary_appears_in_one_row_only`, whose
+        // fixture can actually reach a second row. Asserted here it would be a
+        // loop no mutation can fail: this event's instants never enter another
+        // row's occurrence window at all.
+    }
+
+    /// The defect exactly as reported, in the zones it was reported in: a
+    /// `Pacific/Auckland` calendar rendered against a `Europe/Sofia` display,
+    /// where the chip appeared under Sun 9 Aug while its own popover said
+    /// Mon, Aug 10 and the edit form opened on 2026-08-10.
+    ///
+    /// It is also the one test here that witnesses the **display** side of the
+    /// comparison — every other uses a UTC display, where a column's date is
+    /// the same whichever zone it is read in, so a `column_dates` that stopped
+    /// reading `tz` would go unnoticed. Sofia's Monday midnight is
+    /// 2026-08-09T21:00Z: still Sunday in UTC.
+    #[test]
+    fn an_auckland_event_rendered_in_sofia_lands_on_the_monday_both_of_them_name() {
+        const SOFIA: &str = "Europe/Sofia";
+        let start = midnight_ms(AUCKLAND, 2026, 8, 10);
+        let end = midnight_ms(AUCKLAND, 2026, 8, 11);
+        let week_start = midnight_ms(SOFIA, 2026, 8, 10);
+
+        // The premise, all three legs of it.
+        assert_eq!(crate::write::date_in_zone(start, AUCKLAND), "2026-08-10");
+        assert_eq!(
+            crate::write::date_in_zone(start, SOFIA),
+            "2026-08-09",
+            "the display zone reads the stored instant as the day before"
+        );
+        assert_eq!(
+            crate::write::date_in_zone(week_start, "UTC"),
+            "2026-08-09",
+            "and Sofia's Monday midnight is still Sunday in UTC, so the column dates must be read in Sofia"
+        );
+
+        let evs = vec![all_day_event(AUCKLAND, start, end)];
+
+        let w = assemble_week(&evs, week_start, SOFIA);
+        assert_eq!(w.all_day.len(), 1);
+        assert_eq!(w.all_day[0].start_col, 0, "Mon 10 Aug");
+        assert_eq!(w.all_day[0].end_col, 0);
+        assert!(!w.all_day[0].cont_left, "a one-day event began nowhere earlier");
+
+        // And the week before — the one the stored instant really does fall
+        // inside, in Sofia — must not draw it. That column is the bug report.
+        let before = assemble_week(&evs, midnight_ms(SOFIA, 2026, 8, 3), SOFIA);
+        assert!(
+            before.all_day.is_empty(),
+            "Sofia's Sun 9 Aug drew a chip for Auckland's Mon 10 Aug"
+        );
+    }
+
+    /// The shape the defect was reported in, and the one that makes "drawn in
+    /// exactly one place" a claim with teeth.
+    ///
+    /// Auckland's Mon 10 Aug is stored as 2026-08-09T12:00Z, which falls inside
+    /// the *previous* UTC week's bounds — so the old placement drew the chip
+    /// under Sun 9 **and** under Mon 10, rendering one day as a two-row span,
+    /// while the event's own popover said Mon, Aug 10 throughout.
+    #[test]
+    fn an_all_day_event_on_a_row_boundary_appears_in_one_row_only() {
+        let start = midnight_ms(AUCKLAND, 2026, 8, 10);
+        let end = midnight_ms(AUCKLAND, 2026, 8, 11);
+        assert_eq!(
+            crate::write::date_in_zone(start, "UTC"),
+            "2026-08-09",
+            "premise: the display zone reads the stored instant as the Sunday before"
+        );
+        let evs = vec![all_day_event(AUCKLAND, start, end)];
+
+        // The week that contains it: Mon 10 - Sun 16 Aug UTC.
+        let w = assemble_week(&evs, MON + 7 * DAY, "UTC");
+        assert_eq!(w.all_day.len(), 1);
+        assert_eq!(w.all_day[0].start_col, 0, "Mon 10 Aug");
+        assert_eq!(w.all_day[0].end_col, 0);
+        assert!(!w.all_day[0].cont_left, "a one-day event began nowhere earlier");
+
+        // The week *before* must not draw it at all, even though the stored
+        // instant sits squarely inside that week's UTC bounds.
+        let before = assemble_week(&evs, MON, "UTC");
+        assert!(before.all_day.is_empty(), "Sun 9 Aug's week drew a chip for Mon 10 Aug");
+
+        // The same claim in the month grid, where those two weeks are adjacent
+        // rows and the stray is visible side by side.
+        let m = assemble_month(&evs, 2026, 8, "UTC");
+        assert_eq!(m.rows[2].cells[0].start_ms, w.days[0].start_ms, "row 2 is the Mon 10 Aug week");
+        assert_eq!(m.rows[2].bars.len(), 1);
+        assert_eq!(m.rows[2].bars[0].start_col, 0, "Mon 10 Aug is column 0");
+        assert!(!m.rows[2].bars[0].cont_left);
+        for (r, row) in m.rows.iter().enumerate() {
+            if r != 2 {
+                assert!(row.bars.is_empty(), "row {r} drew a chip for a day it does not contain");
+            }
+        }
+    }
+
+    /// The month's own witness for the end of a span, for the reason
+    /// `an_all_day_events_last_day_comes_from_its_own_calendars_zone` gives: an
+    /// Auckland fixture cannot separate it.
+    #[test]
+    fn the_month_grid_reads_the_last_day_from_the_calendars_zone_too() {
+        let evs = vec![all_day_event(
+            NEW_YORK,
+            midnight_ms(NEW_YORK, 2026, 8, 5),
+            midnight_ms(NEW_YORK, 2026, 8, 8),
+        )];
+        let m = assemble_month(&evs, 2026, 8, "UTC");
+
+        assert_eq!(m.rows[1].bars.len(), 1);
+        assert_eq!(m.rows[1].bars[0].start_col, 2, "Wed 5 Aug");
+        assert_eq!(m.rows[1].bars[0].end_col, 4, "Fri 7 Aug, not Sat 8");
+        assert!(!m.rows[1].bars[0].cont_right);
     }
 
     #[test]
@@ -1113,7 +1537,7 @@ mod tests {
         // (1785618000000), end = Wed 5 Aug 00:00 Sofia (1785877200000,
         // exclusive per Google's all-day convention), covering Sun 2 - Tue
         // 4 Aug inclusive.
-        let evs = vec![all_day_event(1785618000000, 1785877200000)];
+        let evs = vec![all_day_event("Europe/Sofia", 1785618000000, 1785877200000)];
         let m = assemble_month(&evs, 2026, 8, "Europe/Sofia");
         // `bars: Vec<Lane>` — each `Lane` is already one placed, row-clipped
         // segment (see `omacal_core::lanes::Lane`), not a container of
@@ -1166,9 +1590,24 @@ mod tests {
     #[test]
     fn only_all_day_events_dot_the_year_grid() {
         // A timed meeting is not "blocked out"; this view answers what is.
-        let timed = vec![timed_event(1_786_341_600_000, 1_786_341_600_000 + 3_600_000)];
+        //
+        // The one-hour meeting alone no longer witnesses the `is_all_day` guard
+        // and cannot be left to stand for it. It did while days were dotted by
+        // *instant overlap* — an hour overlaps a day. Now they are dotted by
+        // date range, and an hour-long event read as a span gives an
+        // **inverted** one (the exclusive end steps back a whole day), which
+        // matches nothing whether the guard is there or not. A timed event
+        // longer than a day gives a range that is the right way round, so it is
+        // the shape that actually fails if the guard goes.
+        let timed = vec![
+            timed_event(1_786_341_600_000, 1_786_341_600_000 + 3_600_000),
+            timed_event(
+                midnight_ms("UTC", 2026, 8, 5) + 9 * 3_600_000,
+                midnight_ms("UTC", 2026, 8, 8) + 17 * 3_600_000,
+            ),
+        ];
         let y = assemble_year(&timed, 2026, 1_786_341_600_000, "Europe/Sofia");
-        assert!(y.months.iter().all(|m| m.days.iter().all(|d| !d.has_all_day)));
+        assert_eq!(dotted_days(&y), Vec::new(), "a timed event dotted the year grid");
     }
 
     #[test]
@@ -1186,7 +1625,7 @@ mod tests {
         let tz = "Europe/Sofia";
         let start = local_midnight_ms(jiff::civil::date(2026, 3, 15), tz);
         let end = local_midnight_ms(jiff::civil::date(2026, 3, 18), tz);
-        let y = assemble_year(&[all_day_event(start, end)], 2026, 1_786_341_600_000, tz);
+        let y = assemble_year(&[all_day_event(tz, start, end)], 2026, 1_786_341_600_000, tz);
 
         let march = &y.months[2];
         assert_eq!(march.days[14].start_ms, start, "days[14] is the 15th");
@@ -1305,7 +1744,7 @@ mod tests {
         // Sun 25 Jan .. Tue 27 Jan 2026 inclusive, so the end is Wed 28 at
         // 00:00 — Google's all-day end is exclusive. Row 0 ends on Sun 25
         // Jan, so this straddles the row 0/1 boundary by construction.
-        let ev = vec![all_day_event(1769292000000, 1769551200000)];
+        let ev = vec![all_day_event("Europe/Sofia", 1769292000000, 1769551200000)];
         let b = assemble_big_year(&ev, 2026, 1_786_341_600_000, "Europe/Sofia");
         let r0: Vec<_> = b.rows[0].pills.iter().collect();
         let r1: Vec<_> = b.rows[1].pills.iter().collect();
@@ -1317,8 +1756,238 @@ mod tests {
 
     #[test]
     fn only_all_day_and_multi_day_events_reach_the_ribbon() {
-        let timed = vec![timed_event(1_786_341_600_000, 1_786_341_600_000 + 3_600_000)];
+        // The multi-day one is here for the reason
+        // `only_all_day_events_dot_the_year_grid` spells out: read as an
+        // all-day span, an hour-long event yields an inverted column range that
+        // `pack_lanes` discards anyway, so it stopped witnessing the
+        // `is_all_day` guard once pills were placed by date.
+        let timed = vec![
+            timed_event(1_786_341_600_000, 1_786_341_600_000 + 3_600_000),
+            timed_event(
+                midnight_ms("UTC", 2026, 8, 5) + 9 * 3_600_000,
+                midnight_ms("UTC", 2026, 8, 8) + 17 * 3_600_000,
+            ),
+        ];
         let b = assemble_big_year(&timed, 2026, 1_786_341_600_000, "Europe/Sofia");
         assert!(b.rows.iter().all(|r| r.pills.is_empty()));
+    }
+
+    /// August 2026, the "now" every year and ribbon test here shares.
+    const NOW_AUG_2026: i64 = 1_786_341_600_000;
+    const SOFIA: &str = "Europe/Sofia";
+
+    /// Every dotted day in the whole year, as `(month, day)`. The *whole* year
+    /// deliberately: the year grid's defect was an extra dot, so a claim about
+    /// it has to be a claim about how many there are and nowhere else, not
+    /// about one month in isolation.
+    fn dotted_days(y: &YearPayload) -> Vec<(u32, u32)> {
+        y.months
+            .iter()
+            .flat_map(|m| m.days.iter().filter(|d| d.has_all_day).map(|d| (m.month, d.day)))
+            .collect()
+    }
+
+    /// Every placed pill in the ribbon, as `(row, lane)`. Same reasoning as
+    /// `dotted_days`: the ribbon drew a one-day event as two pills in adjacent
+    /// rows, so the count across all fourteen is the claim.
+    fn ribbon_pills(b: &BigYearPayload) -> Vec<(usize, Lane)> {
+        b.rows
+            .iter()
+            .enumerate()
+            .flat_map(|(r, row)| row.pills.iter().map(move |l| (r, *l)))
+            .collect()
+    }
+
+    /// Where the ribbon puts the day beginning at `start_ms`, as `(row, col)`.
+    /// Found from the day cells themselves — which carry their own instants and
+    /// know nothing about pills — so a pill assertion built on it is not
+    /// checking placement against itself.
+    fn ribbon_day_at(b: &BigYearPayload, start_ms: i64) -> (usize, usize) {
+        for (r, row) in b.rows.iter().enumerate() {
+            if let Some(c) = row.days.iter().position(|d| d.start_ms == start_ms) {
+                return (r, c);
+            }
+        }
+        panic!("no ribbon day begins at {start_ms}");
+    }
+
+    /// The year grid's half of this plan's defect, and the worst-behaved half.
+    ///
+    /// It dotted a day when the event's stored *instant range* overlapped that
+    /// day's bounds in the display zone. Auckland is UTC+12 in August, so a
+    /// one-day event on 10 Aug is stored 2026-08-09T12:00Z .. 2026-08-10T12:00Z
+    /// and overlaps **two** UTC days — 9 Aug from noon and 10 Aug until noon —
+    /// so a single day came out as two dots rather than one dot a day late.
+    /// Hence the assertion is on the dotted days of the entire year.
+    #[test]
+    fn the_year_grid_dots_one_day_for_a_one_day_event_from_a_foreign_zone() {
+        let start = midnight_ms(AUCKLAND, 2026, 8, 10);
+        let end = midnight_ms(AUCKLAND, 2026, 8, 11); // Google's end is exclusive
+
+        // The fixture's premise: the stored span must straddle a display-zone
+        // midnight, or there is no second dot to be rid of.
+        assert_eq!(start, 1_786_276_800_000, "2026-08-10 00:00 Auckland is 2026-08-09T12:00Z");
+        assert_eq!(crate::write::date_in_zone(start, AUCKLAND), "2026-08-10");
+        assert_eq!(
+            crate::write::date_in_zone(start, "UTC"),
+            "2026-08-09",
+            "the display zone must read the stored instant on the previous day"
+        );
+        assert_eq!(
+            crate::write::date_in_zone(end - 1, "UTC"),
+            "2026-08-10",
+            "and the span must reach into the next display day, which is the second dot"
+        );
+
+        let y = assemble_year(&[all_day_event(AUCKLAND, start, end)], 2026, NOW_AUG_2026, "UTC");
+
+        assert_eq!(dotted_days(&y), vec![(8, 10)], "one day covered, one dot in the year");
+        assert_eq!(
+            y.months[7].days[9].start_ms,
+            midnight_ms("UTC", 2026, 8, 10),
+            "and days[9] of August really is the 10th"
+        );
+    }
+
+    /// The display side of the year grid's comparison, which a UTC display
+    /// cannot witness: with a UTC display a day's date is the same string
+    /// whichever zone it is read in, so a grid that stopped reading the display
+    /// zone at all would go unnoticed. Sofia's Monday midnight is
+    /// 2026-08-09T21:00Z — still Sunday in UTC.
+    ///
+    /// It is also the defect in the pair of zones it was reported in.
+    #[test]
+    fn the_year_grid_reads_its_own_days_dates_in_the_display_zone() {
+        let start = midnight_ms(AUCKLAND, 2026, 8, 10);
+        let end = midnight_ms(AUCKLAND, 2026, 8, 11);
+
+        assert_eq!(crate::write::date_in_zone(start, AUCKLAND), "2026-08-10");
+        assert_eq!(
+            crate::write::date_in_zone(start, SOFIA),
+            "2026-08-09",
+            "the display zone reads the stored instant as the day before"
+        );
+        assert_eq!(
+            crate::write::date_in_zone(midnight_ms(SOFIA, 2026, 8, 10), "UTC"),
+            "2026-08-09",
+            "and Sofia's Monday midnight is still Sunday in UTC, so a day's date must be read in Sofia"
+        );
+
+        let y = assemble_year(&[all_day_event(AUCKLAND, start, end)], 2026, NOW_AUG_2026, SOFIA);
+
+        assert_eq!(dotted_days(&y), vec![(8, 10)]);
+        assert_eq!(y.months[7].days[9].start_ms, midnight_ms(SOFIA, 2026, 8, 10));
+    }
+
+    /// The end of a span in the year grid. `AUCKLAND` cannot witness it — at
+    /// UTC+12 a millisecond before the stored exclusive end is still the same
+    /// UTC day the calendar's own zone names, so the old arithmetic and the
+    /// date derivation agree there. A calendar *west* of the display separates
+    /// them: a New York span through Fri 7 Aug is stored to 2026-08-08T04:00Z,
+    /// which overlaps Saturday and dotted it.
+    #[test]
+    fn the_year_grid_stops_dotting_after_a_spans_last_day() {
+        let start = midnight_ms(NEW_YORK, 2026, 8, 5);
+        let end = midnight_ms(NEW_YORK, 2026, 8, 8);
+
+        assert_eq!(
+            crate::write::date_in_zone(end - 1, "UTC"),
+            "2026-08-08",
+            "a millisecond before the stored end is Saturday in the display zone"
+        );
+        assert_eq!(
+            crate::write::date_in_zone(end, NEW_YORK),
+            "2026-08-08",
+            "while the calendar's exclusive end is the 8th, so its last covered day is the 7th"
+        );
+
+        let y = assemble_year(&[all_day_event(NEW_YORK, start, end)], 2026, NOW_AUG_2026, "UTC");
+
+        assert_eq!(
+            dotted_days(&y),
+            vec![(8, 5), (8, 6), (8, 7)],
+            "Wed 5 to Fri 7 Aug inclusive — not Sat 8, which the stored instant overlaps"
+        );
+    }
+
+    /// The ribbon's half of this plan's defect. Same shape as the month grid's:
+    /// an Auckland event on Mon 10 Aug is stored 2026-08-09T12:00Z, which falls
+    /// inside the *previous* 28-day row, so the pill was drawn once at the end
+    /// of that row and again — flagged as continuing — at the start of the next.
+    ///
+    /// This is also the ribbon's only witness for the **display** side of the
+    /// comparison, which is why the display is Sofia and not UTC: with a UTC
+    /// display a column's date is the same in every zone.
+    #[test]
+    fn the_ribbon_places_an_all_day_event_on_its_own_calendars_date() {
+        let start = midnight_ms(AUCKLAND, 2026, 8, 10);
+        let end = midnight_ms(AUCKLAND, 2026, 8, 11);
+
+        // All three legs of the premise.
+        assert_eq!(crate::write::date_in_zone(start, AUCKLAND), "2026-08-10");
+        assert_eq!(
+            crate::write::date_in_zone(start, SOFIA),
+            "2026-08-09",
+            "the display zone reads the stored instant as the day before"
+        );
+        assert_eq!(
+            crate::write::date_in_zone(midnight_ms(SOFIA, 2026, 8, 10), "UTC"),
+            "2026-08-09",
+            "and Sofia's Monday midnight is still Sunday in UTC, so column dates must be read in Sofia"
+        );
+
+        let b = assemble_big_year(
+            &[all_day_event(AUCKLAND, start, end)],
+            2026,
+            NOW_AUG_2026,
+            SOFIA,
+        );
+
+        // The ribbon opens Mon 29 Dec 2025, so Mon 10 Aug 2026 is day 224 —
+        // row 8, column 0, the first cell of a row. Pinned absolutely as well
+        // as located, so the search cannot drift.
+        assert_eq!(ribbon_day_at(&b, midnight_ms(SOFIA, 2026, 8, 10)), (8, 0));
+
+        let pills = ribbon_pills(&b);
+        assert_eq!(pills.len(), 1, "one day covered, one pill in the whole ribbon");
+        let (row, pill) = pills[0];
+        assert_eq!(row, 8, "the row containing Mon 10 Aug");
+        assert_eq!(pill.start_col, 0, "Mon 10 Aug is that row's first column");
+        assert_eq!(pill.end_col, 0, "a one-day event covers one column");
+        assert!(!pill.cont_left, "it did not begin in the row before");
+        assert!(!pill.cont_right);
+        assert!(b.rows[7].pills.is_empty(), "the row the stored instant falls in drew a pill");
+    }
+
+    /// The ribbon's own witness for the end of a span, for the reason
+    /// `the_year_grid_stops_dotting_after_a_spans_last_day` gives: an Auckland
+    /// fixture cannot separate the two derivations there.
+    #[test]
+    fn the_ribbon_reads_the_last_day_of_a_span_from_the_calendars_zone() {
+        let start = midnight_ms(NEW_YORK, 2026, 8, 5);
+        let end = midnight_ms(NEW_YORK, 2026, 8, 8);
+
+        assert_eq!(
+            crate::write::date_in_zone(end - 1, "UTC"),
+            "2026-08-08",
+            "a millisecond before the stored end is Saturday in the display zone"
+        );
+        assert_eq!(crate::write::date_in_zone(end, NEW_YORK), "2026-08-08");
+
+        let b =
+            assemble_big_year(&[all_day_event(NEW_YORK, start, end)], 2026, NOW_AUG_2026, "UTC");
+
+        // Wed 5 Aug is day 219 of a ribbon opening Mon 29 Dec 2025 — row 7,
+        // column 23 — and Fri 7 Aug is column 25 of that same row.
+        assert_eq!(ribbon_day_at(&b, midnight_ms("UTC", 2026, 8, 5)), (7, 23));
+        assert_eq!(ribbon_day_at(&b, midnight_ms("UTC", 2026, 8, 7)), (7, 25));
+
+        let pills = ribbon_pills(&b);
+        assert_eq!(pills.len(), 1, "one span, one pill");
+        let (row, pill) = pills[0];
+        assert_eq!(row, 7);
+        assert_eq!(pill.start_col, 23, "Wed 5 Aug");
+        assert_eq!(pill.end_col, 25, "Fri 7 Aug — not Sat 8, which the stored instant reaches");
+        assert!(!pill.cont_right);
     }
 }

@@ -203,6 +203,9 @@ pub async fn seed_demo(pool: &SqlitePool, now_ms: i64) -> anyhow::Result<usize> 
                 self_response: Some(sp.response.to_string()),
                 conference_uri: None,
                 color_hex: None,
+                // Joined in from `calendars` on read, so this write is inert;
+                // every demo calendar above is seeded with 'UTC' anyway.
+                calendar_timezone: "UTC".into(),
                 description,
                 etag: None,
                 sequence: 0,

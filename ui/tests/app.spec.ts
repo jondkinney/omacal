@@ -9,6 +9,8 @@ import {
   APP_PRIMARY_CALENDAR_ID, APP_READER_CALENDAR_ID,
   APP_SERIES_DTSTART, APP_SERIES_OCCURRENCE,
   APP_ALLDAY_OCCURRENCE, APP_ALLDAY_SERIES_DTSTART,
+  XZONE_NOW, XZONE_STORED_START, XZONE_WEEK_START, XZONE_DAY,
+  XZONE_DISPLAY_MISREADING,
 } from './fixtures';
 import { NO_CONFIG_ERROR } from './harness/tauri';
 
@@ -873,5 +875,181 @@ test.describe('App', () => {
         ),
       )
       .toBe('#c04a2b');
+  });
+});
+
+// The grid, the popover and the form must name the SAME day for an all-day
+// event on a foreign-zone calendar — and it must be the **calendar's** day.
+//
+// Plan 6 deliberately did not write this spec: every app fixture was a UTC
+// calendar in a UTC browser, where the stored midnight, the column it falls in
+// and the date it reads back as are all one thing, so an agreement assertion
+// would have been satisfied by the fixture rather than by the app. Plan 7's
+// placement fix is what makes it a real claim, and this is where the three
+// consumers of an all-day date meet: the chip's column comes from
+// `commands::all_day_columns`, the popover's day from `EventDetail.start_date`,
+// and the form's from `valueFromDetail` reading that same field. All three
+// bottom out in `write::all_day_span_dates`.
+//
+// Both zones are load-bearing, and the pairing is asymmetric (see
+// `crossZoneWeek` in fixtures.ts): `Pacific/Auckland` (+12) separates the
+// *calendar* side, `Europe/Sofia` (+3) the *display* side, and a UTC browser
+// separates neither — which is why this describe overrides the project's own
+// `timezoneId` rather than reusing it.
+test.describe('App: an all-day event on a calendar east of the display', () => {
+  test.use({ timezoneId: 'Europe/Sofia' });
+
+  test.beforeEach(async ({ page }) => {
+    // Before `goto`, not after: `App` reads `Date.now()` on mount to pick the
+    // week it opens on, and the harness refuses any week but the fixture's.
+    await page.clock.setFixedTime(XZONE_NOW);
+  });
+
+  /** The same capture `callsTo` inside the `App` describe reads, redeclared
+   *  here rather than hoisted: that one is scoped to its own describe, and a
+   *  shared helper would have to move above both for one caller. */
+  const weekRequests = (page: Page): Promise<any[]> =>
+    page.evaluate(() =>
+      window.__harness.calls.filter((c) => c.cmd === 'get_week').map((c) => c.args),
+    );
+
+  /** The columns the chip actually overlaps on screen, and each one's own
+   *  `start_ms`.
+   *
+   *  Geometry, not `lane.start_col` read back out of the fixture: the claim is
+   *  which day of the week the user sees the chip under, and the band and the
+   *  body are two separate CSS grids that only line up because both reserve the
+   *  same 44px gutter. Reading the number back would assert the fixture against
+   *  itself and would not notice the two drifting apart.
+   *
+   *  A pixel of tolerance either side: a chip carries a 2px right margin and
+   *  column edges are fractional, so a strict comparison would be reporting
+   *  subpixel rounding rather than placement. It is far smaller than the ~176px
+   *  column it would have to swallow to hide a one-column error. */
+  const columnsUnderTheChip = (page: Page) =>
+    page.evaluate(() => {
+      const chip = document.querySelector('.chip')!.getBoundingClientRect();
+      return [...document.querySelectorAll('.col')]
+        .map((c) => ({
+          startMs: Number((c as HTMLElement).dataset.startMs),
+          box: c.getBoundingClientRect(),
+        }))
+        .filter(({ box }) => chip.left < box.right - 1 && chip.right > box.left + 1)
+        .map(({ startMs }) => startMs);
+    });
+
+  test('the chip is drawn under the day its own calendar names, and its popover names that same day', async ({ page }) => {
+    await page.goto('/tests/harness/index.html?c=App&f=cross-zone');
+    await expect(page.locator('.chip')).toHaveText('Berlin trip');
+
+    // The fixture's own premise, all four legs, read in the page so the
+    // browser's real zone answers rather than Node's. Without every one of
+    // these the assertions below are satisfied by the fixture rather than by
+    // the app.
+    const premise = await page.evaluate(
+      ([stored, weekStart]) => {
+        const dateIn = (ms: number, tz?: string) => {
+          const p = Object.fromEntries(
+            new Intl.DateTimeFormat('en-US',
+              { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' })
+              .formatToParts(new Date(ms)).map((x) => [x.type, x.value]));
+          return `${p.year}-${p.month}-${p.day}`;
+        };
+        const wednesday = weekStart + 2 * 24 * 3_600_000;
+        return {
+          browserZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          calendarReadsTheEvent: dateIn(stored, 'Pacific/Auckland'),
+          displayReadsTheEvent: dateIn(stored),
+          displayReadsWednesday: dateIn(wednesday),
+          utcReadsWednesday: dateIn(wednesday, 'UTC'),
+        };
+      },
+      [XZONE_STORED_START, XZONE_WEEK_START],
+    );
+    // `test.use` actually took. Under the project's default UTC browser this
+    // whole spec would still pass its grid half and prove nothing about the
+    // display side, so it is checked rather than assumed.
+    expect(premise.browserZone).toBe('Europe/Sofia');
+    // The stored instant really is midnight on 12 Aug in the calendar's own
+    // zone — i.e. this fixture describes an all-day event that can exist.
+    expect(premise.calendarReadsTheEvent).toBe(XZONE_DAY);
+    // …and the display reads that same instant as the day before. A calendar
+    // zone that agreed with the display could not see this defect at all.
+    expect(premise.displayReadsTheEvent).toBe(XZONE_DISPLAY_MISREADING);
+    // The display side. Sofia's Wednesday midnight is still Tuesday in UTC, so
+    // a column's date has to be read in the display zone — from a UTC browser
+    // these two are the same string and nothing separates them.
+    expect(premise.displayReadsWednesday).toBe(XZONE_DAY);
+    expect(premise.utcReadsWednesday).toBe(XZONE_DISPLAY_MISREADING);
+
+    // And the week on screen is the week the fixture describes: the harness
+    // refuses any other, but a refusal surfaces as an error banner rather than
+    // a failure, so the request is asserted here too.
+    const weeks = await weekRequests(page);
+    expect(weeks.map((a) => a.weekStartMs)).toEqual([XZONE_WEEK_START]);
+
+    // The grid half: one column, and it is the calendar's day. The old
+    // placement drew this chip across columns 1 and 2 — Tue *and* Wed, a
+    // two-day bar for a one-day event — so "exactly one" is as load-bearing as
+    // "which one".
+    const columns = await columnsUnderTheChip(page);
+    expect(columns).toHaveLength(1);
+    const chipColumnMs = columns[0];
+
+    // The popover half.
+    await page.locator('.chip').click();
+    await expect(page.getByRole('dialog', { name: 'Berlin trip' })).toBeVisible();
+
+    const said = await page.evaluate(
+      (ms) => ({
+        popover: document.querySelector('.when')!.textContent!.trim(),
+        column: new Date(ms).toLocaleDateString([],
+          { weekday: 'short', month: 'short', day: 'numeric' }),
+      }),
+      chipColumnMs,
+    );
+
+    // The agreement itself: the day the popover names *is* the day the column
+    // the chip sits in names, both spelled the way the app spells them.
+    expect(said.popover).toBe(said.column);
+    // And an absolute value on both, so two wrong-but-equal answers cannot
+    // satisfy the line above.
+    expect(said.popover).toBe('Wed, Aug 12');
+    // Which is the *calendar's* date, not the display's reading of the stored
+    // instant — the column the chip used to be drawn under.
+    expect(said.popover).not.toContain('Aug 11');
+  });
+
+  test('the edit form opens on that same day too', async ({ page }) => {
+    // The third consumer of the same date, and the one an edit actually saves
+    // through: `valueFromDetail` reads `detail.start_date` rather than deriving
+    // a day from an instant.
+    await page.goto('/tests/harness/index.html?c=App&f=cross-zone');
+    await expect(page.locator('.chip')).toHaveText('Berlin trip');
+
+    await page.locator('.chip').click();
+    await page.getByRole('button', { name: 'Edit' }).click();
+
+    const form = page.getByRole('dialog', { name: 'Edit event' });
+    await expect(form).toBeVisible();
+    // `First day`/`Last day`, not `Date`/`End date`: those labels are the
+    // all-day branch of the form, so finding them at all proves the branch
+    // under test is the one on screen.
+    await expect(form.getByLabel('First day', { exact: true })).toHaveValue(XZONE_DAY);
+    // Inclusive, so a one-day event names the same date twice — never the
+    // exclusive 13th the stored `end_ms` points at, which is what this line
+    // catches (measured: replacing `end_date` with that exclusive date fails
+    // here).
+    //
+    // What it cannot catch, in *this* zone pair, is `endDate` going back to a
+    // reading of `end_ms` in the browser's zone. Auckland's exclusive end is
+    // 2026-08-12T12:00Z; Sofia reads that as the 12th, which is also the answer
+    // the inclusive-end derivation gives — the wrong zone and the missing
+    // "one day back" cancel exactly. That is the UI-side mirror of the ledger's
+    // rule that Auckland witnesses the calendar zone but never the end of a
+    // span. `eventform.spec.ts`'s "a one-day trip on a calendar west of the
+    // browser keeps its last day" (New York calendar, Tokyo browser) is the
+    // test that does catch it, and it fails under exactly that mutation.
+    await expect(form.getByLabel('Last day', { exact: true })).toHaveValue(XZONE_DAY);
   });
 });
