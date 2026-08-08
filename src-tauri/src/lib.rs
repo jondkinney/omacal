@@ -5,6 +5,10 @@ mod commands;
 mod errors;
 mod events;
 mod fixtures;
+/// Test-only: the golden-file mechanism the UI fixtures read. Gated so nothing
+/// that reads or writes `ui/tests/` is compiled into the shipped app.
+#[cfg(test)]
+mod golden;
 mod status;
 mod sync_loop;
 mod theme;

@@ -12,5 +12,9 @@
   // reference to tsconfig.app.json would need `tsc -b` (build mode) to
   // produce its .d.ts outputs first; the check script runs plain `tsc -p`,
   // so the cross-project import would fail to resolve (TS6305).
-  "include": ["tests/**/*.ts", "src/**/*.ts", "src/**/*.d.ts"]
+  // `tests/**/*.json` is `tests/generated/` — the golden fixtures the Rust
+  // suite writes and `fixtures.ts` imports. A composite project must list every
+  // file it compiles, and `resolveJsonModule` makes an imported .json one of
+  // them, so without this pattern the import fails with TS6307.
+  "include": ["tests/**/*.ts", "tests/**/*.json", "src/**/*.ts", "src/**/*.d.ts"]
 }

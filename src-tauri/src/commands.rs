@@ -1336,6 +1336,73 @@ mod tests {
         );
     }
 
+    /// The payload behind the UI suite's `crossZoneWeek` fixture — the same
+    /// zone pair as the test above, one week's Wednesday instead of its Monday,
+    /// because that is the week `ui/tests/app.spec.ts`'s end-to-end agreement
+    /// spec drives.
+    ///
+    /// That fixture used to be a hand-written TypeScript literal, and the only
+    /// thing that ever established it was right was a person reading real
+    /// output off a temporary probe test and pasting it in. Nothing then held
+    /// the two together: an edit here could not fail a Playwright spec, and a
+    /// fixture describing a payload this function no longer returns would have
+    /// gone unreported. Now the UI imports `ui/tests/generated/cross-zone-week.json`
+    /// and this test writes it — see `crate::golden` for the division of labour.
+    ///
+    /// Everything in the file comes from here, so the fixture's numbers are the
+    /// backend's own: `days[0].start_ms` is Sofia's Monday midnight
+    /// (`XZONE_WEEK_START` on the UI side), `all_day_events[0]`'s instants are
+    /// the stored Auckland midnights, and its `color` is `DEFAULT_EVENT_COLOR`
+    /// because this row carries no colour of its own.
+    #[test]
+    fn the_cross_zone_week_golden_file_is_what_assemble_week_produces() {
+        const SOFIA: &str = "Europe/Sofia";
+        // The one value in the file chosen rather than derived. A real row id
+        // is whatever SQLite handed out; the UI fixture keys the chip's popover
+        // detail by it, and reads it back out of the file (`XZONE_ID`) rather
+        // than restating it, so the two cannot disagree.
+        const GOLDEN_ROW_ID: i64 = 4245;
+
+        let start = midnight_ms(AUCKLAND, 2026, 8, 12);
+        let end = midnight_ms(AUCKLAND, 2026, 8, 13); // Google's end is exclusive
+        let week_start = midnight_ms(SOFIA, 2026, 8, 10);
+
+        // The premise, both legs. Without them "column 2" is arithmetic; with
+        // them it is the claim that a chip goes where its own calendar puts it.
+        assert_eq!(crate::write::date_in_zone(start, AUCKLAND), "2026-08-12");
+        assert_eq!(
+            crate::write::date_in_zone(start, SOFIA),
+            "2026-08-11",
+            "the display zone reads the stored instant as the day before"
+        );
+
+        let mut src = all_day_event(AUCKLAND, start, end);
+        src.id = GOLDEN_ROW_ID;
+        src.summary = Some("Berlin trip".into()); // the title the UI spec reads off the chip
+
+        let w = assemble_week(&[src], week_start, SOFIA);
+
+        // The golden comparison first, deliberately: a changed assembler should
+        // be reported as what it is — the committed fixture no longer describing
+        // this backend — and not as a column assertion that happens to be next
+        // to one.
+        crate::golden::assert_golden("cross-zone-week", &w);
+
+        // Then the claims the UI spec leans on, against the freshly computed
+        // payload rather than the file. These are the backstop against a
+        // regeneration that absorbed a real defect: `assert_golden` above would
+        // be satisfied by any payload at all once the file had been rewritten.
+        //
+        // `start_col` is the discriminating one. A count of chips is not: the
+        // instant-bucketing placement this replaced produced *one* lane too —
+        // it just ran from column 1 to column 2, a two-day bar for a one-day
+        // event — so `all_day.len() == 1` reads the same either way.
+        assert_eq!(w.all_day.len(), 1);
+        assert_eq!(w.all_day[0].start_col, 2, "Wed 12 Aug is column 2 of a Monday week");
+        assert_eq!(w.all_day[0].end_col, 2, "a one-day event ends in the column it starts in");
+        assert_eq!(w.days[0].start_ms, week_start, "the file's columns are Sofia midnights");
+    }
+
     /// The shape the defect was reported in, and the one that makes "drawn in
     /// exactly one place" a claim with teeth.
     ///

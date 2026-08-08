@@ -1019,7 +1019,7 @@ test.describe('MonthGrid', () => {
     await page.goto(show('busy-day'));
     await page.locator('.more').first().click();
     const picked = await page.evaluate(() => (window as any).__lastDayPick);
-    expect(picked).toBe(1786341600000); // Mon 10 Aug
+    expect(picked).toBe(1786320000000); // Mon 10 Aug 2026 00:00 UTC, the busy cell's own start
   });
 
   test('clicking the day number asks the parent for that day too', async ({ page }) => {
