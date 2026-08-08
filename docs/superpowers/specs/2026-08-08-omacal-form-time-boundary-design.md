@@ -202,3 +202,51 @@ Recorded during Plan 5's final round and **not** part of this plan:
 splitting from an exception whose only difference is an RSVP discards that RSVP
 for the whole tail — the same "the split carries the master's view, not the
 exception's" seam.
+
+## 7. Known residuals after implementation
+
+Added after the whole-branch review, which found §3's "rejected alternative"
+paragraph misleading on one point: it lists wrong grid placement as a cost of the
+*rejected* approach, which reads as though the shipped one avoids it. It does not.
+
+### 7.1 The grid and the popover now disagree about an all-day event's day
+
+`commands::assemble_days` buckets all-day events with
+`signed_column(&bounds, iv.start_ms)`, where `bounds` comes from
+`n_day_boundaries(start_ms, n, tz)` and `tz` is `lib.rs::display_tz` — the
+**system** zone. The stored instant is midnight in the **calendar's** zone.
+
+Display `Europe/Sofia` (+3), calendar `Pacific/Auckland` (+12), an all-day event
+on 10 Aug: the stored start `2026-08-09T12:00Z` falls inside Sofia's 9 Aug
+bounds, so the chip is drawn under **Sun 9**, while its own popover says
+**Mon, Aug 10** and the form opens on **2026-08-10**.
+
+**Pre-existing placement bug. This plan did not cause it and there is no data
+risk — the writes are now correct where before they were wrong.** But before
+Tasks 4 and 6 all three surfaces were wrong *together*, so closing the popover
+and the form converts a consistent error into a visible self-contradiction.
+
+Closing it means bucketing all-day events by their calendar's zone rather than
+the display zone — a change in `commands.rs`, not in the form. Its own plan.
+
+### 7.2 Toggling All day *off* can leave a form Save refuses
+
+`endDate` is the **inclusive** last day, so a single-day all-day event names the
+same date twice; both midnights then read as the same clock and the span is zero.
+Save is refused with `12:00 → 12:00` on screen.
+
+The UTC-browser/UTC-calendar case is byte-identical to pre-branch behaviour. The
+foreign-calendar case **changed**: it previously produced a *saveable* 24-hour
+event on the wrong two days, and is now refused. Refusing is the better of the
+two, and the wrong value is visible rather than silent — but it is the same
+failure family this plan was chartered to close, reachable in two clicks, and
+**none of the four all-day↔timed toggle combinations has a TypeScript-level
+spec**. `valueFromDetail`'s comment says the toggle-off answers "coincide", which
+is true of the two conversions and reads as a claim the resulting value is sound.
+It is not.
+
+### 7.3 A time typed into a skipped hour
+
+Characterised, not fixed — see §3. Closing it needs the form to *say* the time
+does not exist on that date, and the check must **not** live in `toMs`, where the
+re-anchored create path would meet it and break.
