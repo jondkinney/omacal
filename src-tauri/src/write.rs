@@ -75,6 +75,37 @@ pub(crate) fn date_in_zone(ms: i64, tz: &str) -> String {
         .to_string()
 }
 
+/// The two dates an all-day span covers, read in the **calendar's** zone
+/// `cal_tz`: the first day it covers and the **inclusive** last one, both
+/// `yyyy-mm-dd`.
+///
+/// The last day is one civil day back from `end_ms`'s date, because the stored
+/// end is exclusive: midnight *after* the last day, as on Google's wire.
+/// Deliberately not the date of `end_ms` minus some slack — `valueFromDetail`
+/// steps back half a day, and half a day of slack silently absorbs a wrong
+/// zone, which is how the end came out right by accident while the start was a
+/// day early. A civil day back from the exclusive date is the same answer in
+/// every zone and across every daylight-saving transition, since a date carries
+/// no time of day for a transition to move.
+///
+/// The one derivation, shared by everything that needs an all-day event's
+/// dates: [`crate::events`] for the popover and the edit form, and
+/// [`crate::commands`] for where the chip is drawn in the grid. Two derivations
+/// of this on this project once disagreed silently, so there is only one.
+///
+/// A date that will not parse or has no yesterday falls through to `start`
+/// rather than panicking, the same fallback philosophy as [`date_in_zone`],
+/// which cannot produce one anyway: it answers a real date for every input.
+pub(crate) fn all_day_span_dates(start_ms: i64, end_ms: i64, cal_tz: &str) -> (String, String) {
+    let start = date_in_zone(start_ms, cal_tz);
+    let last = date_in_zone(end_ms, cal_tz)
+        .parse::<jiff::civil::Date>()
+        .ok()
+        .and_then(|exclusive| exclusive.yesterday().ok())
+        .map_or_else(|| start.clone(), |d| d.to_string());
+    (start, last)
+}
+
 /// Where `target` lands after the same movement that takes `from` to `to`,
 /// counted in whole days. All three are `yyyy-mm-dd`.
 ///
