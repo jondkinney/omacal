@@ -413,6 +413,7 @@
     {detail}
     {anchor}
     occurrenceStartMs={startMs}
+    occurrenceEndMs={occurrence.endMs}
     onclose={closePopover}
     onresponded={(r) => handleResponded(id, startMs, r)}
     onedit={() => relay(onedit, occurrence, rect)}

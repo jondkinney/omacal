@@ -92,17 +92,61 @@ Google's own model — an all-day event is `start.date`, not `start.dateTime` �
 and it is the only version where the round trip cannot lose, because no zone
 conversion happens on that path at all.
 
-For timed events the instant stays, and `toMs` gains explicit handling for the
-two civil times it currently cannot represent:
+For timed events the instant stays. Sub-minute precision is **deliberately
+discarded**, not preserved: the form has no seconds field, so a user editing a
+09:00:37 meeting cannot express the 37 seconds. The rule is that discarding it
+must not then read as a *move* — **an untouched time must send no `start`/`end`
+at all.**
 
-- **ambiguous** (repeated hour) — resolve to the **first** pass, and say so.
-- **nonexistent** (skipped hour) — resolve forward to the first valid instant,
-  and move the end by the same civil span rather than leaving it.
+### The mechanism, corrected during Plan 6 Task 5
 
-Sub-minute precision is **deliberately discarded**, not preserved: the form has
-no seconds field, so a user editing a 09:00:37 meeting cannot express the 37
-seconds. The rule is that discarding it must not then read as a *move* — an
-untouched time must send no `start`/`end` at all.
+The rule above is unchanged and is the load-bearing sentence. The **mechanism**
+this section originally prescribed for it was wrong, and is recorded here rather
+than quietly replaced, because the wrong version reads plausibly and a future
+reader following it would reintroduce the defect it was meant to close.
+
+**What this said:** "`toMs` gains explicit handling: **ambiguous** (repeated
+hour) — resolve to the **first** pass, and say so."
+
+**Why that is wrong.** Defect 2.2 *is* an untouched second-pass start being
+re-derived to the first pass. Making that resolution explicit does not close
+the drift; it makes the drift deliberate and documents it. The event still
+moves an hour, still with `sendUpdates=all` behind it, and now on purpose. A
+resolver cannot help here at all: **no rule over civil fields can recover which
+pass an instant came from**, because the civil pair does not carry it.
+
+**What ships instead — the pass-through.** A form value remembers the instants
+its civil fields were **read off** (`sourceStartMs`/`sourceEndMs`), and each
+side is sent as that instant whenever the pair beside it still reads as it.
+Nothing is resolved, because nothing is re-derived: an untouched time is sent
+as the instant it arrived as, which satisfies this section's stated rule
+exactly and closes 2.2 for both the repeated hour and the discarded seconds in
+one move. `instantOf`, under `whenOf` in `ui/src/lib/eventform.ts`, is the
+whole of it. It is deliberately a question about the **value alone** and not
+about the form's `initial` — see that function's own comment.
+
+**The nonexistent (skipped) hour**, likewise corrected. This said "resolve
+forward to the first valid instant, and move the end by the same civil span".
+No resolver ships, and the clause is amended to describe what actually happens:
+`new Date(y, m, d, h, min)` **normalises a skipped civil time forward by the
+size of the gap** — 00:30 on a day whose midnight is skipped by an hour becomes
+01:30, not the first valid instant (01:00). Two consequences, both deliberate:
+
+- **A create is re-anchored rather than resolved.** `blankValue` moving its
+  default onto a chosen day rebuilds the value from the instant that pair names
+  (`blankValueAt(toMs(date, start))`), so both fields and both source instants
+  come off one instant again and the end follows the start by a real half hour.
+  On America/Santiago 6 Sep 2026 that is 01:30–02:00, saveable. Normalisation is
+  load-bearing here, not tolerated: the value has no earlier instant to fall
+  back on.
+- **A time the user *typed* into a skipped hour is not moved for them, and is
+  not yet reported either.** Typing 00:30 and 01:30 on that day leaves both
+  fields showing what was typed while both name 01:30, so Save goes dead with no
+  field visibly wrong. Characterised, not fixed — `eventform.spec.ts`, "the
+  form's civil↔instant boundary". Closing it needs the form to *say* the time
+  does not exist on that date; silently advancing the start would contradict the
+  per-side ruling this plan already made, that an incoherent pair is refused
+  honestly rather than repaired by moving a field the user did not touch.
 
 ### Blast radius
 

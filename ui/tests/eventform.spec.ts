@@ -277,22 +277,33 @@ test.describe('blankValueAt', () => {
 //
 // **There were four characterisation specs here**, each asserting a wrong value
 // on purpose and naming the right one in its comments, so the gate stayed green
-// while the defect stayed visible. Three are gone. Task 4 took the all-day zone
-// crossing, which lives below as "an all-day event's dates cross the boundary
-// as dates"; Task 5 took both timed ones, which are the describe immediately
-// below and "the anchor's precision" at the end of this file. Their comments
-// are the assertions now.
+// while the defect stayed visible. **All four are gone**, and so is the fifth
+// this plan inverted in Rust. Task 4 took the all-day zone crossing, which lives
+// below as "an all-day event's dates cross the boundary as dates"; Task 5 took
+// both timed ones, which are the describe immediately below and "the anchor's
+// precision" at the end of this file; Task 6 took the skipped midnight, which is
+// "a create on a day whose midnight is skipped". Their comments are the
+// assertions now.
 //
-// **What is left, and why.** Task 5's fix is that an instant the value was
-// *read off* is sent unchanged rather than re-derived, which needs there to
-// have been an instant. Every repaired case has one — a grid click, the clock,
-// an event's own stored start. The Santiago case below does not: `blankValue`
-// given a day other than the one its half-hour default was computed on builds
-// a civil pair from two different sources, and that pair names **no instant at
-// all** on a day whose midnight is skipped. There is nothing to fall back on,
-// and repairing it needs a zone-aware civil→instant resolver — which
-// `new Date(y, m, d, h, min)` is not: it picks a pass silently and normalises a
-// skipped hour forward without saying so. Different work from this plan's.
+// **The one characterisation spec that remains was not one of the four.** It is
+// the same skipped hour reached from the other side, found while closing the
+// create: a time the **user typed** into an hour that does not exist. The two
+// look identical on screen and are different problems.
+//
+//   - A create is the *app* choosing a time, so the app may choose another. The
+//     repair is arithmetic — re-anchor the moved pair on the instant it names —
+//     and it needs no resolver and no message.
+//   - A typed time is not the app's to move. Normalising it forward silently
+//     would be a move nobody asked for, and this branch has already ruled on
+//     that shape once: the per-side check refuses an incoherent pair honestly
+//     rather than dragging an untouched field along with it. Closing this one
+//     properly means the form *saying* the time does not exist, which is a
+//     form-level affordance, not a boundary conversion.
+//
+// So `new Date(y, m, d, h, min)` is still not a resolver — it picks a pass
+// silently and normalises a skipped hour forward without saying so — but that
+// is now a statement about what the remaining spec pins, not about work the
+// create was waiting on.
 //
 // Probes behind the numbers: `scratchpad/t10rev/dst.mjs` and `anchor.mjs`
 // (the reviewer's), re-run in six zones — Europe/Sofia, America/New_York,
@@ -547,33 +558,168 @@ test.describe('a timed value is sent as the instants it was read off', () => {
   });
 });
 
+// --- A create on a day whose midnight does not exist ----------------------
+//
+// **The inversion of `CHARACTERISED: a new event on a day whose midnight is
+// skipped cannot be saved`** — the last of the five characterisation specs this
+// plan opened with, and the third defect §2 names. It asserted the wrong values
+// on purpose for the whole of this branch and named the right ones in its
+// comments; those comments are the assertions now.
+//
+// What used to happen: `blankValue` moved its half-hour default onto the chosen
+// day by writing a new `date` beside a `start` computed from the clock on a
+// *different* day. The pair was therefore read off no instant — and on a day
+// whose midnight is skipped it named none either. `toMs` normalised the start
+// forward to 01:30 while the end stayed at the 01:00 a separate string had put
+// there: a form opening half an hour **backwards**, refusing to save, with no
+// field on it visibly wrong. Reached by pressing `n`, or by clicking that day
+// in Month or Big Year, while the clock reads just after midnight.
+//
+// It re-anchors now — the moved pair is asked what instant it names, and the
+// whole value is rebuilt from that — so the end follows the start's own instant
+// by a real half hour instead of being left where it was.
+//
+// **No resolver, and none was needed.** What carries this is `Date`
+// normalisation, which is not what design §3 originally asked for: "the first
+// valid instant" on this date is 01:00, and normalisation lands on 01:30 —
+// forward by the *size of the gap* from where the clock was asked for. §3 is
+// amended to describe what happens rather than an ideal nothing implements.
+test.describe('a create on a day whose midnight is skipped', () => {
+  // 6 Sep 2026: Santiago's clocks go forward 00:00 -> 01:00, so that day has no
+  // 00:00 and no 00:30. Every assertion below is about that gap, so the gap
+  // itself is asserted rather than trusted — a zone or a date that stopped
+  // straddling would make the whole spec pass without discriminating.
+  test.use({ timezoneId: 'America/Santiago' });
+
+  test('re-anchors onto that day and opens savable', async ({ page }) => {
+    await page.goto(PURE);
+    const v = await page.evaluate(() => {
+      const ef = (window as any).__eventform;
+      const now = new Date(2026, 5, 15, 0, 0, 0, 0).getTime(); // 15 Jun, 00:00
+      const day = new Date(2026, 8, 6, 0, 0, 0, 0).getTime(); // 6 Sep — normalises to 01:00
+      const value = ef.blankValue(now, 1, day);
+      const when = ef.whenOf(value);
+      return {
+        // The fixture's premise. `getTimezoneOffset` is minutes *west*, so
+        // Santiago answers 240 at UTC-4 and 180 at UTC-3; the difference is
+        // the hour the clocks jumped. And midnight on the 6th, asked for
+        // directly, comes back as 01:00 — there is no 00:00 to land on.
+        skippedMidnightHour: new Date(day).getHours(),
+        offsetBefore: new Date(2026, 8, 5, 12, 0, 0, 0).getTimezoneOffset(),
+        offsetAfter: new Date(2026, 8, 6, 12, 0, 0, 0).getTimezoneOffset(),
+        date: value.date, endDate: value.endDate,
+        start: value.start, end: value.end,
+        sourceStartMs: value.sourceStartMs, sourceEndMs: value.sourceEndMs,
+        startMs: when.startMs, endMs: when.endMs,
+        span: when.endMs - when.startMs,
+        saveable: ef.endAfterStart(value),
+      };
+    });
+
+    expect(v.skippedMidnightHour).toBe(1);
+    expect(v.offsetBefore - v.offsetAfter).toBe(60);
+
+    // Half an hour past where midnight would have been, which is where
+    // normalisation puts 00:30 — not 01:00, the first instant that exists.
+    expect(v.date).toBe('2026-09-06');
+    expect(v.start).toBe('01:30');
+    expect(v.endDate).toBe('2026-09-06');
+    expect(v.end).toBe('02:00');
+    expect(v.span).toBe(30 * 60_000);
+    expect(v.saveable).toBe(true);
+
+    // The other half of re-anchoring, and the half a `start`/`end` assertion
+    // cannot see: both source instants are now the ones this pair was really
+    // read off, so the pass-through carries them instead of being silently
+    // skipped because they no longer read as the fields beside them. Named by
+    // their own UTC offsets — Santiago is UTC-3 once the clocks have gone
+    // forward — rather than by arithmetic on a local `Date`, which could not
+    // disagree with the reading under test.
+    expect(v.sourceStartMs).toBe(Date.parse('2026-09-06T01:30:00-03:00'));
+    expect(v.sourceEndMs).toBe(Date.parse('2026-09-06T02:00:00-03:00'));
+    expect(v.startMs).toBe(v.sourceStartMs);
+    expect(v.endMs).toBe(v.sourceEndMs);
+  });
+
+  test('a day that moves nothing is left exactly where the clock put it', async ({ page }) => {
+    // The converse, and the reason re-anchoring needs no "did the day actually
+    // move" branch: passing the clock's own day is the same arithmetic with a
+    // zero in it. Without this, a `blankValue` that ignored `dayStartMs`
+    // altogether would satisfy the spec above on any day but the 6th.
+    await page.goto(PURE);
+    const v = await page.evaluate(() => {
+      const ef = (window as any).__eventform;
+      const now = new Date(2026, 5, 15, 9, 12, 0, 0).getTime(); // 15 Jun, 09:12
+      const sameDay = new Date(2026, 5, 15, 0, 0, 0, 0).getTime();
+      const a = ef.blankValue(now, 1);
+      const b = ef.blankValue(now, 1, sameDay);
+      return { a, b };
+    });
+    expect(v.b).toEqual(v.a);
+    expect(v.a.start).toBe('09:30');
+    expect(v.a.date).toBe('2026-06-15');
+  });
+});
+
 test.describe('the form’s civil↔instant boundary (characterised, not fixed)', () => {
-  test.describe('America/Santiago — a midnight that does not exist', () => {
-    // 6 Sep 2026: clocks go forward 00:00 -> 01:00, so that day has no 00:00.
+  test.describe('America/Santiago — a time typed into the skipped hour', () => {
+    // The same 6 Sep 2026 gap, reached from the other side. The create above
+    // is fixed because the *app* chose the time it offered and may therefore
+    // choose another; this is the case where the **user** typed it, and moving
+    // a time somebody entered is a different act from moving a default.
     test.use({ timezoneId: 'America/Santiago' });
 
-    test('CHARACTERISED: a new event on a day whose midnight is skipped cannot be saved', async ({ page }) => {
+    test('CHARACTERISED: typing a start into the skipped hour kills Save with no field visibly wrong', async ({ page }) => {
       await page.goto(PURE);
       const v = await page.evaluate(() => {
         const ef = (window as any).__eventform;
-        const now = new Date(2026, 5, 15, 0, 0, 0, 0).getTime(); // 15 Jun, 00:00
-        const day = new Date(2026, 8, 6, 0, 0, 0, 0).getTime(); // 6 Sep — normalises to 01:00
-        const value = ef.blankValue(now, 1, day);
-        const when = ef.whenOf(value);
+        const now = new Date(2026, 5, 15, 0, 0, 0, 0).getTime();
+        const day = new Date(2026, 8, 6, 0, 0, 0, 0).getTime(); // 6 Sep
+        const opened = ef.blankValue(now, 1, day);
+        // Exactly what `EventForm`'s two `<input type="time">` bindings write:
+        // the strings, and nothing else. Both source instants stay where
+        // opening the form put them, which is what the real form leaves them
+        // as too — `instantOf` is what decides they no longer apply.
+        const typed = { ...opened, start: '00:30', end: '01:30' };
+        const when = ef.whenOf(typed);
         return {
-          start: value.start, end: value.end, saveable: ef.endAfterStart(value),
+          skippedMidnightHour: new Date(day).getHours(),
+          start: typed.start, end: typed.end,
+          startMs: when.startMs, endMs: when.endMs,
           span: when.endMs - when.startMs,
+          saveable: ef.endAfterStart(typed),
         };
       });
 
-      // Reached by pressing `n`, or by clicking that day in Month or Big Year,
-      // while the clock reads just after midnight.
+      expect(v.skippedMidnightHour).toBe(1);
+
+      // What the user sees on the two inputs. Both correct — these are the
+      // strings they typed, and nothing rewrites them.
       expect(v.start).toBe('00:30');
-      expect(v.end).toBe('01:00');
-      // WRONG. Correct: 30 minutes, and `true`. 00:30 does not exist on this
-      // date, so re-parsing it normalises the *start* forward to 01:30 while
-      // the end stays at 01:00 — backwards by half an hour.
-      expect(v.span).toBe(-30 * 60_000);
+      expect(v.end).toBe('01:30');
+
+      // The end is honoured exactly: 01:30 exists on this date.
+      expect(v.endMs).toBe(Date.parse('2026-09-06T01:30:00-03:00'));
+
+      // WRONG, and this is the defect. 00:30 does not exist on 6 Sep here, so
+      // `toMs` normalises it forward onto the very instant the end names: two
+      // different times on screen, one instant behind them, a span of zero and
+      // a dead Save button with nothing pointing at the field that cannot be
+      // honoured.
+      //
+      // **Correct: the form says so** — that 00:30 is not a time on this date.
+      // Closing it needs that message and the check behind it (a civil pair
+      // that does not read back as itself did not name the instant it was
+      // given), which is a form-level affordance this task does not own.
+      //
+      // What it must *not* be is the other repair available here: silently
+      // advancing the start to 01:30 and dragging the end to 02:30 to keep the
+      // hour. That contradicts the ruling this branch already made on the
+      // incoherent pair — the per-side check refuses an inconsistent form
+      // honestly rather than moving a field the user did not touch — and it
+      // would move a time somebody typed without telling them.
+      expect(v.startMs).toBe(v.endMs);
+      expect(v.span).toBe(0);
       expect(v.saveable).toBe(false);
     });
   });

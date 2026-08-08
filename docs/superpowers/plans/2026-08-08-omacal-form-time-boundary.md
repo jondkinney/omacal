@@ -338,25 +338,70 @@ Remove the untouched check so times are always re-derived. Assert present, run, 
 **Files:**
 - Modify: `ui/src/lib/eventform.ts`, and whatever the sweep turns up
 
-Two things.
+> **This section was rewritten after the fact.** What it originally asked for
+> was stale by the time the task ran, in two ways that mattered: its sweep
+> grepped for `instantsOf`, which Task 4 had **deleted**, and its greps could
+> not have found the one live survivor — a `toLocaleDateString` in
+> `EventPopover`. Its fix, "move the end by the same civil span", was also not
+> the one that shipped. What follows is what Task 6 actually did.
 
-**1. `blankValue`/`blankValueAt` still open an unsaveable form** where a zone's midnight does not exist (America/Santiago 2026-09-06, Africa/Cairo 2026-04-24) and for the 30 minutes preceding a fall-back transition. With all-day now on dates, the all-day half of this should disappear; the timed half needs the end moved by the same **civil** span rather than left.
+Four things.
 
-**2. The sweep.** `grep -rn "toMs\|dateOf\|timeOf\|instantsOf" ui/src` and check every remaining caller. Any that still round-trips an instant through civil fields on a path a user can reach is a survivor of the same defect.
+**1. Amend design §3.** §3 prescribed "`toMs` gains explicit handling: ambiguous
+(repeated hour) — resolve to the **first** pass". That mechanism is wrong, and
+Task 5's review established why: applied to an **untouched** second-pass start,
+resolving to the first pass *is* the −1 hour drift of defect 2.2, made
+deliberate. It would not have closed the defect at all. What shipped is the
+**pass-through** — an untouched time is sent as the instant it was read off —
+which satisfies §3's stated *rule* exactly and needs no resolver. §3 now names
+the pass-through and says plainly why resolve-to-first-pass is wrong, so a
+future reader following the old text cannot reintroduce the defect. §3's
+nonexistent-time clause is likewise amended to describe what `Date`
+normalisation actually does rather than an unimplemented ideal.
 
-- [ ] **Step 1: Write the failing specs**
+**2. The skipped midnight — closed without a resolver.** `blankValue` moving its
+default onto a chosen day built `date` from the day and `start` from a clock on
+a *different* day, so the pair was read off no instant and on America/Santiago
+6 Sep 2026 named none. It now **re-anchors**: `blankValueAt(toMs(date, start))`,
+which rebuilds the whole value from the instant the moved pair names. On that
+day it gives 01:30–02:00, span +30, saveable. That is *not* §3's letter ("the
+first valid instant" is 01:00); normalisation lands on 01:30, and §3 is amended
+to say so rather than the code contorted to match it. The Santiago
+characterisation spec — the last one standing — is **inverted**.
 
-```ts
-test('a form opened on a day whose midnight does not exist is saveable', () => {
-  // America/Santiago, 2026-09-06. Assert endAfterStart(blankValue(...)) is true.
-});
+**3. The skipped-hour typed edit — pinned, with the reason on record.** A case
+neither the plan nor Task 5 had: in Santiago on 6 Sep, typing `00:30` and
+`01:30` leaves both strings on screen while `whenOf` answers 01:30 for both —
+span 0, Save dead, no field visibly wrong. **Characterised, not fixed.** A
+create is the *app* choosing a time and may be re-anchored silently; a typed
+time is not the app's to move, and this branch already ruled that an incoherent
+pair is refused honestly rather than repaired by dragging an untouched field.
+Closing it needs the form to *say* the time does not exist — a form-level
+affordance, not a boundary conversion. Measured rather than argued: a mutation
+making `toMs` refuse a civil pair that does not read back as itself fails the
+characterisation spec **and** the create above, so the cheap repair for one
+breaks the other.
 
-test('a form opened in the half hour before a fall-back is saveable', () => {
-  // Europe/Sofia, 25 Oct 2026 02:45 local.
-});
-```
+**4. The sweep**, with `toLocale*` added — which is the point, since the
+original grep would have missed the only live finding.
+`grep -rn "toMs(\|dateOf(\|timeOf(\|toLocaleDateString\|toLocaleTimeString" ui/src`,
+every hit checked on an all-day or occurrence path. One survivor:
+`EventPopover`'s `when` line rendered `detail.start_ms` through
+`toLocaleDateString` in the **browser's** zone — a browser-zone reading of an
+all-day instant *and* the **master's** row rather than the `occurrenceStartMs`
+the component already had. Before Tasks 3–4 the popover and the form were wrong
+together; afterwards they disagreed on screen. Fixed on both arms, with
+`occurrenceEndMs` added as a required prop so the clock comes from the clicked
+block too. Every other hit resolved or recorded with a reason in the task
+report.
 
-- [ ] **Steps 2–6: as above**
+- [x] **Step 1: Write the failing specs**
+
+Five, and the Santiago inversion. The two that carry the sweep are new
+`EventPopover` fixtures — the first here able to catch that line at all, since
+every existing one has `occurrenceStartMs === detail.start_ms`.
+
+- [x] **Steps 2–6: as above**
 
 ---
 
@@ -366,7 +411,7 @@ test('a form opened in the half hour before a fall-back is saveable', () => {
 - [ ] `npm --prefix ui run test:ui` ≥ 460 passed — **by exit code**
 - [ ] `npm --prefix ui run check` — 0 errors, 0 warnings
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings` — clean
-- [ ] **All four Plan 5 characterisation specs inverted**, each now asserting the correct value, and each shown to fail against the pre-fix implementation
+- [ ] **All four Plan 5 characterisation specs inverted**, each now asserting the correct value, and each shown to fail against the pre-fix implementation — in the event **five**, the fifth being a Rust one Task 2's type change made unrepresentable. One characterisation spec remains and is **not** one of them: the skipped-hour *typed edit*, found while closing the create in Task 6 (see that section).
 - [ ] `an_all_day_create_resolves_against_the_calendars_own_timezone_not_the_authoring_one` still binds
 - [ ] At least one fixture has the calendar's zone differing from the browser's — the suite was structurally blind to all three defects because none did
 - [ ] `event_time_json` is gone, with no compatibility shim

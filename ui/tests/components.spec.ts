@@ -899,6 +899,86 @@ test.describe('EventPopover', () => {
     await page.locator('.guest').first().click();
     await expect(page.locator('.pop')).toBeVisible();
   });
+
+  // Task 6's sweep. The `when` line rendered `detail.start_ms` through
+  // `toLocaleDateString`/`toLocaleTimeString` in the browser's zone, and no
+  // spec asserted on it at all — five plans, and the two fixtures below are
+  // the first that could ever have caught it, because every other one here
+  // has `occurrenceStartMs === detail.start_ms`.
+  //
+  // For a series `detail.start_ms` is the **master's** DTSTART. The block on
+  // the grid beside this panel is drawn from the occurrence's own `start_ms`,
+  // so the two disagreeing puts a popover on screen contradicting the thing it
+  // was opened from.
+  test('a later occurrence shows its own day and clock, not the master’s', async ({ page }) => {
+    await page.goto(show('recurring-across-a-fall-back'));
+
+    // The fixture's own premise, asserted rather than described: seven days
+    // and **one hour** apart, because Sofia's clocks go back between them. A
+    // fixture that stopped straddling would still separate the two dates but
+    // could no longer separate the two clocks, and half of this spec would
+    // pass vacuously.
+    const gapHours = await page.evaluate(() => {
+      const f = (window as any).__fixtureProps;
+      return (f.occurrenceStartMs - f.detail.start_ms) / 3_600_000;
+    });
+    expect(gapHours).toBe(169);
+
+    const when = page.locator('.when');
+    await expect(when).toContainText('Mon, Oct 26');
+    await expect(when).toContainText('07:00');
+    await expect(when).toContainText('07:30');
+    // The master's own day and clock, which is what this used to show.
+    await expect(when).not.toContainText('Oct 19');
+    await expect(when).not.toContainText('06:00');
+  });
+});
+
+// The all-day arm of the same line, in a browser **west** of UTC.
+//
+// Three separate ways to get this wrong, and the zone above is what makes the
+// third visible: an all-day day rebuilt from a `yyyy-mm-dd` through `Date.UTC`
+// and then formatted without `timeZone: 'UTC'` is put straight back through the
+// browser's zone, which east of the reader is the previous day. From the
+// project's default UTC browser that mistake is invisible.
+test.describe('EventPopover on an all-day series east of the browser', () => {
+  test.use({ timezoneId: 'America/New_York' });
+
+  test('shows the clicked day, in the calendar’s zone, not a reading of an instant', async ({ page }) => {
+    await page.goto('/tests/harness/index.html?c=EventPopover&f=all-day-series-east-of-the-browser');
+
+    // Both premises, in the page so they are read in the browser's own zone.
+    // Unless this browser reads the stored instants as *different* days from
+    // the ones the calendar keeps them on, every assertion below is satisfied
+    // by the fixture rather than by the component.
+    const premise = await page.evaluate(() => {
+      const f = (window as any).__fixtureProps;
+      const day = (ms: number) =>
+        new Date(ms).toLocaleDateString([], { weekday: 'short', month: 'short', day: 'numeric' });
+      return {
+        browserReadsRow: day(f.detail.start_ms),
+        browserReadsOccurrence: day(f.occurrenceStartMs),
+        rowDate: f.detail.start_date,
+        shiftDays: (f.occurrenceStartMs - f.detail.start_ms) / 86_400_000,
+      };
+    });
+    // The calendar keeps the master on the 10th; this browser reads that same
+    // instant as the 9th, and the clicked chip's as the 12th. The right answer
+    // — the 13th — is a date neither reading produces.
+    expect(premise.rowDate).toBe('2026-08-10');
+    expect(premise.browserReadsRow).toBe('Sun, Aug 9');
+    expect(premise.browserReadsOccurrence).toBe('Wed, Aug 12');
+    expect(premise.shiftDays).toBe(3);
+
+    await expect(page.locator('.when')).toHaveText('Thu, Aug 13');
+  });
+
+  test('an all-day event shows no clock at all', async ({ page }) => {
+    // The `{#if !detail.is_all_day}` guard, which is the reason the times may
+    // be read off instants on the other arm without this one having to care.
+    await page.goto('/tests/harness/index.html?c=EventPopover&f=all-day-series-east-of-the-browser');
+    await expect(page.locator('.when')).not.toContainText(':');
+  });
 });
 
 test.describe('MonthGrid', () => {

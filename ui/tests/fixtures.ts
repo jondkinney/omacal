@@ -1219,7 +1219,8 @@ export const FIXTURES: Record<string, Record<string, any>> = {
           attendee({ email: 'petya@x.com', response_status: 'declined' }),
         ],
       }),
-      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, occurrenceEndMs: MON + 9 * H + 30 * 60_000,
+      onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
     },
     // The raw description is already entity-encoded, as a hostile calendar
     // invite's would be — `descriptionSegments` decodes it back to the
@@ -1229,7 +1230,8 @@ export const FIXTURES: Record<string, Record<string, any>> = {
     // `<script>` element — exactly the regression Step 7 breaks on purpose.
     'nasty-description': {
       detail: detail({ id: 2, description: '&lt;script&gt;alert(1)&lt;/script&gt;' }),
-      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, occurrenceEndMs: MON + 9 * H + 30 * 60_000,
+      onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
     },
     recurring: {
       detail: detail({
@@ -1237,7 +1239,8 @@ export const FIXTURES: Record<string, Record<string, any>> = {
         is_recurring: true,
         attendees: [attendee({ email: 'me@x.com', is_self: true })],
       }),
-      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, occurrenceEndMs: MON + 9 * H + 30 * 60_000,
+      onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
     },
     readonly: {
       detail: detail({
@@ -1249,13 +1252,15 @@ export const FIXTURES: Record<string, Record<string, any>> = {
           attendee({ email: 'petya@x.com', response_status: 'declined' }),
         ],
       }),
-      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, occurrenceEndMs: MON + 9 * H + 30 * 60_000,
+      onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
     },
     // The harness's `respond_to_event` stub rejects for this scenario name —
     // see tests/harness/tauri.ts.
     'respond-fails': {
       detail: detail({ id: 5, attendees: [attendee({ email: 'me@x.com', is_self: true })] }),
-      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, occurrenceEndMs: MON + 9 * H + 30 * 60_000,
+      onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
     },
     // `detail.start_ms` is the series DTSTART (Monday); the block actually
     // clicked is the fourth occurrence (Thursday) — the trap named in the
@@ -1269,7 +1274,8 @@ export const FIXTURES: Record<string, Record<string, any>> = {
         start_ms: SERIES_DTSTART,
         attendees: [attendee({ email: 'me@x.com', is_self: true })],
       }),
-      anchor: ANCHOR, occurrenceStartMs: FOURTH_OCCURRENCE, onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
+      anchor: ANCHOR, occurrenceStartMs: FOURTH_OCCURRENCE, occurrenceEndMs: FOURTH_OCCURRENCE + 30 * 60_000,
+      onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
     },
     // Non-recurring, so the backend really does write back (unlike the
     // bare-master "this one" case above) — the harness's `respond_to_event`
@@ -1281,7 +1287,8 @@ export const FIXTURES: Record<string, Record<string, any>> = {
         id: 7,
         attendees: [attendee({ email: 'me@x.com', is_self: true, response_status: 'needsAction' })],
       }),
-      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, occurrenceEndMs: MON + 9 * H + 30 * 60_000,
+      onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
     },
     // `can_edit: true` *explicitly*: `detail()`'s own default is `false`, and
     // it is false so that a spec asserting the controls are shown fails until
@@ -1290,7 +1297,59 @@ export const FIXTURES: Record<string, Record<string, any>> = {
     // between them the two discriminate in both directions.
     editable: {
       detail: detail({ id: 8, title: 'Board prep', can_edit: true }),
-      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, occurrenceEndMs: MON + 9 * H + 30 * 60_000,
+      onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
+    },
+    // --- Task 6's sweep: the `when` line, which read the master's instants --
+    //
+    // Both of these separate `detail.start_ms` from the clicked block's own,
+    // which is the only way `.when` can be caught reading the wrong one — every
+    // fixture above has them equal, and the line was unpinned for five plans.
+    //
+    // A **timed series across a fall-back**. Sofia's clocks go back at 04:00 on
+    // 25 Oct 2026, so 09:00 there is UTC+3 before that Sunday and UTC+2 after.
+    // The occurrence therefore sits **169 hours** past the master, not 168, and
+    // a UTC browser reads the two as 06:00 and 07:00 — the master's clock is an
+    // hour off the block the grid drew from `UiEvent.start_ms`. The offsets are
+    // written into the literals rather than looked up from the zone: an instant
+    // computed *from* `Europe/Sofia` would be 09:00 there by construction and
+    // could never disagree with the fixture's own claim.
+    'recurring-across-a-fall-back': {
+      detail: detail({
+        id: 9, title: 'Standup', is_recurring: true, can_edit: true,
+        start_ms: Date.parse('2026-10-19T09:00:00+03:00'),
+        end_ms: Date.parse('2026-10-19T09:30:00+03:00'),
+      }),
+      anchor: ANCHOR,
+      occurrenceStartMs: Date.parse('2026-10-26T09:00:00+02:00'),
+      occurrenceEndMs: Date.parse('2026-10-26T09:30:00+02:00'),
+      onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
+    },
+    // An **all-day series on a calendar east of the browser**, which is both
+    // residuals of that line in one fixture. `start_ms` is midnight in
+    // `Pacific/Auckland` (UTC+12), so it falls on the *previous* UTC date —
+    // the "absolute derivation" condition this branch's ledger states — and
+    // the clicked chip is the **fourth** day of the series, three whole days
+    // past the master's own. Read the instant in any zone and the answer is
+    // wrong; take the detail's date verbatim and the answer is the master's.
+    //
+    // Its spec runs in an `America/New_York` browser, which is what makes the
+    // third mutation on that line visible too: a `yyyy-mm-dd` rebuilt through
+    // `Date.UTC` and then formatted *without* `timeZone: 'UTC'` lands a day
+    // early for every reader west of UTC, and cannot be seen from a UTC one.
+    'all-day-series-east-of-the-browser': {
+      detail: detail({
+        id: 10, title: 'Berlin trip', is_all_day: true, is_recurring: true,
+        start_ms: Date.parse('2026-08-10T00:00:00+12:00'),
+        end_ms: Date.parse('2026-08-11T00:00:00+12:00'),
+        // The **master's** dates, `end_date` inclusive — so a one-day
+        // occurrence names the same day twice.
+        start_date: '2026-08-10', end_date: '2026-08-10',
+      }),
+      anchor: ANCHOR,
+      occurrenceStartMs: Date.parse('2026-08-13T00:00:00+12:00'),
+      occurrenceEndMs: Date.parse('2026-08-14T00:00:00+12:00'),
+      onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
     },
   },
   DeleteConfirm: {

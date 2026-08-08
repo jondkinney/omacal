@@ -715,6 +715,7 @@
     detail={gridDetail}
     anchor={gridAnchor}
     occurrenceStartMs={startMs}
+    occurrenceEndMs={occurrence.endMs}
     onclose={closeGridEvent}
     onresponded={() => {}}
     onedit={() => openEdit(occurrence, rect)}

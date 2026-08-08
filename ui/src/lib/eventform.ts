@@ -277,22 +277,41 @@ export function blankValueAt(startMs: number, calendarId: number | null): EventF
  * and moves it to that day, which is what pressing `n` on next Tuesday and
  * getting "next Tuesday at the next half hour" means.
  *
- * The move goes through `shiftedEndDate` rather than assigning both dates the
- * same value, so the day the end lands on is preserved along with the time. The
- * version that wrote `endDate: date` was wrong for half an hour every evening:
- * asked for a new event between 23:00 and 23:30 it offered 23:30–00:00 with
- * both dates on today, which `endAfterStart` reads as an end twenty-three and a
- * half hours *before* the start — a form that opens already refusing to save,
- * and no field on it visibly wrong.
+ * **The move re-anchors: it asks what the moved pair names, and rebuilds the
+ * whole value from that instant.** Not `{ ...at, date }` with the end date
+ * shifted alongside, which is what this used to do and which built a value from
+ * two sources — a day from one place, a clock from another, and a pair that was
+ * therefore read off no instant at all. Two things went wrong with that, one of
+ * them shipped for eight tasks:
  *
- * The instants `blankValueAt` kept are deliberately **not** moved with the
- * dates, and nothing here has to clear them either, because `instantOf` asks
- * whether an instant still reads as the fields beside it rather than taking
- * anybody's word for it. Move the dates onto another day and they stop reading
- * as it, so the answer is re-derived — which is right, since a value assembled
- * from a clock and a *different* day was read off no single instant. Pass
- * today's own day and nothing moved, so they still read as it and the clock's
- * instant travels unchanged. Neither case needs stating twice.
+ *   - a pair naming **no instant** on the chosen day. Where a zone's midnight is
+ *     skipped — America/Santiago 6 Sep 2026, Africa/Cairo 24 Apr 2026 — asking
+ *     for a new event just after midnight offered 00:30–01:00, and 00:30 does
+ *     not exist that day. Re-parsing normalised the *start* forward to 01:30
+ *     while the end stayed at 01:00: a form that opened already refusing to
+ *     save, half an hour backwards, and no field on it visibly wrong. Rebuilding
+ *     from `toMs(date, start)` gives 01:30–02:00 instead — half an hour, forward,
+ *     saveable — because the end is derived from the start's own instant rather
+ *     than left where a separate string put it.
+ *   - the two source instants going stale. Nothing had to *clear* them, because
+ *     `instantOf` asks whether an instant still reads as the fields beside it,
+ *     and a moved date stops reading as one — so they were silently ignored
+ *     rather than used, and every time on this path was re-derived. Re-anchoring
+ *     makes them true again instead: both come off the very instant the moved
+ *     pair names.
+ *
+ * The day the end lands on is preserved by construction, which is what the
+ * `shiftedEndDate` call here used to be for. The version before that wrote
+ * `endDate: date` and was wrong for half an hour every evening: asked for a new
+ * event between 23:00 and 23:30 it offered 23:30–00:00 with both dates on today,
+ * which `endAfterStart` reads as an end twenty-three and a half hours *before*
+ * the start. `blankValueAt` reads the end date off the end instant, so that
+ * case — and the fall-back case where the half hour after 23:30 is a *different*
+ * civil hour — come out right without a second rule.
+ *
+ * Passing today's own day moves nothing, and re-anchoring then returns exactly
+ * what `blankValueAt` already built. That is not a case to special-case; it is
+ * the same arithmetic with a zero in it.
  */
 export function blankValue(
   nowMs: number,
@@ -301,8 +320,7 @@ export function blankValue(
 ): EventFormValue {
   const at = blankValueAt(nextHalfHour(nowMs), calendarId);
   if (dayStartMs === undefined) return at;
-  const date = dateOf(dayStartMs);
-  return { ...at, date, endDate: shiftedEndDate(at.date, date, at.endDate) };
+  return blankValueAt(toMs(dateOf(dayStartMs), at.start), calendarId);
 }
 
 /**
@@ -352,6 +370,16 @@ export function blankValue(
  * clicked block's `endMs` is carried for exactly that reason — see
  * `Occurrence`'s doc comment in `eventdetail.ts`.
  *
+ * Exported, and used outside this module by exactly one other caller:
+ * `EventPopover` asks the same question the form does — *which day is the block
+ * I clicked on* — and answered it its own way until Task 6, with
+ * `toLocaleDateString(detail.start_ms)`. That is both halves of this function's
+ * reason for existing gone at once: a browser-zone reading of a date that has
+ * no instant, taken off the **master's** row. The popover and the form then
+ * disagreed on screen. One authority for the question, not two, is why this is
+ * exported rather than copied — and living here rather than in `eventdetail.ts`
+ * keeps `addDays` and the date-arithmetic block above it together.
+ *
  * A `null` date on an all-day event is **not a case to handle**.
  * `event_detail_impl` fills both for every `is_all_day` row and neither for any
  * other, and the only substitute available here is a date derived from an
@@ -360,7 +388,7 @@ export function blankValue(
  * every test green, so a detail that cannot be true throws instead of being
  * quietly accommodated.
  */
-function occurrenceDate(date: string | null, rowMs: number, occurrenceMs: number): string {
+export function occurrenceDate(date: string | null, rowMs: number, occurrenceMs: number): string {
   // `!date`, not `=== null`. The type says `string | null`, but the type is a
   // claim about the wire, and the failure this guard exists to report is
   // exactly the one that falsifies it: a field that stops arriving under this
