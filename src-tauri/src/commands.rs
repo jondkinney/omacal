@@ -1008,7 +1008,48 @@ mod tests {
         // This is the guard that Day is genuinely the week engine at n=1 rather
         // than a parallel implementation that will drift. If someone later
         // "optimises" assemble_days for the n=1 case, this fails.
-        let evs = vec![ev("standup", MON + 9 * 3_600_000, MON + 9 * 3_600_000 + 30 * 60_000, false)];
+        //
+        // It carries all-day events as well as the timed one because
+        // `assemble_days` runs **two** placement rules, not one: a timed event
+        // is an instant and goes through `timed_column`, an all-day event is a
+        // date and goes through `all_day_columns`. A timed-only fixture covered
+        // both while they were the same rule; it leaves the second unguarded
+        // now that they are not, and an `n == 1` special case putting every
+        // all-day chip in column 0 passed the whole committed suite.
+        //
+        // **The pair is what makes it bite, not the all-day event on its own.**
+        // One Auckland event really is on the shared day, so a rule that always
+        // answers column 0 gets it right by accident. The other is on the
+        // *next* day, yet its stored instant still falls inside the one-day
+        // window — so it reaches placement and has to be rejected *there*, on
+        // its date. Drop it and the mutation survives.
+        let standup = ev("standup", MON + 9 * 3_600_000, MON + 9 * 3_600_000 + 30 * 60_000, false);
+        let on_the_shared_day = all_day_event(
+            AUCKLAND,
+            midnight_ms(AUCKLAND, 2026, 8, 3),
+            midnight_ms(AUCKLAND, 2026, 8, 4),
+        );
+        let on_the_next_day = all_day_event(
+            AUCKLAND,
+            midnight_ms(AUCKLAND, 2026, 8, 4),
+            midnight_ms(AUCKLAND, 2026, 8, 5),
+        );
+
+        // The premise, without which the two rules cannot be told apart: the
+        // second event's stored instant lands on the *shared* day in the
+        // display zone, while its own calendar calls it the day after.
+        assert_eq!(
+            crate::write::date_in_zone(on_the_next_day.start_utc, "Europe/Sofia"),
+            "2026-08-03",
+            "the display zone reads it as the shared day"
+        );
+        assert_eq!(
+            crate::write::date_in_zone(on_the_next_day.start_utc, AUCKLAND),
+            "2026-08-04",
+            "while its own calendar calls it the next one"
+        );
+
+        let evs = vec![standup, on_the_shared_day, on_the_next_day];
 
         let week = assemble_days(&evs, MON, 7, "Europe/Sofia");
         let day = assemble_days(&evs, week.days[0].start_ms, 1, "Europe/Sofia");
@@ -1020,6 +1061,25 @@ mod tests {
             day.days[0].events.len(),
             week.days[0].events.len(),
             "the same day assembled alone and as part of a week disagreed"
+        );
+
+        // The all-day band — the half a timed fixture cannot see. A lane that
+        // covers column 0 is clipped to start there, so `start_col == 0` is
+        // exactly "covers the shared day".
+        //
+        // Counted from `all_day` and never from `all_day_events`: the latter
+        // collects every occurrence that reached placement, *including* those
+        // placed outside the window, so it is 2 either way and would assert
+        // nothing at all.
+        let week_chips_on_the_shared_day = week.all_day.iter().filter(|l| l.start_col == 0).count();
+        assert_eq!(
+            week_chips_on_the_shared_day, 1,
+            "exactly one of the two Auckland events belongs to the shared day"
+        );
+        assert_eq!(
+            day.all_day.len(),
+            week_chips_on_the_shared_day,
+            "the all-day band disagreed about the day they share"
         );
     }
 
