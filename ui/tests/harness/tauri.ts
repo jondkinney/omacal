@@ -339,7 +339,7 @@ function getDay(dayStartMs: number): WeekPayload {
 /** Month view's own `get_month` stub. Unlike `getWeek`/`getDay`, this
  *  deliberately ignores `year`/`month` and always returns the same fixed
  *  grid (`MonthGrid`'s own `busy-day` fixture) — the anchor-survival spec
- *  pins a literal cell (`1_786_341_600_000`, Mon 10 Aug) as the value a
+ *  pins a literal cell (`1_786_320_000_000`, Mon 10 Aug) as the value a
  *  click has to carry through to Day view, and no App spec needs the grid to
  *  actually match the requested month (that's `assemble_month`'s own
  *  Rust-side coverage, and `MonthGrid`'s). */

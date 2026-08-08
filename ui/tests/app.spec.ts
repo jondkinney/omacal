@@ -283,7 +283,9 @@ test.describe('App', () => {
     await page.locator('.mcell .num').nth(14).click();
     await expect(page.locator('.col')).toHaveCount(1);
     const shown = await page.locator('.col').getAttribute('data-start-ms');
-    expect(Number(shown)).toBe(1786341600000); // the day that was clicked
+    // The day that was clicked: cell 14 of `busyDayMonth`, which is row 2
+    // column 0 — Mon 10 Aug 2026 00:00 UTC, the grid's own midnight for it.
+    expect(Number(shown)).toBe(1786320000000);
   });
 
   test('the anchor date reaches Year view too, but never Big Year', async ({ page }) => {
@@ -813,18 +815,17 @@ test.describe('App', () => {
     await expect(page.getByRole('dialog', { name: 'Standup' })).toHaveCount(0);
     // The clicked block's own instant, carried through `App`'s own
     // `gridSelStart`/`gridSelEnd`. `busyDayMonth` builds its Standup at
-    // `BUSY_DAY_START_MS + 9h`, and that constant is carried over verbatim
-    // from the Rust suite rather than being this file's own UTC midnight for
-    // Mon 10 Aug (see its comment in fixtures.ts) — it is 06:00 UTC, so under
-    // the project's `timezoneId: 'UTC'` the form reads 15:00.
+    // `BUSY_DAY_START_MS + 9h`, and that constant is now the busy cell's own
+    // midnight (see its comment in fixtures.ts), so under the project's
+    // `timezoneId: 'UTC'` the form reads 09:00.
     //
     // The *date* is what makes this discriminating: this event's detail is a
     // weekly master whose DTSTART is Mon **3** Aug, so `App` handing the form
     // `gridDetail.start_ms` — the Plan 2 defect, in its second instance —
     // shows 2026-08-03 here. The End field binds `gridSelEnd` the same way.
     await expect(editForm(page).getByLabel('Date', { exact: true })).toHaveValue('2026-08-10');
-    await expect(editForm(page).getByLabel('Start', { exact: true })).toHaveValue('15:00');
-    await expect(editForm(page).getByLabel('End', { exact: true })).toHaveValue('15:30');
+    await expect(editForm(page).getByLabel('Start', { exact: true })).toHaveValue('09:00');
+    await expect(editForm(page).getByLabel('End', { exact: true })).toHaveValue('09:30');
   });
 
   test('the views do not move under an open form', async ({ page }) => {
