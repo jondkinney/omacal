@@ -67,7 +67,44 @@ export default defineConfig({
   workers: process.env.PWDEBUG ? 1 : 6,
   // Snapshots are the point of this suite; a stale one must fail, not silently update.
   updateSnapshots: 'missing',
-  expect: { toHaveScreenshot: { maxDiffPixelRatio: 0.01 } },
+  // Zero counted pixels, and a per-pixel threshold well below the default.
+  //
+  // Both halves, because they fail apart, and the half that looks like the
+  // problem is not the one doing the work.
+  //
+  // `threshold` is pixelmatch's *per-pixel* gate: a pixel is not even a
+  // candidate unless its squared-YIQ distance exceeds `35215 * threshold²`.
+  // Unset, that default is 0.2 — a gate of **1408.6**, which is roughly a
+  // 40-level step in every channel. Everything gentler was invisible at any
+  // ratio whatsoever. That is how three header goldens spent two days showing
+  // Year and Big Year as *disabled* after `188e3f8` made them live: measured
+  // against the stale baselines, 7.02% of the frame differed and the gate
+  // reduced it to 32 counted pixels (webkit) / 43 (chromium).
+  //
+  // But lowering the threshold alone would not have caught that either — at
+  // 0.05 the count rises to 139/133, against the 294 that `maxDiffPixelRatio:
+  // 0.01` allowed a 1280x23 frame. **The count limit is the load-bearing
+  // half.** A ratio is a fraction of the *frame*, and a golden should not earn
+  // a bigger budget for being mostly empty: at 0.01 the `weekgrid-*` pair
+  // could move 9,216 pixels, and `rsvp-*` — before its frame was narrowed to
+  // the block in the commit before this one — could have its entire subject
+  // erased and come within 14 pixels of passing.
+  //
+  // 0.05 rather than 0 is measured, not cautious. Every change this repo has
+  // actually produced, scored as squared-YIQ delta against the gates:
+  //
+  //     header drift (real)                 up to 1707   gate@0.05 =  88 -> caught
+  //     AllDayBand squared corner (real)           309                  -> caught
+  //     Chromium border-radius AA (legitimate)     ~2                   -> ignored
+  //     a 1-level grey step (legitimate)           0.51                 -> ignored
+  //
+  // So 0.05 sits ~44x above every legitimate class measured and ~3.5x below
+  // every real one. `threshold: 0` would have failed a layout-neutral commit
+  // on two Chromium antialiasing pixels; 0.2 is blind to a squared chip corner.
+  //
+  // Playwright's own default is `maxDiffPixels: 0` when neither option is
+  // given; this line is closer to that default than what it replaced.
+  expect: { toHaveScreenshot: { maxDiffPixels: 0, threshold: 0.05 } },
   // Fixtures place events by a literal top-fraction of the day (mins / 1440),
   // while WeekGrid's hour gridlines derive from the *local* wall-clock hour
   // of day.start_ms (see WeekGrid's hourFrac). Fixture timestamps are UTC

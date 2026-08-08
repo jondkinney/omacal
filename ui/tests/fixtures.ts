@@ -33,6 +33,30 @@ const H = 3_600_000;
 /** Monday 2024-01-01 00:00:00 UTC. */
 export const MON = 1_704_067_200_000;
 
+// …and the clock the WeekGrid specs freeze to, which is what turns the
+// paragraph above from a hope into a fact.
+//
+// "A Monday that will never again be today" is true, but nothing was asserting
+// it: `weekgrid-empty.png` and `weekgrid-populated.png` were stable because the
+// *run date* happened to fall outside the fixture week, not because anything
+// made it so. Change `MON` to a current week — or run the suite in a year that
+// somehow lands on it — and both baselines gain an accent day-number pill, a
+// tinted column and a red current-time line, none of which any spec asks for.
+//
+// Deliberately outside `MON`'s week, so the committed baselines are exactly the
+// ones this replaced; `the today-highlight and the current-time line appear
+// when today is on screen` is the spec that stops that being vacuous, by moving
+// the clock *into* the week and asserting both marks arrive. Noon rather than
+// midnight, for the reason `MONTH_2026_NOW` is not midnight: a boundary instant
+// is the one value a fencepost error agrees with.
+/** Thursday 2026-06-11 12:00 UTC — a fixed instant far outside `MON`'s week. */
+export const WEEK_NOW = Date.UTC(2026, 5, 11, 12);
+
+/** Wednesday of `MON`'s week at 10:30 UTC — the clock the today-highlight spec
+ *  uses, so "today" really is the third column and the current-time line has a
+ *  non-degenerate position to take (43.75% down the day, not 0% or 100%). */
+export const WEEK_NOW_INSIDE = MON + 2 * 24 * H + 10 * H + 30 * 60_000;
+
 // `Header`'s "Synced …" text calls `relativeTime` with the real wall clock, so
 // a fixture timestamp alone is not enough to keep it inert — the spec must
 // also freeze the page clock (via `page.clock.setFixedTime`) to this instant
