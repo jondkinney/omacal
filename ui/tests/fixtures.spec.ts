@@ -357,7 +357,7 @@ test.describe('the hand-written week fixtures describe payloads assemble_days co
   // a moved export would leave `weeks` short or empty, and every loop below
   // would pass by iterating nothing.
   test('the sweep finds the week fixtures at all', () => {
-    expect(weeks.length).toBeGreaterThanOrEqual(11);
+    expect(weeks.length).toBeGreaterThanOrEqual(14);
     expect(weeks.map(([name]) => name)).toEqual(
       expect.arrayContaining([
         'empty', 'populated', 'popover', 'popover-two-occurrences', 'popover-all-day',
@@ -371,7 +371,7 @@ test.describe('the hand-written week fixtures describe payloads assemble_days co
     // Carried per test rather than left to the one above, for both holes the
     // month sweep names: an *empty* `weeks` satisfies the count at the bottom
     // (`0 === 0`), and a *partial* one satisfies it too.
-    expect(weeks.length).toBeGreaterThanOrEqual(11);
+    expect(weeks.length).toBeGreaterThanOrEqual(14);
     let checked = 0;
     for (const [name, w] of weeks) {
       // `assemble_days(events, start_ms, n, tz)` has exactly two callers in the
@@ -407,7 +407,7 @@ test.describe('the hand-written week fixtures describe payloads assemble_days co
   });
 
   test('every day column carries timed events only, and the band all-day ones only', () => {
-    expect(weeks.length).toBeGreaterThanOrEqual(11); // see above
+    expect(weeks.length).toBeGreaterThanOrEqual(14); // see above
     let checked = 0;
     for (const [name, w] of weeks) {
       // `if src.is_all_day { .. all_day_events.push(..) } else if let Some(col)
@@ -431,12 +431,12 @@ test.describe('the hand-written week fixtures describe payloads assemble_days co
       }
     }
     // Otherwise a fixture set with no events at all passes by iterating
-    // nothing. Twenty-one today: fifteen in day columns, six in the bands.
+    // nothing. Twenty-seven today: fifteen in day columns, twelve in the bands.
     expect(checked).toBeGreaterThan(0);
   });
 
   test('every timed event sits in the column carrying it, except where a fixture says otherwise', () => {
-    expect(weeks.length).toBeGreaterThanOrEqual(11); // see above
+    expect(weeks.length).toBeGreaterThanOrEqual(14); // see above
     let checked = 0;
     let asserted = 0;
     const offenders = new Set<string>();
@@ -496,7 +496,7 @@ test.describe('the hand-written week fixtures describe payloads assemble_days co
   });
 
   test('every placed box is geometry lay_out_day could have produced', () => {
-    expect(weeks.length).toBeGreaterThanOrEqual(11); // see above
+    expect(weeks.length).toBeGreaterThanOrEqual(14); // see above
     let checked = 0;
     for (const [name, w] of weeks) {
       for (const [d, col] of w.days.entries()) {
@@ -574,7 +574,7 @@ test.describe('the hand-written week fixtures describe payloads assemble_days co
   });
 
   test('every placed box says the same thing as the event it belongs to', () => {
-    expect(weeks.length).toBeGreaterThanOrEqual(11); // see above
+    expect(weeks.length).toBeGreaterThanOrEqual(14); // see above
     let checked = 0;
     let asserted = 0;
     const offenders = new Set<string>();
@@ -626,7 +626,7 @@ test.describe('the hand-written week fixtures describe payloads assemble_days co
   });
 
   test('every all-day chip is a lane pack_lanes could have packed', () => {
-    expect(weeks.length).toBeGreaterThanOrEqual(11); // see above
+    expect(weeks.length).toBeGreaterThanOrEqual(14); // see above
     let checked = 0;
     for (const [name, w] of weeks) {
       const n = w.days.length;
@@ -702,8 +702,9 @@ test.describe('the hand-written week fixtures describe payloads assemble_days co
         expect(seen.has(i), `${name} overflow ${i} is also packed`).toBe(false);
       }
     }
-    // Six today: two in `populated`, two in `popover-all-day`, one in
-    // `app:writable`, one in `app:cross-zone`.
+    // Ten today: two in `populated`, two in `popover-all-day`, one in
+    // `app:writable`, one in `app:cross-zone`, and two each in `band:populated`
+    // and `band:overflow`.
     expect(checked).toBeGreaterThan(0);
   });
 });
