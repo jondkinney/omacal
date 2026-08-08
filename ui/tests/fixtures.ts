@@ -561,6 +561,25 @@ const augustMonth = (): MonthPayload => {
  *  rather than by a test. */
 const BUSY_DAY_START_MS = AUG_GRID_START + 14 * 24 * H;
 
+/** Monday 10 Aug 2026 **14:00** UTC — the instant every `MonthGrid` spec
+ *  freezes the page clock to.
+ *
+ *  `MonthGrid` computes its `todayStart` from `new Date()`, while all three of
+ *  its fixtures are the same fixed August 2026 grid, so without a frozen clock
+ *  the today-highlight is untestable *and* the whole spec block depends on the
+ *  run date. Same reasoning and same mechanism as `YEAR_2026_NOW` for
+ *  `YearGrid`.
+ *
+ *  Derived from `BUSY_DAY_START_MS`, so it names the grid's own cell — row 2,
+ *  column 0 — rather than carrying a second copy of that date that could drift
+ *  from it.
+ *
+ *  Deliberately *not* midnight. `MonthGrid` truncates the instant to its day
+ *  with `setHours(0, 0, 0, 0)` before comparing it to a cell boundary; frozen
+ *  on a day boundary, that truncation could be deleted outright with every
+ *  spec still green. */
+export const MONTH_2026_NOW = BUSY_DAY_START_MS + 14 * H;
+
 /** Two co-existing bars in the same row, deliberately with `idx` and `lane`
  *  diverging for both entries. `pack_lanes` sorts bars longest-first: Berlin
  *  trip (added second, `idx: 1`) is the longer, overlapping span, so it
@@ -686,7 +705,16 @@ const y2026 = (): YearPayload => {
  *  is a permanent failure waiting for 2027-01-01, for reasons unconnected to
  *  any code change. Clear of both January (all marked `unsynced`) and 15
  *  March (the dotted day), so the three specs stay independent. */
-export const YEAR_2026_NOW = Date.UTC(2026, 5, 10); // Wed 10 Jun 2026
+/** Wed 10 Jun 2026 **14:00** UTC — what every `YearGrid` spec freezes to.
+ *
+ *  Not midnight, for the reason `MONTH_2026_NOW` is not: `YearGrid` truncates
+ *  the instant to its day with `setHours(0, 0, 0, 0)` before comparing it to a
+ *  day's `start_ms`, and while this constant *was* midnight that truncation
+ *  could be deleted outright with the whole suite still green — the frozen
+ *  instant already was the day boundary, so the comparison matched either way.
+ *  Verified: with the old value, removing `setHours` from `YearGrid.svelte`
+ *  left all ten specs in the block passing. */
+export const YEAR_2026_NOW = Date.UTC(2026, 5, 10, 14);
 
 // Big Year ribbon. 1 Jan 2026 is a Thursday in UTC (same as the Rust suite's
 // own Europe/Sofia computation for the same year), so the Monday on or

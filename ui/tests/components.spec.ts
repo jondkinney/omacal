@@ -1,7 +1,7 @@
 import { test, expect } from '@playwright/test';
 import {
   FIXED_NOW, FORM_FALLBACK_ID, FORM_NOW, FORM_UNWRITABLE_ID, FORM_UNWRITABLE_NAMES,
-  MON, POPOVER_DETAILS, POPOVER_REFRESHED_DETAIL,
+  MON, MONTH_2026_NOW, POPOVER_DETAILS, POPOVER_REFRESHED_DETAIL,
   TRIP_END_DATE, TRIP_FIRST_DAY, TRIP_LAST_DAY, popoverWeekWithResponse, YEAR_2026_NOW,
 } from './fixtures';
 import { CALENDAR_SYNC_REMOVED } from './harness/tauri';
@@ -984,11 +984,53 @@ test.describe('EventPopover on an all-day series east of the browser', () => {
 test.describe('MonthGrid', () => {
   const show = (f: string) => `/tests/harness/index.html?c=MonthGrid&f=${f}`;
 
+  // `MonthGrid` computes `todayStart` from `new Date()` while every fixture
+  // here is a fixed August 2026, so the clock is frozen ahead of *every*
+  // navigation in this block, not only the today-highlight spec below. Two
+  // separate reasons, and only the first is about the new spec: an unfrozen
+  // clock leaves the highlight untestable, and it also leaves the rest of the
+  // block quietly reading wall-clock time in a suite that otherwise controls
+  // it. Same mechanism as `App`'s own `beforeEach` and `YearGrid`'s
+  // `YEAR_2026_NOW`; it has to run before `page.goto`, since the component
+  // reads the clock once, at mount.
+  test.beforeEach(async ({ page }) => {
+    await page.clock.setFixedTime(MONTH_2026_NOW);
+  });
+
   test('renders six rows of seven, with out-of-month days dimmed', async ({ page }) => {
     await page.goto(show('august'));
     await expect(page.locator('.mrow')).toHaveCount(6);
     await expect(page.locator('.mcell')).toHaveCount(42);
     await expect(page.locator('.mcell.out')).toHaveCount(11); // 5 leading + 6 trailing
+  });
+
+  test('exactly one cell is today, and it is the day the clock is on', async ({ page }) => {
+    // Both halves of the claim, because either alone is satisfied by a real
+    // defect. `toHaveCount(1)` on `.mcell.today` says nothing about *which*
+    // cell; asserting the 10th carries the class passes just as happily while
+    // the 9th carries it too — turning the `===` into a `<=` highlights every
+    // day up to today and would still find the 10th among them. So the whole
+    // 42-cell vector is compared at once, the way the ribbon's weekend-stripe
+    // spec compares all 28 of its columns rather than sampling one.
+    await page.goto(show('august'));
+    const cells = page.locator('.mcell');
+    // Retried, so it also establishes that the component actually mounted —
+    // and it is what makes the fixed loop bound below cover every cell there
+    // is, rather than the first 42 of however many exist.
+    await expect(cells).toHaveCount(42);
+
+    const flagged: number[] = [];
+    for (let i = 0; i < 42; i++) {
+      if ((await cells.nth(i).getAttribute('class'))?.includes('today')) flagged.push(i);
+    }
+    // Row 2, column 0 — Mon 10 Aug 2026, the day `MONTH_2026_NOW` is 14:00 on.
+    expect(flagged).toEqual([14]);
+    // Not implied by the vector above, and not a restatement of it: that one
+    // says which *cell* carries the class, this one says that cell is the one
+    // showing the 10th. They read different things — a class attribute and a
+    // rendered date — so a day number computed one day out leaves the vector
+    // untouched and fails here alone.
+    await expect(cells.nth(14).locator('.num')).toHaveText('10');
   });
 
   test('a multi-day event is one bar, not one chip per day', async ({ page }) => {
@@ -1074,6 +1116,17 @@ test.describe('MonthGrid', () => {
 test.describe('YearGrid', () => {
   const show = (f: string) => `/tests/harness/index.html?c=YearGrid&f=${f}`;
 
+  // Lifted out of the today-highlight spec below, which used to be the only
+  // one here that froze the clock — the other four still read the run date
+  // through `YearGrid`'s own `todayStart`. Nothing they assert can observe it
+  // today (the `today` class is independent of `dotted` and `unsynced`, and
+  // this block takes no screenshots), so this changes no result; it removes a
+  // wall-clock read from four more spec paths, which is the same thing being
+  // done for `MonthGrid` above.
+  test.beforeEach(async ({ page }) => {
+    await page.clock.setFixedTime(YEAR_2026_NOW);
+  });
+
   test('renders twelve months', async ({ page }) => {
     await page.goto(show('y2026'));
     await expect(page.locator('.ymonth')).toHaveCount(12);
@@ -1084,14 +1137,37 @@ test.describe('YearGrid', () => {
     await expect(page.locator('.yday.dotted')).toHaveCount(1);
   });
 
-  test('today is a filled disc', async ({ page }) => {
+  test('today is a filled disc, on the right day and no other', async ({ page }) => {
     // `YearGrid` reads the real wall clock; `y2026` is a fixed calendar year,
     // so the clock must be frozen to an instant inside it — same pattern as
-    // `FIXED_NOW` for the Header specs below — or this becomes a permanent
-    // failure the moment the real date rolls past 2026.
-    await page.clock.setFixedTime(YEAR_2026_NOW);
+    // `FIXED_NOW` for the Header specs above — or this becomes a permanent
+    // failure the moment the real date rolls past 2026. That freeze is the
+    // `beforeEach` at the top of this block.
+    //
+    // This was `expect('.yday.today').toHaveCount(1)`, which pinned *how many*
+    // discs and not *which day*: shift the highlight a day and the count is
+    // still exactly 1, so the spec passed while the grid marked the wrong
+    // date. The month-by-month vector below pins both at once — the same
+    // treatment `MonthGrid`'s today spec gets, in the shape this grid has.
+    //
+    // Read per month rather than as one flat 365-long list because that is the
+    // claim worth making: *no other month* has a disc, and June's is the 10th.
+    // A flat day-of-year index would say the same thing in a number nobody can
+    // check by eye.
     await page.goto(show('y2026'));
-    await expect(page.locator('.yday.today')).toHaveCount(1);
+    const months = page.locator('.ymonth');
+    // Retried, so it also establishes the component mounted — and it is what
+    // makes the fixed loop bound below cover every month there is. `YearGrid`
+    // takes its payload as a prop and renders in one pass, so once the twelve
+    // months are here, so is every `.yday` inside them.
+    await expect(months).toHaveCount(12);
+
+    const flagged: string[][] = [];
+    for (let i = 0; i < 12; i++) {
+      flagged.push(await months.nth(i).locator('.yday.today').allTextContents());
+    }
+    // `YEAR_2026_NOW` is Wed 10 Jun 2026, so June — index 5 — and nothing else.
+    expect(flagged).toEqual([[], [], [], [], [], ['10'], [], [], [], [], [], []]);
   });
 
   test('unsynced days are distinct from empty ones', async ({ page }) => {
