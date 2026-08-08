@@ -763,7 +763,23 @@
   :global(body) { background: var(--bg); color: var(--text); margin: 0;
                   font-family: -apple-system, 'SF Pro Text', Inter, system-ui, sans-serif; }
   /* `border-box` is load-bearing: without it the 28px of vertical padding
-     lands *outside* the 100%, and the window scrolls by exactly that much. */
-  main { padding: 14px 16px; box-sizing: border-box; height: 100%;
+     lands *outside* the 100%, and the window scrolls by exactly that much.
+     28px is still what this costs vertically — `Header` carries the top 14 as
+     its own `padding-top` rather than taking it from here.
+
+     That move is layout-neutral by construction and not cosmetic. With
+     `titleBarStyle: "Overlay"` the webview reaches the top edge of the window,
+     and a drag region only covers its own box: 14px of `main`'s padding above
+     the header left the strip a macOS user reaches for first doing nothing at
+     all. Inside `Header` the same 14px is part of an element that *is* a drag
+     region. Nothing moves — the header's content still starts at y=14, its
+     `margin-bottom` still puts a view at y=49, and `APP_CHROME_PX` is still
+     63 (0 + 37 + 12 + 14 rather than 14 + 23 + 12 + 14); `app.spec.ts`'s "a
+     standalone view gets the same box the app gives it" is what proves that
+     rather than this comment.
+
+     The horizontal 16 stays here, because it is the gutter every *view* is
+     drawn to and not just the header's. */
+  main { padding: 0 16px 14px; box-sizing: border-box; height: 100%;
          display: flex; flex-direction: column; }
 </style>

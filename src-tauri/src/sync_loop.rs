@@ -119,10 +119,7 @@ pub fn spawn(app: AppHandle) {
             };
 
             let now = crate::now_ms();
-            let last = crate::status::read_status(&pool, false)
-                .await
-                .ok()
-                .and_then(|s| s.last_sync_ms);
+            let last = crate::status::last_sync_ms(&pool).await.ok().flatten();
 
             if !should_sync(demo, last, now, interval_ms(&pool).await) {
                 continue;
@@ -149,10 +146,7 @@ pub fn request_now(app: &AppHandle) {
             return;
         }
 
-        let last = crate::status::read_status(&pool, false)
-            .await
-            .ok()
-            .and_then(|s| s.last_sync_ms);
+        let last = crate::status::last_sync_ms(&pool).await.ok().flatten();
         if !focus_should_sync(demo, last, crate::now_ms()) {
             return;
         }

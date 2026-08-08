@@ -68,9 +68,22 @@
   const synced = $derived(relativeTime(status?.last_sync_ms ?? null, now));
 </script>
 
-<header>
+<!-- `data-tauri-drag-region` here and on the title, not on a wrapper around
+     everything: with `titleBarStyle: "Overlay"` there is no title bar left to
+     drag the window by, and without a region named in the DOM the window
+     cannot be moved at all. Tauri's injected handler walks the composed path
+     from whatever was clicked and stops at the first interactive element, so
+     a bare attribute means "clicks that land on *this* element" — the
+     header's own free space and padding, and the title's own box. Every
+     button below stays a button.
+
+     Deliberately not `data-tauri-drag-region="deep"`, which would hand the
+     whole subtree over: `CalendarPopover`'s open panel is inside this header,
+     and its account labels, calendar names and hint text would then drag the
+     window instead of being read. -->
+<header class:overlay={status?.overlay_titlebar} data-tauri-drag-region>
   <div class="left">
-    <h1>{title}</h1>
+    <h1 data-tauri-drag-region>{title}</h1>
     <div class="nav">
       <button onclick={onPrev} aria-label="Previous {unit}">‹</button>
       <button onclick={onNext} aria-label="Next {unit}">›</button>
@@ -116,8 +129,32 @@
 {/if}
 
 <style>
+  /* `padding-top`, moved here out of `App`'s `main` — see the comment there
+     for why it is layout-neutral. A drag region covers its own box and
+     nothing above it, so this is what carries the top edge of the window into
+     something the user can grab; as `main` padding the same 14px was dead,
+     and it is the first strip anyone reaches for to move a window. Padding
+     rather than margin, deliberately: a margin is outside the element and
+     would be dead in exactly the same way. */
   header { display: flex; align-items: center; justify-content: space-between;
-           gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
+           gap: 12px; padding-top: 14px; margin-bottom: 12px; flex-wrap: wrap; }
+  /* Room for macOS's close/minimise/zoom buttons, which `titleBarStyle:
+     "Overlay"` draws *over* this webview rather than in a strip above it.
+     Without it the month title renders underneath them.
+
+     Measured, not guessed — the first guess at this was 78px. An NSWindow
+     built exactly as tao builds ours (`titlebarAppearsTransparent` +
+     `FullSizeContentView`; see tauri-runtime-wry's `title_bar_style`) puts the
+     three buttons at x 7..61 and y 6..22, in CSS pixels from the webview's own
+     top-left, on macOS 26.3.1. `App`'s `main` has already inset this header by
+     its 16px gutter, so 60px more starts the title at x=76 — 15px clear of the
+     zoom button, and about where a macOS toolbar's first item sits.
+
+     Only under `.overlay`, which is `status.overlay_titlebar` and is false on
+     Linux even though `tauri.conf.json` names `titleBarStyle` there too: the
+     key is macOS-only, Omarchy keeps its controls in their own strip, and this
+     padding would be a dead gap. */
+  header.overlay { padding-left: 60px; }
   .left, .right { display: flex; align-items: center; gap: 8px; }
   h1 { font-size: 19px; font-weight: 600; letter-spacing: -.025em; margin: 0; white-space: nowrap; }
   .nav { display: flex; gap: 1px; }

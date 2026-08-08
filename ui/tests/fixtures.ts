@@ -1346,15 +1346,22 @@ export const FIXTURES: Record<string, Record<string, any>> = {
     },
   },
   Header: {
-    disconnected: header({ accounts: [], last_sync_ms: null, demo: false }),
-    connected: header({ accounts: ['me@x.com'], last_sync_ms: FIVE_MIN_AGO, demo: false }),
-    demo: header({ accounts: [], last_sync_ms: null, demo: true }),
+    disconnected: header({ accounts: [], last_sync_ms: null, demo: false, overlay_titlebar: false }),
+    connected: header({ accounts: ['me@x.com'], last_sync_ms: FIVE_MIN_AGO, demo: false, overlay_titlebar: false }),
+    demo: header({ accounts: [], last_sync_ms: null, demo: true, overlay_titlebar: false }),
+    // Every fixture in this block is `overlay_titlebar: false` — Omarchy, and
+    // macOS before this window asked for `titleBarStyle: "Overlay"` — so the
+    // three screenshots below still frame exactly the header they always did.
+    // The macOS half is measured where the geometry exists to measure: a
+    // `Header` mounted on its own has no `main` around it, and what has to
+    // clear the traffic lights is the title's distance from the *window's*
+    // edge. See app.spec.ts, "App: one band, not two".
     // What demo mode actually looks like: `seed_demo` inserts a real accounts
     // row, so the header is in the *connected* branch, not the sign-in one —
     // and that branch must not offer a Sync now button that can only fail.
-    'connected-demo': header({ accounts: ['demo@omacal.local'], last_sync_ms: FIVE_MIN_AGO, demo: true }),
-    'busy-disconnected': header({ accounts: [], last_sync_ms: null, demo: false }, true),
-    'busy-connected': header({ accounts: ['me@x.com'], last_sync_ms: FIVE_MIN_AGO, demo: false }, true),
+    'connected-demo': header({ accounts: ['demo@omacal.local'], last_sync_ms: FIVE_MIN_AGO, demo: true, overlay_titlebar: false }),
+    'busy-disconnected': header({ accounts: [], last_sync_ms: null, demo: false, overlay_titlebar: false }, true),
+    'busy-connected': header({ accounts: ['me@x.com'], last_sync_ms: FIVE_MIN_AGO, demo: false, overlay_titlebar: false }, true),
   },
   CalendarPopover: {
     'two-accounts': {
