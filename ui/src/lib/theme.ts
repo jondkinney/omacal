@@ -39,6 +39,40 @@ export function setPalette(p: Palette): void {
   // use it: this file states colours, and hex literals are spent elsewhere.
   r.setProperty('--ink-on-light', 'rgba(0,0,0,.88)');
   r.setProperty('--ink-on-dark', 'rgba(255,255,255,.96)');
+
+  // Three variables, not one, and the reason is the whole point of publishing
+  // them at all.
+  //
+  // `--error` and `--now` are the same hex today, and they were the same hex
+  // literal in six places before this. That coincidence is exactly what made a
+  // single `--error` covering both the wrong answer: a theme that wanted a
+  // calmer "now" indicator would have silently restyled every error message in
+  // the app, and a redder error would have repainted the current-time line.
+  // They are different meanings that happen to have agreed on a value, and
+  // naming them apart keeps the option of breaking that agreement without
+  // anybody having to notice the coupling first.
+  //
+  // Each is stated once here rather than derived from another: `--now` is not
+  // `var(--error)`, because writing it that way would re-create the coupling
+  // in the one file that exists to prevent it.
+  //
+  // The values are byte-identical to the literals they replace. Whether any of
+  // the three *should* vary with `is_dark` — as `--hairline` and its two
+  // neighbours above do — is a live question and deliberately not answered
+  // here: this change is a refactor, and its witness is that every screenshot
+  // golden is unchanged.
+
+  /** Something failed and the user has to read about it: the error banner in
+   *  `Header`, the form's own `.err`, and the two popovers' `.note.err`. Each
+   *  tints its background from this with `color-mix(… 9%, transparent)`
+   *  rather than carrying a second variable for the wash. */
+  r.setProperty('--error', '#e2564a');
+  /** `WeekGrid`'s current-time line and its dot — "the loudest thing on
+   *  screen, deliberately", and nothing to do with anything being wrong. */
+  r.setProperty('--now', '#e2564a');
+  /** The DEMO DATA badge: a standing warning that the data is synthetic, which
+   *  is neither an error nor a clock. */
+  r.setProperty('--demo', '#e2a03f');
 }
 
 /** Fetches the resolved palette and applies it. Used once at startup. */

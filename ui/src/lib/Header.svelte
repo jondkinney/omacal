@@ -167,9 +167,9 @@
   .primary { background: var(--accent); color: var(--bg); font-weight: 600; }
   .synced, .demo { font-size: 10.5px; }
   .synced { color: var(--muted); }
-  .demo { color: #e2a03f; letter-spacing: .06em; font-weight: 600; }
-  .err { color: #e2564a; font-size: 11.5px; line-height: 1.45; margin: 0 0 12px;
+  .demo { color: var(--demo); letter-spacing: .06em; font-weight: 600; }
+  .err { color: var(--error); font-size: 11.5px; line-height: 1.45; margin: 0 0 12px;
          padding: 7px 10px; border-radius: 6px;
-         background: color-mix(in srgb, #e2564a 9%, transparent);
+         background: color-mix(in srgb, var(--error) 9%, transparent);
          overflow-wrap: anywhere; }
 </style>
