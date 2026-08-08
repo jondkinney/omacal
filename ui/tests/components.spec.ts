@@ -1,4 +1,4 @@
-import { test, expect } from '@playwright/test';
+import { test, expect, type Page } from '@playwright/test';
 import {
   FIXED_NOW, FORM_FALLBACK_ID, FORM_NOW, FORM_UNWRITABLE_ID, FORM_UNWRITABLE_NAMES,
   MON, MONTH_2026_NOW, POPOVER_DETAILS, POPOVER_REFRESHED_DETAIL,
@@ -1243,6 +1243,114 @@ test.describe('BigYearRibbon', () => {
     await page.goto(show('y2026'));
     await page.locator('.pill').first().click();
     expect(await page.evaluate(() => (window as any).__lastOpen)).toBeTruthy();
+  });
+
+  // ---- solid pills: choosing an ink against the fill, not against the theme --
+  //
+  // `foregroundFor` itself is tabled in `ink.spec.ts`, in Node and without a
+  // browser context. What is left here is the part that is genuinely about CSS:
+  // that the ink it picks reaches the pill, that the fill really is the
+  // calendar's colour at full strength, and that the two edge cases the solid
+  // fill created — an unparseable `--cal`, and a continuation marker that used
+  // to be drawn in the fill's own colour — still leave something readable.
+
+  /** Theme variables as the engine computes them.
+   *
+   *  `rgba(0,0,0,.88)` and `rgba(0, 0, 0, 0.88)` are one colour and two
+   *  strings, so a spec comparing a pill's computed `color` against
+   *  `theme.ts`'s literal would be failing on serialisation rather than on the
+   *  property. Putting both sides through the same probe normalises that.
+   *
+   *  Resolved rather than copied so these tests say "the ink the theme
+   *  publishes for a light fill" and not "rgba(0, 0, 0, 0.88)". A copy of those
+   *  literals here would be a second place that knows them, which is the thing
+   *  `theme.ts` exists to prevent. */
+  const resolveInks = (page: Page, vars: string[]) => page.evaluate((vs: string[]) => {
+    const probe = document.createElement('span');
+    document.body.appendChild(probe);
+    const out = vs.map((v) => {
+      probe.style.color = v;
+      return getComputedStyle(probe).color;
+    });
+    probe.remove();
+    return out;
+  }, vars);
+
+  test('a pale fill and a dark one on the same row take different inks', async ({ page }) => {
+    // The rendered half of `ink.spec.ts`: that the decision reaches the pill at
+    // all. Both pills are in one row, which is the arrangement that makes a
+    // fixed `color:` impossible — omacal shows Google's pale yellow beside its
+    // dark blue, and a single foreground fails one of them.
+    await page.goto(show('pill-inks'));
+    const pills = page.locator('.pill');
+    await expect(pills).toHaveCount(3);
+
+    const [light, dark] = await resolveInks(page, ['var(--ink-on-light)', 'var(--ink-on-dark)']);
+    // Without this the two assertions below could both hold with one ink.
+    expect(light).not.toBe(dark);
+
+    const ink = (n: number) => pills.nth(n).evaluate((el) => getComputedStyle(el).color);
+    expect(await ink(0)).toBe(light); // #f6bf26, pale
+    expect(await ink(1)).toBe(dark);  // #3f51b5, dark
+
+    // …and that the fill really is the calendar's colour at full strength,
+    // which is what makes the ink question exist at all. Under the old 16%
+    // wash both pills' backgrounds were within a few percent of the theme's
+    // own and this would read `rgba(…, 0.16)`.
+    const fill = await pills.nth(0).evaluate((el) => getComputedStyle(el).backgroundColor);
+    expect(fill).toBe('rgb(246, 191, 38)');
+  });
+
+  test('an unreadable colour is still readable', async ({ page }) => {
+    // `ev.color` is non-nullable and `to_ui` only ever produces a hex, so this
+    // is not a payload the backend sends — it is the guard on `foregroundFor`
+    // being called during a render, where a throw takes the whole ribbon down
+    // rather than one pill.
+    //
+    // The claim about *why* `var(--text)` is the right fallback is checked
+    // here, not reasoned about: `background: var(--cal)` with a value the
+    // browser cannot parse is invalid at computed-value time, so the
+    // declaration drops to `transparent` and what shows behind the text is the
+    // app's own background — which is exactly the surface `--text` is legible
+    // on. If an engine ever resolved that differently the fallback would be
+    // wrong, and this is what would say so.
+    await page.goto(show('pill-inks'));
+    const broken = page.locator('.pill').nth(2);
+    await expect(broken).toHaveAttribute('title', 'Unreadable');
+
+    const seen = await broken.evaluate((el) => ({
+      color: getComputedStyle(el).color,
+      background: getComputedStyle(el).backgroundColor,
+    }));
+    const [text] = await resolveInks(page, ['var(--text)']);
+    // The fill the browser could not paint, and so the surface the text is
+    // really sitting on: the app's own background, not the calendar's colour.
+    expect(seen.background).toBe('rgba(0, 0, 0, 0)');
+    expect(seen.color).toBe(text);
+    // …and `--text` is not one of the two inks, so this is a genuinely
+    // different branch rather than the light/dark decision landing somewhere
+    // that happens to be legible.
+    const [light, dark] = await resolveInks(page, ['var(--ink-on-light)', 'var(--ink-on-dark)']);
+    expect([light, dark]).not.toContain(text);
+  });
+
+  test('a continuation edge stays visible against a solid fill', async ({ page }) => {
+    // The dashed left edge is what says "this started earlier". It used to be
+    // `border-left-style: dashed` over `border-left: 2px solid var(--cal)`,
+    // which worked against a 16% wash and paints nothing at all against a fill
+    // that *is* `--cal`: same colour, same colour, no marker. Asserted against
+    // the pill's own background rather than against a named colour, so it
+    // stays the right question if either end ever changes.
+    await page.goto(show('crossing'));
+    const tail = page.locator('.pill.cl');
+    await expect(tail).toHaveCount(1);
+
+    const edge = await tail.evaluate((el) => {
+      const s = getComputedStyle(el);
+      return { color: s.borderLeftColor, style: s.borderLeftStyle, background: s.backgroundColor };
+    });
+    expect(edge.style).toBe('dashed');
+    expect(edge.color).not.toBe(edge.background);
   });
 
   // Task 10. The ribbon's day strip carried no click handler at all before

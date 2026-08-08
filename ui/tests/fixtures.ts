@@ -783,6 +783,54 @@ const bigYear2026 = (): BigYearPayload => {
   return b;
 };
 
+/** Three pills in one row, chosen so a spec can see the *rendered* end of
+ *  `foregroundFor` — not just its return value, which `components.spec.ts`
+ *  tables directly.
+ *
+ *  All three sit on lane 0 with disjoint column ranges, which is what
+ *  `pack_lanes` produces for spans that do not overlap; nothing here depends
+ *  on the lane budget, so this fixture stays honest whatever the reservation
+ *  is.
+ *
+ *  The colours are not decorative. `#f6bf26` (Google's "Banana") and
+ *  `#3f51b5` ("Blueberry") are real palette entries at opposite ends —
+ *  relative luminance .57 and .10 against a .179 pivot — and they are the
+ *  side-by-side case the brief describes: on a solid fill one needs black on
+ *  it and the other white, so a single `color:` cannot serve both. A fixture
+ *  of two mid-tones could not witness that.
+ *
+ *  The third is deliberately not a colour at all. `ev.color` is
+ *  non-nullable and `commands.rs`'s `to_ui` only ever produces a hex, so
+ *  this is not a payload the backend can send today — it is here to pin what
+ *  happens if that ever stops being true, which is the one thing a caller
+ *  cannot check for itself: `foregroundFor` must not throw inside the render,
+ *  and the pill must stay readable. */
+const pillInksBigYear = (): BigYearPayload => {
+  const b = emptyBigYear(2026, RIBBON_START, YEAR_2026_START, YEAR_2027_START);
+
+  const pale = ev({
+    id: 930, title: 'Banana', is_all_day: true, color: '#f6bf26',
+    start_ms: RIBBON_START + 1 * 24 * H, end_ms: RIBBON_START + 8 * 24 * H,
+  });
+  const dark = ev({
+    id: 931, title: 'Blueberry', is_all_day: true, color: '#3f51b5',
+    start_ms: RIBBON_START + 9 * 24 * H, end_ms: RIBBON_START + 16 * 24 * H,
+  });
+  const unreadable = ev({
+    id: 932, title: 'Unreadable', is_all_day: true, color: 'not-a-colour',
+    start_ms: RIBBON_START + 17 * 24 * H, end_ms: RIBBON_START + 24 * 24 * H,
+  });
+
+  b.rows[0].pill_events = [pale, dark, unreadable];
+  b.rows[0].pills = [
+    { idx: 0, lane: 0, start_col: 1, end_col: 7, cont_left: false, cont_right: false },
+    { idx: 1, lane: 0, start_col: 9, end_col: 15, cont_left: false, cont_right: false },
+    { idx: 2, lane: 0, start_col: 17, end_col: 23, cont_left: false, cont_right: false },
+  ];
+
+  return b;
+};
+
 /** Two legend entries whose `name` is byte-identical, on different calendars.
  *  Reachable the moment a second account is connected (Plan 1c): two accounts
  *  subscribed to the same public calendar both report it under the same
@@ -1282,6 +1330,7 @@ export const FIXTURES: Record<string, Record<string, any>> = {
     'two-pills': { ribbon: twoPillsBigYear() },
     'same-name-legend': { ribbon: sameNameLegendBigYear() },
     'three-lanes': { ribbon: threeLanesBigYear() },
+    'pill-inks': { ribbon: pillInksBigYear() },
     unsynced: { ribbon: unsyncedBigYear() },
   },
   EventBlock: {

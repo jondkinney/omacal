@@ -18,6 +18,27 @@ export function setPalette(p: Palette): void {
   r.setProperty('--hairline', p.is_dark ? 'rgba(255,255,255,.055)' : 'rgba(0,0,0,.07)');
   r.setProperty('--hour-rule', p.is_dark ? 'rgba(255,255,255,.035)' : 'rgba(0,0,0,.05)');
   r.setProperty('--today-tint', p.is_dark ? 'rgba(255,255,255,.028)' : 'rgba(0,0,0,.025)');
+  // The two endpoints for text drawn on a *calendar's own colour* rather than
+  // on the theme's background — Big Year's solid pills. Which one a given
+  // pill takes is a per-event decision made from that colour's relative
+  // luminance (`foregroundFor`, `BigYearRibbon.svelte`), because `ev.color`
+  // arrives from Google and can be anything: omacal shows dark blues and pale
+  // yellows side by side, and a single `color:` fails one end or the other.
+  //
+  // Unlike the three above, these do **not** branch on `is_dark`, and that is
+  // deliberate rather than an omission. The fill they sit on is the same in
+  // either theme — Google's hex does not know what omacal's background is —
+  // so the only thing they need contrast against is that fill. Dimming the
+  // light ink for a dark theme would be choosing contrast against the wrong
+  // surface, and would take it away from exactly the pills that need it.
+  //
+  // Not quite opaque: at 8px on a saturated chip, a flat #000/#fff reads as
+  // printed-on rather than part of the pill. .88/.96 over the fill keeps the
+  // contrast (~15:1 against white, ~17:1 against a mid-dark fill) and loses
+  // the hard edge. `rgba()` rather than hex for the reason the three above
+  // use it: this file states colours, and hex literals are spent elsewhere.
+  r.setProperty('--ink-on-light', 'rgba(0,0,0,.88)');
+  r.setProperty('--ink-on-dark', 'rgba(255,255,255,.96)');
 }
 
 /** Fetches the resolved palette and applies it. Used once at startup. */

@@ -1,6 +1,7 @@
 <!-- ui/src/lib/BigYearRibbon.svelte -->
 <script lang="ts">
   import type { BigYearPayload, UiEvent } from './api';
+  import { foregroundFor } from './ink';
   import type { Rect } from './position';
 
   let { ribbon, onopen, oncreate }: {
@@ -87,6 +88,7 @@
                 grid-row:{lane.lane + 1};
                 grid-column:{lane.start_col + 1} / {lane.end_col + 2};
                 --cal:{ev.color};
+                --ink:{foregroundFor(ev.color)};
               "
               title={ev.title}
               onclick={(e) => openPill(ev, e)}
@@ -196,13 +198,34 @@
            grid-template-rows: repeat(var(--lanes), 10px);
            grid-auto-rows: 10px; gap: 1px 0; }
 
+  /* Solid, not a 16% wash. Fourteen rows of pastel smudge is what the ribbon
+     read as; a bar of the calendar's actual colour is what makes the year
+     legible at a glance, and it is what both references do.
+
+     `--ink` is the pill's own foreground, decided per event from `--cal`'s
+     relative luminance in the script above — a fixed `color:` cannot serve a
+     dark blue and a pale yellow at once, and after this change both are solid
+     rather than washed towards the theme.
+
+     The `border-left: 2px solid var(--cal)` accent that used to be here is
+     gone. Against a 16% wash it was the one place the full-strength colour
+     appeared, so it carried the calendar's identity; against a fill that *is*
+     that colour it is the same colour on the same colour, and paints nothing
+     at all. Keeping it would be keeping the box-model cost of a rule nobody
+     can see. */
   .pill { appearance: none; -webkit-appearance: none; font: inherit;
-          text-align: left; cursor: pointer; border: 0; border-left: 2px solid var(--cal);
+          text-align: left; cursor: pointer; border: 0;
           font-size: 8px; border-radius: 3px; padding: 0 4px; white-space: nowrap;
           overflow: hidden; text-overflow: ellipsis; margin: 0 1px;
-          background: color-mix(in srgb, var(--cal) 16%, transparent);
-          color: color-mix(in srgb, var(--cal) 60%, var(--text)); }
-  .pill.cl { border-top-left-radius: 0; border-bottom-left-radius: 0; border-left-style: dashed; }
+          background: var(--cal); color: var(--ink); }
+  /* The continuation edge, in `--ink` rather than `--cal` for the reason the
+     plain accent above was dropped: `border-left-style: dashed` in the fill's
+     own colour is invisible on a solid fill — the dashes and the gaps are the
+     same colour, so "this started earlier" stops being said at all. `--ink` is
+     the one colour on the pill guaranteed to contrast with the fill, since
+     that is the entire property `foregroundFor` picks it for. */
+  .pill.cl { border-top-left-radius: 0; border-bottom-left-radius: 0;
+             border-left: 2px dashed var(--ink); }
   .pill.cr { border-top-right-radius: 0; border-bottom-right-radius: 0; }
 
   .more { font-size: 8px; color: var(--muted); opacity: .8; }

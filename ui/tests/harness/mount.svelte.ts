@@ -13,6 +13,7 @@ import DeleteConfirm from '../../src/lib/DeleteConfirm.svelte';
 import * as eventform from '../../src/lib/eventform';
 import { FIXTURES } from '../fixtures';
 import { installTauriStub } from './tauri';
+import { setPalette } from '../../src/lib/theme';
 import { VIEW_BOX_CSS } from './viewbox';
 
 // The form's pure date functions, reachable from a spec.
@@ -26,19 +27,23 @@ import { VIEW_BOX_CSS } from './viewbox';
 (window as any).__eventform = eventform;
 
 // Palette normally arrives from the Rust get_palette command; the harness
-// applies the same fallback_dark values so snapshots are deterministic.
-const PALETTE: Record<string, string> = {
-  '--bg': '#17171a', '--surface': '#1e1e22', '--text': '#e8e8ea',
-  '--muted': '#8a8a90', '--accent': '#5b8def',
-  '--hairline': 'rgba(255,255,255,.055)',
-  '--hour-rule': 'rgba(255,255,255,.035)',
-  '--today-tint': 'rgba(255,255,255,.028)',
+// applies the same `fallback_dark` values (`src-tauri/src/theme.rs`) so
+// snapshots are deterministic.
+//
+// Pushed through `setPalette` rather than written out as a map of variables.
+// That map used to carry its own copies of the three `is_dark`-derived
+// variables, which made this the second place that knew the names — and
+// `theme.ts` says in its own doc comment that it is "the one place". A
+// variable added there but forgotten here does not fail: it resolves to
+// nothing, and a component reading it renders in whatever the initial value
+// is, quietly, in every spec at once.
+const FALLBACK_DARK = {
+  bg: '#17171a', surface: '#1e1e22', text: '#e8e8ea',
+  muted: '#8a8a90', accent: '#5b8def', is_dark: true,
 };
-for (const [k, v] of Object.entries(PALETTE)) {
-  document.documentElement.style.setProperty(k, v);
-}
-document.body.style.background = PALETTE['--bg'];
-document.body.style.color = PALETTE['--text'];
+setPalette(FALLBACK_DARK);
+document.body.style.background = FALLBACK_DARK.bg;
+document.body.style.color = FALLBACK_DARK.text;
 
 const params = new URLSearchParams(location.search);
 const name = params.get('c') ?? 'WeekGrid';
