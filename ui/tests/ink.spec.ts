@@ -24,12 +24,29 @@ const INK_ON_THEME = 'var(--text)';
 test.describe('foregroundFor', () => {
   test('the ink a fill takes is decided by that fill, across the range Google can send', async () => {
     // Every row is a claim about which side of the .179 pivot a colour sits.
+    //
     // The two greys are one byte apart and straddle it (relative luminance
     // .1779 and .1812), so a pivot that drifted either way takes one of them
-    // with it. The four Google palette entries are the real inputs, two either
-    // side. The last three are shapes `parseHex` has to turn away rather than
-    // half-read — `#12345` in particular, because a regex anchored only at the
-    // front would accept it and silently drop a digit.
+    // with it. They do a second job that is easy to miss, so it is written down
+    // here rather than left for someone to rediscover: **they are the witness
+    // for linearising the channels at all.** `linear()` is the step that turns
+    // a gamma-encoded byte into light — 128 is ~21% of the light of 255, not
+    // half — and an implementation that applied the .2126/.7152/.0722 weights
+    // straight to `r/255` would still weight green heavily, still beat a mean,
+    // and still look like the real thing. It would just put the crossover in
+    // the wrong place. `#757575` is .1779 linearised and .4588 without, which
+    // lands on opposite sides of the pivot; Blueberry and Basil below move with
+    // it. Verified by deleting the linearisation: those three rows go red.
+    //
+    // The green/blue pair in the next test does *not* catch that mutation —
+    // weighting gamma-encoded channels still ranks green above blue — so the
+    // two tests are witnesses for different things and neither covers for the
+    // other.
+    //
+    // The four Google palette entries are the real inputs, two either side. The
+    // last three are shapes `parseHex` has to turn away rather than half-read —
+    // `#12345` in particular, because a regex anchored only at the front would
+    // accept it and silently drop a digit.
     const table: [string, string][] = [
       ['#ffffff', INK_ON_LIGHT],   // the light extreme
       ['#000000', INK_ON_DARK],    // and the dark one
@@ -61,6 +78,11 @@ test.describe('foregroundFor', () => {
     // independent of where a naive implementation would put its threshold. The
     // realistic version of the same failure is `#3f51b5` in the table above —
     // a mean reads Google's dark blue as light and puts black text on it.
+    //
+    // This pair is a witness for *weighting* and nothing else. It cannot see a
+    // missing linearisation — gamma-encoded channels under the same weights
+    // still put green far above blue, so both assertions below keep passing.
+    // The greys in the table above are what catch that one.
 
     // The premise, asserted rather than stated in a comment: if these two ever
     // stopped sharing a mean, the assertion below would still pass and would no
