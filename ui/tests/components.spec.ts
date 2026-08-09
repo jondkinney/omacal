@@ -1595,10 +1595,16 @@ test.describe('BigYearRibbon', () => {
     // first-of-month (which would put a `.mchip` in the way), so nothing else
     // could have answered.
     //
-    // Off-centre on purpose: a ribbon day is about 45px wide and 15px tall,
-    // and its own number sits in the middle of it — the click has to land on
-    // the part that is actually empty, which is also what proves the day
-    // number is still on top rather than buried under the target.
+    // Off-centre on purpose: a ribbon day is about 45px wide, its date label
+    // sits at the top of it, and the click has to land on the part that is
+    // actually empty — which is also what proves the label is still on top of
+    // the target rather than buried under it.
+    //
+    // `y: 3` is inside the date band, which is the one strip of the day box
+    // that `.pills` does not cover. That makes this spec blind to the overlay
+    // swallowing clicks, and it is why "a day under the pill strip is still
+    // clickable" below exists as a separate test rather than as another
+    // assertion here.
     await page.locator('.rrow').first().locator('.rday .newhere').nth(4)
       .click({ position: { x: 3, y: 3 } });
     expect(await page.evaluate(() => (window as any).__lastCreate)).toMatchObject({
@@ -1606,54 +1612,146 @@ test.describe('BigYearRibbon', () => {
     });
   });
 
-  test('a fully packed row keeps its day strip, and its weekend stripes with it', async ({ page }) => {
-    // Measured with the old (unreserved-lanes, unprotected-min-height) layout
-    // reinstated: `.rdays` itself collapsed to 0 height, but each `.rday` kept
-    // its own 15px content height and painted at the y-coordinate `.rdays`
-    // would have started at — inside the row *below*, since that row's own
-    // strip spans only ~37px. The stripe was never missing; it was painted in
-    // the wrong place, overlapping the next row's days. With `.pills`
-    // content-sized, row 0 here (three lanes plus a "+N more") is what drove
-    // `.rdays` into that squeeze, while every quieter row was fine — so the
-    // busiest row, the one that most needs reading, was the one that lost the
-    // property. Only the `.rdays` assertion below binds: `.rday.wknd`'s own
-    // height stays 15px whether or not the bug is present (see the boxes
-    // above), so a bounding-box assertion on it can never catch this.
-    await page.goto(show('three-lanes'));
-    const packed = page.locator('.rrow').first();
-
-    // At this suite's 720p viewport the reservation (`--lanes`) is two, which
-    // trims the CSS budget below `PILL_LANE_CAP` (3, `pack_lanes`'s own cap) —
-    // reservation and cap are deliberately not the same number, so this is what
-    // proves the split didn't quietly become a cap of its own: all three of
-    // this row's genuinely overlapping spans still render, the row just grows
-    // past its reserved budget to fit the one it doesn't have a track for.
-    await expect(packed.locator('.pill')).toHaveCount(3);
-
-    // The strip has to be tall enough to *hold* a day, which is a stronger
-    // statement than "not zero" and the one that actually distinguishes the
-    // two renderings: under the bug `.rdays` measured 0 while the `.rday`
-    // inside it still measured its own 15px, so the days were being drawn
-    // somewhere other than inside the strip that owns them. Read off the day
-    // rather than written here as a number, so it stays true if the day's own
-    // font or padding ever changes; and asserted *about* the strip, never
-    // about the day, for the reason the comment above gives.
+  test('a day under the pill strip is still clickable', async ({ page }) => {
+    // The trap the overlay sets. `.pills` spans all 28 columns across the
+    // middle of every day box, and a grid container receives pointer events
+    // across its whole box — not only where a pill is actually drawn. Without
+    // `pointer-events: none` on the strip (and `auto` back on the pills
+    // themselves) it silently eats every click meant for the empty space
+    // underneath it, on exactly the rows that have events on them.
     //
-    // This assertion used to read `|packed - quiet| < 1` — the packed row's
-    // strip and a quiet row's within a pixel of each other — and that was
-    // never a property of this layout. It held because `.rows` was pinned at
-    // `calc(100vh - 190px)`, 530px at this suite's 720p viewport, which is
-    // *less* than fourteen rows' own combined minimum (539px here). Every row
-    // was therefore clamped to its minimum and the two agreed by force. Now
-    // that `.rows` claims the height genuinely available to it (649px) the
-    // quiet rows have room to grow into and the packed one, still held at its
-    // 58px minimum by four lanes of pills, does not: 15px against 23.5px,
-    // measured in both engines. Uniform row heights were the squeeze talking;
-    // the day strip surviving a packed row is the property.
-    const packedDays = (await packed.locator('.rdays').boundingBox())!.height;
-    const oneDay = (await packed.locator('.rday').first().boundingBox())!.height;
-    expect(oneDay).toBeGreaterThan(0); // guards the line below against 0 >= 0
-    expect(packedDays).toBeGreaterThanOrEqual(oneDay);
+    // Row 0 of `y2026` is the right row for that and a row with no pills at all
+    // is not: an empty row still has a `.pills` box covering it, but a spec that
+    // used one would be indistinguishable from a spec that got lucky. Column 4
+    // (Fri 2 Jan 2026) has no pill on it — row 0's runs 8-10 — and is not a
+    // first-of-month, so nothing else could have answered.
+    await page.goto(show('y2026'));
+    const row = page.locator('.rrow').first();
+    await expect(row.locator('.pill')).toHaveCount(1); // the strip is real here
+
+    const day = row.locator('.rday').nth(4);
+    const dayBox = (await day.boundingBox())!;
+    const strip = (await row.locator('.pills').boundingBox())!;
+    const pill = (await row.locator('.pill').boundingBox())!;
+
+    // The point: horizontally over an empty day, vertically in the middle of
+    // the strip. Derived from the boxes rather than written as pixels, so it
+    // stays the right point if the date band or the lane height changes.
+    const x = dayBox.x + dayBox.width / 2;
+    const y = strip.y + strip.height / 2;
+
+    // The premise, in two halves. The point is genuinely underneath the strip
+    // — otherwise this is just the previous test again — and it is not on a
+    // pill, or `oncreate` would rightly never fire.
+    expect(y).toBeGreaterThan(strip.y);
+    expect(y).toBeLessThan(strip.y + strip.height);
+    expect(x > pill.x && x < pill.x + pill.width).toBe(false);
+
+    await page.mouse.click(x, y);
+    expect(await page.evaluate(() => (window as any).__lastCreate)).toMatchObject({
+      startMs: Date.UTC(2026, 0, 2),
+    });
+  });
+
+  // ---- the day box is the container, and the event is drawn in it ----------
+  //
+  // What used to be here was "a fully packed row keeps its day strip, and its
+  // weekend stripes with it", from when `.pills` and `.rdays` were siblings in
+  // a flex column and a tall pill strip could squeeze the day strip to zero.
+  // Its last assertion was `.rdays` height >= one `.rday` height, and under the
+  // overlay that **cannot fail**: `.rday` is a grid item in `.rdays`'s single
+  // row, so it stretches to exactly `.rdays`'s height and the comparison is
+  // `x >= x` whatever the layout does. It was left passing by the restructure
+  // rather than made true by it, which is the worse of the two ways for a spec
+  // to survive a change. Replaced by the three below, which are about the
+  // arrangement that now exists.
+
+  test('the day box is the whole row, not a strip under the pills', async ({ page }) => {
+    // The headline of the change. A day cell is the full-height box — the same
+    // box the event is drawn in — rather than a thin band of numbers beneath a
+    // band of floating bars.
+    //
+    // Measured against `.rrow` rather than written as a number so it stays true
+    // at any window height. The 1px is `.rrow`'s own top border, which is not
+    // part of the box its contents get; read off the element for the same
+    // reason.
+    await page.goto(show('y2026'));
+    const row = page.locator('.rrow').nth(1);
+    const rowBox = (await row.boundingBox())!;
+    const dayBox = (await row.locator('.rday').first().boundingBox())!;
+    const border = await row.evaluate((el) => parseFloat(getComputedStyle(el).borderTopWidth));
+    expect(border).toBe(1); // the line below is meaningless if this is 0
+    expect(dayBox.height).toBeCloseTo(rowBox.height - border, 0);
+  });
+
+  test('a pill is drawn inside its day box, below the date', async ({ page }) => {
+    // The other half, and the one that fails against the old arrangement: a
+    // pill used to live in a strip *above* the day boxes, so its bottom edge
+    // was at or above the day's top edge. Now it is within the day's own box,
+    // and below the date label that sits at the top of it.
+    //
+    // Row 1 of `y2026` is Team off-site on columns 4-6, which is a day that
+    // genuinely carries the pill — the containment claim is empty if the pill
+    // and the day box are not the same days.
+    await page.goto(show('y2026'));
+    const row = page.locator('.rrow').nth(1);
+    const pill = (await row.locator('.pill').boundingBox())!;
+    const day = (await row.locator('.rday').nth(5).boundingBox())!;
+    const label = (await row.locator('.rday').nth(5).locator('.dlabel').boundingBox())!;
+
+    // The pill really is over that day, horizontally — otherwise the vertical
+    // containment below would be a claim about two unrelated boxes.
+    expect(pill.x).toBeLessThan(day.x);
+    expect(pill.x + pill.width).toBeGreaterThan(day.x + day.width);
+
+    // Inside the box, top and bottom.
+    expect(pill.y).toBeGreaterThanOrEqual(day.y);
+    expect(pill.y + pill.height).toBeLessThanOrEqual(day.y + day.height + 0.5);
+
+    // …and clear of the date, which sits at the top of the box rather than in
+    // the middle of it. Both halves matter: the first says the date is at the
+    // top at all, the second that the pills start below it.
+    expect(label.y).toBeCloseTo(day.y, 0);
+    expect(pill.y).toBeGreaterThanOrEqual(label.y + label.height);
+  });
+
+  test('a row that needs a third lane grows to fit it', async ({ page }) => {
+    // The property the overlay could most easily have dropped. `pack_lanes`
+    // caps at three and the reservation at 720p is two, so this row packs one
+    // lane more than the layout budgeted for — and the row has to grow, or the
+    // third lane is drawn over the next row's dates.
+    //
+    // It survives because `.pills` is a *grid item* sharing a cell with
+    // `.rdays`, not an absolutely positioned overlay: both layers still size
+    // the row. An absolutely positioned strip contributes nothing to its
+    // parent's height, and this is the spec that would have caught that.
+    // At a viewport this short every row is clamped to its own minimum — the
+    // total (13 quiet rows plus the packed one) is well past what `.rows` has,
+    // so `.rows` scrolls and no row gets a share of spare height. That is
+    // deliberate: with slack available the quiet rows grow to meet the packed
+    // one anyway, and the difference this test is about shrinks to under a
+    // pixel. Clamped, it is the whole third lane.
+    await page.setViewportSize({ width: 1280, height: 500 });
+    await page.goto(show('three-lanes-exact'));
+    const row = page.locator('.rrow').first();
+    await expect(row.locator('.pill')).toHaveCount(3);
+
+    // The strip grew past the reservation: three lanes, not the two reserved.
+    const quietPills = (await page.locator('.rrow').nth(1).locator('.pills').boundingBox())!;
+    const packedPills = (await row.locator('.pills').boundingBox())!;
+    expect(packedPills.height).toBeGreaterThan(quietPills.height);
+
+    // …and the row grew with it. This is the half an absolute overlay fails:
+    // out of flow, `.pills` contributes nothing to its parent's height, every
+    // row clamps to the same date-band minimum, and the third lane is drawn
+    // over the row below. Measured against a quiet row rather than as a number,
+    // so it says "this row is taller *because* of its lanes".
+    const packedRow = (await row.boundingBox())!;
+    const quietRow = (await page.locator('.rrow').nth(1).boundingBox())!;
+    expect(packedRow.height).toBeGreaterThan(quietRow.height);
+    // …and it is tall enough to actually contain the strip, not merely taller.
+    expect(packedPills.y + packedPills.height)
+      .toBeLessThanOrEqual(packedRow.y + packedRow.height + 0.5);
   });
 
   // ---- the reservation follows the height the window actually has ----------
@@ -1688,9 +1786,9 @@ test.describe('BigYearRibbon', () => {
     // pins to the real thing — so this is a claim about 720p in the app and
     // not only about the harness.
     //
-    // 720p is below the 771px at which a third lane fits, so this is also the
+    // 720p is below the 757px at which a third lane fits, so this is also the
     // regression net for the reservation not creeping up: pinned to a constant
-    // three, `.rows` overflows here by exactly 51px (measured, and the number
+    // three, `.rows` overflows here by exactly 37px (measured, and the number
     // this fails with). It deliberately does *not* also assert the lane count.
     // Three lanes at 720p always overflow, so a lane-count line here could
     // never fail on its own — it would be a passenger, and the reservation at
@@ -1703,13 +1801,13 @@ test.describe('BigYearRibbon', () => {
   });
 
   test('a window tall enough for a third lane reserves one', async ({ page }) => {
-    // The other end. 771px is the measured height at which fourteen rows of
+    // The other end. 757px is the measured height at which fourteen rows of
     // three reserved lanes plus the legend first fit — `.pills`'s own comment
     // has the arithmetic and how it was measured. Set one pixel above it rather
     // than exactly on it: this spec is about the reservation being taken when
     // there is room, and sitting on the boundary would make it a spec about the
     // boundary, which the pair below is for.
-    await page.setViewportSize({ width: 1280, height: 772 });
+    await page.setViewportSize({ width: 1280, height: 758 });
     await page.goto(show('y2026'));
     await expect(page.locator('.rrow')).toHaveCount(14);
     expect(await reservedLanes(page, 2)).toBe(3);
@@ -1721,15 +1819,15 @@ test.describe('BigYearRibbon', () => {
   test('the third lane is taken exactly where it starts fitting', async ({ page }) => {
     // The threshold itself, from both sides, one pixel apart. A spec that only
     // checked a tall window and a short one would pass for a threshold anywhere
-    // between them; this is what says the number is 771 and not "somewhere
+    // between them; this is what says the number is 757 and not "somewhere
     // around 800".
     await page.goto(show('y2026'));
 
-    await page.setViewportSize({ width: 1280, height: 771 });
+    await page.setViewportSize({ width: 1280, height: 757 });
     expect(await reservedLanes(page, 2)).toBe(3);
     expect(await rowsOverflow(page)).toBeLessThanOrEqual(0);
 
-    await page.setViewportSize({ width: 1280, height: 770 });
+    await page.setViewportSize({ width: 1280, height: 756 });
     expect(await reservedLanes(page, 2)).toBe(2);
     expect(await rowsOverflow(page)).toBeLessThanOrEqual(0);
   });
@@ -1750,7 +1848,33 @@ test.describe('BigYearRibbon', () => {
     const quiet = page.locator('.rrow').nth(1).locator('.pills');
     await expect(page.locator('.rrow').nth(0).locator('.pill')).toHaveCount(3);
 
-    await page.setViewportSize({ width: 1280, height: 772 });
+    await page.setViewportSize({ width: 1280, height: 758 });
+
+    // The premise of the whole method, and it needs stating because it is one
+    // CSS declaration away from being false: `.pills` is the lane strip, so its
+    // height *means* "the lanes this row has". `align-self: start` is what makes
+    // that so; stretched to the shared grid cell it would be the row height
+    // minus the date band instead, and both comparisons below would quietly
+    // turn into comparisons of two row heights. Measured, that is not a
+    // hypothetical — under `stretch` the two rows differ only by where the
+    // border falls, 38.14 against 38.16, and this test passed in WebKit and
+    // failed in Chromium on 0.02px of rounding. Reading the box against the
+    // tracks it is supposed to be makes it fail in both, for the real reason.
+    const boxIsItsTracks = async (strip: typeof quiet) => {
+      const m = await strip.evaluate((el) => {
+        const cs = getComputedStyle(el);
+        return {
+          height: el.getBoundingClientRect().height,
+          tracks: cs.gridTemplateRows.split(/\s+/).map(parseFloat),
+          gap: parseFloat(cs.rowGap),
+        };
+      });
+      const tracks = m.tracks.reduce((a, b) => a + b, 0) + (m.tracks.length - 1) * m.gap;
+      expect(m.tracks.length).toBeGreaterThan(0);
+      expect(m.height).toBeCloseTo(tracks, 1);
+    };
+    await boxIsItsTracks(quiet);
+    await boxIsItsTracks(packed);
     expect((await packed.boundingBox())!.height).toBe((await quiet.boundingBox())!.height);
 
     // …and at 720p it does bulge, which is the compromise the small end still

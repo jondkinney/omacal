@@ -53,6 +53,45 @@
   <div class="rows">
     {#each ribbon.rows as row, r (r)}
       <div class="rrow">
+        <!-- The day cells come first and the pills second, and the order is
+             load-bearing rather than editorial. Both occupy the same grid cell
+             (`.rrow` is a one-cell grid), and grid items paint in DOM order, so
+             this is what puts an event *on* its days rather than under them.
+             Swap them and the weekend shading paints over every pill. -->
+        <div class="rdays">
+          {#each row.days as d, c (c)}
+            {@const date = new Date(d.start_ms)}
+            <div
+              class="rday"
+              class:wknd={isWeekend(c)}
+              class:out={!d.in_year}
+              class:unsynced={d.unsynced}
+            >
+              <!-- Empty grid space, same contract and same `tabindex="-1"` as
+                   `WeekGrid`'s and `MonthGrid`'s: 392 invisible tab stops is
+                   not a keyboard route to anything, and `n` already is one. -->
+              <button
+                class="newhere"
+                aria-label="New event"
+                tabindex="-1"
+                onclick={(e) => createOn(d.start_ms, e)}
+              ></button>
+              <!-- The date sits at the top of its box now, not in the middle of
+                   it, because the box is the whole row and the rest of it is
+                   where the events go. The month chip is inline beside the
+                   number rather than absolutely positioned above it: it used to
+                   float over a 15px strip that nothing else occupied, and that
+                   space now belongs to lane 0. -->
+              <span class="dlabel">
+                {#if date.getDate() === 1}
+                  <span class="mchip">{MONTH_NAMES[date.getMonth()]}</span>
+                {/if}
+                <span class="dnum">{date.getDate()}</span>
+              </span>
+            </div>
+          {/each}
+        </div>
+
         <!-- No `--lanes` here. The reservation is a question about how much
              height the window has, which the stylesheet can answer and this
              cannot; an inline custom property would also beat the media query
@@ -105,32 +144,6 @@
             </div>
           {/if}
         </div>
-
-        <div class="rdays">
-          {#each row.days as d, c (c)}
-            {@const date = new Date(d.start_ms)}
-            <div
-              class="rday"
-              class:wknd={isWeekend(c)}
-              class:out={!d.in_year}
-              class:unsynced={d.unsynced}
-            >
-              <!-- Empty grid space, same contract and same `tabindex="-1"` as
-                   `WeekGrid`'s and `MonthGrid`'s: 392 invisible tab stops is
-                   not a keyboard route to anything, and `n` already is one. -->
-              <button
-                class="newhere"
-                aria-label="New event"
-                tabindex="-1"
-                onclick={(e) => createOn(d.start_ms, e)}
-              ></button>
-              {#if date.getDate() === 1}
-                <span class="mchip">{MONTH_NAMES[date.getMonth()]}</span>
-              {/if}
-              <span class="dnum">{date.getDate()}</span>
-            </div>
-          {/each}
-        </div>
       </div>
     {/each}
   </div>
@@ -180,14 +193,36 @@
      is the opposite arrangement and the reason a short window scrolls the
      rows rather than flattening them. */
   .rows { display: flex; flex-direction: column; flex: 1; overflow-y: auto; }
-  /* No `min-height: 0` — that let a row shrink below its own contents, and
-     `.pills` is the taller of the two children, so the day strip is what
-     absorbed the shortfall: a fully packed row squeezed `.rdays` to zero and
-     its days spilled over the row below. A short viewport scrolls `.rows`
-     (which is what its `overflow-y` is for) rather than crushing a row. */
-  .rrow { flex: 1; display: flex; flex-direction: column;
-          border-top: 1px solid var(--hairline); }
+  /* One cell, two layers. `.rdays` and `.pills` are both placed at `1 / 1`, so
+     the day boxes and the events drawn in them are the same box rather than two
+     stacked bands — which is the whole of this change. The ribbon used to be a
+     flex column of a pill strip above a day strip, and read as two separate
+     things: a row of floating bars, and under it a thin row of numbers.
+
+     A grid overlay rather than `position: absolute` on `.pills`, and the
+     difference is not cosmetic. An absolutely positioned strip contributes
+     nothing to its parent's height, which would silently drop the property that
+     a row needing more lanes than the reservation *grows* to fit them — three
+     packed lanes against a reservation of two would simply be drawn over the
+     next row's dates. As grid items both layers still size the row, so that
+     behaviour survives with no explicit minimum to compute and no lane count to
+     thread through the markup. `a row that needs a third lane grows to fit it`
+     is the spec that holds this.
+
+     Still no `min-height: 0`, and now for a slightly different reason than
+     before: the automatic minimum is what makes the paragraph above true. It
+     resolves to the taller layer's own minimum — the date band plus however
+     many lanes the row actually uses — so a short viewport scrolls `.rows`
+     (which is what its `overflow-y` is for) rather than crushing a row into its
+     neighbour.
+
+     The three geometry numbers live here, on the row, because both layers need
+     them: `.dlabel` sizes itself by `--date-band` and `.pills` clears it by
+     exactly the same value, so the date and lane 0 cannot drift apart. */
+  .rrow { flex: 1; display: grid; border-top: 1px solid var(--hairline);
+          --date-band: 11px; --lane-h: 11px; --lane-gap: 1px; }
   .rrow:first-child { border-top: 0; }
+  .rdays, .pills { grid-area: 1 / 1; }
 
   /* `grid-template-rows`, not `grid-auto-rows`, for the reserved lanes
      themselves: explicit tracks exist whether or not a pill occupies them, so
@@ -214,29 +249,64 @@
      subscription and a teardown to get right, the more expensive way to learn
      the same fact.
 
-     The threshold is measured, at 10px lanes, in both engines, and they agree
-     to the pixel. Fourteen rows reserving three lanes need 671px of `.rows`:
-     each row is 47px (15px day strip + 32px pill strip — 3 × 10px and two 1px
-     gaps) with a 1px top border on all but the first. Around that sit the
-     legend at 21px, this element's 8px of gap and padding, and App's 63px:
-     63 + 4 + 671 + 8 + 21 + 4 = 771. Measured by stepping the viewport a pixel
-     at a time against `.rows`'s own overflow: 771 is the first height that
-     fits and 770 overflows by exactly 1px, in WebKit and in Chromium. Two lanes
-     fit from 617px, and at 720p three lanes overflow by 51px — which is why the
-     reservation below 771 is two, and why the old fixed reservation of two
-     existed at all.
+     The threshold is measured, in both engines, and they agree to the pixel.
+     Re-measured for the overlay: a row is no longer a day strip stacked on a
+     pill strip, it is one box holding a date band and the lanes, so every
+     number below moved.
+
+     Fourteen rows reserving three lanes need 657px of `.rows`. A row is 46px —
+     11px of date band plus a 35px lane strip (3 × 11px and two 1px gaps) — with
+     a 1px top border on all but the first: 13 × 47 + 46 = 657. Around that sit
+     the legend at 21px, this element's 8px of gap and padding, and App's 63px:
+     63 + 4 + 657 + 8 + 21 + 4 = 757. Measured by stepping the viewport a pixel
+     at a time against `.rows`'s own overflow: 757 is the first height that fits
+     and 756 overflows by exactly 1px. Two lanes fit from 589px, and at 720p
+     three lanes overflow by 37px — which is why the reservation below 757 is
+     still two.
+
+     Overlaying the two strips bought height back even though the lanes grew
+     from 10px to 11px: the date used to hold a 15px strip of its own that
+     nothing else could use, and now holds an 11px band inside a box the pills
+     share. Three lanes went from 771px to 757px and two from 617px to 589px.
 
      Do not read the 21px legend as a constant. It is one line of legend, which
      is what a handful of calendars comes to; a wrapped second line costs 23px
-     (measured), and at 771 exactly that scrolls. No fixed threshold can prevent
+     (measured), and at 757 exactly that scrolls. No fixed threshold can prevent
      that — a third line would cost 23px again — so the measured one-line height
      is what this uses, and a taller legend does what it already does today:
      `.rows` scrolls, which is what its `overflow-y` is for. */
   .pills { display: grid; grid-template-columns: repeat(28, 1fr);
            --lanes: 2;
-           grid-template-rows: repeat(var(--lanes), 10px);
-           grid-auto-rows: 10px; gap: 1px 0; }
-  @media (min-height: 771px) { .pills { --lanes: 3; } }
+           grid-template-rows: repeat(var(--lanes), var(--lane-h));
+           grid-auto-rows: var(--lane-h); gap: var(--lane-gap) 0;
+           /* Clears the date at the top of the cell, by exactly the height the
+              date is given. Lane 0 starts where the label stops. */
+           margin-top: var(--date-band);
+           /* Not `stretch`. The box is then the lane strip and nothing else,
+              which keeps `.pills`'s measured height meaningful — it is the
+              reservation, or the lanes actually used, and a spec can read it.
+              Stretched, it would always be the row height and any spec that
+              measured it would have stopped distinguishing anything. */
+           align-self: start;
+           /* Paints over the day cells and their shading. `z-index` applies to
+              a grid item whether or not it is positioned, which is what makes
+              this work without `position: relative` — and it is needed, because
+              `.newhere` below *is* positioned, and a positioned descendant
+              otherwise paints above a non-positioned sibling regardless of DOM
+              order. Without it the click targets sit on top of every pill. */
+           z-index: 2;
+           /* The trap. This strip covers the middle of all 28 day boxes, and a
+              grid container receives pointer events across its whole box — not
+              only where a pill happens to be drawn. Left alone it swallows
+              every click meant for `.newhere` underneath it, including in the
+              empty tracks of an otherwise busy row, so "click an empty day"
+              silently stops working on exactly the rows that have events on
+              them. `a day under the pill strip is still clickable` is the spec,
+              and it clicks a day that genuinely has the strip over it — a day
+              in a row with no pills at all would pass either way. */
+           pointer-events: none; }
+  .pill, .more { pointer-events: auto; }
+  @media (min-height: 757px) { .pills { --lanes: 3; } }
 
   /* Solid, not a 16% wash. Fourteen rows of pastel smudge is what the ribbon
      read as; a bar of the calendar's actual colour is what makes the year
@@ -253,9 +323,19 @@
      that colour it is the same colour on the same colour, and paints nothing
      at all. Keeping it would be keeping the box-model cost of a rule nobody
      can see. */
+  /* Fully rounded ends, not the old 3px. Both references use a capsule, and on
+     a bar this short the radius is most of what says "this is one object" — at
+     3px on an 11px lane the corners read as a rectangle with the edges knocked
+     off. `999px` rather than `50%`, which on a wide bar would give an ellipse.
+     The squared continuation corners below still win, since they come after.
+
+     `line-height: var(--lane-h)` centres the label without a flex context,
+     which would fight `text-overflow: ellipsis`. The pill stretches to the
+     track, so its content box is the lane height and one line box fills it. */
   .pill { appearance: none; -webkit-appearance: none; font: inherit;
           text-align: left; cursor: pointer; border: 0;
-          font-size: 8px; border-radius: 3px; padding: 0 4px; white-space: nowrap;
+          font-size: 8px; line-height: var(--lane-h);
+          border-radius: 999px; padding: 0 5px; white-space: nowrap;
           overflow: hidden; text-overflow: ellipsis; margin: 0 1px;
           background: var(--cal); color: var(--ink); }
   /* The continuation edge, in `--ink` rather than `--cal` for the reason the
@@ -270,13 +350,18 @@
 
   .more { font-size: 8px; color: var(--muted); opacity: .8; }
 
-  /* Likewise no `min-height: 0`: the weekend shading is painted by `.rday`'s
-     own background, so a day strip with no height is a row with no stripes —
-     and the stripes are the whole reason the ribbon's rows are 28 days. */
-  .rdays { flex: 1; display: grid; grid-template-columns: repeat(28, 1fr); }
+  /* The full-height box now, not a strip under the pills: it stretches to the
+     grid cell it shares with `.pills`, so a day cell is as tall as its row and
+     the events are drawn inside it. The weekend shading and the `.unsynced`
+     hatch are still painted here, which is what puts them *behind* the pills
+     rather than beside them. */
+  .rdays { display: grid; grid-template-columns: repeat(28, 1fr); }
 
-  .rday { display: flex; flex-direction: column; align-items: center; justify-content: center;
-          gap: 1px; min-width: 0; position: relative; font-size: 8.5px; color: var(--text);
+  /* `flex-start`, not `center`: the date belongs at the top of its box because
+     the rest of the box is where the events go. */
+  .rday { display: flex; flex-direction: column; align-items: center;
+          justify-content: flex-start;
+          min-width: 0; position: relative; font-size: 8.5px; color: var(--text);
           font-variant-numeric: tabular-nums; border-left: 1px solid var(--hairline); }
   .rday:first-child { border-left: 0; }
   .rday.wknd { background: color-mix(in srgb, var(--muted) 8%, transparent); }
@@ -296,9 +381,15 @@
              background: none; border: 0; padding: 0; margin: 0; font: inherit;
              cursor: cell; z-index: 0; }
 
-  .mchip { position: absolute; top: 1px; font-size: 6.5px; font-weight: 600;
-           color: var(--accent); letter-spacing: .02em; z-index: 1; }
-  .dnum { margin-top: 6px; position: relative; z-index: 1; }
+  /* The date band: the one strip of the day box that pills do not cover, and
+     `.pills`'s `margin-top` is the same variable, so the two cannot drift.
+     `z-index: 1` keeps it above `.newhere` (0) and below `.pills` (2) — which
+     costs nothing, since the band is exactly the height the pills clear. */
+  .dlabel { display: flex; align-items: center; gap: 2px;
+            height: var(--date-band); line-height: var(--date-band);
+            position: relative; z-index: 1; }
+  .mchip { font-size: 6.5px; font-weight: 600;
+           color: var(--accent); letter-spacing: .02em; }
 
   .legend { display: flex; flex-wrap: wrap; gap: 10px 16px; padding: 4px; }
   .legend .item { display: flex; align-items: center; gap: 5px; font-size: 10px; color: var(--muted); }
