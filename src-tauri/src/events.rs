@@ -242,6 +242,103 @@ pub(crate) fn attendees_verbatim(attendees: &[omacal_store::Attendee]) -> Vec<se
     attendees.iter().map(|a| attendee_json(a, &a.response_status)).collect()
 }
 
+/// An address as it is compared. Case-insensitive, trimmed — `Ana@X.com` and
+/// `ana@x.com` are one person, and a stored list that spells an address one way
+/// must not gain a duplicate because the form spelled it another.
+fn same_address(a: &str, b: &str) -> bool {
+    a.trim().eq_ignore_ascii_case(b.trim())
+}
+
+/// **The guest list Google should be sent, given what is stored and what the
+/// user asked for. This function is what the whole guest-list design exists
+/// for.**
+///
+/// `attendees` is a **whole-list replace** (spec §2): the array in a PATCH is
+/// what the event ends up with, and anything left out is gone. Two things
+/// follow, and the second is the dangerous one.
+///
+/// Removing somebody means sending the list without them — there is no remove
+/// call, which is why `wanted` is a target list rather than a set of
+/// operations.
+///
+/// And **every attendee who stays must go out carrying the fields they already
+/// had.** Send `{"email": …}` alone for somebody who had accepted and their
+/// answer can come back as `needsAction` — on their calendar as well as this
+/// one. The popover this app is built around exists to show those answers;
+/// wiping them would destroy the exact data it displays, and it would look
+/// perfectly fine locally until the next sync brought back a room full of
+/// un-answered guests. So an attendee who is merely *kept* is echoed back
+/// through [`attendee_json`] — `responseStatus`, `displayName`, `comment`,
+/// `additionalGuests` and all — rather than reconstructed from an address.
+///
+/// That is deliberately safe under either reading of Google's merge semantics.
+/// It does not depend on being right about what a partial entry would do.
+///
+/// **`optional` is the one field `wanted` may overrule**, because it is the one
+/// the form lets a user change. Nothing else on this struct can reach an
+/// attendee's own data — see [`crate::write::Guest`], which has no field for it.
+///
+/// The order is stored-first, additions after, so a list whose *membership* is
+/// unchanged produces the same array however the form happened to order it.
+/// Without that, a re-render that shuffled rows would read as a change and send
+/// a whole-list replace nobody asked for.
+///
+/// A duplicate address is a no-op rather than an error (spec §5): the second
+/// mention adds nothing, so it produces no second row. Refusing instead would
+/// make the write path answer a question the form should have answered.
+pub(crate) fn attendees_for_edit(
+    attendees: &[omacal_store::Attendee],
+    wanted: &[crate::write::Guest],
+) -> Vec<serde_json::Value> {
+    let mut out = Vec::new();
+
+    // Everyone who was already on the event and is still wanted, in the order
+    // the event holds them, echoed whole.
+    for a in attendees {
+        let Some(g) = wanted.iter().find(|g| same_address(&g.email, &a.email)) else {
+            continue; // removed
+        };
+        // `optional` is taken from the form; everything else from the store.
+        // Cloning the row to overrule one field keeps the echo-back in
+        // `attendee_json` rather than spreading a second copy of the field list
+        // through here, which is the duplication that drifts.
+        let kept = omacal_store::Attendee { optional: g.optional, ..a.clone() };
+        out.push(attendee_json(&kept, &a.response_status));
+    }
+
+    // Then the newly invited, in the order the form gave them. `responseStatus`
+    // is `needsAction` because that is what an un-answered invitation is; it is
+    // sent rather than omitted so that every entry in this array has the same
+    // shape, and so a reader of the request cannot mistake a new guest for one
+    // whose answer was dropped.
+    for g in wanted {
+        let already_on_event = attendees.iter().any(|a| same_address(&g.email, &a.email));
+        let already_added = out
+            .iter()
+            .any(|v| v["email"].as_str().is_some_and(|e| same_address(e, &g.email)));
+        if already_on_event || already_added {
+            continue;
+        }
+        out.push(serde_json::json!({
+            "email": g.email.trim(),
+            "responseStatus": "needsAction",
+            "optional": g.optional,
+            "additionalGuests": 0,
+        }));
+    }
+
+    out
+}
+
+/// What the user is told when a guest-list change loses a race.
+///
+/// A named constant because it is asserted in two places that must not drift:
+/// the test that pins it, and `errors.rs`'s `SAFE_EXACT` allowlist, which shows
+/// a message verbatim only if it matches one there exactly.
+pub(crate) const CONFLICT_GUESTS: &str =
+    "somebody else changed this event while you were editing it, so the guest list was not \
+     saved — close the form, let it refresh, and make the change again";
+
 /// Which Google event id an RSVP write targets.
 #[derive(Debug, PartialEq)]
 pub(crate) enum Target {
@@ -841,6 +938,10 @@ pub(crate) fn edit_patch_body(
         tz: zone.to_string(),
         // `None`, always — `changed_fields` never reads this side. See above.
         recurrence: None,
+        // Likewise: the guest list is not diffed by `changed_fields` at all. It
+        // is compared below against the row's own attendees, which carry fields
+        // `EventFields` has no room for.
+        guests: None,
     };
 
     let anchor = if is_recurring(&ev.recurrence, &ev.recurring_event_id) {
@@ -862,7 +963,40 @@ pub(crate) fn edit_patch_body(
         ..after.clone()
     };
 
-    crate::write::changed_fields(&before, &after)
+    let mut body = crate::write::changed_fields(&before, &after);
+
+    // **The guest list, and only when it actually changed.**
+    //
+    // Here rather than in `changed_fields`, and that is a decision rather than
+    // an accident. `changed_fields` compares two `EventFields`, and the *before*
+    // side of a guest list is not one: it is `ev.attendees`, which carries
+    // `responseStatus`, `displayName`, `comment` and `additionalGuests` — the
+    // fields §2 is about, and the ones `EventFields` deliberately has no room
+    // for. Putting the rule there would mean dragging a store type into
+    // `write.rs`'s pure builders, or thinning the attendee down to what
+    // `EventFields` can hold, which is precisely the loss the rule exists to
+    // prevent.
+    //
+    // Here it is also **structural**: this is the one function that builds an
+    // edit's PATCH body, it is called twice (once for the request, once for the
+    // 412 retry), and `attendee_json` — the field list being echoed — already
+    // lives beside it. A caller that forgot the rule is not a shape this file
+    // admits, because there is no other place for a caller to build a body.
+    //
+    // Compared against [`attendees_verbatim`] rather than against a second
+    // notion of "the same list": that function is what an *unchanged* list
+    // serializes to, so equality here means exactly "the user changed nothing",
+    // by construction and with no rule to keep in step. An absent `attendees`
+    // is a PATCH saying leave the list alone, which is the only safe thing to
+    // send for an event whose guests nobody touched.
+    if let Some(wanted) = &after.guests {
+        let sending = attendees_for_edit(&ev.attendees, wanted);
+        if sending != attendees_verbatim(&ev.attendees) {
+            body["attendees"] = serde_json::json!(sending);
+        }
+    }
+
+    body
 }
 
 /// The resource being patched, as a [`crate::write::When`].
@@ -1289,6 +1423,30 @@ async fn update_via_client(
     {
         Ok(p) => p,
         Err(omacal_google::ApiError::PreconditionFailed) => {
+            // **A guest-list change is not retried. It is reported.**
+            //
+            // Every other field in this body is a diff — only what the user
+            // touched — so rebuilding it against a freshly-read event leaves
+            // somebody else's concurrent change intact. `attendees` is not a
+            // diff. It is a whole-list replace built from `ev.attendees`, the
+            // list as omacal last read it, and a 412 is Google saying that
+            // reading is out of date. Retrying would send that stale list over
+            // the current one: anyone invited elsewhere since the form opened
+            // is silently un-invited, and with `sendUpdates=all` they are
+            // mailed a cancellation for a meeting nobody meant to remove them
+            // from.
+            //
+            // Re-reading and merging is not an option either, because a target
+            // list cannot say what the user *did*. If Dan is on the fresh copy
+            // and not on the form's list, "the user removed Dan" and "the user
+            // never saw Dan" are the same list, and the two want opposite
+            // writes. The form is the only thing that knows, so the conflict
+            // goes back to it. Guest-list spec §2 is explicit that `If-Match`
+            // matters more here than anywhere, and this is what it is for.
+            if body.get("attendees").is_some() {
+                anyhow::bail!(CONFLICT_GUESTS);
+            }
+
             // Somebody changed the event while the form was open. Re-read for
             // the current version, rebuild against where the event now *is*
             // (a time shift the user made applies to its new position), and
@@ -2173,6 +2331,159 @@ mod tests {
         let others: Vec<Attendee> = three().into_iter().filter(|a| !a.is_self).collect();
         assert!(attendees_with_self_response(&others, "accepted").is_none());
         assert!(attendees_with_self_response(&[], "accepted").is_none());
+    }
+
+    /// **The guest list a form shows for `attendees`, with nothing touched**:
+    /// every stored address carrying the optional flag it already has.
+    ///
+    /// Built from the stored list rather than typed out as addresses, and that
+    /// is not tidiness. A helper that spelled the addresses alone would have to
+    /// invent an `optional` for each, and the obvious invention — `false` for
+    /// all of them — silently *changes* Petya, who is stored optional. Every
+    /// test below that says "nothing changed" would then have been asserting
+    /// something else, and the premise test is what caught it.
+    fn guests_of(attendees: &[Attendee]) -> Vec<crate::write::Guest> {
+        attendees
+            .iter()
+            .map(|a| crate::write::Guest { email: a.email.clone(), optional: a.optional })
+            .collect()
+    }
+
+    /// [`guests_of`] with one address typed in at the end — somebody the user
+    /// has just invited.
+    fn guests_plus(attendees: &[Attendee], email: &str) -> Vec<crate::write::Guest> {
+        let mut w = guests_of(attendees);
+        w.push(crate::write::Guest { email: email.into(), optional: false });
+        w
+    }
+
+    /// [`guests_of`] with one address taken out — somebody the user has just
+    /// removed.
+    fn guests_without(attendees: &[Attendee], email: &str) -> Vec<crate::write::Guest> {
+        guests_of(attendees).into_iter().filter(|g| g.email != email).collect()
+    }
+
+    /// **The assertion the whole guest-list design exists for** (spec §2, §7).
+    ///
+    /// `attendees` is a whole-list replace, so adding one person means resending
+    /// everyone. Send `{"email": …}` for the three who were already there and
+    /// Ana's `accepted` can come back as `needsAction` — on her calendar, not
+    /// just this one — and the popover this app is built around would be showing
+    /// a room full of un-answered guests that nobody un-answered.
+    ///
+    /// Every field is named individually rather than compared as a blob,
+    /// because each is a separate way to lose somebody's data and a blob
+    /// comparison says only that *something* moved.
+    #[test]
+    fn adding_a_guest_sends_everyone_elses_fields_back_untouched() {
+        let out = attendees_for_edit(&three(), &guests_plus(&three(), "dan@x.com"));
+
+        assert_eq!(out.len(), 4, "the list must carry everyone, not just the new one");
+
+        assert_eq!(out[0]["email"], "ana@x.com");
+        assert_eq!(out[0]["responseStatus"], "accepted", "Ana's answer was reset");
+        assert_eq!(out[0]["displayName"], "Ana", "Ana's display name was dropped");
+        assert_eq!(out[0]["comment"], "running 5 late", "Ana's comment was dropped");
+        assert_eq!(out[0]["additionalGuests"], 1, "Ana's additional guests were dropped");
+
+        assert_eq!(out[1]["email"], "me@x.com");
+        assert_eq!(out[1]["responseStatus"], "needsAction");
+
+        assert_eq!(out[2]["email"], "petya@x.com");
+        assert_eq!(out[2]["responseStatus"], "declined", "Petya's answer was reset");
+        assert_eq!(out[2]["optional"], true, "Petya's optional flag was lost");
+        assert_eq!(out[2]["additionalGuests"], 2, "Petya's additional guests were dropped");
+
+        // And the newcomer, who genuinely has no answer yet.
+        assert_eq!(out[3]["email"], "dan@x.com");
+        assert_eq!(out[3]["responseStatus"], "needsAction");
+        assert_eq!(out[3]["optional"], false);
+    }
+
+    /// Removal is "send the list without them" — there is no remove call — and
+    /// it must not disturb anybody else on the way.
+    #[test]
+    fn removing_a_guest_leaves_everyone_elses_answer_alone() {
+        let out = attendees_for_edit(&three(), &guests_without(&three(), "petya@x.com"));
+
+        assert_eq!(out.len(), 2, "Petya should be the only one gone");
+        assert!(
+            !out.iter().any(|a| a["email"] == "petya@x.com"),
+            "the removed guest is still on the list"
+        );
+        assert_eq!(out[0]["responseStatus"], "accepted", "Ana's answer moved during a removal");
+        assert_eq!(out[0]["comment"], "running 5 late");
+    }
+
+    /// The one field the form may overrule, and it must overrule *only* that
+    /// one: a version that rebuilt the attendee from the form would pass an
+    /// assertion on `optional` while quietly resetting the answer beside it.
+    #[test]
+    fn marking_a_guest_optional_changes_that_flag_and_nothing_else() {
+        // Ana becomes optional, Petya stops being: both directions, so the
+        // flag cannot be satisfied by a version that always sends `true`.
+        let mut wanted = guests_of(&three());
+        wanted[0].optional = true;
+        wanted[2].optional = false;
+        let out = attendees_for_edit(&three(), &wanted);
+
+        assert_eq!(out[0]["optional"], true, "Ana was not made optional");
+        assert_eq!(out[0]["responseStatus"], "accepted", "Ana's answer moved with her flag");
+        assert_eq!(out[0]["displayName"], "Ana");
+        assert_eq!(out[2]["optional"], false, "Petya was not made required");
+        assert_eq!(out[2]["responseStatus"], "declined");
+    }
+
+    /// §5: a duplicate address is a no-op, not an error and not a second row.
+    #[test]
+    fn a_duplicate_address_adds_no_second_row() {
+        let out = attendees_for_edit(&three(), &guests_plus(&three(), "ana@x.com"));
+        assert_eq!(out.len(), 3, "Ana was invited twice");
+
+        // And the same for two mentions of somebody genuinely new.
+        let twice = attendees_for_edit(&[], &guests_plus(&[], "dan@x.com")
+            .into_iter()
+            .chain(guests_plus(&[], "dan@x.com"))
+            .collect::<Vec<_>>());
+        assert_eq!(twice.len(), 1, "a new address was added twice");
+    }
+
+    /// Addresses are compared case-insensitively and trimmed. Typing `Ana@X.com`
+    /// beside a stored `ana@x.com` is the same person: treated otherwise, the
+    /// list goes out with Ana twice — the second entry carrying no answer, which
+    /// is the reset this design is about, wearing a duplicate's clothes.
+    #[test]
+    fn an_address_that_differs_only_in_case_or_spacing_is_the_same_person() {
+        let mut wanted = guests_of(&three());
+        wanted[0].email = " Ana@X.com ".into();
+        let out = attendees_for_edit(&three(), &wanted);
+        assert_eq!(out.len(), 3, "Ana was treated as a second person");
+        assert_eq!(out[0]["email"], "ana@x.com", "the stored spelling must win");
+        assert_eq!(out[0]["responseStatus"], "accepted");
+    }
+
+    /// The premise the "send nothing when nothing changed" rule rests on: an
+    /// untouched list must serialize **exactly** as [`attendees_verbatim`] does,
+    /// so equality between the two means "the user changed nothing" and needs no
+    /// second definition of sameness to keep in step.
+    #[test]
+    fn an_unchanged_list_serializes_exactly_as_the_stored_one() {
+        let unchanged = attendees_for_edit(&three(), &guests_of(&three()));
+        assert_eq!(unchanged, attendees_verbatim(&three()));
+
+        // And order is not part of it: the form renders from a list it may
+        // reorder, and a reshuffle nobody asked for must not read as a change.
+        let mut shuffled_in = guests_of(&three());
+        shuffled_in.rotate_right(1);
+        let shuffled = attendees_for_edit(&three(), &shuffled_in);
+        assert_eq!(shuffled, attendees_verbatim(&three()), "a reordered list read as a change");
+    }
+
+    /// Removing everybody is a thing a user can ask for, and it is not the same
+    /// as not touching the list — see [`crate::write::EventFields::guests`].
+    #[test]
+    fn removing_everyone_sends_an_empty_list_rather_than_the_old_one() {
+        assert!(attendees_for_edit(&three(), &[]).is_empty());
     }
 
     #[test]
@@ -3227,6 +3538,7 @@ mod tests {
             },
             tz: "Europe/Sofia".into(),
             recurrence: Some(Some("RRULE:FREQ=WEEKLY".into())),
+            guests: None,
         }
     }
 
@@ -3481,6 +3793,10 @@ mod tests {
             when: crate::write::When::Timed { start_ms, end_ms },
             tz: "Europe/Sofia".into(),
             recurrence: None,
+            // The guest list was not touched. Every edit test that predates
+            // guest editing says so through this field, which is what keeps
+            // them assertions about the fields they are actually named for.
+            guests: None,
         }
     }
 
@@ -4073,6 +4389,274 @@ mod tests {
             requests(&server).await.is_empty(),
             "a save that changed nothing still went to Google"
         );
+    }
+
+    /// [`form`] with a guest list attached — what a save from a form that
+    /// *does* offer guest editing sends.
+    fn form_with_guests(
+        summary: &str,
+        start_ms: i64,
+        end_ms: i64,
+        guests: Vec<crate::write::Guest>,
+    ) -> crate::write::EventFields {
+        crate::write::EventFields { guests: Some(guests), ..form(summary, start_ms, end_ms) }
+    }
+
+    /// **Spec §7, on the wire: the assertion the whole design exists for.**
+    ///
+    /// Three attendees, one of them `accepted`, gains a fourth — and the
+    /// request must carry the first three with their own `responseStatus`
+    /// intact. Asserted with `body_json` against the **whole document**, not
+    /// with a matcher on part of it: a partial matcher passes just as happily
+    /// when the body also carries a `summary` nobody typed, and the failure
+    /// mode here is a field that should not be in the body at all.
+    ///
+    /// Nothing else changed, so `attendees` is the only key. That is itself
+    /// load bearing — a body that also resent the title would prove the diff
+    /// discipline had been abandoned along with the echo-back.
+    #[tokio::test]
+    async fn adding_a_guest_resends_the_whole_list_with_every_answer_intact() {
+        let mut ev = stored(three());
+        ev.summary = Some("Lunch".into());
+        ev.start_utc = OCCURRENCE;
+        ev.end_utc = OCCURRENCE + HOUR;
+        let (pool, _id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+
+        let expected = serde_json::json!({
+            "attendees": [
+                { "email": "ana@x.com", "responseStatus": "accepted", "optional": false,
+                  "additionalGuests": 1, "displayName": "Ana", "comment": "running 5 late" },
+                { "email": "me@x.com", "responseStatus": "needsAction", "optional": false,
+                  "additionalGuests": 0 },
+                { "email": "petya@x.com", "responseStatus": "declined", "optional": true,
+                  "additionalGuests": 2 },
+                { "email": "dan@x.com", "responseStatus": "needsAction", "optional": false,
+                  "additionalGuests": 0 },
+            ]
+        });
+
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/ev1"))
+            .and(wiremock::matchers::body_json(expected))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "ev1", "status": "confirmed", "etag": "\"e2\"",
+                "summary": "Lunch",
+                "start": {"dateTime": omacal_sync::to_rfc3339(OCCURRENCE)},
+                "end":   {"dateTime": omacal_sync::to_rfc3339(OCCURRENCE + HOUR)}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let after = form_with_guests(
+            "Lunch",
+            OCCURRENCE,
+            OCCURRENCE + HOUR,
+            guests_plus(&three(), "dan@x.com"),
+        );
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        update_via_client(&pool, "all", OCCURRENCE, ev, "cal@x.com", "UTC", after, "none", &client)
+            .await
+            .unwrap();
+    }
+
+    /// A whole-list replace built from a stale read un-invites whoever was
+    /// added elsewhere since, so the write must say **which version it was
+    /// built from** (spec §2). The etag path already exists; this is what
+    /// stops a guest change being the one write that forgets to use it.
+    #[tokio::test]
+    async fn a_guest_change_is_conditioned_on_the_version_it_was_built_from() {
+        let mut ev = stored(three()); // etag "old"
+        ev.summary = Some("Lunch".into());
+        ev.start_utc = OCCURRENCE;
+        ev.end_utc = OCCURRENCE + HOUR;
+        let (pool, _id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/ev1"))
+            .and(wiremock::matchers::header("if-match", "\"old\""))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "ev1", "status": "confirmed", "etag": "\"e2\"",
+                "summary": "Lunch",
+                "start": {"dateTime": omacal_sync::to_rfc3339(OCCURRENCE)},
+                "end":   {"dateTime": omacal_sync::to_rfc3339(OCCURRENCE + HOUR)}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let after = form_with_guests(
+            "Lunch",
+            OCCURRENCE,
+            OCCURRENCE + HOUR,
+            guests_without(&three(), "petya@x.com"),
+        );
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        update_via_client(&pool, "all", OCCURRENCE, ev, "cal@x.com", "UTC", after, "none", &client)
+            .await
+            .unwrap();
+    }
+
+    /// **A 412 on a guest-list change is reported, never retried.**
+    ///
+    /// Every other field in an edit body is a diff, so rebuilding it against a
+    /// fresh read leaves the other person's change standing. `attendees` is not
+    /// a diff — it is the whole list as omacal last read it, and a 412 is
+    /// Google saying that reading is out of date. A retry would send the stale
+    /// list over the current one and silently un-invite anyone added since.
+    ///
+    /// Witnessed by the **absence of a second PATCH**, and by no GET at all: a
+    /// version that re-read the event in order to retry would leave a GET in
+    /// the log even if the second write then failed for another reason.
+    #[tokio::test]
+    async fn a_guest_list_conflict_is_reported_rather_than_retried_over_the_current_list() {
+        let mut ev = stored(three());
+        ev.summary = Some("Lunch".into());
+        ev.start_utc = OCCURRENCE;
+        ev.end_utc = OCCURRENCE + HOUR;
+        let (pool, _id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/ev1"))
+            .respond_with(wiremock::ResponseTemplate::new(412))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let after = form_with_guests(
+            "Lunch",
+            OCCURRENCE,
+            OCCURRENCE + HOUR,
+            guests_without(&three(), "petya@x.com"),
+        );
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        let err = update_via_client(
+            &pool, "all", OCCURRENCE, ev, "cal@x.com", "UTC", after, "none", &client,
+        )
+        .await
+        .expect_err("a lost race on a guest list must not be swallowed");
+
+        assert_eq!(err.to_string(), CONFLICT_GUESTS);
+        assert_eq!(
+            methods_and_paths(&requests(&server).await),
+            vec!["PATCH /calendars/cal%40x.com/events/ev1"],
+            "the stale guest list was sent a second time, or re-read in order to be"
+        );
+    }
+
+    /// And the other half of that rule, so it cannot be satisfied by refusing
+    /// to retry *anything*: an edit that leaves the guest list alone still gets
+    /// its retry, and the other person's change still survives it. The two
+    /// arms are one `if` apart, and only a pair of tests can say the `if` is
+    /// there.
+    #[tokio::test]
+    async fn a_conflict_on_an_edit_that_touches_no_guests_still_retries() {
+        let mut ev = stored(three());
+        ev.summary = Some("Lunch".into());
+        ev.location = Some("Room 4A".into());
+        ev.start_utc = OCCURRENCE;
+        ev.end_utc = OCCURRENCE + HOUR;
+        let (pool, id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::header("if-match", "\"old\""))
+            .respond_with(wiremock::ResponseTemplate::new(412))
+            .expect(1)
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/ev1"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "ev1", "status": "confirmed", "etag": "\"fresh\"",
+                "summary": "Lunch with Ana", "location": "Room 4A",
+                "start": {"dateTime": omacal_sync::to_rfc3339(OCCURRENCE)},
+                "end":   {"dateTime": omacal_sync::to_rfc3339(OCCURRENCE + HOUR)}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::header("if-match", "\"fresh\""))
+            .and(wiremock::matchers::body_json(serde_json::json!({"location": "Room 5"})))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "ev1", "status": "confirmed", "etag": "\"e3\"",
+                "summary": "Lunch with Ana", "location": "Room 5",
+                "start": {"dateTime": omacal_sync::to_rfc3339(OCCURRENCE)},
+                "end":   {"dateTime": omacal_sync::to_rfc3339(OCCURRENCE + HOUR)}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        // The guest list is handed over **unchanged** rather than omitted: the
+        // form always sends one, so "no guest change" has to mean "the same
+        // list", not "the field was absent". A rule keyed on `guests.is_some()`
+        // rather than on the body would fail here, which is the point.
+        let after =
+            form_with_guests("Lunch", OCCURRENCE, OCCURRENCE + HOUR, guests_of(&three()));
+        let after = crate::write::EventFields { location: Some("Room 5".into()), ..after };
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        update_via_client(&pool, "all", OCCURRENCE, ev, "cal@x.com", "UTC", after, "all", &client)
+            .await
+            .unwrap();
+
+        let (row, _, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
+        assert_eq!(row.location.as_deref(), Some("Room 5"));
+        assert_eq!(row.summary.as_deref(), Some("Lunch with Ana"), "their change was reverted");
+    }
+
+    /// A guest list the user did not touch sends **no `attendees` at all**.
+    ///
+    /// Absent means "leave it alone", which is the only safe instruction for a
+    /// whole-list replace built from a possibly-stale read. A form that resent
+    /// the list on every save would rewrite the attendees of every event it
+    /// ever touched, from whatever omacal happened to hold.
+    #[test]
+    fn a_guest_list_that_did_not_change_sends_no_attendees() {
+        let mut ev = stored(three());
+        ev.summary = Some("Lunch".into());
+        ev.start_utc = OCCURRENCE;
+        ev.end_utc = OCCURRENCE + HOUR;
+
+        let after =
+            form_with_guests("Lunch", OCCURRENCE, OCCURRENCE + HOUR, guests_of(&three()));
+        let body = edit_patch_body(&ev, OCCURRENCE, OCCURRENCE + HOUR, OCCURRENCE, "UTC", &after);
+        assert_eq!(body, serde_json::json!({}), "an untouched guest list reached the wire");
+
+        // And a path that offers no guest editing at all says the same thing a
+        // different way, which is what keeps a drag structurally unable to
+        // rewrite a guest list.
+        let untouched = form("Lunch", OCCURRENCE, OCCURRENCE + HOUR);
+        assert!(untouched.guests.is_none());
+        let body =
+            edit_patch_body(&ev, OCCURRENCE, OCCURRENCE + HOUR, OCCURRENCE, "UTC", &untouched);
+        assert_eq!(body, serde_json::json!({}));
+    }
+
+    /// …and a guest change on its own is **not** an empty body, so the two
+    /// no-op guards do not swallow the one edit this feature exists to make.
+    #[test]
+    fn a_guest_change_alone_is_a_real_edit() {
+        let mut ev = stored(three());
+        ev.summary = Some("Lunch".into());
+        ev.start_utc = OCCURRENCE;
+        ev.end_utc = OCCURRENCE + HOUR;
+
+        let after = form_with_guests(
+            "Lunch",
+            OCCURRENCE,
+            OCCURRENCE + HOUR,
+            guests_without(&three(), "petya@x.com"),
+        );
+        let body = edit_patch_body(&ev, OCCURRENCE, OCCURRENCE + HOUR, OCCURRENCE, "UTC", &after);
+
+        assert_ne!(body, serde_json::json!({}), "a removal was read as a no-op and dropped");
+        assert_eq!(body["attendees"].as_array().map(Vec::len), Some(2));
+        assert!(body.get("summary").is_none(), "an untouched title rode along with the guests");
     }
 
     /// The zone rule, as a pure function of the two zones in play. A timed

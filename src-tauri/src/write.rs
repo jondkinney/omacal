@@ -23,6 +23,48 @@ pub(crate) struct EventFields {
     /// `Some(None)` — the user chose Never; send `null`.
     /// `Some(Some(rule))` — send `[rule]`.
     pub recurrence: Option<Option<String>>,
+    /// **The guest list the user wants the event to end up with**, or `None`
+    /// for "the guest list was not touched".
+    ///
+    /// The same absent/present distinction the rest of this struct runs on, and
+    /// here it is load bearing rather than tidy. Google's `attendees` is a
+    /// whole-list replace (guest-list spec §2), so a save that resent the list
+    /// every time would rewrite every attendee on the event from whatever
+    /// omacal last read — quietly un-inviting anyone added elsewhere since. A
+    /// path that does not offer guest editing (a drag) sends `None` and cannot
+    /// touch the list at all.
+    ///
+    /// `Some(vec![])` is not the same as `None`: it means *remove everyone*,
+    /// which is a thing a user can ask for. There is no "remove" call.
+    ///
+    /// Deliberately not a diff. The form knows the list it is showing, not the
+    /// operations that produced it, and turning a target list back into a delta
+    /// would be guesswork — see [`crate::events::attendees_for_edit`], which is
+    /// where the target is reconciled against what is actually stored.
+    ///
+    /// **Read by the edit path only.** A create builds its body from these
+    /// fields directly and ignores this one; inviting guests on a brand-new
+    /// event is not in this pass, and nothing sets it on that path.
+    pub guests: Option<Vec<Guest>>,
+}
+
+/// One guest, as the form names them.
+///
+/// Two fields, because two are all the user can author: an address, and whether
+/// the person is optional. Everything else an attendee carries —
+/// `responseStatus`, `displayName`, `comment`, `additionalGuests` — belongs to
+/// that person rather than to whoever is editing, and is echoed back from what
+/// is stored rather than sent from here. That asymmetry *is* guest-list spec
+/// §2, expressed as a type: there is no field on this struct through which a
+/// form could overwrite somebody's answer.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Guest {
+    pub email: String,
+    /// Google's `optional`. Absent reads as false, which is what an ordinary
+    /// invitation is.
+    #[serde(default)]
+    pub optional: bool,
 }
 
 /// When an event happens.
@@ -296,6 +338,12 @@ pub(crate) struct EventInput {
     /// Absent when the user did not touch Repeat.
     #[serde(default)]
     pub repeat: Option<String>,
+    /// Absent when the user did not touch the guest list — see
+    /// [`EventFields::guests`], which this becomes unchanged. `#[serde(default)]`
+    /// so every payload written before this field existed still deserializes,
+    /// and so a caller that has no guest editing (a drag) simply omits it.
+    #[serde(default)]
+    pub guests: Option<Vec<Guest>>,
 }
 
 /// [`When`] as the UI sends it. A separate type for the same reason
@@ -340,6 +388,7 @@ pub(crate) fn fields_from_input(input: EventInput) -> EventFields {
         },
         tz: input.tz,
         recurrence: input.repeat.map(|r| rrule_for(&r)),
+        guests: input.guests,
     }
 }
 
@@ -522,6 +571,7 @@ mod tests {
             when: When::Timed { start_ms: 1_785_398_400_000, end_ms: 1_785_400_200_000 },
             tz: "Europe/Sofia".into(),
             recurrence: None,
+            guests: None,
         }
     }
 
@@ -847,6 +897,7 @@ mod tests {
             },
             tz: "Europe/Sofia".into(),
             repeat: None,
+            guests: None,
         }
     }
 
