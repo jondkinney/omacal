@@ -1,6 +1,7 @@
 <!-- ui/src/lib/EventPopover.svelte -->
 <script lang="ts">
   import { onMount, tick } from 'svelte';
+  import { escapeCloses } from './dismiss.svelte';
   import { placePopover, type Rect } from './position';
   import { descriptionSegments } from './sanitize';
   import { occurrenceDate } from './eventform';
@@ -224,12 +225,8 @@
   // mid-submit (see `busy` above) can drop focus to `<body>`, exactly the
   // failure `CalendarPopover`'s own comment documents — nothing short of
   // `window` hears Escape from there.
-  function onKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape') onclose();
-  }
+  escapeCloses(() => true, () => onclose());
 </script>
-
-<svelte:window onkeydown={onKeydown} />
 
 <!-- A sibling of `.pop`, not a wrapper around it, so a click inside the
      panel — the guest list included — never reaches this button. -->

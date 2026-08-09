@@ -1,5 +1,6 @@
 <!-- ui/src/lib/CalendarPopover.svelte -->
 <script lang="ts">
+  import { escapeCloses } from './dismiss.svelte';
   import CalendarList from './CalendarList.svelte';
   import type { Calendar } from './calendars';
 
@@ -30,17 +31,9 @@
     open = false;
   }
 
-  // A window-level listener, not one hung on the trigger/panel: focus does
-  // not stay put while this is open. Tab once from the trigger and it lands
-  // on `.scrim`, a *sibling* of `.panel` that neither of those two elements'
-  // keydown would ever hear from. Worse, disabling a focused row's checkbox
-  // mid-toggle (see `CalendarList`'s `busy`) drops focus to <body> — nothing
-  // short of `document`/`window` hears Escape from there. `<svelte:window>` is
-  // the answer to the leak this was originally written to avoid: Svelte
-  // removes it on unmount itself, so there's nothing left dangling.
-  function onKeydown(e: KeyboardEvent) {
-    if (open && e.key === 'Escape') close();
-  }
+  // Only while open, which is this panel's whole guard — see `escapeCloses`
+  // for why the listener is on `window` and why the guard is the caller's.
+  escapeCloses(() => open, close);
 </script>
 
 <!--
@@ -56,8 +49,6 @@
   spec passes on that alone. Keeping the effect would have been keeping a line
   that could no longer fire.
 -->
-<svelte:window onkeydown={onKeydown} />
-
 <div class="wrap">
   <button class="trigger" onclick={toggle} aria-expanded={open}>
     Calendars <span class="count">{shown}</span>

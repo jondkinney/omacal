@@ -2,6 +2,7 @@
 <script lang="ts">
   import { syncLight, type AppStatus } from './status';
   import type { Calendar } from './calendars';
+  import { escapeCloses } from './dismiss.svelte';
   import CalendarPopover from './CalendarPopover.svelte';
   import SettingsModal from './SettingsModal.svelte';
   import ViewSwitcher, { type View } from './ViewSwitcher.svelte';
@@ -122,12 +123,8 @@
   // to opening the modal, so `menuOpen` is already false whenever the modal is
   // up. A guard that can never fire is a guard no test can prove, and this
   // file has been through that once already.
-  function onKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape' && menuOpen && !open) menuOpen = false;
-  }
+  escapeCloses(() => menuOpen && !open, () => (menuOpen = false));
 </script>
-
-<svelte:window onkeydown={onKeydown} />
 
 <!-- `data-tauri-drag-region` here and on the title, not on a wrapper around
      everything: with `titleBarStyle: "Overlay"` there is no title bar left to
