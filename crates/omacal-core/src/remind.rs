@@ -136,9 +136,20 @@ pub fn due_reminders(
             continue;
         }
 
-        // Rule 2. A timed occurrence keeps its own time of day; applying the
-        // midnight derivation unconditionally would fire every 09:00 meeting's
-        // reminder at half past midnight.
+        // Rule 2, and it does real work rather than restating an invariant.
+        //
+        // An expanded all-day occurrence arrives as midnight in the *event's*
+        // `start_tz` — that is the zone `commands::occurrences` hands to
+        // `expand`, and the zone `recur` re-anchors each occurrence in. What
+        // §2.1 asks for is midnight in the **calendar's** zone, and the store
+        // keeps those as two separate columns precisely because they diverge:
+        // a calendar whose zone was changed in Google's settings still has
+        // events stamped with the zone that was current when sync stored them.
+        // When they differ this line is the only thing that reconciles them.
+        //
+        // The `else` is equally load-bearing in the other direction: a timed
+        // occurrence keeps its own time of day, and anchoring it to midnight
+        // would fire every 09:00 meeting's reminder at half past midnight.
         let anchor_ms = if ev.is_all_day {
             midnight_of_instant_in_zone(ev.occurrence_start_ms, &ev.calendar_tz)
         } else {
@@ -207,16 +218,32 @@ mod tests {
 
     const AUCKLAND: &str = "Pacific/Auckland";
 
-    /// Midnight on 2026-08-10 in `Pacific/Auckland`, which is 2026-08-09T12:00Z.
+    /// Midnight on 2026-08-10 in `Pacific/Auckland` — 2026-08-09T12:00Z. The
+    /// answer the all-day test expects.
     ///
-    /// The zone is the fixture. Auckland is UTC+12 all August (New Zealand's
-    /// DST runs late September to early April), so this instant's date read in
-    /// **UTC** is 2026-08-09 — a different day from its date read in Auckland.
-    /// A fixture in `America/New_York` cannot tell those two readings apart:
-    /// midnight there is 04:00Z the *same* date, so the all-day test would pass
-    /// against an implementation that ignored the calendar's zone entirely.
-    /// That is the specific way this class of defect has survived here before.
+    /// Auckland is UTC+12 all August (New Zealand's DST runs late September to
+    /// early April), so this instant's date read in **UTC** is 2026-08-09 — a
+    /// different day. A fixture in `America/New_York` cannot tell those two
+    /// readings apart: midnight there is 04:00Z on the *same* date.
     const AUCKLAND_MIDNIGHT_AUG10: i64 = 1_786_276_800_000;
+
+    /// Midnight on 2026-08-10 in `Europe/Sofia` — 2026-08-09T21:00Z. The
+    /// all-day test's *input*, and it is deliberately not the constant above.
+    ///
+    /// This is the divergence the store already models: an all-day event's
+    /// `events.start_tz` is the zone Google sent (or the calendar's zone as it
+    /// stood when sync ran), while `calendars.timezone` is the zone the
+    /// calendar has *now*. `commands::occurrences` anchors an expanded all-day
+    /// occurrence in `start_tz` — so a calendar whose zone has since changed,
+    /// or an event Google stamped with a zone of its own, arrives here as
+    /// midnight in a zone that is **not** `calendar_tz`. `omacal-store` has its
+    /// own test for exactly that divergence
+    /// (`events_in_window_returns_the_calendars_own_timezone_not_the_events`).
+    ///
+    /// Nine hours apart, and on the *same civil date* in both zones, so the
+    /// all-day test below is purely a question of which midnight — not of which
+    /// day.
+    const SOFIA_MIDNIGHT_AUG10: i64 = 1_786_309_200_000;
 
     fn popup(minutes: i64) -> Reminder {
         Reminder { method: "popup".into(), minutes }
@@ -318,18 +345,32 @@ mod tests {
     /// An all-day occurrence starts at midnight **in the calendar's own zone**,
     /// so "30 minutes before" is 23:30 the evening before, in that zone.
     ///
-    /// The fixture check is load-bearing: if the constants ever stop putting
-    /// the Auckland date and the UTC date on different days, this test goes on
-    /// passing while no longer witnessing the rule it is named for.
+    /// The input is midnight in `Europe/Sofia` while the calendar is in
+    /// `Pacific/Auckland`, and that choice is the whole test. An earlier
+    /// version of this fixture fed an instant that was *already* midnight in
+    /// the calendar's zone, which made the derivation the identity function:
+    /// the rule could be deleted outright and every test still passed. A
+    /// fixture that cannot distinguish "the rule ran" from "the rule was
+    /// skipped" witnesses nothing, however carefully its other premises are
+    /// asserted.
+    ///
+    /// The three premises below are what keep that from happening again, and
+    /// the first is the one that was missing.
     #[test]
     fn an_all_day_occurrence_is_anchored_to_midnight_in_the_calendars_zone() {
-        assert_eq!(
-            crate::zone::date_in_zone(AUCKLAND_MIDNIGHT_AUG10, AUCKLAND),
-            "2026-08-10",
-            "fixture check: the anchor must be midnight on the 10th in Auckland"
+        assert_ne!(
+            SOFIA_MIDNIGHT_AUG10, AUCKLAND_MIDNIGHT_AUG10,
+            "fixture check: the input must NOT already be the answer, or deleting \
+             the derivation changes nothing and this test proves nothing"
         );
         assert_eq!(
-            crate::zone::date_in_zone(AUCKLAND_MIDNIGHT_AUG10, "UTC"),
+            crate::zone::date_in_zone(SOFIA_MIDNIGHT_AUG10, AUCKLAND),
+            "2026-08-10",
+            "fixture check: input and answer share a civil date in the calendar's \
+             zone, so this is a question of which midnight, not which day"
+        );
+        assert_eq!(
+            crate::zone::date_in_zone(SOFIA_MIDNIGHT_AUG10, "UTC"),
             "2026-08-09",
             "fixture check: the same instant must fall on a different UTC date, \
              or this test cannot tell the calendar's zone from UTC"
@@ -338,14 +379,59 @@ mod tests {
         let mut ev = timed(1, vec![popup(30)]);
         ev.is_all_day = true;
         ev.calendar_tz = AUCKLAND.into();
-        ev.occurrence_start_ms = AUCKLAND_MIDNIGHT_AUG10;
-        ev.occurrence_end_ms = AUCKLAND_MIDNIGHT_AUG10 + 24 * HOUR;
+        ev.occurrence_start_ms = SOFIA_MIDNIGHT_AUG10;
+        ev.occurrence_end_ms = SOFIA_MIDNIGHT_AUG10 + 24 * HOUR;
 
         let out = due(&[ev], AUCKLAND_MIDNIGHT_AUG10 - 2 * HOUR);
         assert_eq!(
             triples(&out),
             vec![(1, 30, AUCKLAND_MIDNIGHT_AUG10 - 30 * MINUTE)],
-            "an all-day reminder must count back from midnight in the calendar's zone"
+            "an all-day reminder must count back from midnight in the calendar's \
+             own zone, not from the instant the expansion happened to produce"
+        );
+    }
+
+    /// The occurrence key is the **anchor**, not the raw start, which is what
+    /// makes a recorded reminder still match itself after a restart.
+    ///
+    /// Same divergent fixture as above: recording the anchor must suppress the
+    /// reminder, and recording the raw instant must not, because the raw
+    /// instant is not what this function computes.
+    #[test]
+    fn an_all_day_occurrence_is_keyed_by_its_anchor_not_its_raw_start() {
+        let all_day = || {
+            let mut ev = timed(1, vec![popup(30)]);
+            ev.is_all_day = true;
+            ev.calendar_tz = AUCKLAND.into();
+            ev.occurrence_start_ms = SOFIA_MIDNIGHT_AUG10;
+            ev.occurrence_end_ms = SOFIA_MIDNIGHT_AUG10 + 24 * HOUR;
+            ev
+        };
+        let now = AUCKLAND_MIDNIGHT_AUG10 - 2 * HOUR;
+
+        let by_anchor: HashSet<FiredKey> = [FiredKey {
+            event_id: 1,
+            occurrence_ms: AUCKLAND_MIDNIGHT_AUG10,
+            minutes: 30,
+        }]
+        .into_iter()
+        .collect();
+        assert!(
+            due_reminders(&[all_day()], &by_anchor, now, HORIZON).is_empty(),
+            "a reminder recorded under the anchor must not be posted twice"
+        );
+
+        let by_raw_start: HashSet<FiredKey> = [FiredKey {
+            event_id: 1,
+            occurrence_ms: SOFIA_MIDNIGHT_AUG10,
+            minutes: 30,
+        }]
+        .into_iter()
+        .collect();
+        assert_eq!(
+            triples(&due_reminders(&[all_day()], &by_raw_start, now, HORIZON)),
+            vec![(1, 30, AUCKLAND_MIDNIGHT_AUG10 - 30 * MINUTE)],
+            "the raw expansion instant is not the key this function computes"
         );
     }
 
