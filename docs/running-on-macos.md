@@ -115,17 +115,23 @@ the loopback listener. Close it and retry.
 
 ## What is not built yet
 
-Notifications and the tray. Editing the guest list — you can see who is coming,
-but omacal never adds or removes anyone. Drag to create, move or resize. Search.
-Per-calendar colour overrides. Offline writes: a save needs the network and says
-so rather than queueing.
+Editing the guest list — you can see who is coming, but omacal never adds or
+removes anyone. Drag to create, move or resize. Search. Per-calendar colour
+overrides. Offline writes: a save needs the network and says so rather than
+queueing.
 
-One known display defect is recorded in
-`docs/superpowers/specs/2026-08-08-omacal-form-time-boundary-design.md` §7: a
-time typed into a daylight-saving spring-forward gap refuses to save without
-saying why. It loses no data.
+**Reliable notifications on macOS.** `UNUserNotificationCenter` wants a correctly
+signed bundle and this one is unsigned, so a reminder may simply never appear.
+The path is wired and fails quietly by design — no error banner, no retry loop,
+and the reminder is still recorded as fired so a refusing transport cannot turn
+into an unbounded retry. The scheduler, the tray and start-on-login all work
+regardless; it is only the final hand-off to macOS that is unreliable. Omarchy
+is the platform this was built for, where it goes over D-Bus to mako.
 
-§7 used to list a second — all-day events placed in the grid by your system zone
-rather than the calendar's, so a calendar in a distant timezone drew a chip a day
-out. That is fixed (§7.1 is closed): an all-day event now goes where its own
-calendar's date puts it, in all four grids.
+All three residuals in §7 of
+`docs/superpowers/specs/2026-08-08-omacal-form-time-boundary-design.md` are now
+closed: all-day placement by the calendar's own date (§7.1), the **All day**
+toggle no longer producing a span Save refuses or quietly writing times invented
+from the calendar's UTC offset (§7.2), and a time typed into a spring-forward
+gap now being named and explained rather than leaving Save dead with no field
+looking wrong (§7.3).

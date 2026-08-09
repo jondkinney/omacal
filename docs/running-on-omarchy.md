@@ -64,6 +64,34 @@ Check before you bother:
 Nothing there means you need a Secret Service provider running in your session.
 That is a gap in omacal's Linux support, not a mistake in your setup.
 
+## Notifications
+
+This is the platform they were built for. Reminder times come from each event's
+own Google `reminders`, falling back to the calendar's `defaultReminders`, so
+what fires here matches what your phone does. Only `popup` reminders fire —
+Google sends the `email` ones from its own servers, and firing those locally
+would double every one.
+
+They go out over D-Bus to `org.freedesktop.Notifications`, which on Omarchy
+means **mako**. As with the Secret Service above, that needs something actually
+running to receive them:
+
+    busctl --user list | grep -i Notifications
+
+Nothing there means no daemon is listening and reminders will go nowhere. omacal
+treats a refused post as expected rather than as an error — it logs it, records
+the reminder as fired, and carries on, because the alternative is retrying the
+same failure on every pass forever.
+
+Only calendars you have **selected** fire, not everything you sync. Deselecting
+a calendar cancels its pending reminders, which is the intended reading of that
+switch: if it is not worth drawing, it is not worth interrupting you.
+
+A reminder that came due while omacal was not running fires at the next launch,
+provided the event has not already ended. Closing the window **hides** it rather
+than quitting — the scheduler is the point, and a closed window that stopped
+firing reminders would be a bug. Quit from the tray when you mean it.
+
 ## Where things live
 
 | | macOS | Omarchy |

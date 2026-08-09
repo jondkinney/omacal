@@ -34,23 +34,32 @@ this occurrence, this and following, all events.
 
 **Sync** runs every five minutes, on window focus, and after every write.
 
+**Notifications** come from each event's own Google reminders, falling back to
+the calendar's defaults, so what fires here matches what your phone does. Only
+`popup` reminders fire — Google sends the email ones itself. One missed while
+the app was shut fires at the next launch if the meeting has not ended yet.
+There is a tray and start-on-login, and closing the window hides it rather than
+quitting, because a closed window that stopped firing reminders would be a bug.
+On macOS this needs a signed bundle to be reliable and omacal is unsigned, so
+the path is wired but allowed to fail quietly; Omarchy is where it is built to
+work, over D-Bus.
+
 ## What is not built
 
-Notifications and the tray. Editing the guest list (you can see who is coming,
-but omacal never adds or removes anyone). Drag to create, move or resize. Search.
-Per-calendar colour overrides. Offline writes — a save needs the network, and
-says so rather than queueing.
+Editing the guest list (you can see who is coming, but omacal never adds or
+removes anyone). Drag to create, move or resize. Search. Per-calendar colour
+overrides. Offline writes — a save needs the network, and says so rather than
+queueing.
 
-A known display defect: a time typed into an hour that does not exist on that
-date (a daylight-saving spring-forward) refuses to save without saying why. It
-loses no data. That and the other open residuals are recorded in
+All three residuals recorded in §7 of
 [`docs/superpowers/specs/2026-08-08-omacal-form-time-boundary-design.md`](docs/superpowers/specs/2026-08-08-omacal-form-time-boundary-design.md)
-§7.
-
-This list used to include a second one: all-day events placed in the grid by your
-system zone rather than the calendar's, so a calendar in a distant timezone drew
-a chip a day out. That is **fixed** (§7.1 is closed) — an all-day event now goes
-where its own calendar's date puts it, in all four grids.
+are now closed. All-day events are placed by their own calendar's date rather
+than your system zone (§7.1). Toggling **All day** off no longer lands on a span
+Save refuses, and no longer quietly writes times invented from the calendar's
+UTC offset (§7.2). A time typed into an hour that does not exist — a
+daylight-saving spring-forward — is still refused, which is correct, but the
+form now names it and says why instead of leaving Save dead with no field
+looking wrong (§7.3).
 
 ## Design and history
 
