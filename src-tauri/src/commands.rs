@@ -111,6 +111,21 @@ pub(crate) fn suppressed_slots(events: &[StoredEvent]) -> HashSet<(i64, &str, i6
 
 /// Expands one stored row into the concrete occurrences overlapping the window.
 pub(crate) fn occurrences(src: &StoredEvent, from_ms: i64, to_ms: i64) -> Vec<Interval> {
+    occurrences_limited(src, from_ms, to_ms, EXPAND_LIMIT)
+}
+
+/// [`occurrences`] with the expansion cap named by the caller.
+///
+/// Every grid asks for a week, a month or a year and `EXPAND_LIMIT` is sized
+/// for those. Search's fallback asks for *everything since a series began*, to
+/// find the last occurrence of one that ended years ago, and needs a larger
+/// bound — one it states rather than inherits.
+pub(crate) fn occurrences_limited(
+    src: &StoredEvent,
+    from_ms: i64,
+    to_ms: i64,
+    limit: u16,
+) -> Vec<Interval> {
     let Some(rule) = &src.recurrence else {
         let iv = Interval { start_ms: src.start_utc, end_ms: src.end_utc };
         return if iv.start_ms < to_ms && iv.end_ms > from_ms { vec![iv] } else { vec![] };
@@ -123,14 +138,14 @@ pub(crate) fn occurrences(src: &StoredEvent, from_ms: i64, to_ms: i64) -> Vec<In
         is_all_day: src.is_all_day,
         recurrence: &lines,
     };
-    match expand(&series, from_ms, to_ms, EXPAND_LIMIT) {
+    match expand(&series, from_ms, to_ms, limit) {
         Ok(e) => {
             if e.truncated {
                 // Surfaced rather than swallowed: a series this dense means the
                 // window is showing an incomplete picture.
                 tracing::warn!(
                     google_id = %src.google_id,
-                    limit = EXPAND_LIMIT,
+                    limit,
                     "recurrence expansion truncated"
                 );
             }

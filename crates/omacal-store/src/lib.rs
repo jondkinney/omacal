@@ -12,7 +12,7 @@ pub use calendars::{
 pub use reminders::{fired_keys, prune_fired, record_fired};
 pub use events::{
     delete_event, delete_series, event_by_id, event_for_write, events_in_window, exceptions_from,
-    upsert_event, Attendee, Reminder, Reminders, StoredEvent,
+    search_events, upsert_event, Attendee, Reminder, Reminders, StoredEvent,
 };
 
 /// Opens (creating if needed) the database at `url` and runs migrations.
