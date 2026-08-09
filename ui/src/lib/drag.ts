@@ -19,6 +19,36 @@
  *   epoch-rounding would offer 09:15 for a drop on the 09:30 line.
  */
 
+/**
+ * How far the pointer must travel, with the button held, before a press
+ * becomes a drag rather than a click (spec §4).
+ *
+ * Four pixels. Without it every click on an event is a potential fifteen-minute
+ * move, because no hand holds a mouse perfectly still between pressing and
+ * releasing — and a user who can no longer open an event by clicking it has
+ * lost more than dragging gains.
+ */
+export const DRAG_THRESHOLD_PX = 4;
+
+/** The snap interval (spec §5): fifteen minutes, which is how meetings are
+ *  actually scheduled and lands on clean times without fighting. */
+export const SNAP_MS = 15 * 60_000;
+
+/**
+ * Whether a press that has travelled `dx`, `dy` has become a drag.
+ *
+ * Straight-line distance rather than either axis alone: a diagonal wander of
+ * three pixels each way is five pixels of travel, and treating it as a click
+ * because neither component reached four would make the threshold mean
+ * something different in every direction.
+ *
+ * Here rather than in the component because it is arithmetic, and arithmetic
+ * in a Svelte file is arithmetic without a table.
+ */
+export function beganDrag(dx: number, dy: number, threshold: number = DRAG_THRESHOLD_PX): boolean {
+  return Math.hypot(dx, dy) >= threshold;
+}
+
 /** A span of time. The shape a drag produces and a write consumes. */
 export type Span = { startMs: number; endMs: number };
 

@@ -7,7 +7,20 @@
     event,
     placed,
     onopen,
-  }: { event: UiEvent; placed: Placed; onopen: (event: UiEvent, rect: Rect) => void } = $props();
+    ongrab,
+    offsetPct = 0,
+  }: {
+    event: UiEvent;
+    placed: Placed;
+    onopen: (event: UiEvent, rect: Rect) => void;
+    /** The pointer went down on this block. The grid decides whether that
+     *  becomes a drag — see `drag.ts`'s threshold — and this reports the press
+     *  rather than interpreting it. */
+    ongrab?: (event: UiEvent, e: PointerEvent) => void;
+    /** How far down the column this block is being dragged, as a percentage of
+     *  the column's height. Zero unless it is the block under the pointer. */
+    offsetPct?: number;
+  } = $props();
 
   const minutes = $derived((event.end_ms - event.start_ms) / 60_000);
 
@@ -36,15 +49,22 @@
   }
 </script>
 
+<!-- `top` stays a bare percentage while nothing is being dragged: wrapping it
+     in a `calc()` that adds zero renders the same but is not the same string,
+     and this component has committed screenshot baselines. -->
 <button
   class="ev {event.response}"
+  class:dragging={offsetPct !== 0}
   style="
-    top:{placed.top * 100}%; height:{placed.height * 100}%;
+    top:{offsetPct === 0
+      ? `${placed.top * 100}%`
+      : `calc(${placed.top * 100}% + ${offsetPct}%)`}; height:{placed.height * 100}%;
     left:calc({left}% + 3px); width:calc({width}% - 6px);
     --cal:{event.color}; z-index:{placed.column + 1};
   "
   title={event.title}
   onclick={open}
+  onpointerdown={(e) => ongrab?.(event, e)}
 >
   {#if event.response === 'needsAction'}<i class="rs">?</i>{/if}
   <b>{event.title}</b>
@@ -53,6 +73,12 @@
 </button>
 
 <style>
+  /* Lifted while dragging so it reads as picked up, and above every other
+     block so it is never hidden behind one it is passing over. No transition:
+     the block is following a pointer and easing would put it behind the
+     finger. */
+  .ev.dragging { z-index: 50 !important; opacity: 0.85; cursor: grabbing; }
+
   .ev {
     /* A <button> keeps native chrome in macOS WKWebView unless appearance is
        cleared. Not the cause of the corner artifact below — clearing it alone
