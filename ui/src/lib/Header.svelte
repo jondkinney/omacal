@@ -241,7 +241,19 @@
 </header>
 
 {#if settingsOpen}
-  <SettingsModal onclose={() => (settingsOpen = false)} />
+  <SettingsModal
+    accounts={status?.accounts ?? []}
+    {busy}
+    onclose={() => (settingsOpen = false)}
+    onSignIn={() => {
+      settingsOpen = false;
+      onSignIn();
+    }}
+    oncalendars={() => {
+      menuOpen = true;
+      open = true;
+    }}
+  />
 {/if}
 
 <!-- Below the header rather than inside it, and free to wrap. The likeliest

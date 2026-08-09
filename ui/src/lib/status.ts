@@ -31,8 +31,7 @@ export const syncNow = () => invoke<number>('sync_now');
 export type SyncState =
   /** A sync is in flight. Active. */
   | 'syncing'
-  /** Something failed and the calendar may be stale. The one state that has to
-   *  be noticed. */
+  /** Something failed. The one state that has to be noticed. */
   | 'failed'
   /** Nothing to be stale: signed out, or signed in and nothing fetched yet. */
   | 'never'
@@ -62,18 +61,29 @@ export type SyncState =
  *      nothing to sync. A red dot on a fresh install is the app telling a new
  *      user it is broken.
  *
- * `error` is `App`'s own error state, which is wider than sync — a write that
- * could not refresh sets it too. That is imprecise and deliberately so for
- * now: it is the only failure signal the header is given, the banner beneath
- * carries the words, and a light that under-reports failure would be worse
- * than one that occasionally over-reports it.
+ * `error` is `App`'s own error state, which is wider than sync: a write that
+ * could not refresh sets it too, and `AppStatus` carries no sync-specific
+ * failure field to narrow to. Keeping the wider signal is deliberate — it is
+ * the only failure the header is given, and under-reporting one is worse than
+ * occasionally over-reporting.
+ *
+ * **So the label does not claim it was a sync failure.** Saying "Last sync
+ * failed" when a *write* could not refresh states as fact something the source
+ * cannot support: over-reporting that a problem exists is defensible,
+ * misreporting which problem it is is not. The dot says something is wrong and
+ * the sentence says what, by carrying `App`'s own message rather than a
+ * category invented here.
+ *
+ * If it ever proves noisy — a transient write failure leaving the light red
+ * until the next operation — that is when a sync-specific field on `AppStatus`
+ * earns its cost. Not before.
  */
 export function syncLight(
   o: { connected: boolean; busy: boolean; error: string | null; lastSyncMs: number | null },
   now: number,
 ): { state: SyncState; label: string } {
   if (o.busy) return { state: 'syncing', label: 'Syncing now' };
-  if (o.error !== null) return { state: 'failed', label: 'Last sync failed' };
+  if (o.error !== null) return { state: 'failed', label: `Something went wrong: ${o.error}` };
   if (!o.connected) return { state: 'never', label: 'Not signed in' };
   if (o.lastSyncMs === null) return { state: 'never', label: 'Not synced yet' };
   return { state: 'synced', label: `Synced ${relativeTime(o.lastSyncMs, now)}` };

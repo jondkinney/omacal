@@ -2,7 +2,93 @@
 <script lang="ts">
   import { onMount } from 'svelte';
 
-  let { onclose }: { onclose: () => void } = $props();
+  import {
+    getSettings, minutesOf, msOfMinutes, setNotificationsEnabled, setSyncInterval,
+    type AppSettings,
+  } from './settings';
+
+  let {
+    accounts,
+    busy,
+    onclose,
+    onSignIn,
+    oncalendars,
+  }: {
+    /** The connected accounts, from `AppStatus`. Read only — this modal adds
+     *  one through `onSignIn` and cannot remove one, because nothing can yet. */
+    accounts: string[];
+    busy: boolean;
+    onclose: () => void;
+    onSignIn: () => void;
+    /** Opens the calendar picker, which still lives in the header's menu. See
+     *  the Calendars tab for why it is not in here yet. */
+    oncalendars: () => void;
+  } = $props();
+
+  /** The settings as the backend holds them, or `null` until they land. */
+  let settings = $state<AppSettings | null>(null);
+  /** What is in the interval box, in minutes, as a string — a form value, not a
+   *  number, so a half-typed "1" is not read as one minute mid-keystroke. */
+  let intervalText = $state('');
+  let note = $state<{ text: string; kind: 'info' | 'error' } | null>(null);
+
+  $effect(() => {
+    getSettings()
+      .then((s) => {
+        settings = s;
+        intervalText = String(minutesOf(s.syncIntervalMs));
+      })
+      .catch((e) => (note = { text: String(e), kind: 'error' }));
+  });
+
+  const floorMinutes = $derived(settings ? minutesOf(settings.minSyncIntervalMs) : 1);
+
+  /**
+   * Saves the interval and shows whatever comes back.
+   *
+   * Spec §3: the floor still applies and the UI says so rather than silently
+   * clamping — but **the refusal is `set_sync_interval`'s, not this form's**,
+   * and that is a decision the mutation sweep forced. A duplicate check here
+   * refused with its own wording, which meant no test could tell which of the
+   * two guards had fired: deleting the form's changed nothing anybody could
+   * observe, which is the definition of a rule that is not being tested. One
+   * authority, one message, and the form's job is to put it on screen.
+   *
+   * The integer check stays, because it is not a duplicate: the box is a
+   * string, and "abc" never reaches a command that could refuse it.
+   */
+  async function saveInterval() {
+    const minutes = Number(intervalText);
+    if (!Number.isFinite(minutes) || !Number.isInteger(minutes)) {
+      note = { text: 'Enter a whole number of minutes.', kind: 'error' };
+      return;
+    }
+    note = null;
+    try {
+      // The answer is deliberately **not** kept. Nothing on screen is derived
+      // from it — the box holds what was typed and the floor does not move —
+      // so assigning it changed nothing observable, which the sweep proved by
+      // deleting the assignment and reddening no test at all. What the save
+      // has to guarantee is that the value was *stored*, and the spec asserts
+      // that by reopening the modal, which re-fetches.
+      await setSyncInterval(msOfMinutes(minutes));
+      note = { text: 'Saved.', kind: 'info' };
+    } catch (e) {
+      note = { text: String(e), kind: 'error' };
+    }
+  }
+
+  async function toggleNotifications(on: boolean) {
+    note = null;
+    try {
+      settings = await setNotificationsEnabled(on);
+    } catch (e) {
+      note = { text: String(e), kind: 'error' };
+      // The click already flipped the checkbox; put it back to what the
+      // backend still holds, the same repair `CalendarPopover` makes.
+      settings = settings ? { ...settings } : null;
+    }
+  }
 
   /**
    * The four tabs of spec §3, in the order it lists them.
@@ -92,9 +178,90 @@
   </div>
 
   <div class="body" role="tabpanel" aria-label={tab}>
-    <!-- Task 2 fills this. Named rather than blank so that what is missing is
-         obvious to whoever opens it, including Plamen. -->
-    <p class="soon">{tab} settings are not built yet.</p>
+    {#if tab === 'General'}
+      <div class="row">
+        <label class="lab" for="sync-interval">Sync every</label>
+        <div class="inline">
+          <input
+            id="sync-interval"
+            type="number"
+            min={floorMinutes}
+            step="1"
+            bind:value={intervalText}
+            onkeydown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                saveInterval();
+              }
+            }}
+          />
+          <span class="unit">minutes</span>
+          <button type="button" onclick={saveInterval} disabled={!settings}>Save</button>
+        </div>
+      </div>
+      <!-- Said, not enforced silently. A value accepted and then quietly
+           changed is worse than one refused. -->
+      <p class="hint">
+        Not less than {floorMinutes} minute{floorMinutes === 1 ? '' : 's'} — Google's quota is
+        finite, and a desktop app has no business polling faster.
+      </p>
+
+    {:else if tab === 'Calendars'}
+      <!-- **Still in the header's menu, and this says where.** Moving the
+           picker's rows in here needs either a component extraction or a
+           rewrite, and spec §4 is explicit that the picker is rehomed rather
+           than rewritten — its `selected`/`sync_enabled` separation, its busy
+           set and its keyed each all have to travel unchanged. That is a
+           decision worth making deliberately rather than in passing, so it is
+           flagged rather than guessed at. Per-calendar colour lands here after
+           it. -->
+      <p class="soon">
+        Calendars are still in the menu for now.
+        <button type="button" class="link" onclick={() => { onclose(); oncalendars(); }}>
+          Open the calendar list
+        </button>
+      </p>
+
+    {:else if tab === 'Accounts'}
+      <ul class="accounts">
+        {#each accounts as email (email)}
+          <li>{email}</li>
+        {/each}
+      </ul>
+      {#if accounts.length === 0}
+        <p class="soon">No account is connected.</p>
+      {/if}
+      <button type="button" onclick={onSignIn} disabled={busy}>Add account</button>
+      <!-- Signing an account out is not a button: it means revoking a token,
+           clearing the Keychain entry and deleting that account's calendars and
+           their events. There is no command for it, and a control that only
+           half-did it would leave rows nothing can reach. -->
+      <p class="hint">Signing an account out is not built yet.</p>
+
+    {:else}
+      <label class="check">
+        <input
+          type="checkbox"
+          checked={settings?.notificationsEnabled ?? true}
+          disabled={!settings}
+          onchange={(e) => toggleNotifications(e.currentTarget.checked)}
+        />
+        Show reminders
+      </label>
+      <!-- This tab turns the machinery on and off; it does not invent a
+           reminder policy. What fires is still each event's own Google
+           reminders, which is what makes what omacal shows match what the
+           phone shows. -->
+      <p class="hint">
+        What fires is each event's own reminders from Google — omacal does not
+        invent its own schedule.
+      </p>
+      <p class="hint">The tray and start-on-login switches are not built yet.</p>
+    {/if}
+
+    {#if note}
+      <p class="note" class:err={note.kind === 'error'} data-testid="settings-note">{note.text}</p>
+    {/if}
   </div>
 </div>
 
@@ -124,6 +291,36 @@
                     background: color-mix(in srgb, var(--text) 7%, transparent); }
   .tabs button:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
 
-  .body { flex: 1; overflow-y: auto; padding: 14px; }
+  .body { flex: 1; overflow-y: auto; padding: 14px;
+          display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
   .soon { font-size: 11px; color: var(--muted); margin: 0; }
+
+  .row { display: flex; flex-direction: column; gap: 4px; }
+  .lab { font-size: 9.5px; color: var(--muted); letter-spacing: .05em; }
+  .inline { display: flex; align-items: center; gap: 6px; }
+  .unit { font-size: 11px; color: var(--muted); }
+  .hint { font-size: 10px; color: var(--muted); opacity: .85; line-height: 1.45; margin: 0;
+          max-width: 40ch; }
+
+  input[type='number'] { font: inherit; font-size: 12px; color: var(--text); width: 72px;
+                         background: color-mix(in srgb, var(--text) 5%, transparent);
+                         border: 1px solid var(--hairline); border-radius: 5px; padding: 4px 6px; }
+  input:focus { outline: 1px solid var(--accent); outline-offset: -1px; }
+
+  .check { display: flex; align-items: center; gap: 7px; font-size: 11.5px; cursor: pointer; }
+
+  .accounts { list-style: none; margin: 0; padding: 0; display: flex;
+              flex-direction: column; gap: 3px; font-size: 11.5px; }
+
+  .body button { font: inherit; font-size: 11px; color: var(--muted); cursor: pointer;
+                 background: color-mix(in srgb, var(--text) 6%, transparent);
+                 border: 0; border-radius: 6px; padding: 4px 10px; }
+  .body button:disabled { opacity: .5; cursor: default; }
+  .body button.link { background: none; padding: 0; color: var(--accent);
+                      text-decoration: underline; }
+
+  .note { font-size: 10.5px; color: var(--muted); line-height: 1.4; margin: 0;
+          padding: 6px 8px; border-radius: 5px;
+          background: color-mix(in srgb, var(--text) 6%, transparent); }
+  .note.err { color: var(--error); background: color-mix(in srgb, var(--error) 9%, transparent); }
 </style>

@@ -11,6 +11,7 @@ mod fixtures;
 mod golden;
 mod notify;
 mod notify_loop;
+mod settings;
 mod status;
 mod sync_loop;
 mod theme;
@@ -764,6 +765,9 @@ pub fn run() {
             calendars::get_calendars,
             calendars::set_calendar_selected,
             calendars::set_calendar_sync,
+            settings::get_settings,
+            settings::set_sync_interval,
+            settings::set_notifications_enabled,
             events::event_detail,
             events::respond_to_event,
             events::refresh_event,

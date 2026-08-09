@@ -115,10 +115,15 @@ async fn scheduled_events(
 /// present so the views look alive, which is precisely what would make an
 /// unguarded scheduler buzz about meetings that do not exist.
 ///
+/// **And the user's own switch** (settings spec §3): reminders can be turned
+/// off entirely, which is a different thing from having none due. Read here
+/// rather than at `spawn` for the same reason demo mode is — a guard on a path
+/// no test can reach is a guard nobody has checked.
+///
 /// Named, like `may_sync`, so the decision is one thing every caller routes
 /// through rather than an untested `if demo` copied about.
-pub(crate) fn may_notify(demo: bool) -> bool {
-    !demo
+pub(crate) fn may_notify(demo: bool, enabled: bool) -> bool {
+    !demo && enabled
 }
 
 /// One pass of the scheduler, at a clock the caller supplies.
@@ -166,7 +171,7 @@ pub(crate) async fn run_once(
     // test that matters is the one running through this function exactly as a
     // real pass does. A pointless loop in demo mode costs a comparison every
     // few minutes and returns here before touching the database.
-    if !may_notify(demo) {
+    if !may_notify(demo, crate::settings::read_settings(pool).await.notifications_enabled) {
         return Ok(Pass::default());
     }
 
@@ -745,8 +750,17 @@ mod tests {
     /// than carrying its own untested `if demo`.
     #[test]
     fn only_a_real_run_may_notify() {
-        assert!(may_notify(false));
-        assert!(!may_notify(true), "demo mode posts no notifications at all");
+        assert!(may_notify(false, true));
+        assert!(!may_notify(true, true), "demo mode posts no notifications at all");
+    }
+
+    /// The user's own switch, and it is **not** the same question as demo mode:
+    /// both have to be able to stop reminders on their own, or turning them off
+    /// in a real build would depend on a flag the user cannot see.
+    #[test]
+    fn reminders_turned_off_post_nothing_even_in_a_real_run() {
+        assert!(!may_notify(false, false), "the switch must work on its own");
+        assert!(!may_notify(true, false));
     }
 
     #[test]

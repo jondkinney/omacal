@@ -37,8 +37,9 @@ test.describe('the status light', () => {
       why: 'the normal case, and it still says when' },
     { over: { busy: true }, state: 'syncing', label: 'Syncing now',
       why: 'something is happening right now' },
-    { over: { error: 'network unreachable' }, state: 'failed', label: 'Last sync failed',
-      why: 'the one state that has to be noticed' },
+    { over: { error: 'network unreachable' }, state: 'failed',
+      label: 'Something went wrong: network unreachable',
+      why: 'the one state that has to be noticed — and it names what, not a category' },
     { over: { connected: false }, state: 'never', label: 'Not signed in',
       why: 'nothing to sync, which is not a failure' },
     { over: { lastSyncMs: null }, state: 'never', label: 'Not synced yet',
@@ -70,6 +71,22 @@ test.describe('the status light', () => {
     // the calendar is quietly going stale. That is the defect this light exists
     // to make visible.
     expect(light({ error: 'network unreachable' }).state).toBe('failed');
+  });
+
+  /**
+   * **The label says what went wrong, not which subsystem.**
+   *
+   * `error` is `App`'s own — a write that could not refresh sets it too, and
+   * `AppStatus` carries no sync-specific failure to narrow to. Claiming "Last
+   * sync failed" there states as fact something the source cannot support:
+   * over-reporting that a problem exists is defensible, misreporting which
+   * problem it is is not.
+   */
+  test('a failure carries the actual message rather than a category', () => {
+    expect(light({ error: 'the token was revoked' }).label)
+      .toBe('Something went wrong: the token was revoked');
+    // And it never names sync, because it does not know that it was sync.
+    expect(light({ error: 'the token was revoked' }).label).not.toContain('sync');
   });
 
   test('being signed out is not a failure', () => {

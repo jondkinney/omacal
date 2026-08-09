@@ -420,6 +420,15 @@ export function installTauriStub(scenario: string): Harness {
   // must reflect it too, not just `get_calendars`.
   let status = statusFor(scenario);
   let signedIn = false;
+  /** The settings modal's preferences, per page. Mutable for the reason the
+   *  `get_settings` case gives: a stub answering the same thing forever cannot
+   *  tell a saved setting from an ignored one. Five minutes and a one-minute
+   *  floor are `sync_loop`'s own `DEFAULT_INTERVAL_MS`/`MIN_INTERVAL_MS`. */
+  let settings = {
+    syncIntervalMs: 5 * 60_000,
+    notificationsEnabled: true,
+    minSyncIntervalMs: 60_000,
+  };
 
   const invoke = async (cmd: string, args: Record<string, any> = {}): Promise<unknown> => {
     harness.calls.push({ cmd, args });
@@ -465,6 +474,28 @@ export function installTauriStub(scenario: string): Harness {
         return scenario === 'sign-in-adds-account' && signedIn
           ? SIGNED_IN_CALENDARS
           : ([] as Calendar[]);
+      // The settings modal's three. Held in one mutable object rather than
+      // returned as constants, because half of what its specs assert is that a
+      // value **came back changed** — a stub answering the same thing forever
+      // cannot tell a saved setting from an ignored one.
+      case 'get_settings':
+        return { ...settings };
+      case 'set_sync_interval': {
+        // The backend refuses below the floor rather than clamping, and so
+        // does this: a stub that accepted anything would let a form which
+        // forgot its own guard pass every spec.
+        if ((args.ms as number) < settings.minSyncIntervalMs) {
+          throw new Error(
+            "omacal will not sync more often than once a minute — Google's quota is finite " +
+            'and a desktop app has no business polling faster than that',
+          );
+        }
+        settings = { ...settings, syncIntervalMs: args.ms as number };
+        return { ...settings };
+      }
+      case 'set_notifications_enabled':
+        settings = { ...settings, notificationsEnabled: args.on as boolean };
+        return { ...settings };
       case 'set_calendar_selected':
         return calendarResult(cmd, undefined);
       case 'set_calendar_sync':
