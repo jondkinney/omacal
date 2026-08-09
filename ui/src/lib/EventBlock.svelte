@@ -8,18 +8,28 @@
     placed,
     onopen,
     ongrab,
-    offsetPct = 0,
+    preview = null,
   }: {
     event: UiEvent;
     placed: Placed;
     onopen: (event: UiEvent, rect: Rect) => void;
     /** The pointer went down on this block. The grid decides whether that
-     *  becomes a drag — see `drag.ts`'s threshold — and this reports the press
-     *  rather than interpreting it. */
+     *  becomes a drag, and whether it is a move or a resize — see `drag.ts`'s
+     *  threshold and `edgeAt`. This reports the press rather than interpreting
+     *  it. */
     ongrab?: (event: UiEvent, e: PointerEvent) => void;
-    /** How far down the column this block is being dragged, as a percentage of
-     *  the column's height. Zero unless it is the block under the pointer. */
-    offsetPct?: number;
+    /**
+     * Where this block is being dragged to, or `null` when it is not the one
+     * under the pointer.
+     *
+     * **Deltas on `placed`**, not absolutes: a block's position comes from the
+     * backend's own layout and is not recoverable from its instants, so the
+     * grid says how far it has moved rather than where it now is. Percentages
+     * of the column for the two vertical numbers, exactly the units `placed`
+     * is in; pixels for `dx`, because a horizontal move is whole columns and a
+     * block is only a fraction of one's width.
+     */
+    preview?: { topDeltaPct: number; heightDeltaPct: number; dx: number } | null;
   } = $props();
 
   const minutes = $derived((event.end_ms - event.start_ms) / 60_000);
@@ -49,16 +59,21 @@
   }
 </script>
 
-<!-- `top` stays a bare percentage while nothing is being dragged: wrapping it
-     in a `calc()` that adds zero renders the same but is not the same string,
-     and this component has committed screenshot baselines. -->
+<!-- `top` and `height` stay bare percentages while nothing is being dragged,
+     and `transform` is absent rather than `none`: this component has committed
+     screenshot baselines, and a value that renders the same is still not the
+     same string. -->
 <button
   class="ev {event.response}"
-  class:dragging={offsetPct !== 0}
+  class:dragging={preview !== null}
   style="
-    top:{offsetPct === 0
-      ? `${placed.top * 100}%`
-      : `calc(${placed.top * 100}% + ${offsetPct}%)`}; height:{placed.height * 100}%;
+    top:{preview
+      ? `calc(${placed.top * 100}% + ${preview.topDeltaPct}%)`
+      : `${placed.top * 100}%`};
+    height:{preview
+      ? `calc(${placed.height * 100}% + ${preview.heightDeltaPct}%)`
+      : `${placed.height * 100}%`};
+    {preview && preview.dx !== 0 ? `transform: translateX(${preview.dx}px);` : ''}
     left:calc({left}% + 3px); width:calc({width}% - 6px);
     --cal:{event.color}; z-index:{placed.column + 1};
   "
@@ -78,6 +93,10 @@
      the block is following a pointer and easing would put it behind the
      finger. */
   .ev.dragging { z-index: 50 !important; opacity: 0.85; cursor: grabbing; }
+  /* The grab bands, as cursors only — the hit test itself is `drag.ts`'s
+     `edgeAt`, on the press's own offset, so there is no element here whose
+     bounds could disagree with it. */
+  .ev:hover { cursor: grab; }
 
   .ev {
     /* A <button> keeps native chrome in macOS WKWebView unless appearance is

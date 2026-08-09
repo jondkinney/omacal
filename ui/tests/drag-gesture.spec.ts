@@ -330,3 +330,281 @@ test.describe('a completed drag writes', () => {
     expect(await page.evaluate(() => (window as any).__lastMove)).toBeNull();
   });
 });
+
+/**
+ * Task #64. Two gestures the geometry could already describe and the pointer
+ * could not produce: a move to another day, and a resize by an edge.
+ *
+ * Both inherit the guarantees already in place, and the specs say so rather
+ * than assuming it: the 4px threshold, Escape, and a drop that changed nothing
+ * handing up nothing.
+ */
+test.describe('moving to another day', () => {
+  /** Presses the block's middle — never a band — and drags by (dx, dy). */
+  const grabMiddleAndMove = async (page: Page, dx: number, dy: number) => {
+    const b = await boxOf(page);
+    const cx = b.x + b.width / 2;
+    const cy = b.y + b.height / 2;
+    await page.mouse.move(cx, cy);
+    await page.mouse.down();
+    await page.mouse.move(cx + dx, cy + dy, { steps: 6 });
+    return { cx, cy };
+  };
+
+  /**
+   * **The day axis alone.** No vertical travel at all, so a span whose *time*
+   * moved could only have come from the horizontal — which is the separation
+   * the geometry's own table has and the gesture did not.
+   */
+  test('a sideways drag changes the day and leaves the time', async ({ page }) => {
+    await open(page);
+    const col = await page.locator('.col').first().boundingBox();
+    if (!col) throw new Error('no column');
+
+    await grabMiddleAndMove(page, col.width, 0);
+    await page.mouse.up();
+
+    const moved = await page.evaluate(() => (window as any).__lastMove);
+    expect(moved, 'a whole column right must be a move').not.toBeNull();
+
+    const DAY = 24 * 60 * 60_000;
+    const delta = moved.span.startMs - moved.event.start_ms;
+    expect(delta, 'exactly one day, and no part of an hour').toBe(DAY);
+    expect(moved.span.endMs - moved.span.startMs).toBe(
+      moved.event.end_ms - moved.event.start_ms,
+    );
+  });
+
+  /**
+   * **The time axis alone**, at the gesture level rather than in the geometry:
+   * a purely vertical drag must not shift the day, however far it goes. The
+   * pair is what makes each answer falsifiable — a fixture that moved both
+   * could not say which one was wrong.
+   */
+  test('a vertical drag changes the time and leaves the day', async ({ page }) => {
+    await open(page);
+    const col = await page.locator('.col').first().boundingBox();
+    if (!col) throw new Error('no column');
+
+    await grabMiddleAndMove(page, 0, (col.height / 96) * 4); // four snap steps
+    await page.mouse.up();
+
+    const moved = await page.evaluate(() => (window as any).__lastMove);
+    expect(moved.span.startMs - moved.event.start_ms).toBe(60 * 60_000);
+  });
+
+  /**
+   * §6: **the block follows the pointer**, sideways as well as down. Without
+   * this the write is right and the screen is not — the block sits in Monday
+   * while the drop moves it to Tuesday, which is a gesture nobody can aim.
+   *
+   * Snapped to whole columns, so it lands *on* the next column rather than
+   * under the finger, exactly as the vertical does with its 15 minutes.
+   */
+  test('the block follows the pointer across columns', async ({ page }) => {
+    await open(page);
+    const col = await page.locator('.col').first().boundingBox();
+    if (!col) throw new Error('no column');
+    const before = await boxOf(page);
+
+    // Two-thirds of a column: past the halfway point, so it snaps to one whole
+    // column rather than staying put or following the pointer exactly.
+    await grabMiddleAndMove(page, col.width * 0.67, 0);
+    const during = await boxOf(page);
+
+    expect(during.x - before.x, 'one whole column, not the pointer').toBeCloseTo(col.width, 0);
+    expect(during.y, 'and no vertical drift at all').toBeCloseTo(before.y, 0);
+
+    await page.keyboard.press('Escape');
+  });
+
+  test('a sideways drag below the threshold hands up nothing', async ({ page }) => {
+    await open(page);
+    await grabMiddleAndMove(page, 3, 0);
+    await page.mouse.up();
+
+    expect(await page.evaluate(() => (window as any).__lastMove)).toBeNull();
+  });
+
+  test('Escape during a sideways drag hands up nothing', async ({ page }) => {
+    await open(page);
+    const col = await page.locator('.col').first().boundingBox();
+    if (!col) throw new Error('no column');
+
+    await grabMiddleAndMove(page, col.width * 2, 0);
+    await page.keyboard.press('Escape');
+    await page.mouse.up();
+
+    expect(await page.evaluate(() => (window as any).__lastMove)).toBeNull();
+  });
+});
+
+test.describe('resizing by an edge', () => {
+  /** Presses `edge` of the block and drags vertically by `dy`. */
+  const grabEdgeAndMove = async (page: Page, edge: 'top' | 'bottom', dy: number) => {
+    const b = await boxOf(page);
+    // Two pixels inside the 6px band, so a band that shrank by one still
+    // catches this and a press that missed it lands in the middle and moves.
+    const cy = edge === 'top' ? b.y + 2 : b.y + b.height - 2;
+    const cx = b.x + b.width / 2;
+    await page.mouse.move(cx, cy);
+    await page.mouse.down();
+    await page.mouse.move(cx, cy + dy, { steps: 6 });
+  };
+
+  /**
+   * **Its own assertion that the other end did not move**, because an
+   * implementation that shifted both by the same delta passes any test looking
+   * only at the one being dragged — and that implementation is a *move*, which
+   * is a different gesture with different consequences.
+   */
+  test('dragging the bottom edge moves the end and leaves the start', async ({ page }) => {
+    await open(page);
+    const col = await page.locator('.col').first().boundingBox();
+    if (!col) throw new Error('no column');
+
+    await grabEdgeAndMove(page, 'bottom', (col.height / 96) * 2); // half an hour
+    await page.mouse.up();
+
+    const moved = await page.evaluate(() => (window as any).__lastMove);
+    expect(moved, 'a resize is a write like any other').not.toBeNull();
+    expect(moved.span.startMs, 'the start must not have moved').toBe(moved.event.start_ms);
+    expect(moved.span.endMs - moved.event.end_ms).toBe(30 * 60_000);
+  });
+
+  test('dragging the top edge moves the start and leaves the end', async ({ page }) => {
+    await open(page);
+    const col = await page.locator('.col').first().boundingBox();
+    if (!col) throw new Error('no column');
+
+    await grabEdgeAndMove(page, 'top', -(col.height / 96) * 2); // half an hour earlier
+    await page.mouse.up();
+
+    const moved = await page.evaluate(() => (window as any).__lastMove);
+    expect(moved).not.toBeNull();
+    expect(moved.span.endMs, 'the end must not have moved').toBe(moved.event.end_ms);
+    expect(moved.event.start_ms - moved.span.startMs).toBe(30 * 60_000);
+  });
+
+  /**
+   * The middle is a move, and the bands are only at the ends. Without this the
+   * edge test above is satisfied by a build where *every* press resizes, which
+   * would make a block impossible to move.
+   */
+  test('pressing the middle still moves rather than resizing', async ({ page }) => {
+    await open(page);
+    const col = await page.locator('.col').first().boundingBox();
+    if (!col) throw new Error('no column');
+    const b = await boxOf(page);
+    const cx = b.x + b.width / 2;
+    const cy = b.y + b.height / 2;
+
+    await page.mouse.move(cx, cy);
+    await page.mouse.down();
+    await page.mouse.move(cx, cy + (col.height / 96) * 2, { steps: 6 });
+    await page.mouse.up();
+
+    const moved = await page.evaluate(() => (window as any).__lastMove);
+    expect(moved).not.toBeNull();
+    // Both ends moved by the same amount: that is a move, not a resize.
+    expect(moved.span.startMs - moved.event.start_ms).toBe(30 * 60_000);
+    expect(moved.span.endMs - moved.span.startMs).toBe(
+      moved.event.end_ms - moved.event.start_ms,
+    );
+  });
+
+  /**
+   * §6 for the other gesture: **the block grows as you drag its edge.**
+   *
+   * Without this the write is right and the screen is inert — you drag the
+   * bottom of a meeting and nothing happens until the drop, which reads as a
+   * broken control. The Escape spec below cannot catch it: that one asserts
+   * the height is *unchanged*, which is exactly what a preview that never
+   * moves also produces.
+   */
+  test('the block grows as its bottom edge is dragged', async ({ page }) => {
+    await open(page);
+    const col = await page.locator('.col').first().boundingBox();
+    if (!col) throw new Error('no column');
+    const step = col.height / 96; // 15 minutes
+    const before = await boxOf(page);
+
+    await grabEdgeAndMove(page, 'bottom', step * 4); // an hour longer
+
+    const during = await boxOf(page);
+    expect(during.height - before.height, 'an hour taller').toBeCloseTo(step * 4, 0);
+    expect(during.y, 'and the top has not moved').toBeCloseTo(before.y, 0);
+
+    await page.keyboard.press('Escape');
+  });
+
+  /** And the top edge grows it upward: the block's top rises and its bottom
+   *  stays where it was. */
+  test('dragging the top edge raises the top and leaves the bottom', async ({ page }) => {
+    await open(page);
+    const col = await page.locator('.col').first().boundingBox();
+    if (!col) throw new Error('no column');
+    const step = col.height / 96;
+    const before = await boxOf(page);
+
+    await grabEdgeAndMove(page, 'top', -step * 4);
+
+    const during = await boxOf(page);
+    expect(before.y - during.y, 'the top rises an hour').toBeCloseTo(step * 4, 0);
+    expect(during.y + during.height, 'the bottom is where it was').toBeCloseTo(
+      before.y + before.height,
+      0,
+    );
+
+    await page.keyboard.press('Escape');
+  });
+
+  test('a resize below the threshold hands up nothing', async ({ page }) => {
+    await open(page);
+    await grabEdgeAndMove(page, 'bottom', 3);
+    await page.mouse.up();
+
+    expect(await page.evaluate(() => (window as any).__lastMove)).toBeNull();
+  });
+
+  test('Escape during a resize hands up nothing and returns the block', async ({ page }) => {
+    await open(page);
+    const before = await boxOf(page);
+    const col = await page.locator('.col').first().boundingBox();
+    if (!col) throw new Error('no column');
+
+    await grabEdgeAndMove(page, 'bottom', (col.height / 96) * 4);
+    // Measured while held, for the reason the move's own Escape spec gives:
+    // a drop returns the block too, so after `mouse.up()` the two agree.
+    await page.keyboard.press('Escape');
+    const cancelled = await boxOf(page);
+    expect(cancelled.height).toBeCloseTo(before.height, 0);
+
+    await page.mouse.up();
+    expect(await page.evaluate(() => (window as any).__lastMove)).toBeNull();
+  });
+
+  /**
+   * A resize that lands back on its own span writes nothing — the same rule as
+   * a move dropped where it started, and it needs saying separately because
+   * the guard compares *both* ends now. Comparing starts alone would call
+   * every resize a no-op.
+   */
+  test('a resize dropped back on its own span hands up nothing', async ({ page }) => {
+    await open(page);
+    const col = await page.locator('.col').first().boundingBox();
+    if (!col) throw new Error('no column');
+    const step = col.height / 96;
+    const b = await boxOf(page);
+    const cx = b.x + b.width / 2;
+    const cy = b.y + b.height - 2;
+
+    await page.mouse.move(cx, cy);
+    await page.mouse.down();
+    await page.mouse.move(cx, cy + step * 4, { steps: 6 });
+    await page.mouse.move(cx, cy, { steps: 6 });
+    await page.mouse.up();
+
+    expect(await page.evaluate(() => (window as any).__lastMove)).toBeNull();
+  });
+});

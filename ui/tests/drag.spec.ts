@@ -342,12 +342,82 @@ test.describe('the drag threshold', () => {
   }
 });
 
+/**
+ * Which end of a block a press grabs. Arithmetic, so it has a table; whether
+ * the grid then *resizes* is `drag-gesture.spec.ts`'s.
+ */
+test.describe('the grab bands at a block’s ends', () => {
+  const H = 40; // comfortably more than three 6px bands
+
+  const cases: Array<{ y: number; h?: number; edge: string | null; why: string }> = [
+    { y: 0, edge: 'start', why: 'the very top' },
+    { y: 6, edge: 'start', why: 'the last pixel of the top band' },
+    { y: 7, edge: null, why: 'one past it is the middle' },
+    { y: 20, edge: null, why: 'the middle is a move' },
+    { y: 33, edge: null, why: 'one short of the bottom band' },
+    { y: 34, edge: 'end', why: 'the first pixel of the bottom band' },
+    { y: 40, edge: 'end', why: 'the very bottom' },
+    // A 15-minute block on a 1200px day is 12.5px: two bands would leave
+    // nothing between them, so it has no edges and stays draggable.
+    { y: 0, h: 12, edge: null, why: 'a short block has no top band' },
+    { y: 12, h: 12, edge: null, why: 'nor a bottom one' },
+    { y: 6, h: 12, edge: null, why: 'and no middle to lose' },
+  ];
+
+  for (const c of cases) {
+    test(`y ${c.y} of ${c.h ?? H} grabs ${c.edge ?? 'nothing'} — ${c.why}`, async ({ page }) => {
+      await page.goto(PURE);
+      const got = await page.evaluate(
+        (a) => (window as any).__drag.edgeAt(a.y, a.h),
+        { y: c.y, h: c.h ?? H },
+      );
+      expect(got).toBe(c.edge);
+    });
+  }
+});
+
+/** How far sideways is one day. */
+test.describe('crossing day columns', () => {
+  const W = 100;
+
+  const cases: Array<{ dx: number; cols: number; why: string }> = [
+    { dx: 0, cols: 0, why: 'no movement crosses nothing' },
+    { dx: 49, cols: 0, why: 'not yet halfway stays put' },
+    { dx: 50, cols: 1, why: 'exactly halfway lands on the next' },
+    { dx: 100, cols: 1, why: 'a whole column' },
+    { dx: 260, cols: 3, why: 'and three of them, rounded' },
+    { dx: -49, cols: 0, why: 'the same going left' },
+    // The mirror of the 50 above. `Math.round(-0.5)` is -0, so the naive
+    // version stays put going left while moving going right.
+    { dx: -50, cols: -1, why: 'exactly halfway left lands on the previous' },
+    { dx: -100, cols: -1, why: 'a whole column left' },
+  ];
+
+  for (const c of cases) {
+    test(`dx ${c.dx} over a ${W}px column is ${c.cols} — ${c.why}`, async ({ page }) => {
+      await page.goto(PURE);
+      const got = await page.evaluate(
+        (a) => (window as any).__drag.colsMoved(a.dx, a.w),
+        { dx: c.dx, w: W },
+      );
+      expect(got).toBe(c.cols);
+    });
+  }
+
+  test('a column with no width crosses nothing rather than dividing by zero', async ({ page }) => {
+    await page.goto(PURE);
+    const got = await page.evaluate(() => (window as any).__drag.colsMoved(120, 0));
+    expect(got).toBe(0);
+  });
+});
+
 test('the module exports the geometry the plan names, and the gesture constants', async ({ page }) => {
   await page.goto(PURE);
   // A guard on the shape rather than on any answer: Task 3 wires a component to
   // these names, and a rename here would otherwise surface as a runtime
   // undefined in a gesture spec rather than as a failure here.
   expect((await drag(page)).sort()).toEqual(
-    ['DRAG_THRESHOLD_PX', 'SNAP_MS', 'beganDrag', 'snapMs', 'spanForMove', 'spanForResize'],
+    ['DRAG_THRESHOLD_PX', 'RESIZE_EDGE_PX', 'SNAP_MS', 'beganDrag', 'colsMoved', 'edgeAt',
+     'snapMs', 'spanForMove', 'spanForResize'],
   );
 });
