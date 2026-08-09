@@ -1,5 +1,8 @@
 pub mod convert;
-pub use convert::{from_google_attendee, is_tombstone, to_cancelled_exception, to_stored};
+pub use convert::{
+    from_google_attendee, from_google_reminder, from_google_reminders, is_tombstone,
+    to_cancelled_exception, to_stored,
+};
 
 use omacal_google::{ApiError, CalendarClient, EventsRequest};
 use sqlx::SqlitePool;
@@ -260,6 +263,7 @@ mod tests {
             color_hex: None, calendar_timezone: "Europe/Sofia".into(),
             description: None, etag: None, sequence: 0, organizer_email: None,
             attendees: Vec::new(),
+            reminders: Default::default(), calendar_default_reminders: Vec::new(),
         }
     }
 
@@ -648,5 +652,129 @@ mod tests {
         assert_eq!(ev.organizer_email.as_deref(), Some("ana@x.com"));
         assert_eq!(ev.attendees.len(), 2, "guest list dropped during sync");
         assert!(ev.attendees.iter().any(|a| a.is_self && a.optional));
+    }
+
+    /// Reminders arrive on every sync already — `list_events` sends no
+    /// `fields=` mask, so Google has been returning them all along and they
+    /// were parsed into nothing. This pins that they are stored.
+    ///
+    /// Two events, because the two shapes are answered in different places:
+    /// `ev-own` carries its own overrides, `ev-defers` says `useDefault` and
+    /// resolves against the calendar's list. Their values are deliberately
+    /// disjoint from the calendar's, so a path that returned one where the
+    /// other belongs fails here.
+    #[tokio::test]
+    async fn a_synced_event_carries_its_reminders() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/calendars/primary/events"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "items": [
+                    {
+                        "id": "ev-own", "status": "confirmed", "summary": "Standup",
+                        "start": { "dateTime": "2026-08-10T09:00:00+03:00" },
+                        "end":   { "dateTime": "2026-08-10T09:30:00+03:00" },
+                        "reminders": {
+                            "useDefault": false,
+                            "overrides": [
+                                { "method": "popup", "minutes": 10 },
+                                { "method": "email", "minutes": 1440 }
+                            ]
+                        }
+                    },
+                    {
+                        "id": "ev-defers", "status": "confirmed", "summary": "Retro",
+                        "start": { "dateTime": "2026-08-10T11:00:00+03:00" },
+                        "end":   { "dateTime": "2026-08-10T11:30:00+03:00" },
+                        "reminders": { "useDefault": true }
+                    }
+                ],
+                "nextSyncToken": "tok-1"
+            })))
+            .mount(&server).await;
+
+        let pool = seeded_pool().await;
+        sqlx::query(
+            "UPDATE calendars
+                SET default_reminders_json = '[{\"method\":\"popup\",\"minutes\":30}]'
+              WHERE id = 1",
+        )
+        .execute(&pool).await.unwrap();
+
+        let client = CalendarClient::new(server.uri(), "at-1");
+        sync_calendar(&pool, &client, 1, "primary", 1786300000000, 1786400000000).await.unwrap();
+
+        let stored = omacal_store::events_in_window(&pool, 1786300000000, 1786400000000)
+            .await.unwrap();
+        let got = |gid: &str| {
+            stored.iter().find(|e| e.google_id == gid).unwrap_or_else(|| panic!("no event {gid}"))
+        };
+
+        let own = got("ev-own");
+        assert!(!own.reminders.use_default);
+        assert_eq!(
+            own.reminders.overrides,
+            vec![
+                omacal_store::Reminder { method: "popup".into(), minutes: 10 },
+                omacal_store::Reminder { method: "email".into(), minutes: 1440 },
+            ],
+            "the event's own overrides were dropped during sync"
+        );
+
+        let defers = got("ev-defers");
+        assert!(defers.reminders.use_default, "useDefault was dropped during sync");
+        assert!(defers.reminders.overrides.is_empty());
+        assert_eq!(
+            defers.calendar_default_reminders,
+            vec![omacal_store::Reminder { method: "popup".into(), minutes: 30 }],
+            "the calendar's defaults are what useDefault resolves against"
+        );
+    }
+
+    /// `list_events`'s query string, pinned byte for byte on both the full and
+    /// the incremental call.
+    ///
+    /// Not a `query_param` matcher: those assert a parameter is *present* and
+    /// say nothing at all about ones that are not. This compares the whole
+    /// string, which is the only assertion that can catch a parameter being
+    /// **added**.
+    ///
+    /// The parameter somebody will reach for is `fields=`, to "ask for" the
+    /// reminders this branch stores. They were already arriving — there is no
+    /// mask on this call, so Google returns them on every event — and adding
+    /// one would change the request Google's sync token is keyed to, invalidate
+    /// every stored token, and force a full resync of every calendar to fetch
+    /// data that was already in the response. See `client.rs`: *every parameter
+    /// here must stay byte-identical across incremental calls*.
+    #[tokio::test]
+    async fn list_events_sends_exactly_these_query_parameters_and_no_others() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/calendars/primary/events"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(one_event_body("tok-1")))
+            .mount(&server).await;
+
+        let pool = seeded_pool().await;
+        let client = CalendarClient::new(server.uri(), "at-1");
+
+        // The first call has no stored token, so it is the windowed full sync;
+        // it stores `tok-1`, which the second call then sends.
+        sync_calendar(&pool, &client, 1, "primary", 0, 1_000_000_000_000).await.unwrap();
+        sync_calendar(&pool, &client, 1, "primary", 0, 1_000_000_000_000).await.unwrap();
+
+        let requests = server.received_requests().await.expect("recording is on by default");
+        let queries: Vec<&str> =
+            requests.iter().map(|r| r.url.query().unwrap_or("")).collect();
+        assert_eq!(queries.len(), 2, "expected one full and one incremental call");
+
+        assert_eq!(
+            queries[0],
+            "singleEvents=false&showDeleted=true&maxResults=2500\
+             &timeMin=1970-01-01T00%3A00%3A00Z&timeMax=2001-09-09T01%3A46%3A40Z",
+            "the full-sync query string changed"
+        );
+        assert_eq!(
+            queries[1],
+            "singleEvents=false&showDeleted=true&maxResults=2500&syncToken=tok-1",
+            "the incremental query string changed — every stored sync token is now stale"
+        );
     }
 }

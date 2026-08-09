@@ -44,6 +44,40 @@ pub struct StoredEvent {
     pub sequence: i64,
     pub organizer_email: Option<String>,
     pub attendees: Vec<Attendee>,
+    /// What this event asks for: the calendar's defaults, or its own overrides.
+    pub reminders: Reminders,
+    /// The owning calendar's `default_reminders_json`, joined in by
+    /// [`events_in_window`] alongside `color_hex` and `calendar_timezone`. It
+    /// lives on `calendars`, not `events`, so [`upsert_event`] neither reads
+    /// nor writes it; a hand-built `StoredEvent` on the write path leaves it
+    /// empty.
+    ///
+    /// Carried on the event rather than looked up per calendar because it is
+    /// only ever wanted *with* one: `reminders.use_default` is the question and
+    /// this is the answer, and reading one without the other says nothing.
+    pub calendar_default_reminders: Vec<Reminder>,
+}
+
+/// One reminder: fire `minutes` before the event starts, by `method`.
+///
+/// `method` is Google's own vocabulary — `popup` or `email`. Both are stored;
+/// only `popup` may ever be fired locally, since `email` is Google's to send
+/// and firing it here would double it. Keeping `email` rows rather than
+/// filtering them at the store boundary means the rule lives in one place, and
+/// a stored row still describes what Google actually holds.
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub struct Reminder {
+    pub method: String,
+    pub minutes: i64,
+}
+
+/// An event's reminder settings. The two fields are alternatives, not additive:
+/// either `use_default` and the owning calendar's list applies, or `overrides`
+/// replaces it entirely.
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub struct Reminders {
+    pub use_default: bool,
+    pub overrides: Vec<Reminder>,
 }
 
 /// One invitee. Mirrors Google's `attendees[]` entry, kept in a JSON column
@@ -73,7 +107,8 @@ const SELECT_COLS: &str = "e.id, e.calendar_id, e.google_id, e.summary, e.locati
      e.start_utc, e.end_utc, e.start_tz, e.end_tz, e.is_all_day, e.recurrence,
      e.recurring_event_id, e.original_start_utc,
      e.status, e.self_response, e.conference_uri, c.color_hex, c.timezone,
-     e.description, e.etag, e.sequence, e.organizer_email, e.attendees_json";
+     e.description, e.etag, e.sequence, e.organizer_email, e.attendees_json,
+     e.reminders_json, c.default_reminders_json";
 
 fn row_to_event(row: &sqlx::sqlite::SqliteRow) -> StoredEvent {
     StoredEvent {
@@ -106,6 +141,19 @@ fn row_to_event(row: &sqlx::sqlite::SqliteRow) -> StoredEvent {
             .get::<Option<String>, _>("attendees_json")
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_default(),
+        // NULL on both of these is the ordinary case, not an edge one: every
+        // row written before 0004 has a NULL `reminders_json`, and a calendar
+        // has a NULL `default_reminders_json` until the account is next
+        // signed in. Both read as "fires nothing", which is what the absence
+        // of a reminder means.
+        reminders: row
+            .get::<Option<String>, _>("reminders_json")
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default(),
+        calendar_default_reminders: row
+            .get::<Option<String>, _>("default_reminders_json")
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default(),
     }
 }
 
@@ -124,15 +172,16 @@ pub async fn upsert_event<'e, E>(exec: E, ev: &StoredEvent) -> anyhow::Result<i6
 where
     E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
 {
-    // 21 columns, 21 placeholders, 21 binds, all in the same order. Keep them
+    // 22 columns, 22 placeholders, 22 binds, all in the same order. Keep them
     // that way: a mismatch here writes a value into the wrong column silently.
     let attendees_json = serde_json::to_string(&ev.attendees)?;
+    let reminders_json = serde_json::to_string(&ev.reminders)?;
     let id: i64 = sqlx::query(
         "INSERT INTO events (calendar_id, google_id, summary, location, start_utc, end_utc,
              start_tz, end_tz, is_all_day, recurrence, recurring_event_id,
              original_start_utc, status, self_response, conference_uri, updated_at,
-             description, etag, sequence, organizer_email, attendees_json)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)
+             description, etag, sequence, organizer_email, attendees_json, reminders_json)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)
          ON CONFLICT (calendar_id, google_id) DO UPDATE SET
              summary = excluded.summary, location = excluded.location,
              start_utc = excluded.start_utc, end_utc = excluded.end_utc,
@@ -144,7 +193,8 @@ where
              conference_uri = excluded.conference_uri, updated_at = excluded.updated_at,
              description = excluded.description, etag = excluded.etag,
              sequence = excluded.sequence, organizer_email = excluded.organizer_email,
-             attendees_json = excluded.attendees_json
+             attendees_json = excluded.attendees_json,
+             reminders_json = excluded.reminders_json
          RETURNING id",
     )
     .bind(ev.calendar_id)          // ?1  calendar_id
@@ -168,6 +218,7 @@ where
     .bind(ev.sequence)             // ?19 sequence
     .bind(&ev.organizer_email)     // ?20 organizer_email
     .bind(attendees_json)          // ?21 attendees_json
+    .bind(reminders_json)          // ?22 reminders_json
     .fetch_one(exec)
     .await?
     .get("id");
@@ -471,6 +522,7 @@ mod tests {
             color_hex: None, calendar_timezone: "Europe/Sofia".into(),
             description: None, etag: None, sequence: 0, organizer_email: None,
             attendees: Vec::new(),
+            reminders: Reminders::default(), calendar_default_reminders: Vec::new(),
         }
     }
 
@@ -692,6 +744,7 @@ mod tests {
             calendar_timezone: "Europe/Sofia".into(),
             description: None, etag: None, sequence: 0, organizer_email: None,
             attendees: Vec::new(),
+            reminders: Reminders::default(), calendar_default_reminders: Vec::new(),
         };
         upsert_event(&pool, &full).await.unwrap();
 
@@ -895,6 +948,8 @@ mod tests {
             etag: Some("\"etag-1\"".into()),
             sequence: 3,
             organizer_email: Some("ana@x.com".into()),
+            reminders: Reminders::default(),
+            calendar_default_reminders: Vec::new(),
             attendees: vec![
                 Attendee { email: "ana@x.com".into(), display_name: Some("Ana".into()),
                            response_status: "accepted".into(), optional: false, is_self: false,
@@ -944,6 +999,133 @@ mod tests {
                    "the second write's response status did not take effect");
     }
 
+    /// Both halves of a reminder answer, and the two must not be mistaken for
+    /// each other: an event's own overrides come off `events.reminders_json`,
+    /// the fallback for `use_default` off the calendar's
+    /// `default_reminders_json`. The two fixtures below share no method and no
+    /// minute value, so a query reading either column in place of the other
+    /// fails here rather than looking right.
+    ///
+    /// `email` overrides are stored, not filtered — only `popup` may ever be
+    /// *fired* locally, and that is a decision for whatever reads these rows,
+    /// not for the store. Dropping them here would also make the stored row
+    /// stop describing what Google actually holds.
+    #[tokio::test]
+    async fn an_events_own_reminders_and_its_calendars_defaults_both_round_trip() {
+        let pool = connect_memory().await.unwrap();
+        let cal = seed(&pool).await;
+        sqlx::query(
+            "UPDATE calendars
+                SET default_reminders_json = '[{\"method\":\"popup\",\"minutes\":30}]'
+              WHERE id = ?1",
+        )
+        .bind(cal)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let mut overriding = ev(cal, "own", 1_000, 2_000);
+        overriding.reminders = Reminders {
+            use_default: false,
+            overrides: vec![
+                Reminder { method: "popup".into(), minutes: 10 },
+                Reminder { method: "email".into(), minutes: 1_440 },
+            ],
+        };
+        let mut deferring = ev(cal, "defers", 1_000, 2_000);
+        deferring.reminders = Reminders { use_default: true, overrides: Vec::new() };
+
+        upsert_event(&pool, &overriding).await.unwrap();
+        upsert_event(&pool, &deferring).await.unwrap();
+
+        let out = events_in_window(&pool, 0, 5_000).await.unwrap();
+        let got = |gid: &str| {
+            out.iter()
+                .find(|e| e.google_id == gid)
+                .unwrap_or_else(|| panic!("no event {gid}"))
+                .clone()
+        };
+
+        let own = got("own");
+        assert!(!own.reminders.use_default);
+        assert_eq!(own.reminders.overrides.len(), 2, "an override was lost in the round trip");
+        assert_eq!(own.reminders.overrides[0], Reminder { method: "popup".into(), minutes: 10 });
+        assert_eq!(
+            own.reminders.overrides[1],
+            Reminder { method: "email".into(), minutes: 1_440 },
+            "an email reminder must be stored, not filtered out at the store boundary"
+        );
+
+        let defers = got("defers");
+        assert!(defers.reminders.use_default, "the defer-to-calendar flag was lost");
+        assert!(defers.reminders.overrides.is_empty());
+
+        // The calendar's own list, joined in like `color_hex`, on both rows —
+        // it is the answer to `use_default` and is useless without it.
+        for e in [&own, &defers] {
+            assert_eq!(
+                e.calendar_default_reminders,
+                vec![Reminder { method: "popup".into(), minutes: 30 }],
+                "{}: the calendar's defaults did not join in",
+                e.google_id
+            );
+        }
+    }
+
+    /// The update path: a re-sync of the same event must replace its reminder
+    /// list rather than leave the old one standing. Deleting a reminder in
+    /// Google is delivered as an event whose `overrides` is simply shorter.
+    #[tokio::test]
+    async fn re_upserting_an_event_replaces_its_reminders() {
+        let pool = connect_memory().await.unwrap();
+        let cal = seed(&pool).await;
+
+        let mut e = ev(cal, "a", 1_000, 2_000);
+        e.reminders = Reminders {
+            use_default: false,
+            overrides: vec![
+                Reminder { method: "popup".into(), minutes: 10 },
+                Reminder { method: "popup".into(), minutes: 60 },
+            ],
+        };
+        upsert_event(&pool, &e).await.unwrap();
+
+        e.reminders = Reminders { use_default: true, overrides: Vec::new() };
+        upsert_event(&pool, &e).await.unwrap();
+
+        let out = events_in_window(&pool, 0, 5_000).await.unwrap();
+        assert_eq!(out.len(), 1);
+        assert!(out[0].reminders.use_default);
+        assert!(
+            out[0].reminders.overrides.is_empty(),
+            "the second upsert must replace the override list, not merge into it"
+        );
+    }
+
+    /// Every row written before 0004 has a NULL `reminders_json`, and every
+    /// calendar has a NULL `default_reminders_json` until the account is next
+    /// signed in. Neither may become a parse failure that takes the whole
+    /// window query down with it.
+    #[tokio::test]
+    async fn null_reminder_columns_read_back_as_nothing_rather_than_failing() {
+        let pool = connect_memory().await.unwrap();
+        let cal = seed(&pool).await;
+        sqlx::query(
+            "INSERT INTO events (calendar_id, google_id, start_utc, end_utc,
+                 start_tz, end_tz, status, updated_at)
+             VALUES (?1, 'bare', 1000, 2000, 'Europe/Sofia', 'Europe/Sofia', 'confirmed', 0)",
+        )
+        .bind(cal)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let out = events_in_window(&pool, 0, 5_000).await.unwrap();
+        let got = out.iter().find(|e| e.google_id == "bare").expect("the bare row must come back");
+        assert_eq!(got.reminders, Reminders::default());
+        assert!(got.calendar_default_reminders.is_empty());
+    }
+
     #[tokio::test]
     async fn an_event_with_no_attendees_reads_back_as_an_empty_list() {
         // A NULL column must not become a parse error. Most personal events have
@@ -963,62 +1145,138 @@ mod tests {
         assert_eq!(got.sequence, 0);
     }
 
+    /// A fixed list of already-resolved migrations, so a slice of the real
+    /// migration set can be run on its own.
+    #[derive(Debug)]
+    struct Subset(Vec<sqlx::migrate::Migration>);
+    impl sqlx::migrate::MigrationSource<'static> for Subset {
+        #[allow(clippy::type_complexity)]
+        fn resolve(
+            self,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<
+                            Vec<sqlx::migrate::Migration>,
+                            Box<dyn std::error::Error + Sync + Send>,
+                        >,
+                    > + Send,
+            >,
+        > {
+            Box::pin(async move { Ok(self.0) })
+        }
+    }
+
+    /// A database with every migration *below* `version` applied and nothing
+    /// above it, so a test can plant rows that predate the one it is about.
+    ///
     /// Migrations normally all run together at `connect_memory` time, which
-    /// would make an assertion here observe only the `DELETE`'s effect, not
-    /// the migration actually running against rows that predate it. To
-    /// observe the real ordering, this applies 0001 and 0002 by hand, inserts
-    /// a pre-upgrade sync cursor, then applies 0003 on top and checks it is
-    /// gone.
-    #[tokio::test]
-    async fn the_migration_drops_every_sync_cursor_so_old_rows_get_backfilled() {
-        use sqlx::migrate::{Migration, MigrationSource, Migrator};
+    /// would make a backfill assertion observe only the shape of the finished
+    /// schema rather than the migration running against rows that were already
+    /// there. `expected` pins how many migrations that is, so a renumbering
+    /// cannot silently turn this into "run nothing, then assert".
+    async fn pool_migrated_below(version: i64, expected: usize) -> SqlitePool {
+        use sqlx::migrate::{Migration, Migrator};
         use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-        use std::error::Error;
-        use std::future::Future;
-        use std::pin::Pin;
         use std::str::FromStr;
 
-        /// A fixed list of already-resolved migrations, so a slice of the
-        /// real migration set can be run on its own.
-        #[derive(Debug)]
-        struct Subset(Vec<Migration>);
-        impl MigrationSource<'static> for Subset {
-            fn resolve(
-                self,
-            ) -> Pin<
-                Box<dyn Future<Output = Result<Vec<Migration>, Box<dyn Error + Sync + Send>>> + Send>,
-            > {
-                Box::pin(async move { Ok(self.0) })
-            }
-        }
-
-        let all = sqlx::migrate!("./migrations");
         let opts = SqliteConnectOptions::from_str("sqlite::memory:").unwrap().foreign_keys(true);
         // `max_connections(1)`, same reason as `connect_memory`: every other
         // connection to `:memory:` would be its own empty database.
         let pool = SqlitePoolOptions::new().max_connections(1).connect_with(opts).await.unwrap();
 
-        let pre_upgrade: Vec<Migration> = all.iter().filter(|m| m.version < 3).cloned().collect();
-        assert_eq!(pre_upgrade.len(), 2, "expected exactly 0001 and 0002 before 0003 lands");
-        Migrator::new(Subset(pre_upgrade)).await.unwrap().run(&pool).await.unwrap();
+        let earlier: Vec<Migration> = sqlx::migrate!("./migrations")
+            .iter()
+            .filter(|m| m.version < version)
+            .cloned()
+            .collect();
+        assert_eq!(earlier.len(), expected, "expected {expected} migrations before {version} lands");
+        Migrator::new(Subset(earlier)).await.unwrap().run(&pool).await.unwrap();
+        pool
+    }
+
+    /// Applies exactly the migration at `version` on top of a pool already
+    /// carrying the earlier ones.
+    async fn apply_migration(pool: &SqlitePool, version: i64) {
+        use sqlx::migrate::{Migration, Migrator};
+
+        let just_this: Vec<Migration> = sqlx::migrate!("./migrations")
+            .iter()
+            .filter(|m| m.version == version)
+            .cloned()
+            .collect();
+        assert_eq!(just_this.len(), 1, "expected exactly one migration at version {version}");
+        let mut only_this = Migrator::new(Subset(just_this)).await.unwrap();
+        // This source lists one version; without this, `run` sees the earlier
+        // ones already applied but absent from its own list and refuses to
+        // proceed (`VersionMissing`) rather than treating that as fine.
+        only_this.set_ignore_missing(true);
+        only_this.run(pool).await.unwrap();
+    }
+
+    /// 0003's backfill: an event stored before it landed is missing the guest
+    /// list the popover needs, and an unchanged event is never re-delivered by
+    /// an incremental sync. Dropping every cursor is what makes the next sync
+    /// a full window fetch.
+    #[tokio::test]
+    async fn the_migration_drops_every_sync_cursor_so_old_rows_get_backfilled() {
+        let pool = pool_migrated_below(3, 2).await;
 
         let cal = seed(&pool).await;
         sqlx::query("INSERT INTO sync_state (calendar_id, sync_token, window_start, window_end)
                      VALUES (?1, 'tok-from-before-the-upgrade', 0, 0)")
             .bind(cal).execute(&pool).await.unwrap();
 
-        let just_0003: Vec<Migration> = all.iter().filter(|m| m.version == 3).cloned().collect();
-        assert_eq!(just_0003.len(), 1, "expected exactly one migration at version 3");
-        let mut only_0003 = Migrator::new(Subset(just_0003)).await.unwrap();
-        // This source only lists version 3; without this, `run` sees versions
-        // 1 and 2 already applied but absent from its own list and refuses to
-        // proceed (`VersionMissing`), rather than treating that as fine.
-        only_0003.set_ignore_missing(true);
-        only_0003.run(&pool).await.unwrap();
+        apply_migration(&pool, 3).await;
 
         let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sync_state")
             .fetch_one(&pool).await.unwrap();
         assert_eq!(left, 0, "a surviving cursor means old rows never get their attendees");
+    }
+
+    /// 0004 makes the same trade for the same reason. `reminders_json` has
+    /// existed unwritten since 0001, so every row stored before this branch
+    /// reads as "no reminders" — and would keep reading that way forever,
+    /// because an unchanged event is never re-delivered incrementally. A
+    /// notification feature reading those rows would simply never fire for
+    /// anything already in the store.
+    ///
+    /// The column half is asserted too: without it there is nowhere for a
+    /// calendar's defaults to go, and `SELECT_COLS` fails to compile a query
+    /// at all.
+    #[tokio::test]
+    async fn the_reminders_migration_adds_the_column_and_drops_every_sync_cursor() {
+        let pool = pool_migrated_below(4, 3).await;
+
+        let cal = seed(&pool).await;
+        sqlx::query("INSERT INTO sync_state (calendar_id, sync_token, window_start, window_end)
+                     VALUES (?1, 'tok-from-before-the-upgrade', 0, 0)")
+            .bind(cal).execute(&pool).await.unwrap();
+
+        // The column cannot be there yet, or this test would pass against a
+        // migration that only ran the `DELETE`.
+        assert!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(default_reminders_json) FROM calendars")
+                .fetch_one(&pool)
+                .await
+                .is_err(),
+            "fixture check: default_reminders_json must not exist before 0004 runs"
+        );
+
+        apply_migration(&pool, 4).await;
+
+        let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM sync_state")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(left, 0, "a surviving cursor means old rows never get their reminders");
+
+        // Present, and NULL until the account is next signed in.
+        let defaults: Option<String> =
+            sqlx::query_scalar("SELECT default_reminders_json FROM calendars WHERE id = ?1")
+                .bind(cal)
+                .fetch_one(&pool)
+                .await
+                .expect("0004 must add default_reminders_json to calendars");
+        assert!(defaults.is_none(), "an existing calendar has no defaults until it is re-fetched");
     }
 
     #[tokio::test]
