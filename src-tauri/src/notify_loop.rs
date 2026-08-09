@@ -33,7 +33,9 @@ const MAX_REMINDER_LEAD_MS: i64 = 40_320 * 60_000;
 /// without watching a clock.
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct Pass {
-    /// Posted on this pass, and recorded.
+    /// Handed to the notifier on this pass, and recorded. A reminder the
+    /// notifier *refused* is still in here: the attempt was made and the record
+    /// written, which is what stops it being attempted again forever.
     pub posted: Vec<Due>,
     /// The earliest fire-time still ahead of `now_ms`, if any. What [`spawn`]
     /// sleeps until.
@@ -96,6 +98,9 @@ async fn scheduled_events(
                 use_default_reminders: src.reminders.use_default,
                 overrides: src.reminders.overrides.iter().map(to_core).collect(),
                 calendar_defaults: src.calendar_default_reminders.iter().map(to_core).collect(),
+                title: src.summary.clone(),
+                location: src.location.clone(),
+                conference_uri: src.conference_uri.clone(),
             });
         }
     }
@@ -104,10 +109,19 @@ async fn scheduled_events(
 
 /// One pass of the scheduler, at a clock the caller supplies.
 ///
-/// `post` is the seam the transport plugs into. It is a callback rather than a
-/// notifier because the transport is not built yet; what matters for this task
-/// is that everything around it — which reminders are ready, what gets
-/// recorded, what gets forgotten — is decided here and tested without a clock.
+/// `tz` is the **display** zone — what the user reads the time in. It decides
+/// only wording; every firing decision was made against the calendar's zone
+/// before this point.
+///
+/// **A notifier that refuses is not an error, and the reminder is recorded
+/// anyway.** On macOS an unsigned bundle may simply be refused (§2.4), and that
+/// is the expected case rather than a fault. The alternative — leaving it
+/// unrecorded — re-offers the same reminder on every pass for as long as the
+/// occurrence runs, so a transport that is down turns into an unbounded retry
+/// loop and a log full of the same failure. Recording it means one attempt per
+/// reminder, one log line, and no banner. The cost is a reminder genuinely lost
+/// when the transport was briefly unavailable, which is the cheaper mistake:
+/// the user missed one notification rather than being unable to use the app.
 ///
 /// **Ready means `fire_at_ms <= now_ms`, not "in the returned list".**
 /// `due_reminders` hands back the whole schedule out to the horizon, most of
@@ -125,7 +139,8 @@ pub(crate) async fn run_once(
     pool: &SqlitePool,
     now_ms: i64,
     horizon_ms: i64,
-    post: &mut (dyn FnMut(&Due) + Send),
+    tz: &str,
+    notifier: &dyn crate::notify::Notifier,
 ) -> anyhow::Result<Pass> {
     let events = scheduled_events(pool, now_ms, horizon_ms).await?;
 
@@ -146,7 +161,12 @@ pub(crate) async fn run_once(
             continue;
         }
 
-        post(&d);
+        if let Err(e) = notifier.post(&crate::notify::notification_for(&d, tz)) {
+            // Logged and dropped. Never a banner, never a retry — see this
+            // function's own doc comment for why the reminder is still
+            // recorded below.
+            tracing::warn!(%e, event_id = d.key.event_id, "could not post a reminder");
+        }
 
         // `d.occurrence_end_ms` rather than a lookup: the `Due` carries the end
         // of its own occurrence, so there is no search to come up empty and no
@@ -198,7 +218,7 @@ pub(crate) fn next_wake_ms(next_fire_ms: Option<i64>, now_ms: i64, sync_interval
 /// this early would silently consume the first day of notifications. Task 5
 /// wires it, after the demo guard exists.
 #[allow(dead_code)]
-pub(crate) fn spawn(app: tauri::AppHandle, mut post: Box<dyn FnMut(&Due) + Send>) {
+pub(crate) fn spawn(app: tauri::AppHandle, notifier: Box<dyn crate::notify::Notifier>) {
     tauri::async_runtime::spawn(async move {
         loop {
             let (pool, interval) = {
@@ -207,7 +227,8 @@ pub(crate) fn spawn(app: tauri::AppHandle, mut post: Box<dyn FnMut(&Due) + Send>
             };
 
             let now = crate::now_ms();
-            let next_fire = match run_once(&pool, now, HORIZON_MS, &mut post).await {
+            let tz = crate::display_tz(&pool);
+            let next_fire = match run_once(&pool, now, HORIZON_MS, &tz, notifier.as_ref()).await {
                 Ok(pass) => pass.next_fire_ms,
                 Err(e) => {
                     // Offline, a locked database, a malformed rule — all normal
@@ -292,14 +313,26 @@ mod tests {
         Reminders { use_default: false, overrides: vec![popup(minutes)] }
     }
 
-    /// Collects what a pass would post, without any transport.
+    /// The display zone every test reads times in. Deliberately not UTC, so a
+    /// body that ignored the zone argument would read differently.
+    const SOFIA: &str = "Europe/Sofia";
+
+    /// One pass against a recording fake. **No test in this file reaches a real
+    /// transport** — `RecordingNotifier` is the only notifier the suite has.
+    async fn pass_with(
+        pool: &SqlitePool,
+        now_ms: i64,
+        notifier: &crate::notify::RecordingNotifier,
+    ) -> (Pass, Vec<(i64, i64)>) {
+        let pass = run_once(pool, now_ms, HORIZON_MS, SOFIA, notifier).await.unwrap();
+        let handed = pass.posted.iter().map(|d| (d.key.event_id, d.key.minutes)).collect();
+        (pass, handed)
+    }
+
+    /// `pass_with` against a fresh fake, for the tests that only care which
+    /// reminders came out.
     async fn pass_at(pool: &SqlitePool, now_ms: i64) -> (Pass, Vec<(i64, i64)>) {
-        let mut posted = Vec::new();
-        let pass = {
-            let mut sink = |d: &Due| posted.push((d.key.event_id, d.key.minutes));
-            run_once(pool, now_ms, HORIZON_MS, &mut sink).await.unwrap()
-        };
-        (pass, posted)
+        pass_with(pool, now_ms, &crate::notify::RecordingNotifier::default()).await
     }
 
     #[tokio::test]
@@ -537,6 +570,100 @@ mod tests {
 
         let (_, posted) = pass_at(&pool, T0900Z - 45 * MINUTE).await;
         assert_eq!(posted, vec![(1, 45)], "the calendar's default reminder did not reach here");
+    }
+
+    /// What a given clock actually puts in front of the user — the whole point
+    /// of the feature, asserted end to end.
+    #[tokio::test]
+    async fn what_is_posted_for_a_given_clock_carries_the_events_title_and_time() {
+        let pool = seeded("UTC", "[]").await;
+        let mut ev = event("e1", T0900Z, T0900Z + HOUR, own(10));
+        ev.summary = Some("Weekly Standup".into());
+        ev.location = Some("Room 1".into());
+        omacal_store::upsert_event(&pool, &ev).await.unwrap();
+
+        let fake = crate::notify::RecordingNotifier::default();
+        pass_with(&pool, T0900Z - 10 * MINUTE, &fake).await;
+
+        let posted = fake.posted();
+        assert_eq!(posted.len(), 1, "exactly one notification for one due reminder");
+        assert_eq!(posted[0].title, "Weekly Standup");
+        assert_eq!(
+            posted[0].body, "12:00 · Room 1",
+            "09:00Z read in Europe/Sofia is 12:00, and the location follows it"
+        );
+    }
+
+    /// **The Join rule, through the driver.** A meeting with a conferencing
+    /// link offers Join; one without must not — there would be nothing for the
+    /// button to open.
+    ///
+    /// Both events in one pass, so the fixture set contains a link and an
+    /// absence. A pass where everything had a link could not witness this.
+    #[tokio::test]
+    async fn join_is_offered_only_for_the_occurrence_that_has_a_conference_link() {
+        let pool = seeded("UTC", "[]").await;
+
+        let mut online = event("e1", T0900Z, T0900Z + HOUR, own(10));
+        online.summary = Some("Design review".into());
+        online.conference_uri = Some("https://meet.google.com/abc".into());
+        omacal_store::upsert_event(&pool, &online).await.unwrap();
+
+        let mut in_person = event("e2", T0900Z, T0900Z + HOUR, own(10));
+        in_person.summary = Some("Coffee".into());
+        in_person.conference_uri = None;
+        omacal_store::upsert_event(&pool, &in_person).await.unwrap();
+
+        let fake = crate::notify::RecordingNotifier::default();
+        pass_with(&pool, T0900Z - 10 * MINUTE, &fake).await;
+
+        let posted = fake.posted();
+        assert_eq!(posted.len(), 2, "fixture check: both meetings must notify");
+
+        let join_uri = |title: &str| {
+            posted
+                .iter()
+                .find(|n| n.title == title)
+                .unwrap_or_else(|| panic!("nothing posted for {title}"))
+                .actions
+                .iter()
+                .find_map(|a| match a {
+                    crate::notify::Action::Join(u) => Some(u.clone()),
+                    _ => None,
+                })
+        };
+
+        assert_eq!(join_uri("Design review").as_deref(), Some("https://meet.google.com/abc"));
+        assert_eq!(join_uri("Coffee"), None, "a meeting with nowhere to join must not offer Join");
+    }
+
+    /// §2.4: on an unsigned macOS bundle the notification centre may simply
+    /// refuse. That is expected, so the pass must not fail — and the reminder
+    /// must still be recorded, or every later pass re-attempts it for as long
+    /// as the meeting runs and the log fills with the same failure.
+    #[tokio::test]
+    async fn a_notifier_that_refuses_is_tolerated_and_the_reminder_is_still_recorded() {
+        let pool = seeded("UTC", "[]").await;
+        omacal_store::upsert_event(&pool, &event("e1", T0900Z, T0900Z + HOUR, own(10)))
+            .await.unwrap();
+
+        let failing = crate::notify::RecordingNotifier::failing();
+        let pass = run_once(&pool, T0900Z - 10 * MINUTE, HORIZON_MS, SOFIA, &failing)
+            .await
+            .expect("a refusing transport must not fail the pass");
+
+        assert_eq!(failing.posted().len(), 1, "it must still have been attempted");
+        assert_eq!(pass.posted.len(), 1);
+        assert_eq!(
+            omacal_store::fired_keys(&pool).await.unwrap(),
+            vec![(1, T0900Z, 10)],
+            "a refused reminder must still be recorded, or it is retried forever"
+        );
+
+        // And the next pass, mid-meeting, does not attempt it again.
+        let second = crate::notify::RecordingNotifier::default();
+        pass_with(&pool, T0900Z + 5 * MINUTE, &second).await;
+        assert!(second.posted().is_empty(), "the record must suppress the retry");
     }
 
     #[test]

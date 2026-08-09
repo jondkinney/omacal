@@ -9,6 +9,7 @@ mod fixtures;
 /// that reads or writes `ui/tests/` is compiled into the shipped app.
 #[cfg(test)]
 mod golden;
+mod notify;
 mod notify_loop;
 mod status;
 mod sync_loop;
@@ -663,8 +664,18 @@ async fn sync_now(state: tauri::State<'_, AppState>) -> Result<u64, String> {
 pub fn run() {
     tracing_subscriber::fmt::init();
 
-    tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
+    #[allow(unused_mut)]
+    let mut builder = tauri::Builder::default().plugin(tauri_plugin_opener::init());
+
+    // Registered so `app.notification()` resolves for `notify::MacNotifier`.
+    // Registration alone posts nothing — it makes the transport available, and
+    // Task 5 decides whether the loop that would use it ever starts.
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder.plugin(tauri_plugin_notification::init());
+    }
+
+    builder
         .setup(|app| {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
