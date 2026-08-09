@@ -7,7 +7,7 @@
   import AllDayBand from './AllDayBand.svelte';
   import EventPopover from './EventPopover.svelte';
   import { getEventDetail, refreshEvent, type EventDetail, type Occurrence } from './eventdetail';
-  import { SNAP_MS, beganDrag, spanForMove } from './drag';
+  import { SNAP_MS, beganDrag, colsMoved, edgeAt, spanForMove, spanForResize } from './drag';
 
   let { week, oncreate, onedit, ondelete, onmove }: {
     week: WeekPayload;
@@ -222,11 +222,22 @@
     originX: number;
     originY: number;
     colHeight: number;
+    colWidth: number;
     dayMs: number;
     origin: { startMs: number; endMs: number };
+    /** Which end was grabbed, or `null` for the body of the block — decided
+     *  once, at the press, by `edgeAt`. Deciding it again on each move would
+     *  let a gesture change from a resize into a move halfway through, because
+     *  the pointer leaves the band it started in almost immediately. */
+    edge: 'start' | 'end' | null;
     /** Past the threshold. Below it this is still a click. */
     moving: boolean;
-    offsetPct: number;
+    /** The span this drag would write. `null` until it has moved at all. */
+    landed: { startMs: number; endMs: number } | null;
+    /** Where the block is drawn while dragging, relative to where `Placed`
+     *  put it. Presentational only — the write reads `landed`, so the two can
+     *  never disagree by being derived from one another. */
+    preview: { topDeltaPct: number; heightDeltaPct: number; dx: number } | null;
   };
   let drag = $state<Drag | null>(null);
 
@@ -246,18 +257,21 @@
    */
   let draggedNotClicked = false;
 
-  /** Whether `event` is the one currently being dragged. */
-  const dragOffsetFor = (event: UiEvent): number =>
+  /** The preview for `event`, or `null` when it is not the one being dragged. */
+  const previewFor = (event: UiEvent) =>
     drag && drag.moving && drag.id === event.id && drag.startMs === event.start_ms
-      ? drag.offsetPct
-      : 0;
+      ? drag.preview
+      : null;
 
   function startDrag(event: UiEvent, day: { start_ms: number; end_ms: number }, e: PointerEvent) {
     // Primary button only: a right-click opens a context menu and must not
     // leave a half-armed drag behind it.
     if (e.button !== 0) return;
-    const col = (e.currentTarget as HTMLElement).closest('.col');
+    const target = e.currentTarget as HTMLElement;
+    const col = target.closest('.col');
     if (!col) return;
+    const colBox = col.getBoundingClientRect();
+    const box = target.getBoundingClientRect();
 
     drag = {
       event,
@@ -265,11 +279,17 @@
       startMs: event.start_ms,
       originX: e.clientX,
       originY: e.clientY,
-      colHeight: col.getBoundingClientRect().height,
+      colHeight: colBox.height,
+      colWidth: colBox.width,
+      // Decided from where the press landed *within the block*, which is what
+      // `edgeAt` answers and what a band drawn as an element could disagree
+      // with.
+      edge: edgeAt(e.clientY - box.top, box.height),
       dayMs: day.end_ms - day.start_ms,
       origin: { startMs: event.start_ms, endMs: event.end_ms },
       moving: false,
-      offsetPct: 0,
+      landed: null,
+      preview: null,
     };
 
     window.addEventListener('pointermove', onDragMove);
@@ -287,21 +307,44 @@
     drag.moving = true;
 
     // The geometry is `drag.ts`'s, never recomputed here — the snap, the
-    // duration rule and the civil day all live there with a table each.
-    // `dxCols` is 0: this task moves a block within its own column, and
-    // rendering it in a different one is a change to how the grid is laid
-    // out rather than to the gesture.
-    const span = spanForMove(
-      drag.origin,
-      drag.colHeight === 0 ? 0 : dy / drag.colHeight,
-      drag.dayMs,
-      week.days.length,
-      0,
-      SNAP_MS,
-    );
-    // Back into the column's own units, from the instant the geometry chose,
-    // so what is drawn is what would be written.
-    drag.offsetPct = ((span.startMs - drag.origin.startMs) / drag.dayMs) * 100;
+    // duration rule, the civil day, the inversion clamp and how many columns
+    // a sideways travel crosses all live there with a table each.
+    const dyFrac = drag.colHeight === 0 ? 0 : dy / drag.colHeight;
+    // A resize is one edge of one block and never crosses a day.
+    const cols = drag.edge ? 0 : colsMoved(dx, drag.colWidth);
+
+    // What would be written. Stored rather than reconstructed on drop, so the
+    // instants that go to Google are the ones the geometry produced and not a
+    // second derivation of them.
+    drag.landed = drag.edge
+      ? spanForResize(drag.origin, drag.edge, dyFrac, drag.dayMs, SNAP_MS)
+      : spanForMove(drag.origin, dyFrac, drag.dayMs, week.days.length, cols, SNAP_MS);
+
+    // What is drawn, and **the two axes are drawn separately**: a day is a
+    // sideways translation, not a hundred percent of a column's height. Asking
+    // the same span for both puts a block dragged one column right a whole
+    // column *down* as well — `top: calc(105%)`, off the bottom of the grid,
+    // which is exactly what it did.
+    const vertical = drag.edge
+      ? drag.landed
+      : spanForMove(drag.origin, dyFrac, drag.dayMs, week.days.length, 0, SNAP_MS);
+
+    // Deltas on `Placed`, not absolutes: a block's position comes from the
+    // backend's own layout and is not recoverable from its instants.
+    //
+    // `d` rather than `drag`: the closure below outlives the null check above
+    // as far as the compiler is concerned, and narrowing a module-level `let`
+    // is not something it will carry into one.
+    const d = drag;
+    const pct = (ms: number) => (ms / d.dayMs) * 100;
+    const wasMs = d.origin.endMs - d.origin.startMs;
+    drag.preview = {
+      topDeltaPct: pct(vertical.startMs - d.origin.startMs),
+      heightDeltaPct: pct(vertical.endMs - vertical.startMs - wasMs),
+      // Whole columns in pixels: a block is a fraction of a column's width, so
+      // translating it by its own width would land it somewhere arbitrary.
+      dx: cols * d.colWidth,
+    };
   }
 
   function onDragEnd() {
@@ -318,25 +361,19 @@
     // one 15-minute slot are the same drop, and the geometry has already said
     // so by returning the span it did.
     // One question, asked of the span rather than of the gesture: a press that
-    // never passed the threshold has an offset of zero and so lands on its own
-    // origin, which is the same answer for the same reason. A `drag.moving`
-    // check here as well reddened nothing when deleted, because it could not
-    // disagree.
-    const landed = spanOf(drag);
-    const moved = landed.startMs !== drag.origin.startMs;
+    // never passed the threshold has no preview and so lands on its own
+    // origin, which is the same answer for the same reason.
+    //
+    // **Both ends**, now that a resize is possible: a resize leaves the start
+    // exactly where it was and moves only the end, so a comparison of starts
+    // alone would call every resize a no-op and write nothing.
+    const landed = drag.landed ?? drag.origin;
+    const changed =
+      landed.startMs !== drag.origin.startMs || landed.endMs !== drag.origin.endMs;
     const event = drag.event;
 
     endDrag();
-    if (moved) onmove(event, landed);
-  }
-
-  /** The span the current drag has arrived at, in the geometry's own terms. */
-  function spanOf(d: Drag): { startMs: number; endMs: number } {
-    const shifted = (d.offsetPct / 100) * d.dayMs;
-    return {
-      startMs: d.origin.startMs + shifted,
-      endMs: d.origin.endMs + shifted,
-    };
+    if (changed) onmove(event, landed);
   }
 
   function onDragKey(e: KeyboardEvent) {
@@ -547,7 +584,7 @@
           placed={p}
           onopen={openPopover}
           ongrab={(ev, e) => startDrag(ev, day, e)}
-          offsetPct={dragOffsetFor(day.events[p.idx])}
+          preview={previewFor(day.events[p.idx])}
         />
       {/each}
 

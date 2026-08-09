@@ -819,6 +819,86 @@ test.describe('App', () => {
       expect(args.sendUpdates).toBe('none');
     });
 
+    /** Drags `title`'s block sideways by `dx` and vertically by `dy`. */
+    const dragXY = async (page: Page, title: string, dx: number, dy: number) => {
+      const b = block(page, title).first();
+      await b.scrollIntoViewIfNeeded();
+      const box = await b.boundingBox();
+      if (!box) throw new Error(`no box for ${title}`);
+      const cx = box.x + box.width / 2;
+      const cy = box.y + box.height / 2;
+      await page.mouse.move(cx, cy);
+      await page.mouse.down();
+      await page.mouse.move(cx + dx, cy + dy, { steps: 6 });
+      await page.mouse.up();
+    };
+
+    /** Drags an edge of `title`'s block by `dy`. */
+    const dragEdge = async (page: Page, title: string, edge: 'top' | 'bottom', dy: number) => {
+      const b = block(page, title).first();
+      await b.scrollIntoViewIfNeeded();
+      const box = await b.boundingBox();
+      if (!box) throw new Error(`no box for ${title}`);
+      const cx = box.x + box.width / 2;
+      const cy = edge === 'top' ? box.y + 2 : box.y + box.height - 2;
+      await page.mouse.move(cx, cy);
+      await page.mouse.down();
+      await page.mouse.move(cx, cy + dy, { steps: 6 });
+      await page.mouse.up();
+    };
+
+    /**
+     * Task #64: the two new gestures reach the same write with the same
+     * guarantees. Asserted rather than assumed — a gesture added in front of a
+     * write path is exactly where a guarantee stops applying quietly.
+     */
+    test('a drag to another day writes that day, still without notifying', async ({ page }) => {
+      await writable(page);
+      const col = await page.locator('.col').first().boundingBox();
+      if (!col) throw new Error('no column');
+
+      await dragXY(page, 'Board prep', col.width, 0);
+
+      await expect.poll(() => callsTo(page, 'update_event')).toHaveLength(1);
+      const [args] = await callsTo(page, 'update_event');
+      expect(args.fields.when.startMs - args.occurrenceStartMs).toBe(24 * 60 * 60_000);
+      expect(args.sendUpdates).toBe('none');
+    });
+
+    test('a resize writes the new span, still without notifying', async ({ page }) => {
+      await writable(page);
+      const col = await page.locator('.col').first().boundingBox();
+      if (!col) throw new Error('no column');
+
+      await dragEdge(page, 'Board prep', 'bottom', (col.height / 96) * 2);
+
+      await expect.poll(() => callsTo(page, 'update_event')).toHaveLength(1);
+      const [args] = await callsTo(page, 'update_event');
+      // The start is untouched and the end is half an hour later — a resize,
+      // not a move, all the way through to the payload.
+      expect(args.fields.when.startMs).toBe(args.occurrenceStartMs);
+      expect(args.fields.when.endMs - args.fields.when.startMs).toBe(90 * 60_000);
+      expect(args.sendUpdates).toBe('none');
+    });
+
+    /** The gate applies to the new gestures too: a resize on an event with
+     *  guests asks before it writes, exactly as a move does. */
+    test('a resize on an event with guests still asks first', async ({ page }) => {
+      await writable(page);
+      const col = await page.locator('.col').first().boundingBox();
+      if (!col) throw new Error('no column');
+
+      await dragEdge(page, 'Client call', 'bottom', (col.height / 96) * 2);
+
+      await expect(movePanel(page)).toBeVisible();
+      expect(await callsTo(page, 'update_event')).toHaveLength(0);
+
+      await movePanel(page).getByRole('button', { name: 'Move and notify guests' }).click();
+      await expect.poll(() => callsTo(page, 'update_event')).toHaveLength(1);
+      const [args] = await callsTo(page, 'update_event');
+      expect(args.sendUpdates).toBe('all');
+    });
+
     test('a write that fails is reported and moves nothing', async ({ page }) => {
       await writable(page);
       await page.evaluate(() => window.__harness.failNextUpdate('that event is no longer here'));

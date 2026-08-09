@@ -49,6 +49,59 @@ export function beganDrag(dx: number, dy: number, threshold: number = DRAG_THRES
   return Math.hypot(dx, dy) >= threshold;
 }
 
+/**
+ * How thick the grab band at each end of a block is, in pixels.
+ *
+ * Six, which is a little larger than the 4px drag threshold on purpose: a
+ * press that begins inside the band and wanders is a resize, and if the band
+ * were the smaller of the two a hand could leave it before the drag even
+ * started and silently become a move instead.
+ */
+export const RESIZE_EDGE_PX = 6;
+
+/**
+ * Which edge of a block a press at `offsetY` grabs, or `null` for the middle.
+ *
+ * **A short block has no edges at all.** Below three bands' worth of height
+ * there is no middle left between them, and every press on a 15-minute event
+ * would resize it — the block would become impossible to *move*, which is the
+ * commoner gesture by far. `null` there means such a block can still be
+ * dragged, and resized by making it longer from a taller sibling or the form.
+ */
+export function edgeAt(
+  offsetY: number,
+  height: number,
+  band: number = RESIZE_EDGE_PX,
+): 'start' | 'end' | null {
+  if (height < band * 3) return null;
+  if (offsetY <= band) return 'start';
+  if (offsetY >= height - band) return 'end';
+  return null;
+}
+
+/**
+ * How many day columns a horizontal travel of `dx` crosses.
+ *
+ * Rounded, so the block lands in the column the pointer is nearest rather than
+ * the one it has fully entered: dragging a little over halfway into Tuesday
+ * means Tuesday. Ties go **away from zero** — `Math.round` alone rounds −0.5 to
+ * −0, which would make a drag exactly half a column to the *left* stay put
+ * while the same drag to the right moved, and a gesture that behaves
+ * differently in mirror image is a gesture nobody can predict.
+ *
+ * A column of zero width crosses nothing rather than dividing by it.
+ */
+export function colsMoved(dx: number, colWidth: number): number {
+  if (colWidth <= 0) return 0;
+  const cols = dx / colWidth;
+  const n = cols < 0 ? -Math.round(-cols) : Math.round(cols);
+  // `+ 0` turns `-0` into `0`. Not cosmetic: a drag a little to the left
+  // produces `-0` here, and `Object.is(-0, 0)` is false — so a caller
+  // comparing against zero, or a spec asserting it, disagrees with itself
+  // depending on which way the pointer went.
+  return n + 0;
+}
+
 /** A span of time. The shape a drag produces and a write consumes. */
 export type Span = { startMs: number; endMs: number };
 
