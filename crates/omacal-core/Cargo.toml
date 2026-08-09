@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 chrono = "0.4.45"
 chrono-tz = "0.10.4"
+jiff = "0.2.35"
 rrule = "0.14.0"
 serde.workspace = true
 thiserror.workspace = true

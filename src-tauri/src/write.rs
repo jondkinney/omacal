@@ -55,25 +55,13 @@ impl When {
 
 /// The calendar date `ms` falls on, read in `tz`, as `yyyy-mm-dd`.
 ///
-/// How an all-day event's *date* is recovered from the instant the store holds
-/// for it — and lossless for exactly one reason: the store holds midnight in
-/// the **calendar's** zone, because Google sends a bare `date` and
-/// `omacal_sync::resolve` falls back to `calendars.timezone`. Read back in that
-/// same zone it returns the date sync put in. Read in any other zone it is a
-/// day out on one side of midnight or the other, which is the defect this plan
-/// exists to close — so no caller may hand it the browser's zone.
-///
-/// An unresolvable timestamp or zone still produces a date rather than
-/// panicking: the Unix epoch, then UTC — the same fallback philosophy used
-/// elsewhere for zone handling (`n_day_boundaries`, `local_midnight_ms` in
-/// `commands.rs`).
-pub(crate) fn date_in_zone(ms: i64, tz: &str) -> String {
-    let ts = jiff::Timestamp::from_millisecond(ms).unwrap_or(jiff::Timestamp::UNIX_EPOCH);
-    ts.in_tz(tz)
-        .unwrap_or_else(|_| ts.in_tz("UTC").expect("UTC always resolves"))
-        .date()
-        .to_string()
-}
+/// Re-exported, not defined here. It moved down to [`omacal_core::zone`] so
+/// that crate's `midnight_in_zone` — the inverse derivation, and the one that
+/// turns a date back into an instant — could sit beside it, and so
+/// `due_reminders` could reach it without a second copy being written in the
+/// crate below. Every call site here and in `commands.rs`/`events.rs` still
+/// says `crate::write::date_in_zone`, and still gets the same function.
+pub(crate) use omacal_core::zone::date_in_zone;
 
 /// The two dates an all-day span covers, read in the **calendar's** zone
 /// `cal_tz`: the first day it covers and the **inclusive** last one, both
