@@ -12,8 +12,8 @@ provider there.
   `cargo tauri` subcommand used throughout this guide).
 - **Xcode Command Line Tools**: `xcode-select --install`.
 
-`sqlite3` is not required for normal use — it ships with macOS and is only
-needed for the optional sync-interval tweak below.
+`sqlite3` is not needed at all. It used to be, for the sync interval; that is a
+control in Settings now.
 
 ## Look at it first, without any credentials
 
@@ -84,34 +84,75 @@ and whenever the window regains focus.
 | `npm --prefix ui run check` | TypeScript and Svelte type checking |
 | `cargo tauri build` | Build a release `.app` |
 
-## Changing the sync interval
+## Settings
 
-Default 5 minutes, floor 1 minute (a shorter value is accepted but silently
-clamped up to the floor):
+Behind the **hamburger** in the header, in four tabs.
 
-    sqlite3 "$HOME/Library/Application Support/com.omacal.app/omacal.db" \
-      "INSERT INTO settings (key,value) VALUES ('sync_interval_ms','60000')
-       ON CONFLICT(key) DO UPDATE SET value=excluded.value;"
+**General** — the sync interval. Default 5 minutes, and it will not go below one
+minute: Google's quota is finite and a desktop app has no business polling
+faster. A shorter value is **refused with a reason** rather than accepted and
+quietly clamped, which is the difference between knowing what your app is doing
+and believing something untrue about it. (Setting this used to mean running
+`sqlite3` against the database by hand. It no longer does.)
 
-`com.omacal.app` is the app's bundle identifier; macOS's per-app data
-directory is derived from it automatically. The demo database
-(`omacal-demo.db`) lives alongside it in the same directory and is unaffected
-by this setting, since demo mode never syncs.
+**Calendars** — the same rows as the header's picker: **show** and **sync** as
+two separate switches, plus a colour. **Accounts** — what is connected, and
+adding another. **Notifications** — whether reminders fire at all; what fires is
+still each event's own Google reminders rather than a schedule omacal invents.
 
-## Troubleshooting
+## Per-calendar colour
 
-**Sign-in fails immediately with an error containing `no config at
-…/.config/omacal/config.toml`** — step 4 above was skipped or the file is in
-the wrong place. The full message names the exact path it looked for and
-ends with `Create it with client_id and client_secret.`
+Each calendar takes Google's colour until you pick another, from a curated set
+chosen to stay legible on both a light and a dark theme.
 
-**Sign-in stops working after about a week** — the OAuth app is still in
-*Testing*. Publish it to Production (step 2.5) and sign in again.
+**The choice is local to omacal and is never sent to Google.** Your phone, the
+web UI and anyone else subscribed to that calendar see exactly what they saw
+before. *Use Google's* clears your choice, which is a different thing from
+picking the colour Google currently uses — a cleared calendar follows Google's
+colour from then on, including when Google changes it.
 
-**"state mismatch — possible CSRF, sign-in aborted"** — a stale browser tab hit
-the loopback listener. Close it and retry.
+## Search
 
-**Blank window** — check `npm --prefix ui run build` succeeds, then rerun.
+`/`, or the magnifier in the header. Titles only — not location, not
+description, not guests — so every result is explicable from what you typed.
+
+Results are ordered by distance from today in **either** direction: a trip last
+month and a trip next month both beat one from four years ago. A recurring event
+is **one** result rather than one per occurrence, resolved to the occurrence
+nearest today.
+
+It searches only the calendars you display. Searching everything synced sounds
+more useful and produces a dead end: you click a result on a hidden calendar,
+the view jumps to its date, and nothing is drawn — because hiding it is what you
+asked for.
+
+Choosing a result moves the calendar to that date in the view you are already in
+and opens the event. Escape closes search and leaves you where you were.
+
+## Where the database lives
+
+    ~/Library/Application Support/com.omacal.app/omacal.db
+
+`com.omacal.app` is the app's bundle identifier; macOS's per-app data directory
+is derived from it automatically. It is SQLite in WAL mode, so it is **three**
+files — plus `-wal` and `-shm`. Copy or delete all three together. The demo
+database (`omacal-demo.db`) lives alongside it and is never synced.
+
+## Dragging
+
+Move an event by dragging it, resize it by an edge, or sweep empty grid to start
+a new one.
+
+**A drag never emails anybody by itself.** Dropping an event that has guests
+asks first, and *Move without notifying* is the default answer — a gesture can
+happen by accident, and an accident that mails a meeting's whole guest list is
+the outcome the question exists to prevent. Dropping an occurrence of a series
+asks which occurrences you meant, the same three scopes the form offers. A drop
+that lands where it started does nothing at all: no request, no dialog.
+
+Sweeping empty grid opens the event form pre-filled with the span rather than
+creating something untitled — a new event needs a name, and the form is where
+that lives.
 
 ## Guests, and who gets an email
 
@@ -136,10 +177,27 @@ Inviting guests to a **brand-new** event is not built: create it first, then add
 them by editing it. omacal says so rather than creating the event and quietly
 dropping the list.
 
+## Troubleshooting
+
+**Sign-in fails immediately with an error containing `no config at
+…/.config/omacal/config.toml`** — step 4 above was skipped or the file is in
+the wrong place. The full message names the exact path it looked for and
+ends with `Create it with client_id and client_secret.`
+
+**Sign-in stops working after about a week** — the OAuth app is still in
+*Testing*. Publish it to Production (step 2.5) and sign in again.
+
+**"state mismatch — possible CSRF, sign-in aborted"** — a stale browser tab hit
+the loopback listener. Close it and retry.
+
+**Blank window** — check `npm --prefix ui run build` succeeds, then rerun.
+
 ## What is not built yet
 
-Guests on a create, as above. Search. Per-calendar colour overrides. Offline
-writes: a save needs the network and says so rather than queueing.
+Guests on a create, as above. Offline writes: a save needs the network and says
+so rather than queueing. Signing an account out — that means revoking a token,
+clearing the Keychain entry and deleting that account's calendars and their
+events, and a button that did half of it would leave rows nothing can reach.
 
 **Reliable notifications on macOS.** `UNUserNotificationCenter` wants a correctly
 signed bundle and this one is unsigned, so a reminder may simply never appear.
