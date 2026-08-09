@@ -2972,6 +2972,7 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "chrono-tz",
+ "jiff",
  "rrule",
  "serde",
  "thiserror 2.0.19",
