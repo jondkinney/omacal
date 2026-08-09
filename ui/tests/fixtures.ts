@@ -1988,15 +1988,24 @@ export const FIXTURES: Record<string, Record<string, any>> = {
     // Five attendees, one of them the signed-in user: the notice must say
     // four. A fixture whose guests were all strangers would pass whether or
     // not the count excluded the person doing the saving.
+    //
+    // Three more properties the guest editor needs, all on this one fixture
+    // rather than on three near-copies of it. **Ana is the organizer**, so the
+    // row §5 forbids removing is present and is not the self row — the two
+    // rules would be indistinguishable on a fixture where the organizer was
+    // also the user. **Ivan is already optional**, so the toggle can be driven
+    // in both directions rather than only on. And `me@x.com` is a real row
+    // rather than a name, which is what makes "removing yourself" reachable.
     'with-guests': {
       anchor: ANCHOR,
       initial: editing(detail({
         id: 11, title: 'Board prep', can_edit: true,
+        organizer_email: 'ana@x.com',
         attendees: [
           attendee({ email: 'ana@x.com', display_name: 'Ana' }),
           attendee({ email: 'petya@x.com' }),
           attendee({ email: 'rahul@x.com' }),
-          attendee({ email: 'ivan@x.com' }),
+          attendee({ email: 'ivan@x.com', optional: true }),
           attendee({ email: 'me@x.com', is_self: true }),
         ],
       })),

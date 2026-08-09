@@ -2273,13 +2273,14 @@ test.describe('EventForm', () => {
     await expect(custom).toHaveText('Custom · Every 2 weeks');
   });
 
-  test('an event with guests warns that saving notifies them', async ({ page }) => {
-    // `patch_event` sends `sendUpdates=all` unconditionally, so every save on
-    // this event is also five emails — four, once the person doing the saving
-    // is taken out of the count. The fixture has five attendees for exactly
-    // that reason.
+  test('an event with guests says the choice is on the buttons, not on Save', async ({ page }) => {
+    // **This replaces "Saving will notify 4 guests."** That sentence was true
+    // when `update_event` was handed `all` unconditionally; spec §3 makes it a
+    // choice, so a warning that states an outcome would now be describing one
+    // of the two buttons. The count still excludes the person doing the saving
+    // — the fixture has five attendees for exactly that reason.
     await open(page, 'with-guests');
-    await expect(page.getByTestId('guest-notice')).toHaveText('Saving will notify 4 guests.');
+    await expect(page.getByTestId('guest-notice')).toContainText('4 guests');
   });
 
   test('a description is rendered as text, never as markup', async ({ page }) => {
@@ -2362,6 +2363,235 @@ test.describe('EventForm', () => {
     await page.getByRole('button', { name: 'Save' }).click();
     const [saved] = await saves(page);
     expect(saved.fields.repeat).toBe('weekly');
+  });
+
+  // --- The guest list (spec §1, §4, §5) ------------------------------------
+
+  /** The rows currently on the form, by address. */
+  const guestRows = (page: import('@playwright/test').Page) =>
+    page.locator('[data-guest]');
+
+  /** Types `address` into the add field and presses Add. */
+  const addGuest = async (page: import('@playwright/test').Page, address: string) => {
+    await page.getByLabel('Add guest', { exact: true }).fill(address);
+    await page.getByRole('button', { name: 'Add', exact: true }).click();
+  };
+
+  /** Answers the notify choice, which every save on this fixture now reaches. */
+  const answerNotify = async (page: import('@playwright/test').Page, button: string) => {
+    await page.getByRole('button', { name: 'Save' }).click();
+    await page.getByRole('button', { name: button, exact: true }).click();
+  };
+
+  test('the guest list shows everyone on the event, the user included', async ({ page }) => {
+    // Five rows, not four. The *notice* excludes the person doing the saving
+    // because it counts who gets an email; the list is what the event's
+    // attendees would become, and leaving yourself out of that would take you
+    // off the event on the next save.
+    await open(page, 'with-guests');
+    await expect(guestRows(page)).toHaveCount(5);
+    await expect(page.locator('[data-guest="me@x.com"]')).toBeVisible();
+  });
+
+  test('a create offers no guest editing at all', async ({ page }) => {
+    // A create cannot invite anybody — `create_impl` refuses one that carries
+    // guests, because the notify choice for a create does not exist yet — so
+    // the form must not offer what the write path will refuse.
+    await open(page, 'create');
+    await expect(page.getByTestId('guests')).toHaveCount(0);
+  });
+
+  test('an address typed in is added, and reaches the save', async ({ page }) => {
+    await open(page, 'with-guests');
+    await addGuest(page, 'dan@x.com');
+    await expect(guestRows(page)).toHaveCount(6);
+
+    await answerNotify(page, 'Save without notifying');
+    const [saved] = await saves(page);
+    expect(saved.fields.guests.map((g: any) => g.email)).toContain('dan@x.com');
+    // And everyone who was already there is still there: `attendees` is a
+    // whole-list replace, so a payload carrying only the new person removes
+    // the rest.
+    expect(saved.fields.guests).toHaveLength(6);
+  });
+
+  test('Return in the address field adds a guest rather than saving', async ({ page }) => {
+    // The field lives inside the `<form>`, so an unhandled Return submits it —
+    // saving an event with a half-typed guest list and, on an event with
+    // guests, opening the notify choice for a change the user had not finished
+    // making.
+    await open(page, 'with-guests');
+    await page.getByLabel('Add guest', { exact: true }).fill('dan@x.com');
+    await page.getByLabel('Add guest', { exact: true }).press('Enter');
+
+    await expect(guestRows(page)).toHaveCount(6);
+    expect(await saves(page), 'Return must not have saved anything').toEqual([]);
+  });
+
+  /**
+   * §5: **refused in the form, before Save** — never by a 400 from Google,
+   * which arrives after the user has stopped looking.
+   */
+  test('an address that is not one is refused, and adds no row', async ({ page }) => {
+    await open(page, 'with-guests');
+    await addGuest(page, 'not-an-address');
+
+    await expect(page.getByTestId('form-error')).toBeVisible();
+    await expect(guestRows(page)).toHaveCount(5);
+    // Marked as well as described, the same rule the time fields follow: the
+    // message says what is wrong and the field says which one.
+    await expect(page.getByLabel('Add guest', { exact: true }))
+      .toHaveAttribute('aria-invalid', 'true');
+  });
+
+  /** §5: a duplicate is a no-op — not an error, and not a second row. */
+  test('an address already invited adds no second row and no error', async ({ page }) => {
+    await open(page, 'with-guests');
+    await addGuest(page, 'ANA@x.com');
+
+    await expect(guestRows(page)).toHaveCount(5);
+    await expect(page.getByTestId('form-error')).toHaveCount(0);
+  });
+
+  /** §5: **the organizer cannot be removed.** Google refuses it, so the control
+   *  is absent rather than present and disappointing. */
+  test('the organizer has no remove control, and everyone else does', async ({ page }) => {
+    await open(page, 'with-guests');
+    await expect(
+      page.locator('[data-guest="ana@x.com"]').getByRole('button'),
+      'Ana is the organizer',
+    ).toHaveCount(0);
+    await expect(page.locator('[data-guest="petya@x.com"]').getByRole('button')).toHaveCount(1);
+  });
+
+  /**
+   * §5: **removing yourself is not declining, and must not look like an RSVP.**
+   * Two things say so — the control names what it does rather than saying
+   * "remove", and the form says what it is not.
+   */
+  test('removing yourself is offered, and does not read as an RSVP', async ({ page }) => {
+    await open(page, 'with-guests');
+    await expect(
+      page.getByRole('button', { name: 'Remove yourself from this event' }),
+    ).toBeVisible();
+    await expect(page.getByTestId('self-guest-hint')).toContainText('not the same as declining');
+  });
+
+  test('removing a guest sends the list without them', async ({ page }) => {
+    await open(page, 'with-guests');
+    await page.getByRole('button', { name: 'Remove petya@x.com' }).click();
+    await expect(guestRows(page)).toHaveCount(4);
+
+    await answerNotify(page, 'Save without notifying');
+    const [saved] = await saves(page);
+    expect(saved.fields.guests.map((g: any) => g.email)).not.toContain('petya@x.com');
+    expect(saved.fields.guests).toHaveLength(4);
+  });
+
+  /** §4: the optional flag rides on the same whole-list replace, so this is a
+   *  toggle like any other — driven **both ways**, because a control wired to
+   *  set `true` passes a one-directional test. */
+  test('a guest can be marked optional, and unmarked', async ({ page }) => {
+    await open(page, 'with-guests');
+    const petya = page.getByLabel('Optional: petya@x.com');
+    const ivan = page.getByLabel('Optional: ivan@x.com');
+    await expect(ivan, 'the fixture ships one already optional').toBeChecked();
+
+    await petya.check();
+    await ivan.uncheck();
+
+    await answerNotify(page, 'Save without notifying');
+    const [saved] = await saves(page);
+    const by = (e: string) => saved.fields.guests.find((g: any) => g.email === e);
+    expect(by('petya@x.com').optional).toBe(true);
+    expect(by('ivan@x.com').optional).toBe(false);
+  });
+
+  test('a save that left the guest list alone sends no guests at all', async ({ page }) => {
+    // Absent means "leave the list alone", which is the only safe instruction
+    // for a whole-list replace built from a possibly-stale read.
+    await open(page, 'with-guests');
+    await answerNotify(page, 'Save without notifying');
+    const [saved] = await saves(page);
+    expect(Object.keys(saved.fields)).not.toContain('guests');
+  });
+
+  // --- The notify choice on Save (spec §3) ---------------------------------
+
+  /**
+   * **The don't-notify path, witnessed rather than assumed** — asserted on what
+   * the write is asked to send, exactly as the drag specs do it.
+   *
+   * `sendUpdates=all` used to be unconditional here. Correcting a typo in an
+   * address should not mail the whole room, and mail to other people is a
+   * deliberate act rather than a consequence of pressing Save.
+   */
+  test('Save without notifying sends none', async ({ page }) => {
+    await open(page, 'with-guests');
+    await answerNotify(page, 'Save without notifying');
+
+    const [saved] = await saves(page);
+    expect(saved.notify).toBe('none');
+  });
+
+  test('Save and notify guests sends all', async ({ page }) => {
+    // The other half, and the only path to `all` from this form. Without it
+    // "never notify" would satisfy the spec above.
+    await open(page, 'with-guests');
+    await answerNotify(page, 'Save and notify guests');
+
+    const [saved] = await saves(page);
+    expect(saved.notify).toBe('all');
+  });
+
+  test('Save on an event with guests saves nothing until the choice is made', async ({ page }) => {
+    // The panel must *gate* the save rather than merely appear. Witnessed by
+    // the absence of a save while it is open — a dialog that is visible and
+    // does not gate is the failure this shape is aimed at.
+    await open(page, 'with-guests');
+    await page.getByRole('button', { name: 'Save' }).click();
+
+    await expect(page.getByRole('dialog', { name: 'Save event' })).toBeVisible();
+    expect(await saves(page)).toEqual([]);
+  });
+
+  test('cancelling the choice saves nothing and leaves the form open', async ({ page }) => {
+    await open(page, 'with-guests');
+    await page.getByRole('button', { name: 'Save' }).click();
+    await page.getByRole('dialog', { name: 'Save event' })
+      .getByRole('button', { name: 'Cancel' }).click();
+
+    expect(await saves(page)).toEqual([]);
+    await expect(page.getByRole('dialog', { name: 'Edit event' })).toBeVisible();
+  });
+
+  /**
+   * Escape closes the choice and **not the form behind it.** Both listen on
+   * `window` — they have to, for the reason each says — so without a guard one
+   * keystroke dismisses both and the user loses everything they typed.
+   */
+  test('Escape on the choice returns to the form rather than closing it', async ({ page }) => {
+    await open(page, 'with-guests');
+    await page.getByRole('button', { name: 'Save' }).click();
+    await expect(page.getByRole('dialog', { name: 'Save event' })).toBeVisible();
+
+    await page.keyboard.press('Escape');
+
+    await expect(page.getByRole('dialog', { name: 'Save event' })).toHaveCount(0);
+    await expect(page.getByRole('dialog', { name: 'Edit event' })).toBeVisible();
+    expect(await saves(page)).toEqual([]);
+  });
+
+  test('an event with nobody on it saves straight away, and notifies nobody', async ({ page }) => {
+    // No guests, so there is nothing to choose between: asking would be a
+    // dialog with one answer. `none` rather than `all`, so that `all` appears
+    // exactly where somebody chose it — the same rule the drag path follows.
+    await open(page, 'custom-repeat');
+    await page.getByRole('button', { name: 'Save' }).click();
+
+    await expect(page.getByRole('dialog', { name: 'Save event' })).toHaveCount(0);
+    const [saved] = await saves(page);
+    expect(saved.notify).toBe('none');
   });
 });
 

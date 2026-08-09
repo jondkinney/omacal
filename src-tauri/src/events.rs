@@ -1403,6 +1403,7 @@ async fn update_via_client(
                         cal_google_id,
                         cal_tz,
                         &after,
+                        send_updates,
                         client,
                     )
                     .await;
@@ -1632,6 +1633,7 @@ async fn split_series(
     cal_google_id: &str,
     cal_tz: &str,
     after: &crate::write::EventFields,
+    send_updates: &str,
     client: &omacal_google::CalendarClient,
 ) -> anyhow::Result<()> {
     let lines: Vec<String> = master.recurrence.clone().unwrap_or_default();
@@ -1761,7 +1763,13 @@ async fn split_series(
         body["attendees"] = serde_json::json!(attendees);
     }
 
-    let created = client.insert_event(cal_google_id, &body, "all").await?;
+    // **The caller's choice, not a constant.** Both writes below carried
+    // `"all"` while a save was the only way to change an event and always
+    // notified. Guest-list spec §3 makes notifying a choice, and a split that
+    // mailed regardless would make that choice a lie on one scope in three:
+    // the user would press "Save without notifying" and every guest would be
+    // told twice — once by the tail's creation, once by the truncation.
+    let created = client.insert_event(cal_google_id, &body, send_updates).await?;
 
     // ---- 2. The original, shortened. --------------------------------------
     // Past this point the tail exists on Google, so every failure below is the
@@ -1801,7 +1809,7 @@ async fn split_series(
             cal_google_id,
             &master.id,
             &serde_json::json!({ "recurrence": shortened }),
-            "all",
+            send_updates,
             master.etag.as_deref(),
         )
         .await
@@ -6016,6 +6024,67 @@ mod tests {
         let client = omacal_google::CalendarClient::new(server.uri(), "tok");
         update_via_client(
             &pool, "following", OCCURRENCE, ev, "cal@x.com", "UTC", after, "all", &client,
+        )
+        .await
+        .unwrap();
+    }
+
+    /// **"Save without notifying" means it on this scope too.**
+    ///
+    /// A split is two writes and both used to carry `"all"` unconditionally,
+    /// which was right while every save notified. Guest-list spec §3 makes it a
+    /// choice, and a split that mailed regardless would make the choice a lie
+    /// on one scope in three — the user presses *Save without notifying* and
+    /// every guest is told twice, once by the tail's creation and once by the
+    /// truncation.
+    ///
+    /// **Both writes**, asserted separately with `query_param` + `.expect(1)`:
+    /// threading it into the POST alone leaves the PATCH mailing everyone, and
+    /// a spec that checked only the POST would call that fixed.
+    #[tokio::test]
+    async fn a_following_save_carries_the_notify_choice_to_both_of_its_writes() {
+        let mut ev = weekly_master("RRULE:FREQ=WEEKLY");
+        let (pool, _id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+
+        let server = wiremock::MockServer::start().await;
+        mount_master(&server, &["RRULE:FREQ=WEEKLY"]).await;
+
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events"))
+            .and(wiremock::matchers::query_param("sendUpdates", "none"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(wire_new_series(OCCURRENCE)),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/master1"))
+            .and(wiremock::matchers::query_param("sendUpdates", "none"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "master1", "status": "confirmed", "etag": "\"m2\"",
+                "summary": "Standup",
+                "recurrence": [UNTIL_BEFORE_OCCURRENCE],
+                "attendees": wire_guests(),
+                "start": {"dateTime": omacal_sync::to_rfc3339(DTSTART)},
+                "end":   {"dateTime": omacal_sync::to_rfc3339(DTSTART + HOUR)}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        update_via_client(
+            &pool,
+            "following",
+            OCCURRENCE,
+            ev,
+            "cal@x.com",
+            "UTC",
+            form("Standup (from here)", OCCURRENCE, OCCURRENCE + HOUR),
+            "none",
+            &client,
         )
         .await
         .unwrap();

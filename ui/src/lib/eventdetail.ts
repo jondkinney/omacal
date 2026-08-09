@@ -108,6 +108,24 @@ export type EventInput = {
   when: WhenInput;
   tz: string;
   repeat?: string;
+  /**
+   * The guest list the event should end up with, or **absent** when the user
+   * did not touch it.
+   *
+   * The distinction is the whole of guest-list spec §2 on this side of the
+   * wire. Google's `attendees` is a whole-list replace, so absent is the only
+   * safe thing to send for a list nobody edited: present, it would rewrite
+   * every attendee from whatever omacal last read, un-inviting anyone added
+   * elsewhere since. `[]` is a third thing again — remove everyone — and a
+   * caller that conflated it with absent would make removing the last guest
+   * impossible.
+   *
+   * Each entry carries an address and an optional flag and nothing else. What
+   * each person already answered is echoed back on the Rust side from what is
+   * stored (`events::attendees_for_edit`); there is deliberately no field here
+   * through which a form could overwrite an RSVP.
+   */
+  guests?: { email: string; optional: boolean }[];
 };
 
 /**

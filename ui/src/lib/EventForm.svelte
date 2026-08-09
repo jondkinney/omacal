@@ -3,8 +3,11 @@
   import { onMount } from 'svelte';
   import { placePopover, type Rect } from './position';
   import { offerableCalendarId, writableCalendars, type Calendar } from './calendars';
+  import SaveConfirm from './SaveConfirm.svelte';
+  import type { SendUpdates } from './eventdetail';
   import {
-    CUSTOM_REPEAT, REPEAT_OPTIONS, endAfterStart, ruleInWords, shiftedEndDate, toEventInput,
+    CUSTOM_REPEAT, REPEAT_OPTIONS, addGuest, endAfterStart, isAddress, removableGuest,
+    removeGuest, ruleInWords, shiftedEndDate, toEventInput, toggledGuestOptional,
     timeProblem, toggledAllDay,
     type EventFormResult, type EventFormValue, type Scope,
   } from './eventform';
@@ -58,7 +61,19 @@
   let error = $state<string | null>(null);
   /** Which time input the current `error` is about, so it can be marked rather
    *  than only described. Cleared with `error` on any input. */
-  let invalidField = $state<'start' | 'end' | null>(null);
+  let invalidField = $state<'start' | 'end' | 'guest' | null>(null);
+
+  /** What is in the add-a-guest box. Not part of `value`: an address nobody has
+   *  pressed Add on is not on the guest list, and a save must not quietly
+   *  invite whoever is half-typed there. */
+  let draft = $state('');
+
+  /** The notify choice, open. `null` while the form is being filled in.
+   *
+   *  Held here rather than handed up because everything the choice needs is
+   *  already here and nothing about it is the caller's business — the same
+   *  reason the scope radios live in this form rather than in `App`. */
+  let asking = $state<{ result: Omit<EventFormResult, 'notify'> } | null>(null);
 
   /** The event arrived carrying a rule omacal cannot express. Read from
    *  `initial`, not `value`: once the user picks something else the entry stays
@@ -67,6 +82,11 @@
   const isCustom = $derived(initial.repeat === CUSTOM_REPEAT);
   const customWords = $derived(ruleInWords(initial.recurrence));
   const guests = $derived(initial.isEdit ? initial.guestCount : 0);
+  /** Whether the signed-in user is on the event, which is what makes "removing
+   *  yourself" a thing that can be explained rather than a hypothetical. */
+  const selfOnEvent = $derived(
+    value.guests.some((g) => g.email.toLowerCase() === (value.selfEmail ?? '').toLowerCase()),
+  );
   const showScope = $derived(initial.isEdit && initial.isRecurring);
   const accounts = $derived(new Set(offerable.map((c) => c.account_email)).size);
 
@@ -129,14 +149,72 @@
         : 'The end time must be after the start time.';
       return;
     }
-    onsave({ calendarId: value.calendarId, scope, fields: toEventInput(value, initial) });
+    const result = { calendarId: value.calendarId, scope, fields: toEventInput(value, initial) };
+
+    // **Spec §3: whether to mail the guests is a choice, not a consequence.**
+    //
+    // This form used to warn "Saving will notify N guests" and pass `all`
+    // unconditionally, and that was sound while a save could only change the
+    // event itself — a time typed on purpose is what guests need to hear about.
+    // It stopped being sound the moment the form could edit the guest list:
+    // correcting a typo in an address would mail the whole room about a change
+    // that concerns one person.
+    //
+    // Nobody to tell means nothing to choose between, so a save with no guests
+    // goes straight out — with `'none'`, so that `all` appears only where
+    // somebody chose it. Same rule as the drag path's.
+    if (guests === 0) {
+      onsave({ ...result, notify: 'none' });
+      return;
+    }
+    asking = { result };
+  }
+
+  /** The answer. The save happens here and nowhere else, which is what makes
+   *  Cancel witnessable by the absence of one. */
+  function confirmSave(notify: SendUpdates) {
+    const pending = asking;
+    asking = null;
+    if (pending) onsave({ ...pending.result, notify });
+  }
+
+  // --- The guest list ------------------------------------------------------
+  //
+  // Every rule here is `eventform.ts`'s, with a table under it: which addresses
+  // are addresses, what a duplicate does, who cannot be removed. Nothing below
+  // decides any of that — it renders the answers and hands the clicks on.
+
+  /** Adds whatever is in the box, or explains why it cannot. */
+  function addTyped() {
+    const typed = draft.trim();
+    if (typed === '') return;
+    // §5: refused **here**, before Save, the way every other invalid field is —
+    // never by a 400 coming back from Google after the user has stopped
+    // looking.
+    if (!isAddress(typed)) {
+      error = `${typed} is not an email address.`;
+      invalidField = 'guest';
+      return;
+    }
+    // §5: a duplicate is a no-op. `addGuest` returns the identical array when
+    // there is nothing to do, so the box is cleared either way and no error
+    // appears — the user asked for a state the list is already in.
+    value.guests = addGuest(value.guests, typed);
+    draft = '';
+    error = null;
+    invalidField = null;
   }
 
   // A window-level listener rather than one on the panel, for the reason
   // `EventPopover` and `CalendarPopover` both document: focus does not stay
   // put, and nothing short of `window` hears Escape from `<body>`.
+  //
+  // **Silent while the notify choice is open**, and that guard is load bearing:
+  // `ConfirmPanel` listens on `window` too, and has to, so without this one
+  // Escape would dismiss the choice *and* close the form behind it — losing
+  // everything typed into it, for a keystroke that meant "not that dialog".
   function onKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape') oncancel();
+    if (e.key === 'Escape' && !asking) oncancel();
   }
 </script>
 
@@ -301,9 +379,82 @@
       {/if}
     {/if}
 
+    <!-- **Edit only.** A create cannot invite anybody: `create_impl` refuses a
+         create that carries guests rather than dropping them, because the
+         notify choice for one does not exist yet, and a form that offered what
+         the write path refuses is a form that can only disappoint. -->
+    {#if initial.isEdit}
+      <div class="guests" data-testid="guests">
+        <span class="lab">Guests</span>
+        <ul>
+          {#each value.guests as g (g.email)}
+            {@const isSelf = g.email.toLowerCase() === (value.selfEmail ?? '').toLowerCase()}
+            <li class="guest" data-guest={g.email}>
+              <span class="addr" title={g.email}>{g.email}{isSelf ? ' (you)' : ''}</span>
+              <label class="opt">
+                <!-- §4. The one field of somebody else's row this form may
+                     author — everything else about them is echoed back from
+                     what is stored. -->
+                <input
+                  type="checkbox"
+                  aria-label="Optional: {g.email}"
+                  checked={g.optional}
+                  onchange={() => (value.guests = toggledGuestOptional(value.guests, g.email))}
+                />
+                Optional
+              </label>
+              <!-- §5: the organizer is absent from this control rather than
+                   disabled in it. Google refuses the removal, so offering it
+                   produces a save that fails for a reason nothing explains. -->
+              {#if removableGuest(g.email, value.organizerEmail)}
+                <button
+                  type="button"
+                  class="x"
+                  aria-label={isSelf ? 'Remove yourself from this event' : `Remove ${g.email}`}
+                  onclick={() => (value.guests = removeGuest(value.guests, g.email))}
+                >×</button>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+        <div class="addguest">
+          <input
+            aria-label="Add guest"
+            placeholder="name@example.com"
+            bind:value={draft}
+            aria-invalid={invalidField === 'guest' ? 'true' : undefined}
+            onkeydown={(e) => {
+              // This field is inside the `<form>`, so an unhandled Return
+              // submits it — saving an event with a half-typed guest list, and
+              // on an event with guests opening the notify choice for a change
+              // nobody had finished making.
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                addTyped();
+              }
+            }}
+          />
+          <button type="button" onclick={addTyped}>Add</button>
+        </div>
+        {#if selfOnEvent}
+          <!-- §5. Removing yourself takes you off the event; declining keeps
+               you on it and tells the organizer. The control above names what
+               it does, and this says what it is not — between them, nothing on
+               this form reads as an RSVP. -->
+          <p class="hint" data-testid="self-guest-hint">
+            Removing yourself takes you off the event. That is not the same as
+            declining — to say you cannot come, use the event's RSVP buttons.
+          </p>
+        {/if}
+      </div>
+    {/if}
+
     {#if guests > 0}
+      <!-- What used to say "Saving will notify N guests." It cannot say that
+           any more: §3 makes it a choice, and the buttons on the panel Save
+           opens are where the choice is made. -->
       <p class="notice" data-testid="guest-notice">
-        Saving will notify {guests} guest{guests === 1 ? '' : 's'}.
+        {guests} guest{guests === 1 ? '' : 's'} can be told by email, or not. Save asks.
       </p>
     {/if}
 
@@ -318,6 +469,18 @@
     </div>
   </form>
 </div>
+
+<!-- Over the form, not instead of it: Cancel returns to a panel with
+     everything still typed into it, which is why the form stays mounted. -->
+{#if asking}
+  <SaveConfirm
+    guests={guests}
+    title={value.title.trim() === '' ? '(no title)' : value.title}
+    {anchor}
+    onconfirm={confirmSave}
+    oncancel={() => (asking = null)}
+  />
+{/if}
 
 <style>
   .scrim { position: fixed; inset: 0; background: none; border: 0; cursor: default; z-index: 40; }
@@ -354,6 +517,26 @@
   .scope input { width: auto; }
 
   .hint { font-size: 10px; color: var(--muted); opacity: .85; line-height: 1.45; margin: 0; }
+
+  .guests { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .guests ul { list-style: none; margin: 0; padding: 0; display: flex;
+               flex-direction: column; gap: 3px; }
+  .guest { display: flex; align-items: center; gap: 6px; font-size: 11px; min-width: 0; }
+  /* The address takes what is left and truncates rather than wrapping: a long
+     one would otherwise push the two controls beside it off the panel. */
+  .addr { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+          white-space: nowrap; }
+  .opt { display: flex; align-items: center; gap: 4px; color: var(--muted);
+         font-size: 10px; cursor: pointer; flex: none; }
+  .opt input { width: auto; }
+  .x { flex: none; font: inherit; font-size: 13px; line-height: 1; cursor: pointer;
+       background: none; border: 0; color: var(--muted); padding: 0 2px; }
+  .x:hover { color: var(--text); }
+
+  .addguest { display: flex; gap: 6px; }
+  .addguest button { flex: none; font: inherit; font-size: 11px; cursor: pointer;
+                     border-radius: 5px; padding: 4px 10px;
+                     border: 1px solid var(--hairline); background: none; color: var(--muted); }
 
   .notice { font-size: 10.5px; color: var(--text); line-height: 1.4; margin: 0;
             padding: 6px 8px; border-radius: 5px;

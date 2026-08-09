@@ -1151,12 +1151,20 @@ test.describe('App', () => {
     await expect(editForm(page)).toBeVisible();
     await expect(editForm(page).getByLabel('Date', { exact: true })).toHaveValue('2024-02-01');
 
+    // This event has guests, so Save asks who to tell before it saves
+    // anything (guest-list spec §3). Answering is now part of saving.
     await editForm(page).getByRole('button', { name: 'Save' }).click();
+    await page.getByRole('button', { name: 'Save without notifying', exact: true }).click();
     await expect(editForm(page)).toHaveCount(0);
 
     const [args] = await callsTo(page, 'update_event');
     expect(args.occurrenceStartMs).toBe(APP_SERIES_OCCURRENCE);
     expect(args.occurrenceStartMs).not.toBe(APP_SERIES_DTSTART);
+    // **The don't-notify path, at the boundary the app actually crosses.**
+    // The component specs assert what the form hands up; this is what reaches
+    // the command, and only this can email anybody. It used to be `'all'`
+    // unconditionally.
+    expect(args.sendUpdates).toBe('none');
     // Task 9's anchoring invariant, asserted at the only place both values
     // exist together: an untouched time means these two are equal *exactly*,
     // because the Rust side reads any difference between them as a move.
@@ -1266,6 +1274,7 @@ test.describe('App', () => {
       .toHaveValue('2024-01-31');
 
     await editForm(page).getByRole('button', { name: 'Save' }).click();
+    await page.getByRole('button', { name: 'Save without notifying', exact: true }).click();
     await expect(editForm(page)).toHaveCount(0);
 
     const [args] = await callsTo(page, 'update_event');
@@ -1300,6 +1309,68 @@ test.describe('App', () => {
     await confirmPanel(page).getByRole('button', { name: 'Cancel' }).click();
     await expect(confirmPanel(page)).toHaveCount(0);
     expect(await callsTo(page, 'delete_event_cmd')).toEqual([]);
+  });
+
+  /**
+   * **The only path from a save to `sendUpdates=all`.**
+   *
+   * Its sibling above witnesses the don't-notify path; without this one, "never
+   * notify" would satisfy it and the choice would be a choice in name. Asserted
+   * at the command, because that is the boundary that can email a guest list.
+   */
+  test('Save and notify guests is the one way a save mails anybody', async ({ page }) => {
+    await writable(page);
+    await block(page, 'Standup').click();
+    await page.getByRole('button', { name: 'Edit' }).click();
+    await expect(editForm(page)).toBeVisible();
+
+    await editForm(page).getByRole('button', { name: 'Save' }).click();
+    await page.getByRole('button', { name: 'Save and notify guests', exact: true }).click();
+
+    await expect.poll(() => callsTo(page, 'update_event')).toHaveLength(1);
+    const [args] = await callsTo(page, 'update_event');
+    expect(args.sendUpdates).toBe('all');
+  });
+
+  /** §3 again, from the side that matters most: **Cancel writes nothing at
+   *  all** — witnessed by the absence of a call, never by a visible dialog. */
+  test('cancelling the notify choice issues no write', async ({ page }) => {
+    await writable(page);
+    await block(page, 'Standup').click();
+    await page.getByRole('button', { name: 'Edit' }).click();
+    await editForm(page).getByRole('button', { name: 'Save' }).click();
+
+    await page.getByRole('dialog', { name: 'Save event' })
+      .getByRole('button', { name: 'Cancel' }).click();
+
+    await expect(editForm(page), 'the form keeps what was typed into it').toBeVisible();
+    expect(await callsTo(page, 'update_event')).toHaveLength(0);
+  });
+
+  /**
+   * A guest added in the form reaches `update_event` as the whole list.
+   *
+   * The end-to-end witness that the guest editor is wired to the write path at
+   * all: the component specs assert what the form hands up, and `oncreate`-
+   * shaped gaps between a form and `App` have shipped on this project before.
+   */
+  test('a guest added in the form reaches the command as the whole list', async ({ page }) => {
+    await writable(page);
+    await block(page, 'Standup').click();
+    await page.getByRole('button', { name: 'Edit' }).click();
+    await editForm(page).getByLabel('Add guest', { exact: true }).fill('dan@x.com');
+    await editForm(page).getByRole('button', { name: 'Add', exact: true }).click();
+
+    await editForm(page).getByRole('button', { name: 'Save' }).click();
+    await page.getByRole('button', { name: 'Save without notifying', exact: true }).click();
+
+    await expect.poll(() => callsTo(page, 'update_event')).toHaveLength(1);
+    const [args] = await callsTo(page, 'update_event');
+    // Everyone, not just the new one: `attendees` is a whole-list replace, so a
+    // payload carrying only the addition removes the rest of the room.
+    expect(args.fields.guests.map((g: any) => g.email)).toEqual(
+      ['ana@x.com', 'petya@x.com', 'me@x.com', 'dan@x.com'],
+    );
   });
 
   test('editing from the Month view popover reaches the form too', async ({ page }) => {
@@ -1365,6 +1436,13 @@ test.describe('App', () => {
     await expect(page.locator('.pop')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Edit' })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Delete' })).toHaveCount(0);
+
+    // **Guest-list spec §5's `can_edit` rule, and it is this same gate.**
+    // Editing the guest list lives in the edit form and nowhere else, so an
+    // event that offers no Edit offers no way to reach it — asserted here
+    // rather than as a second flag on the form, which would be a rule that is
+    // always true in the app and therefore untestable against anything real.
+    await expect(page.getByTestId('guests')).toHaveCount(0);
   });
 
   test('a theme-changed event repaints without a reload', async ({ page }) => {

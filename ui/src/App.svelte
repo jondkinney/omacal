@@ -602,13 +602,19 @@
       } else {
         // `request.occurrenceStartMs`, never `detail.start_ms`: for a series
         // the second is the master's DTSTART, and an edit aimed at it patches
-        // occurrence #0 with the whole form as its payload and `sendUpdates=all`
-        // behind it. The scope comes from the form's own chooser (Task 9).
-        // `'all'`: the form is a deliberate edit — a time typed on purpose,
-        // Save pressed — which is exactly the change guests need to hear
-        // about. A drag says `'none'`; see `moveOccurrence`.
+        // occurrence #0 with the whole form as its payload. The scope comes
+        // from the form's own chooser (Task 9).
+        //
+        // **`result.notify`, never a constant.** This used to be `'all'`, on
+        // the reasoning that a time typed on purpose and saved is exactly the
+        // change guests need to hear about. That was right while the form
+        // could only change the event; guest-list spec §3 makes it a choice,
+        // because the same Save now also fixes a typo in an address, and
+        // mailing the whole room about that is the outcome the choice exists
+        // to prevent. `App` does not decide it — the form asks, and this
+        // carries the answer.
         await updateEvent(
-          request.id, result.scope, request.occurrenceStartMs, result.fields, 'all',
+          request.id, result.scope, request.occurrenceStartMs, result.fields, result.notify,
         );
       }
     } catch (e) {
