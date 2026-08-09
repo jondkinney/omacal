@@ -93,7 +93,7 @@ if (name === 'App') {
   const { default: App } = await import('../../src/App.svelte');
   mount(App, { target });
 } else {
-  const props = FIXTURES[name]?.[fixture];
+  let props = FIXTURES[name]?.[fixture];
   if (!props) {
     target.textContent = `no fixture ${name}/${fixture}`;
   } else {
@@ -108,6 +108,15 @@ if (name === 'App') {
     // copy of the instants can be right about a fixture that has changed under
     // it. Read-only by convention; nothing here mutates it.
     (window as any).__fixtureProps = props;
+    if (name === 'Header') {
+      // `oncalendarchange` is a callback prop, not a Tauri command: the header
+      // tells `App` to reload rather than reloading anything itself. Captured
+      // on the window exactly as `WeekGrid`'s four are, so a spec can assert
+      // the app was told — which is a different fact from the command having
+      // been sent, and the one a second host for these rows can silently drop.
+      (window as any).__calendarChanges = 0;
+      props = { ...props, oncalendarchange: () => { (window as any).__calendarChanges += 1; } };
+    }
     // EventBlock is absolutely positioned; give it a sized relative parent.
     if (name === 'EventBlock') {
       target.style.position = 'relative';

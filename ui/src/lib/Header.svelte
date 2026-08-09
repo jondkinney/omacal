@@ -245,13 +245,11 @@
     accounts={status?.accounts ?? []}
     {busy}
     onclose={() => (settingsOpen = false)}
+    {calendars}
+    {oncalendarchange}
     onSignIn={() => {
       settingsOpen = false;
       onSignIn();
-    }}
-    oncalendars={() => {
-      menuOpen = true;
-      open = true;
     }}
   />
 {/if}

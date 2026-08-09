@@ -2,6 +2,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
 
+  import CalendarList from './CalendarList.svelte';
+  import type { Calendar } from './calendars';
   import {
     getSettings, minutesOf, msOfMinutes, setNotificationsEnabled, setSyncInterval,
     type AppSettings,
@@ -10,19 +12,23 @@
   let {
     accounts,
     busy,
+    calendars,
     onclose,
     onSignIn,
-    oncalendars,
+    oncalendarchange,
   }: {
     /** The connected accounts, from `AppStatus`. Read only — this modal adds
      *  one through `onSignIn` and cannot remove one, because nothing can yet. */
     accounts: string[];
     busy: boolean;
+    /** Every calendar the app knows about, handed straight to `CalendarList` —
+     *  the same rows the header's popover shows, from the same component. */
+    calendars: Calendar[];
     onclose: () => void;
     onSignIn: () => void;
-    /** Opens the calendar picker, which still lives in the header's menu. See
-     *  the Calendars tab for why it is not in here yet. */
-    oncalendars: () => void;
+    /** A calendar was shown, hidden, added or removed: reload. Passed through
+     *  untouched, exactly as the popover passes it. */
+    oncalendarchange: () => void;
   } = $props();
 
   /** The settings as the backend holds them, or `null` until they land. */
@@ -207,20 +213,20 @@
       </p>
 
     {:else if tab === 'Calendars'}
-      <!-- **Still in the header's menu, and this says where.** Moving the
-           picker's rows in here needs either a component extraction or a
-           rewrite, and spec §4 is explicit that the picker is rehomed rather
-           than rewritten — its `selected`/`sync_enabled` separation, its busy
-           set and its keyed each all have to travel unchanged. That is a
-           decision worth making deliberately rather than in passing, so it is
-           flagged rather than guessed at. Per-calendar colour lands here after
-           it. -->
-      <p class="soon">
-        Calendars are still in the menu for now.
-        <button type="button" class="link" onclick={() => { onclose(); oncalendars(); }}>
-          Open the calendar list
-        </button>
-      </p>
+      <!-- **The same rows the header's popover shows, from the same
+           component.** Extracted rather than reimplemented, which is what
+           makes "rehomed, not rewritten" checkable: `CalendarPopover`'s own
+           specs pass unchanged, because what they assert is `CalendarList`
+           now.
+
+           Per-calendar colour lands here next, on the row — which is why the
+           row is a component with its own file rather than markup written out
+           twice in two hosts. -->
+      {#if calendars.length > 0}
+        <div class="cals"><CalendarList {calendars} onchange={oncalendarchange} /></div>
+      {:else}
+        <p class="soon">No calendars yet. Connect an account first.</p>
+      {/if}
 
     {:else if tab === 'Accounts'}
       <ul class="accounts">
@@ -312,12 +318,14 @@
   .accounts { list-style: none; margin: 0; padding: 0; display: flex;
               flex-direction: column; gap: 3px; font-size: 11.5px; }
 
+  /* Full width, unlike the other tabs' left-aligned controls: this is a list
+     of rows whose right-hand Add/Remove buttons have to line up. */
+  .cals { align-self: stretch; }
+
   .body button { font: inherit; font-size: 11px; color: var(--muted); cursor: pointer;
                  background: color-mix(in srgb, var(--text) 6%, transparent);
                  border: 0; border-radius: 6px; padding: 4px 10px; }
   .body button:disabled { opacity: .5; cursor: default; }
-  .body button.link { background: none; padding: 0; color: var(--accent);
-                      text-decoration: underline; }
 
   .note { font-size: 10.5px; color: var(--muted); line-height: 1.4; margin: 0;
           padding: 6px 8px; border-radius: 5px;
