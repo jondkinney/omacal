@@ -1262,3 +1262,245 @@ test.describe('the anchor’s precision', () => {
     expect(sent.when.endMs).toBe(endMs);
   });
 });
+
+/**
+ * §7.2 — the All day switch, in all four directions.
+ *
+ * The spec that recorded this said plainly that **none of the four
+ * all-day↔timed toggle combinations has a TypeScript-level spec**, and that is
+ * how a form Save refuses survived two clicks from an ordinary edit.
+ *
+ * The acceptance property is one sentence: **toggling a switch is not a way to
+ * reach a state Save refuses.** Every case below asserts `endAfterStart` on the
+ * toggled value, which is the very question `EventForm`'s Save guard asks.
+ *
+ * Every case goes through `toggledAllDay`, the function the checkbox's
+ * `onchange` calls. That matters more than it looks: these started out
+ * modelling the flick as `{ ...value, isAllDay: x }`, which is what the old
+ * `bind:checked` did — and a spec that re-implements the thing it tests stays
+ * green however the component later changes. The two round-trip cases below
+ * were tautologies under that model and no mutation could redden them.
+ */
+test.describe('the All day switch never lands on a value Save refuses', () => {
+  // The browser is east of a UTC calendar and west of the Auckland one, so the
+  // stored midnight reads as neither 00:00 nor the same number in both. That is
+  // exactly what made the old `timeOf(startMs)` a zone artefact rather than a
+  // time: 03:00 for the UTC calendar, 15:00 for Auckland.
+  test.use({ timezoneId: 'Europe/Sofia' });
+
+  /** Opens an all-day detail and flips All day off, as a click does. */
+  const toggledOff = (page: any, detail: unknown) =>
+    page.evaluate((d: any) => {
+      const ef = (window as any).__eventform;
+      const opened = ef.valueFromDetail(d, d.start_ms, d.end_ms);
+      const off = ef.toggledAllDay(opened, false);
+      return {
+        date: off.date, endDate: off.endDate, start: off.start, end: off.end,
+        saveable: ef.endAfterStart(off),
+        when: ef.whenOf(off),
+      };
+    }, detail);
+
+  const utcMidnight = (date: string): number => Date.parse(`${date}T00:00:00Z`);
+
+  /**
+   * The case §7.2 names. A single-day all-day event names the same date twice,
+   * so before the fix both ends read as the same clock and the span was zero —
+   * `12:00 → 12:00` on screen, and a Save button that refused a form with
+   * nothing on it visibly wrong.
+   */
+  test('toggling All day off on a single-day event leaves a saveable span', async ({ page }) => {
+    await page.goto(PURE);
+    const detail = allDayDetail(
+      '2026-08-10', '2026-08-10', utcMidnight('2026-08-10'), utcMidnight('2026-08-11'),
+    );
+
+    const off = await toggledOff(page, detail);
+
+    expect(off.date).toBe('2026-08-10');
+    expect(off.endDate).toBe('2026-08-10');
+    expect(off.saveable).toBe(true);
+    expect(off.when.endMs).toBeGreaterThan(off.when.startMs);
+  });
+
+  /**
+   * The same event on a calendar twelve hours the other side of the browser.
+   * The zone is the fixture: a stored Auckland midnight reads as 15:00 here, so
+   * a start time taken from the instant is visibly not a time anybody chose.
+   * Its being *equal* to the end is what refused the save; its being 15:00 at
+   * all is the reason the pair was never a time.
+   */
+  test('toggling All day off is not at the mercy of the calendar’s zone', async ({ page }) => {
+    await page.goto(PURE);
+    const detail = allDayDetail(
+      '2026-08-10', '2026-08-10',
+      aucklandMidnight('2026-08-10'), aucklandMidnight('2026-08-11'),
+    );
+
+    const off = await toggledOff(page, detail);
+
+    expect(off.saveable).toBe(true);
+    // The same pair as the UTC-calendar case above: what a toggle produces
+    // cannot depend on which zone the calendar happens to be in.
+    expect(off.start).toBe('09:00');
+    expect(off.end).toBe('09:30');
+  });
+
+  /**
+   * A multi-day trip keeps every date it covered. **The dates are what must not
+   * move** — see the round-trip spec below for why that is the property rather
+   * than preserving the event's extent in instants.
+   */
+  test('toggling All day off on a multi-day trip keeps its first and last day', async ({ page }) => {
+    await page.goto(PURE);
+    const detail = allDayDetail(
+      '2026-08-10', '2026-08-12', utcMidnight('2026-08-10'), utcMidnight('2026-08-13'),
+    );
+
+    const off = await toggledOff(page, detail);
+
+    expect(off.date).toBe('2026-08-10');
+    expect(off.endDate, 'the inclusive last day, unmoved').toBe('2026-08-12');
+    expect(off.saveable).toBe(true);
+  });
+
+  /** The other direction, single day: a timed meeting becomes a one-day event. */
+  test('toggling All day on for a timed meeting gives the day it was on', async ({ page }) => {
+    await page.goto(PURE);
+    const startMs = Date.parse('2026-08-10T09:00:00+03:00');
+    const endMs = Date.parse('2026-08-10T09:30:00+03:00');
+
+    const on = await page.evaluate(([s, e]) => {
+      const ef = (window as any).__eventform;
+      const value = { ...ef.blankValueAt(s, 1), sourceEndMs: e, end: ef.timeOf(e) };
+      const flipped = ef.toggledAllDay(value, true);
+      return { when: ef.whenOf(flipped), saveable: ef.endAfterStart(flipped) };
+    }, [startMs, endMs]);
+
+    expect(on.saveable).toBe(true);
+    expect(on.when.startDate).toBe('2026-08-10');
+    // Exclusive on the wire: one day means the 10th, ending the 11th.
+    expect(on.when.endDate).toBe('2026-08-11');
+  });
+
+  /**
+   * And a timed meeting that runs past midnight becomes the two days it
+   * genuinely touches. Saveable, and the days are the ones its own dates named
+   * — a 23:00–00:30 meeting really is on both.
+   */
+  test('toggling All day on for a meeting past midnight covers both days', async ({ page }) => {
+    await page.goto(PURE);
+    const startMs = Date.parse('2026-08-10T23:00:00+03:00');
+    const endMs = Date.parse('2026-08-11T00:30:00+03:00');
+
+    const on = await page.evaluate(([s, e]) => {
+      const ef = (window as any).__eventform;
+      const value = {
+        ...ef.blankValueAt(s, 1),
+        sourceEndMs: e, end: ef.timeOf(e), endDate: ef.dateOf(e),
+      };
+      const flipped = ef.toggledAllDay(value, true);
+      return { when: ef.whenOf(flipped), saveable: ef.endAfterStart(flipped) };
+    }, [startMs, endMs]);
+
+    expect(on.saveable).toBe(true);
+    expect(on.when.startDate).toBe('2026-08-10');
+    expect(on.when.endDate, 'the 10th and the 11th, exclusive end').toBe('2026-08-12');
+  });
+
+  /**
+   * **The property that decides the multi-day question.**
+   *
+   * A checkbox has to be reversible: flick it twice and you are where you
+   * started. That is what rules out the tempting alternative for toggling off —
+   * converting the all-day extent into instants, first day 00:00 to the day
+   * *after* the last at 00:00. It is the more faithful reading of "how long the
+   * event is", and it is not reversible: `endDate` on the all-day arm is the
+   * **inclusive** last day, so reading that exclusive end back grows the trip by
+   * a day on every round trip. A toggle that lengthens the event each time you
+   * flick it twice is worse than one that leaves you to type an end time.
+   */
+  test('flicking All day off and on again returns the days it started with', async ({ page }) => {
+    await page.goto(PURE);
+    const detail = allDayDetail(
+      '2026-08-10', '2026-08-12', utcMidnight('2026-08-10'), utcMidnight('2026-08-13'),
+    );
+
+    const r = await page.evaluate((d: any) => {
+      const ef = (window as any).__eventform;
+      const opened = ef.valueFromDetail(d, d.start_ms, d.end_ms);
+      const off = ef.toggledAllDay(opened, false);
+      const backOn = ef.toggledAllDay(off, true);
+      return {
+        before: ef.whenOf(opened),
+        after: ef.whenOf(backOn),
+        saveable: ef.endAfterStart(backOn),
+      };
+    }, detail);
+
+    expect(r.after).toEqual(r.before);
+    expect(r.saveable).toBe(true);
+  });
+
+  /**
+   * And the same in the other direction: a timed event's times survive a trip
+   * through all-day, because they live in the very fields the all-day arm
+   * leaves alone. Without this, toggling on and off again would silently
+   * replace a 14:00 meeting with the default hour.
+   */
+  test('flicking All day on and off again returns the times it started with', async ({ page }) => {
+    await page.goto(PURE);
+    const startMs = Date.parse('2026-08-10T14:00:00+03:00');
+
+    const r = await page.evaluate((s) => {
+      const ef = (window as any).__eventform;
+      const timed = ef.blankValueAt(s, 1);
+      const on = ef.toggledAllDay(timed, true);
+      const backOff = ef.toggledAllDay(on, false);
+      return {
+        before: { start: timed.start, end: timed.end },
+        after: { start: backOff.start, end: backOff.end },
+        saveable: ef.endAfterStart(backOff),
+      };
+    }, startMs);
+
+    expect(r.after).toEqual(r.before);
+    expect(r.saveable).toBe(true);
+  });
+});
+
+/**
+ * A contract, pinned directly, because **no behavioural test can reach it** and
+ * that is worth saying rather than leaving it to look covered.
+ *
+ * `sourceStartMs`'s contract is "the instant this civil pair was read off", and
+ * `instantOf` passes a source through only when the pair still reads back as it.
+ * On the all-day arm the times are now [`ALL_DAY_START`]/[`ALL_DAY_END`], which
+ * were not read off anything, so the field would be a lie — but a harmless one:
+ * for any stored instant that *could* satisfy `instantOf`'s guard, `toMs` on the
+ * same pair rebuilds that very instant, so the two answers are equal. (A
+ * calendar six hours west of a Sofia browser is such a case: its stored midnight
+ * reads as exactly 09:00 on exactly that date.) The exceptions `instantOf`
+ * exists for — a seconds value `HH:MM` cannot carry, a repeated wall-clock hour
+ * — cannot arise from a stored midnight at 09:00.
+ *
+ * So this asserts the field, not an outcome. Deleting the `null` reddens this
+ * and nothing else, which is the honest amount of coverage for a change that
+ * makes a type truthful rather than a behaviour correct.
+ */
+test('an all-day value carries no source instants, because its times were not read off any', async ({ page }) => {
+  await page.goto(PURE);
+  const detail = allDayDetail(
+    '2026-08-10', '2026-08-10',
+    Date.parse('2026-08-10T00:00:00Z'), Date.parse('2026-08-11T00:00:00Z'),
+  );
+
+  const v = await page.evaluate((d: any) => {
+    const ef = (window as any).__eventform;
+    const value = ef.valueFromDetail(d, d.start_ms, d.end_ms);
+    return { sourceStartMs: value.sourceStartMs, sourceEndMs: value.sourceEndMs };
+  }, detail);
+
+  expect(v.sourceStartMs).toBeNull();
+  expect(v.sourceEndMs).toBeNull();
+});

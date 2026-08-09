@@ -144,6 +144,29 @@ export type EventFormValue = {
 
 const MIN_MS = 60_000;
 const HALF_HOUR_MS = 30 * MIN_MS;
+
+/**
+ * The civil times an **all-day** value carries in its (hidden) time fields.
+ *
+ * An all-day event has no time, so these are never shown and never sent —
+ * `whenOf`'s all-day arm sends dates. They exist for exactly one moment: the
+ * user unticking **All day**, when the form stops hiding the time inputs and
+ * whatever is in them becomes the event's span.
+ *
+ * A real pair rather than a reading of the stored instant, and that is the
+ * whole of §7.2. The stored instant is midnight in the *calendar's* zone; read
+ * in the browser's it is 03:00 for a UTC calendar seen from Sofia and 15:00 for
+ * an Auckland one — a number nobody chose, differing by calendar. Worse, an
+ * all-day event's two ends read as the *same* clock whenever it covers a single
+ * day, because `end_date` is the inclusive last day: the span came out zero and
+ * Save refused a form with nothing on it visibly wrong.
+ *
+ * Half an hour apart, matching the duration `blankValueAt` gives a new event,
+ * so a day becoming timed and a fresh event created on it agree about how long
+ * "an event" is by default.
+ */
+const ALL_DAY_START = '09:00';
+const ALL_DAY_END = '09:30';
 const DAY_MS = 24 * 3_600_000;
 
 const pad = (n: number) => String(n).padStart(2, '0');
@@ -424,16 +447,25 @@ export function occurrenceDate(date: string | null, rowMs: number, occurrenceMs:
  * so a time nobody edited has to travel as the instant it arrived as. See
  * `sourceStartMs` and `instantOf`.
  *
- * On the **all-day** arm they are inert rather than special-cased, and that is
- * worth a sentence because a reader will look for the missing `is_all_day ?`
- * here. `whenOf`'s all-day arm sends dates and never asks, so the only path
- * that could ask is the user toggling All day *off* — and there the two answers
- * coincide. `instantOf` passes an instant through only when this browser reads
- * it as exactly the date and time beside it, and a stored midnight that reads
- * that way is one `toMs` rebuilds identically. (The lone exception is a browser
- * zone whose midnight is itself repeated, where the stored instant is the more
- * faithful of the two.) A `null` on this arm would say something truer about
- * the type and change no behaviour, at the cost of a branch no test can reach.
+ * On the **all-day** arm they are `null`, and the times beside them are
+ * [`ALL_DAY_START`]/[`ALL_DAY_END`] rather than readings of those instants.
+ *
+ * An earlier version of this comment said the two answers "coincide" on the one
+ * path that could ask — the user toggling All day *off* — and that sentence was
+ * part of why §7.2 survived. They do not coincide. `timeOf(startMs)` on this arm
+ * is the browser's reading of a midnight stored in the *calendar's* zone, which
+ * is 03:00 or 15:00 or anything else; and for a single-day event, where
+ * `end_date` is the same date as `start_date`, both ends read as the same clock
+ * and the toggled-off span is **zero**, which Save refuses. The comment was true
+ * of the conversions and false of the value, which is the most expensive kind of
+ * comment to be right about.
+ *
+ * `null` rather than the instants for the same reason: `instantOf` passes a
+ * source through when this browser reads it as exactly the date and time beside
+ * it, and there is a calendar zone for which a stored midnight reads as exactly
+ * `ALL_DAY_START` on exactly that date. Keeping the instants would make the
+ * toggle's answer depend on the calendar's offset in a way no test would think
+ * to look for. There is nothing to pass through on this arm, so it says so.
  *
  * `guestCount` excludes the signed-in user's own attendee row: `sendUpdates=all`
  * mails the other guests, and telling somebody they are about to notify
@@ -455,10 +487,10 @@ export function valueFromDetail(
     endDate: detail.is_all_day
       ? occurrenceDate(detail.end_date, detail.end_ms, endMs)
       : dateOf(endMs),
-    start: timeOf(startMs),
-    end: timeOf(endMs),
-    sourceStartMs: startMs,
-    sourceEndMs: endMs,
+    start: detail.is_all_day ? ALL_DAY_START : timeOf(startMs),
+    end: detail.is_all_day ? ALL_DAY_END : timeOf(endMs),
+    sourceStartMs: detail.is_all_day ? null : startMs,
+    sourceEndMs: detail.is_all_day ? null : endMs,
     isAllDay: detail.is_all_day,
     location: detail.location ?? '',
     // Verbatim. Never through `sanitize.ts`: that module exists for *rendering*
@@ -537,6 +569,39 @@ export function whenOf(value: EventFormValue): WhenInput {
     endMs: instantOf(value.sourceEndMs, value.endDate, value.end),
   };
 }
+
+/**
+ * The value after the **All day** switch is flicked.
+ *
+ * A pure boolean flip, and that is the design rather than an omission.
+ *
+ * Toggling a switch must be reversible — flick it twice and you are where you
+ * started — and the only way to guarantee that is to change nothing else. It
+ * rules out the tempting reading of "toggle off", which is to convert the
+ * all-day extent into instants: first day at 00:00 through to the day *after*
+ * the last at 00:00. That is the more faithful answer to "how long is this
+ * event", and it is not reversible. `endDate` on the all-day arm is the
+ * **inclusive** last day, so reading that exclusive end back grows the trip by
+ * one day on every round trip; a switch that lengthens an event each time you
+ * flick it twice is worse than one that leaves you to type an end time.
+ *
+ * It is a function rather than the `bind:checked` it replaces so that the
+ * property has somewhere to be tested. §7.2 happened because none of the four
+ * all-day↔timed combinations had a spec, and a bare bind gives a spec nothing
+ * to point at but a re-implementation of itself — which stays green however the
+ * component later changes.
+ *
+ * **What makes the flip safe is upstream, in `valueFromDetail`.** The times an
+ * all-day value carries are [`ALL_DAY_START`]/[`ALL_DAY_END`], a real pair, so
+ * unticking the box reveals a span Save accepts. When they were read off the
+ * stored instants they were a zone artefact, equal on both ends for any
+ * single-day event, and the form arrived at a state its own Save button
+ * refused.
+ */
+export const toggledAllDay = (value: EventFormValue, isAllDay: boolean): EventFormValue => ({
+  ...value,
+  isAllDay,
+});
 
 /**
  * Whether a value's end is strictly after its start.
