@@ -29,6 +29,30 @@ pub fn from_google_attendee(a: &omacal_google::model::Attendee) -> omacal_store:
     }
 }
 
+/// Maps one wire reminder to its stored shape.
+///
+/// `pub` for the same reason as [`from_google_attendee`]: the calendar-list
+/// upsert in `src-tauri` maps `defaultReminders` through this too, and the
+/// event path maps `reminders.overrides` through it, so the two halves of the
+/// same pair cannot drift apart.
+pub fn from_google_reminder(r: &omacal_google::model::Reminder) -> omacal_store::Reminder {
+    omacal_store::Reminder { method: r.method.clone(), minutes: r.minutes }
+}
+
+/// Maps a list of wire reminders — an event's `overrides`, or a calendar's
+/// `defaultReminders`, which are the same shape.
+pub fn from_google_reminders(rs: &[omacal_google::model::Reminder]) -> Vec<omacal_store::Reminder> {
+    rs.iter().map(from_google_reminder).collect()
+}
+
+/// Maps an event's whole `reminders` object.
+fn event_reminders(r: &omacal_google::model::Reminders) -> omacal_store::Reminders {
+    omacal_store::Reminders {
+        use_default: r.use_default,
+        overrides: from_google_reminders(&r.overrides),
+    }
+}
+
 /// Resolves one endpoint to an epoch-millisecond instant.
 ///
 /// Timed events carry RFC 3339 with an offset. All-day events carry a bare
@@ -106,6 +130,10 @@ pub fn to_stored(ev: &Event, calendar_id: i64, cal_tz: &str) -> Option<StoredEve
         sequence: ev.sequence,
         organizer_email: (!ev.organizer.email.is_empty()).then(|| ev.organizer.email.clone()),
         attendees: ev.attendees.iter().map(from_google_attendee).collect(),
+        reminders: event_reminders(&ev.reminders),
+        // Joined in from `calendars` on read, like `color_hex`; nothing to
+        // write here.
+        calendar_default_reminders: Vec::new(),
     })
 }
 
@@ -168,6 +196,12 @@ pub fn to_cancelled_exception(ev: &Event, calendar_id: i64, cal_tz: &str) -> Opt
         sequence: ev.sequence,
         organizer_email: (!ev.organizer.email.is_empty()).then(|| ev.organizer.email.clone()),
         attendees: ev.attendees.iter().map(from_google_attendee).collect(),
+        // Usually absent on a tombstone, and nothing fires for a cancelled
+        // occurrence anyway — mapped rather than hardcoded for the same reason
+        // as the four fields above, so nothing is silently dropped if Google
+        // ever sends more.
+        reminders: event_reminders(&ev.reminders),
+        calendar_default_reminders: Vec::new(),
     })
 }
 
@@ -187,6 +221,7 @@ mod tests {
             recurrence: None, recurring_event_id: None, original_start_time: None,
             hangout_link: None, attendees: vec![], sequence: 0,
             organizer: Organizer::default(),
+            reminders: Default::default(),
         }
     }
 

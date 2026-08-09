@@ -752,6 +752,7 @@ mod tests {
             color_hex: None, calendar_timezone: "UTC".into(),
             description: None, etag: None, sequence: 0, organizer_email: None,
             attendees: Vec::new(),
+            reminders: Default::default(), calendar_default_reminders: Vec::new(),
         }
     }
 

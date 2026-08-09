@@ -2224,6 +2224,7 @@ mod tests {
             start: Default::default(), end: Default::default(),
             recurrence: None, recurring_event_id: None, original_start_time: None,
             hangout_link: None, attendees: vec![], sequence: 0, organizer: Default::default(),
+            reminders: Default::default(),
         }
     }
 
@@ -2284,6 +2285,7 @@ mod tests {
             description: None,
             etag: Some("\"old\"".into()), sequence: 1, organizer_email: None,
             attendees,
+            reminders: Default::default(), calendar_default_reminders: Vec::new(),
         }
     }
 
@@ -2307,6 +2309,7 @@ mod tests {
             }],
             sequence: 5,
             organizer: Default::default(),
+            reminders: Default::default(),
         };
         merge_patched(&mut row, &patched);
         assert_eq!(row.etag.as_deref(), Some("\"new\""));

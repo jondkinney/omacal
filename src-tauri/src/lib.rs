@@ -347,18 +347,32 @@ async fn sign_in_impl(pool: &SqlitePool, demo: bool) -> Result<String, String> {
 /// them here would silently undo every removal and every hide the moment the
 /// user re-picked an account they had already connected, and nothing else in
 /// the codebase would notice.
+///
+/// `default_reminders_json` *is* updated, on the other side of that same line:
+/// it is Google's value, not the user's, and this app has no UI that sets it.
+///
+/// This is the only writer of that column, and it runs on sign-in alone —
+/// nothing refreshes the calendar list on a timer. A calendar whose defaults
+/// change in Google's own settings keeps the values from the last sign-in
+/// until the account is re-connected.
 async fn upsert_calendar(
     pool: &SqlitePool,
     account_id: i64,
     c: &omacal_google::model::Calendar,
 ) -> anyhow::Result<()> {
+    // Mapped through `omacal_sync` rather than serialising the wire type
+    // directly, so the stored shape is the same one `StoredEvent` reads back.
+    let default_reminders =
+        serde_json::to_string(&omacal_sync::from_google_reminders(&c.default_reminders))?;
     sqlx::query(
         "INSERT INTO calendars
-             (account_id, google_id, summary, color_hex, timezone, access_role, is_primary)
-         VALUES (?1,?2,?3,?4,?5,?6,?7)
+             (account_id, google_id, summary, color_hex, timezone, access_role, is_primary,
+              default_reminders_json)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8)
          ON CONFLICT (account_id, google_id) DO UPDATE SET
              summary = excluded.summary, color_hex = excluded.color_hex,
-             timezone = excluded.timezone, access_role = excluded.access_role",
+             timezone = excluded.timezone, access_role = excluded.access_role,
+             default_reminders_json = excluded.default_reminders_json",
     )
     .bind(account_id)
     .bind(&c.id)
@@ -367,6 +381,7 @@ async fn upsert_calendar(
     .bind(c.time_zone.as_deref().unwrap_or("UTC"))
     .bind(&c.access_role)
     .bind(c.primary as i64)
+    .bind(default_reminders)
     .execute(pool)
     .await?;
     Ok(())
@@ -866,6 +881,7 @@ mod tests {
             conference_uri: None, color_hex: None, calendar_timezone: "UTC".into(),
             description: None, etag: None,
             sequence: 0, organizer_email: None, attendees: Vec::new(),
+            reminders: Default::default(), calendar_default_reminders: Vec::new(),
         };
         omacal_store::upsert_event(&pool, &leave).await.unwrap();
 
@@ -1109,6 +1125,7 @@ mod tests {
             time_zone: Some("Europe/Sofia".into()),
             access_role: "owner".into(),
             primary: true,
+            default_reminders: Vec::new(),
         }
     }
 
@@ -1157,5 +1174,54 @@ mod tests {
         assert_eq!(removed.3, 0, "re-signing in re-added a removed calendar");
         assert_eq!(removed.1, "Work (renamed)",
                    "Google's own fields must still be refreshed");
+    }
+
+    /// `defaultReminders` arrives on every `calendarList` entry and this is the
+    /// only writer of the column that holds it. It is what an event saying
+    /// `useDefault: true` resolves against, so a calendar that loses it makes
+    /// every such event fire nothing at all.
+    ///
+    /// The second half is the refresh: unlike `selected` and `sync_enabled`,
+    /// this value is Google's, not the user's, so re-signing in must *update*
+    /// it rather than preserve what was there. A calendar whose defaults were
+    /// changed in Google's own settings is otherwise stuck on the old list.
+    #[tokio::test]
+    async fn a_calendars_default_reminders_are_stored_and_refreshed() {
+        let pool = omacal_store::connect_memory().await.unwrap();
+        let account_id = seed_account(&pool, "sub", "me@x").await;
+
+        let mut cal = google_calendar("primary");
+        cal.default_reminders = vec![
+            omacal_google::model::Reminder { method: "popup".into(), minutes: 10 },
+            omacal_google::model::Reminder { method: "email".into(), minutes: 1440 },
+        ];
+        upsert_calendar(&pool, account_id, &cal).await.unwrap();
+
+        let stored: Option<String> = sqlx::query_scalar(
+            "SELECT default_reminders_json FROM calendars WHERE google_id = 'primary'")
+            .fetch_one(&pool).await.unwrap();
+        let parsed: Vec<omacal_store::Reminder> =
+            serde_json::from_str(&stored.expect("the column must be written, not left NULL"))
+                .expect("stored as the shape StoredEvent reads back");
+        assert_eq!(parsed, vec![
+            omacal_store::Reminder { method: "popup".into(), minutes: 10 },
+            omacal_store::Reminder { method: "email".into(), minutes: 1440 },
+        ]);
+
+        // Google's settings change; the next sign-in must carry that through.
+        cal.default_reminders =
+            vec![omacal_google::model::Reminder { method: "popup".into(), minutes: 5 }];
+        upsert_calendar(&pool, account_id, &cal).await.unwrap();
+
+        let stored: Option<String> = sqlx::query_scalar(
+            "SELECT default_reminders_json FROM calendars WHERE google_id = 'primary'")
+            .fetch_one(&pool).await.unwrap();
+        let parsed: Vec<omacal_store::Reminder> =
+            serde_json::from_str(&stored.unwrap()).unwrap();
+        assert_eq!(
+            parsed,
+            vec![omacal_store::Reminder { method: "popup".into(), minutes: 5 }],
+            "re-signing in must refresh Google's own value, not preserve the old one"
+        );
     }
 }
