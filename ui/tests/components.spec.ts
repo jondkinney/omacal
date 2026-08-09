@@ -770,7 +770,7 @@ test.describe('Header', () => {
     // Both halves: a colour alone is not a status, so the words are on the dot
     // *and* the failure keeps its own readable banner.
     await page.goto(show('Header', 'error'));
-    expect(await lightName(page)).toBe('Last sync failed');
+    expect(await lightName(page)).toBe('Something went wrong: network unreachable');
     await expect(page.locator('.light')).toHaveClass(/\bfailed\b/);
     await expect(page.locator('.err')).toContainText('network unreachable');
   });
