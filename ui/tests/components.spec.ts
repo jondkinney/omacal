@@ -795,6 +795,107 @@ test.describe('Header', () => {
     await expect(modal).toHaveCount(0);
   });
 
+  /** Opens the modal on `tab`. Every spec below needs the same three clicks. */
+  const openSettings = async (page: import('@playwright/test').Page, tab?: string) => {
+    await page.getByRole('button', { name: 'Menu' }).click();
+    await page.getByRole('button', { name: 'Settings…' }).click();
+    const modal = page.getByRole('dialog', { name: 'Settings' });
+    await expect(modal).toBeVisible();
+    if (tab) await modal.getByRole('tab', { name: tab }).click();
+    return modal;
+  };
+
+  test('General shows the stored sync interval, in minutes', async ({ page }) => {
+    // Until now this was settable only by running `sqlite3` against the
+    // database by hand, and both platform guides documented it that way.
+    await page.goto(show('Header', 'connected'));
+    const modal = await openSettings(page);
+    await expect(modal.getByLabel('Sync every')).toHaveValue('5');
+  });
+
+  test('a longer interval is saved', async ({ page }) => {
+    await page.goto(show('Header', 'connected'));
+    const modal = await openSettings(page);
+    await modal.getByLabel('Sync every').fill('15');
+    await modal.getByRole('button', { name: 'Save' }).click();
+
+    await expect(page.getByTestId('settings-note')).toHaveText('Saved.');
+
+    // **Reopened, not read off the box.** The box holds what was typed whether
+    // or not anything was stored, so asserting it here would pass against a
+    // Save that did nothing. Closing and reopening re-fetches, which is the
+    // only thing that can say the value survived.
+    await page.keyboard.press('Escape');
+    const again = await openSettings(page);
+    await expect(again.getByLabel('Sync every')).toHaveValue('15');
+  });
+
+  /**
+   * **§3: the floor applies and the UI says so.** A value accepted and then
+   * quietly clamped is worse than one refused — the user types ten seconds, the
+   * form says nothing, and the app polls every minute while they believe
+   * otherwise.
+   */
+  test('an interval below the floor is refused, with a reason', async ({ page }) => {
+    await page.goto(show('Header', 'connected'));
+    const modal = await openSettings(page);
+    await modal.getByLabel('Sync every').fill('0');
+    await modal.getByRole('button', { name: 'Save' }).click();
+
+    await expect(page.getByTestId('settings-note')).toContainText('will not sync more often');
+    // And nothing was stored: reopening shows what was there before.
+    await page.keyboard.press('Escape');
+    const again = await openSettings(page);
+    await expect(again.getByLabel('Sync every')).toHaveValue('5');
+  });
+
+  test('the floor is stated before anybody trips over it', async ({ page }) => {
+    // Said up front, not only on refusal. A rule you can only discover by
+    // breaking it is a rule the form kept to itself.
+    await page.goto(show('Header', 'connected'));
+    const modal = await openSettings(page);
+    await expect(modal).toContainText('Not less than 1 minute');
+  });
+
+  test('Notifications turns reminders off and on', async ({ page }) => {
+    await page.goto(show('Header', 'connected'));
+    const modal = await openSettings(page, 'Notifications');
+    const box = modal.getByLabel('Show reminders');
+    await expect(box, 'reminders are on until turned off').toBeChecked();
+
+    await box.uncheck();
+    await page.keyboard.press('Escape');
+    const again = await openSettings(page, 'Notifications');
+    await expect(again.getByLabel('Show reminders')).not.toBeChecked();
+  });
+
+  test('Notifications says what fires, rather than inventing a policy', async ({ page }) => {
+    await page.goto(show('Header', 'connected'));
+    const modal = await openSettings(page, 'Notifications');
+    await expect(modal).toContainText("each event's own reminders from Google");
+  });
+
+  test('Accounts lists the connected account and offers to add another', async ({ page }) => {
+    await page.goto(show('Header', 'connected'));
+    const modal = await openSettings(page, 'Accounts');
+    await expect(modal.getByRole('listitem')).toHaveText(['me@x.com']);
+    await expect(modal.getByRole('button', { name: 'Add account' })).toBeVisible();
+  });
+
+  test('what is not built yet says so rather than being absent', async ({ page }) => {
+    // A control that is missing reads as "never"; a line saying it is not built
+    // reads as "not yet", which is the true one.
+    await page.goto(show('Header', 'connected'));
+    const modal = await openSettings(page, 'Accounts');
+    await expect(modal).toContainText('Signing an account out is not built yet');
+
+    // Switching tabs inside the open modal, not reopening it: the scrim covers
+    // the hamburger, so a second `openSettings` would be clicking a button
+    // nothing can reach.
+    await modal.getByRole('tab', { name: 'Notifications' }).click();
+    await expect(modal).toContainText('tray and start-on-login switches are not built');
+  });
+
   test('the settings modal does not close on a click inside it', async ({ page }) => {
     // Spec §5. A modal that dismisses when you click its own tabs is a modal
     // nobody can use.

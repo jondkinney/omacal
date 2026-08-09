@@ -141,6 +141,15 @@ const SAFE_EXACT: &[&str] = &[
     // `OPAQUE` here would be a slightly louder version of the silent drop it
     // replaces. Pinned by `a_create_carrying_guests_says_so_verbatim`.
     crate::events::NO_GUESTS_ON_CREATE,
+    // src-tauri/src/settings.rs — `set_sync_interval`'s floor. Fixed literal,
+    // held in `settings::INTERVAL_TOO_SHORT` and raised with `bail!`, reached
+    // only through `set_sync_interval`'s own `.map_err(user_facing)` with no
+    // `.context(..)` on the way, so `err.to_string()` is byte-identical.
+    // Allowlisted because the refusal is the whole point: a value accepted and
+    // then quietly clamped is worse than one turned down, and a turned-down
+    // value the user cannot read a reason for is barely better. Pinned by
+    // `an_interval_below_the_floor_is_refused_and_nothing_is_stored`.
+    crate::settings::INTERVAL_TOO_SHORT,
     // src-tauri/src/events.rs — `split_series`' refusal to split a series that
     // ends after a fixed number of occurrences. Fixed literal, no
     // interpolation, raised with `bail!` before either write and propagated by
@@ -316,6 +325,7 @@ mod tests {
              you now have two overlapping series and should delete one",
             crate::events::CONFLICT_GUESTS,
             crate::events::NO_GUESTS_ON_CREATE,
+            crate::settings::INTERVAL_TOO_SHORT,
         ];
         for expected in EXPECTED {
             assert!(

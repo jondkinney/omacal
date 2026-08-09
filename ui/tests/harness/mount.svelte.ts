@@ -120,6 +120,12 @@ if (name === 'App') {
     // prop rather than `get_calendars`, so the scenario name only matters
     // for the write commands the stub answers.
     if (name === 'CalendarPopover') installTauriStub(fixture);
+    // The settings modal opens from this header and reads its preferences over
+    // the IPC, so `Header` needs the stub for the same reason `CalendarPopover`
+    // does — installed unconditionally rather than gated on a fixture name,
+    // since it is opening the modal and not the fixture that decides whether
+    // anything reaches `invoke`.
+    if (name === 'Header') installTauriStub(fixture);
     if (name === 'WeekGrid') {
       // Clicking one of its blocks opens a real `EventPopover` that calls
       // `event_detail`/`refresh_event`/`respond_to_event` itself — installed
