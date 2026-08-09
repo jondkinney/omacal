@@ -118,6 +118,18 @@ const SAFE_EXACT: &[&str] = &[
     // seen, and that one stays opaque rather than telling the user something
     // specific that may not be true.
     "that occurrence is no longer on the calendar",
+    // src-tauri/src/events.rs — `update_via_client`'s refusal to retry a
+    // **guest-list** change after a 412. Fixed literal, held in
+    // `events::CONFLICT_GUESTS` and raised with `bail!(CONFLICT_GUESTS)`,
+    // propagated by a bare `?` with no `.context(..)` anywhere on the way to
+    // `update_event`'s `.map_err(..)`, so `err.to_string()` is byte-identical
+    // to the constant. Entered here rather than left opaque because it is the
+    // one conflict a user can actually act on — reopen the form and make the
+    // change again — and because "something went wrong" for a guest list
+    // nobody knows was dropped is exactly the silent failure guest-list spec
+    // §2 is about. `a_guest_list_conflict_reaches_the_user_verbatim` pins the
+    // pair, so a reworded constant fails a test rather than going opaque.
+    crate::events::CONFLICT_GUESTS,
     // src-tauri/src/events.rs — `split_series`' refusal to split a series that
     // ends after a fixed number of occurrences. Fixed literal, no
     // interpolation, raised with `bail!` before either write and propagated by
@@ -291,6 +303,7 @@ mod tests {
              edit all events instead",
             "the new series was created but the original could not be shortened — \
              you now have two overlapping series and should delete one",
+            crate::events::CONFLICT_GUESTS,
         ];
         for expected in EXPECTED {
             assert!(
@@ -306,6 +319,22 @@ mod tests {
              checked it against the rule in SAFE_EXACT's doc comment: a fixed literal, no \
              interpolation, no `.context(..)` anywhere on its way here"
         );
+    }
+
+    /// A guest-list conflict is the one write failure a user can actually act
+    /// on — reopen the form and make the change again — so it must reach them
+    /// as itself rather than as `OPAQUE`.
+    ///
+    /// Pinned as the pair it is: the literal `update_via_client` raises, and
+    /// the entry that lets it through. Either one reworded on its own turns a
+    /// specific, actionable message into "something went wrong" for a change
+    /// the user has no other way of learning was dropped, which is the silent
+    /// failure guest-list spec §2 is about.
+    #[test]
+    fn a_guest_list_conflict_reaches_the_user_verbatim() {
+        let raised = anyhow::anyhow!(crate::events::CONFLICT_GUESTS);
+        assert_eq!(user_facing(&raised), crate::events::CONFLICT_GUESTS);
+        assert_ne!(user_facing(&raised), OPAQUE);
     }
 
     /// [`every_message_the_app_relies_on_showing_is_still_allowlisted`]'s rule,
