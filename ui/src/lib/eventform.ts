@@ -249,13 +249,20 @@ export const nextHalfHour = (nowMs: number): number =>
   Math.floor(nowMs / HALF_HOUR_MS) * HALF_HOUR_MS + HALF_HOUR_MS;
 
 /**
- * A form value for a brand-new event starting at `startMs`, half an hour long,
- * on `calendarId`.
+ * A form value for a brand-new event starting at `startMs`, on `calendarId`,
+ * running until `endMs` — or half an hour, when nothing names an end.
  *
  * The counterpart to `blankValue`: there the *clock* names the time, here the
  * *grid* does. A click on empty space in Day or Week view already knows which
  * instant it landed on, and substituting "the next half hour" for it would move
  * the event away from where the user pointed.
+ *
+ * **`endMs` is optional because a click genuinely does not name one.** A click
+ * names a moment and the duration is this module's default; a sweep names both
+ * ends and the grid's answer is the one that must survive. Defaulting here
+ * rather than at each call site keeps "an event is half an hour" in the one
+ * file that also decides what an all-day event's times become when it is
+ * untoggled (see `ALL_DAY_START`), so the two cannot drift apart.
  *
  * `endDate` is read off the end instant rather than copied from the start date,
  * which is the whole reason this is one function and not two lines at each call
@@ -269,8 +276,11 @@ export const nextHalfHour = (nowMs: number): number =>
  * puts the end half an hour before the start — a form that opens already
  * refusing to save with no field on it visibly wrong. See `sourceStartMs`.
  */
-export function blankValueAt(startMs: number, calendarId: number | null): EventFormValue {
-  const endMs = startMs + HALF_HOUR_MS;
+export function blankValueAt(
+  startMs: number,
+  calendarId: number | null,
+  endMs: number = startMs + HALF_HOUR_MS,
+): EventFormValue {
   return {
     title: '',
     date: dateOf(startMs),

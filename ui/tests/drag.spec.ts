@@ -411,6 +411,173 @@ test.describe('crossing day columns', () => {
   });
 });
 
+/**
+ * Task 6: the span a sweep over empty grid produces.
+ *
+ * Nothing is created here — the form is, and it is opened pre-filled. So this
+ * answers exactly one question: given where a press landed in a column and
+ * where the pointer got to, which two instants does the form open on?
+ */
+test.describe('sweeping out a new span', () => {
+  /** Midnight of the day `T0900Z` is in. */
+  const DAY_START = Date.UTC(2026, 7, 10);
+
+  /** A fraction of a 24-hour column for a whole number of hours. */
+  const at = (hours: number) => hours / 24;
+
+  /** `spanForSweep` in the page, over an ordinary 24-hour day starting at
+   *  midnight UTC. Fractions are of the column's own height. */
+  const sweep = (
+    page: import('@playwright/test').Page,
+    args: { from: number; to: number; dayStartMs?: number; dayMs?: number },
+  ): Promise<Span> =>
+    page.evaluate((a) => {
+      const d = (window as any).__drag;
+      return d.spanForSweep(a.dayStartMs, a.dayMs, a.from, a.to, a.snap);
+    }, {
+      dayStartMs: args.dayStartMs ?? DAY_START,
+      dayMs: args.dayMs ?? DAY,
+      from: args.from,
+      to: args.to,
+      snap: SNAP,
+    });
+
+  test('a downward sweep is the span it swept', async ({ page }) => {
+    await page.goto(PURE);
+    const got = await sweep(page, { from: at(14), to: at(15) });
+
+    expect(got.startMs).toBe(DAY_START + 14 * HOUR);
+    expect(got.endMs).toBe(DAY_START + 15 * HOUR);
+  });
+
+  /**
+   * **Upward, and this is its own case rather than a corollary.**
+   *
+   * Sweeping from 15:00 up to 14:00 is the same gesture read backwards and must
+   * produce 14:00–15:00, not a span an hour long and negative. `endAfterStart`
+   * would refuse the negative one and the form would open dead — the same
+   * family as the resize clamp, reached through a different door, which is why
+   * it does not inherit that one's proof.
+   */
+  test('an upward sweep is the same span, not a negative one', async ({ page }) => {
+    await page.goto(PURE);
+    const got = await sweep(page, { from: at(15), to: at(14) });
+
+    expect(got.endMs - got.startMs, 'forwards').toBeGreaterThan(0);
+    expect(got.startMs).toBe(DAY_START + 14 * HOUR);
+    expect(got.endMs).toBe(DAY_START + 15 * HOUR);
+  });
+
+  /**
+   * **The minimum is not cosmetic.** A hand that twitches between press and
+   * release sweeps a few pixels, both ends snap to the same slot, and the span
+   * is zero — which `endAfterStart` refuses, so the form would open already
+   * unable to save with no field on it visibly wrong. The clamp is what keeps
+   * the form *openable*, which is the whole of this task's deliverable.
+   */
+  test('a sweep shorter than the snap still yields a usable span', async ({ page }) => {
+    await page.goto(PURE);
+    // Four minutes: past nothing, and well inside one 15-minute slot.
+    const got = await sweep(page, { from: at(14), to: at(14) + 4 / (24 * 60) });
+
+    expect(got.endMs - got.startMs).toBe(SNAP);
+    expect(got.startMs).toBe(DAY_START + 14 * HOUR);
+  });
+
+  test('a sweep that did not move at all still yields a usable span', async ({ page }) => {
+    await page.goto(PURE);
+    const got = await sweep(page, { from: at(14), to: at(14) });
+
+    expect(got.endMs - got.startMs).toBe(SNAP);
+  });
+
+  /**
+   * And upward into the same slot, which is the twitch's mirror image: the
+   * minimum extends the **end** forward from the earlier of the two points,
+   * always, so a sweep of nothing gives the same answer whichever way the hand
+   * moved. Stated as a rule rather than left to whichever branch ran.
+   */
+  test('a sub-snap upward sweep extends the end, not the start', async ({ page }) => {
+    await page.goto(PURE);
+    const got = await sweep(page, { from: at(14) + 4 / (24 * 60), to: at(14) });
+
+    expect(got.startMs).toBe(DAY_START + 14 * HOUR);
+    expect(got.endMs).toBe(DAY_START + 14 * HOUR + SNAP);
+  });
+
+  /**
+   * The boundary from the safe side, so the clamp cannot be satisfied by a
+   * function that always returns the minimum: a sweep of exactly one slot is
+   * honoured as swept.
+   */
+  test('a sweep of exactly the minimum is left alone', async ({ page }) => {
+    await page.goto(PURE);
+    const got = await sweep(page, { from: at(14), to: at(14.25) });
+
+    expect(got.endMs - got.startMs).toBe(SNAP);
+    expect(got.endMs).toBe(DAY_START + 14 * HOUR + SNAP);
+  });
+
+  /**
+   * Both ends snap, and to the *nearest* slot rather than the one the pointer
+   * is inside. Without this the sweep could be raw pixel arithmetic and every
+   * case above — all of which sit on whole hours — would still pass.
+   */
+  test('both ends land on a snap step', async ({ page }) => {
+    await page.goto(PURE);
+    // 14:10 to 15:20 — neither on a slot, and they round in *opposite*
+    // directions, so a version that only ever floored (or only ever ceiled)
+    // both ends fails on one of them.
+    const got = await sweep(page, {
+      from: at(14) + 10 / (24 * 60),
+      to: at(15) + 20 / (24 * 60),
+    });
+
+    expect(got.startMs, 'rounded forward').toBe(DAY_START + 14 * HOUR + 15 * MIN);
+    expect(got.endMs, 'rounded back').toBe(DAY_START + 15 * HOUR + 15 * MIN);
+  });
+
+  /** A pointer dragged off the top or bottom of the column pins to the day's
+   *  own ends rather than sweeping into the day before or after — the same
+   *  clamp `slotAt` applies to a click. */
+  test('a sweep off the ends of the column pins to the day', async ({ page }) => {
+    await page.goto(PURE);
+    const got = await sweep(page, { from: -0.4, to: 1.6 });
+
+    expect(got.startMs).toBe(DAY_START);
+    expect(got.endMs).toBe(DAY_START + DAY);
+  });
+});
+
+test.describe('sweeping on a daylight-saving day', () => {
+  test.use({ timezoneId: 'Europe/Sofia' });
+
+  /**
+   * The vertical axis is a fraction of **that day's own span**, for the sweep
+   * exactly as for a move. Half way down a 23-hour Sunday is 11.5 hours past
+   * midnight, which the wall clock reads as 12:30 — a version dividing by a
+   * fixed 24 opens the form an hour out for every sweep after the transition.
+   */
+  test('a sweep is a fraction of the day it is swept in', async ({ page }) => {
+    await page.goto(PURE);
+    const sunStart = Date.parse('2026-03-29T00:00:00+02:00');
+    const dayMs = Date.parse('2026-03-30T00:00:00+03:00') - sunStart;
+    expect(dayMs, 'fixture check: a spring-forward Sunday is 23 hours').toBe(23 * HOUR);
+
+    // Read in the page: `timezoneId` reaches the browser context and not Node.
+    const got = await page.evaluate((a) => {
+      const d = (window as any).__drag;
+      const span = d.spanForSweep(a.sunStart, a.dayMs, 0.5, 0.75, a.snap);
+      const s = new Date(span.startMs);
+      return { ...span, hour: s.getHours(), minute: s.getMinutes() };
+    }, { sunStart, dayMs, snap: SNAP });
+
+    expect(got.startMs).toBe(sunStart + 11.5 * HOUR);
+    expect(got.hour).toBe(12);
+    expect(got.minute).toBe(30);
+  });
+});
+
 test('the module exports the geometry the plan names, and the gesture constants', async ({ page }) => {
   await page.goto(PURE);
   // A guard on the shape rather than on any answer: Task 3 wires a component to
@@ -418,6 +585,6 @@ test('the module exports the geometry the plan names, and the gesture constants'
   // undefined in a gesture spec rather than as a failure here.
   expect((await drag(page)).sort()).toEqual(
     ['DRAG_THRESHOLD_PX', 'RESIZE_EDGE_PX', 'SNAP_MS', 'beganDrag', 'colsMoved', 'edgeAt',
-     'snapMs', 'spanForMove', 'spanForResize'],
+     'snapMs', 'spanForMove', 'spanForResize', 'spanForSweep'],
   );
 });

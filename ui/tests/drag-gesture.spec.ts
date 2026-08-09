@@ -213,22 +213,6 @@ test.describe('what the gesture must not break', () => {
     expect(typeof created.startMs).toBe('number');
   });
 
-  test('a drag over empty space does not create anything', async ({ page }) => {
-    await open(page, 'empty');
-    const col = page.locator('.col').first();
-    const b = await col.boundingBox();
-    if (!b) throw new Error('no column');
-
-    await page.mouse.move(b.x + b.width / 2, b.y + 100);
-    await page.mouse.down();
-    await page.mouse.move(b.x + b.width / 2, b.y + 200, { steps: 4 });
-    await page.mouse.up();
-
-    // Task 3 writes nothing at all, and drag-to-create is not in it: a drag
-    // across empty space is not a click, so it must not open the form either.
-    expect(await page.evaluate(() => (window as any).__lastCreate)).toBeNull();
-  });
-
   /**
    * And the drag cannot leave the app in a state where the *next* click fails.
    * A window-level pointermove listener that is never removed would keep
@@ -606,5 +590,291 @@ test.describe('resizing by an edge', () => {
     await page.mouse.up();
 
     expect(await page.evaluate(() => (window as any).__lastMove)).toBeNull();
+  });
+});
+
+/**
+ * Task 6: **sweeping empty grid opens the form on the span that was swept.**
+ *
+ * Nothing is created by the gesture. `WeekGrid` still has no `invoke` — it
+ * hands the span up through the same `oncreate` a click already uses, and the
+ * form does the creating through the path it has always used. A second create
+ * seam would be a second way to make an event, and the less-used one rots.
+ *
+ * Coordinates are the column's own: the grid body is 1200px inside a scrolling
+ * pane, so each spec scrolls the hour it cares about into view first and then
+ * measures from the column box. `overEmptyGrid` asserts the press really landed
+ * on empty grid space, because half of these end in "nothing happened" — and a
+ * spec that misses the grid entirely says that too. The spec this replaced
+ * ("a drag over empty space does not create anything", Task 3) pressed at
+ * `column.y + 100` with the pane scrolled 200px down, which is above the pane.
+ */
+test.describe('creating by sweeping empty grid', () => {
+  const HOUR = 60 * 60_000;
+
+  /**
+   * The first column of the `empty` fixture, scrolled so `aroundHour` sits in
+   * the middle of the visible pane.
+   *
+   * `at(h)` is the viewport y of wall-clock hour `h` in that column, and
+   * `startMs` is the day the column actually is — read off the DOM rather than
+   * copied from the fixture, so the two cannot drift.
+   */
+  const emptyColumn = async (page: Page, aroundHour: number) => {
+    await page.locator('[data-testid="week-body"]').evaluate((el, frac) => {
+      el.scrollTop = Math.max(0, frac * el.scrollHeight - el.clientHeight / 2);
+    }, aroundHour / 24);
+    const col = page.locator('.col').first();
+    const b = await col.boundingBox();
+    if (!b) throw new Error('no column');
+    const startMs = Number(await col.getAttribute('data-start-ms'));
+    return {
+      b,
+      startMs,
+      cx: b.x + b.width / 2,
+      at: (h: number) => b.y + (b.height * h) / 24,
+      /** One 15-minute snap step, in pixels. */
+      step: b.height / 96,
+    };
+  };
+
+  /**
+   * That a point is over the column's empty-space control.
+   *
+   * Its own assertion because most of the specs below end in an absence, and an
+   * absence is exactly what a press that landed on the header, the all-day band
+   * or nothing at all also produces.
+   */
+  const overEmptyGrid = async (page: Page, x: number, y: number) => {
+    // `classList`, not `className`: Svelte adds its own scoping class to every
+    // styled element, so the string is `newhere s-9UNmq3MtCWeE` and comparing
+    // it whole would pin a hash that changes with the stylesheet.
+    const on = await page.evaluate(
+      (p) => (document.elementFromPoint(p.x, p.y) as HTMLElement | null)
+        ?.classList.contains('newhere') ?? false,
+      { x, y },
+    );
+    expect(on, `(${Math.round(x)}, ${Math.round(y)}) must be over empty grid space`).toBe(true);
+  };
+
+  /** Presses at `fromHour` and drags to `toHour`, leaving the button down. */
+  const sweep = async (page: Page, fromHour: number, toHour: number) => {
+    const c = await emptyColumn(page, (fromHour + toHour) / 2);
+    await overEmptyGrid(page, c.cx, c.at(fromHour));
+    await page.mouse.move(c.cx, c.at(fromHour));
+    await page.mouse.down();
+    await page.mouse.move(c.cx, c.at(toHour), { steps: 6 });
+    return c;
+  };
+
+  const created = (page: Page) => page.evaluate(() => (window as any).__lastCreate);
+  const createCount = (page: Page) => page.evaluate(() => (window as any).__createCount);
+
+  test('a sweep hands up the span that was swept', async ({ page }) => {
+    await open(page, 'empty');
+    const c = await sweep(page, 9, 10);
+    await page.mouse.up();
+
+    const got = await created(page);
+    expect(got, 'a sweep must ask for a new event').not.toBeNull();
+    expect(got.startMs).toBe(c.startMs + 9 * HOUR);
+    expect(got.endMs).toBe(c.startMs + 10 * HOUR);
+    expect(await page.evaluate(() => (window as any).__lastMove), 'and moves nothing').toBeNull();
+  });
+
+  /**
+   * **One form, not two.** The browser dispatches a `click` after the
+   * `pointerup` that ended the sweep, and the button under it is the very
+   * control click-to-create hangs off — so without a guard a sweep asks for one
+   * form on the span it swept and then immediately a second on the half hour
+   * the release landed in, which is the one the user would see.
+   */
+  test('a completed sweep is not also a click', async ({ page }) => {
+    await open(page, 'empty');
+    await sweep(page, 9, 10);
+    await page.mouse.up();
+
+    expect(await createCount(page)).toBe(1);
+  });
+
+  /**
+   * §7.2 of the form spec, reached through a new door: a span of zero is one
+   * `endAfterStart` refuses, so a twitch between press and release would open a
+   * form that cannot be saved and has no field visibly wrong on it. The minimum
+   * is what keeps the form openable, which is the deliverable.
+   */
+  test('a sweep shorter than the snap still opens a usable span', async ({ page }) => {
+    await open(page, 'empty');
+    const c = await emptyColumn(page, 9);
+    // The band this needs, asserted rather than assumed: past the 4px drag
+    // threshold, so a sweep genuinely begins, and short of half a snap step, so
+    // both ends land on the same slot and the raw span is zero. On a 1200px
+    // column a step is 12.5px, which leaves 4 to 6.25.
+    const dy = c.step * 0.4;
+    expect(dy, 'must begin a sweep at all').toBeGreaterThan(4);
+    expect(dy, 'must still snap to a single slot').toBeLessThan(c.step / 2);
+
+    await overEmptyGrid(page, c.cx, c.at(9));
+    await page.mouse.move(c.cx, c.at(9));
+    await page.mouse.down();
+    await page.mouse.move(c.cx, c.at(9) + dy, { steps: 4 });
+    await page.mouse.up();
+
+    const got = await created(page);
+    expect(got).not.toBeNull();
+    expect(got.startMs).toBe(c.startMs + 9 * HOUR);
+    expect(got.endMs - got.startMs, 'a usable span, not zero').toBe(15 * 60_000);
+  });
+
+  /**
+   * Upward: 10:00 back to 09:00 is 09:00–10:00. Its own case rather than a
+   * corollary of the downward one — a different branch of the geometry, and the
+   * one that produces a negative span if it is missing.
+   */
+  test('an upward sweep hands up a forward span', async ({ page }) => {
+    await open(page, 'empty');
+    const c = await sweep(page, 10, 9);
+    await page.mouse.up();
+
+    const got = await created(page);
+    expect(got).not.toBeNull();
+    expect(got.endMs - got.startMs, 'forwards').toBeGreaterThan(0);
+    expect(got.startMs).toBe(c.startMs + 9 * HOUR);
+    expect(got.endMs).toBe(c.startMs + 10 * HOUR);
+  });
+
+  /**
+   * **The existing click path, and the risk this task actually carries.**
+   *
+   * A plain click on empty grid creates at the half hour it landed in, and has
+   * since long before any of this. The danger is not that sweeping fails, it is
+   * that clicking quietly stops — so this asserts both that a form is asked for
+   * *and* that it names no end, which is what leaves the duration to the form's
+   * own half-hour default rather than to the grid.
+   */
+  test('a plain click on empty grid still creates, and names no span', async ({ page }) => {
+    await open(page, 'empty');
+    const c = await emptyColumn(page, 9);
+    await overEmptyGrid(page, c.cx, c.at(9));
+    await page.mouse.click(c.cx, c.at(9));
+
+    const got = await created(page);
+    expect(got, 'clicking an empty column must still ask for a new event').not.toBeNull();
+    expect(got.startMs).toBe(c.startMs + 9 * HOUR);
+    expect(got.endMs, 'a click names a time, never a duration').toBeUndefined();
+    expect(await createCount(page)).toBe(1);
+  });
+
+  /** And the same statement from the pointer's side: the jitter every real
+   *  click has is still a click, not a sweep. */
+  test('a press that moves less than the threshold is still a click', async ({ page }) => {
+    await open(page, 'empty');
+    const c = await emptyColumn(page, 9);
+    await overEmptyGrid(page, c.cx, c.at(9));
+    await page.mouse.move(c.cx, c.at(9));
+    await page.mouse.down();
+    await page.mouse.move(c.cx, c.at(9) + 3, { steps: 3 });
+    await expect(page.locator('.sweep'), 'nothing is drawn below the threshold')
+      .toHaveCount(0);
+    await page.mouse.up();
+
+    const got = await created(page);
+    expect(got).not.toBeNull();
+    expect(got.endMs, 'still a click, so still no span').toBeUndefined();
+  });
+
+  /**
+   * §6: **the sweep is visible while it happens.** Without it the user drags
+   * across nothing at all and a form appears afterwards carrying times they
+   * never saw being chosen — which is the same defect as a block that does not
+   * follow the pointer, in the one gesture that has no block to follow.
+   */
+  test('the swept span is drawn while the pointer is down', async ({ page }) => {
+    await open(page, 'empty');
+    const c = await sweep(page, 9, 10);
+
+    const ghost = page.locator('.sweep');
+    // **One**, in the column the press landed in — not seven. The ghost is
+    // drawn per column, so a version that forgot to ask *which* column would
+    // paint the same span across the whole week.
+    await expect(ghost).toHaveCount(1);
+    await expect(ghost).toBeVisible();
+    const g = await ghost.boundingBox();
+    if (!g) throw new Error('the sweep has no box');
+    expect(g.y, 'top of the swept span').toBeCloseTo(c.at(9), 0);
+    expect(g.height, 'an hour of the column').toBeCloseTo(c.b.height / 24, 0);
+
+    await page.keyboard.press('Escape');
+    await expect(ghost, 'and it goes when the sweep does').toHaveCount(0);
+    await page.mouse.up();
+  });
+
+  /**
+   * **The sweep answers to the hand, not to the pane.**
+   *
+   * The column is 1200px inside something that scrolls, so "where the pointer
+   * is" and "which time the pointer is over" stop agreeing the moment the pane
+   * moves under it. The far end is a *travel* from the near end, which is what
+   * the move and the resize beside it already are — so a pane that scrolls
+   * with the button held changes nothing about the span, and a pointer that
+   * has not moved has not swept anything further.
+   *
+   * The second `mouse.move` to the same coordinates is the whole test: without
+   * it both readings agree and nothing is being asked.
+   */
+  test('a pane that scrolls mid-sweep does not move the swept span', async ({ page }) => {
+    await open(page, 'empty');
+    const c = await sweep(page, 9, 10);
+
+    await page.locator('[data-testid="week-body"]').evaluate((el) => { el.scrollTop += 60; });
+    await page.mouse.move(c.cx, c.at(10)); // the same place the hand already was
+    await page.mouse.up();
+
+    const got = await created(page);
+    expect(got).not.toBeNull();
+    expect(got.startMs).toBe(c.startMs + 9 * HOUR);
+    expect(got.endMs, 'still the hour that was swept').toBe(c.startMs + 10 * HOUR);
+  });
+
+  /**
+   * The primary button only. A right-press opens a context menu, and a gesture
+   * that armed itself behind one would sweep out a span the user never meant
+   * and hand up a form on release.
+   */
+  test('a right-button drag over empty grid sweeps nothing', async ({ page }) => {
+    await open(page, 'empty');
+    const c = await emptyColumn(page, 9);
+    await overEmptyGrid(page, c.cx, c.at(9));
+
+    await page.mouse.move(c.cx, c.at(9));
+    await page.mouse.down({ button: 'right' });
+    await page.mouse.move(c.cx, c.at(10), { steps: 6 });
+    await expect(page.locator('.sweep')).toHaveCount(0);
+    await page.mouse.up({ button: 'right' });
+
+    expect(await created(page)).toBeNull();
+  });
+
+  test('Escape cancels a sweep and asks for no form', async ({ page }) => {
+    await open(page, 'empty');
+    await sweep(page, 9, 10);
+    await page.keyboard.press('Escape');
+    await page.mouse.up();
+
+    expect(await created(page)).toBeNull();
+    expect(await createCount(page)).toBe(0);
+  });
+
+  /** And a cancelled sweep must not leave the grid unable to do the ordinary
+   *  thing: the window listeners come off, so the next click still creates. */
+  test('a click still creates after a sweep has been cancelled', async ({ page }) => {
+    await open(page, 'empty');
+    await sweep(page, 9, 10);
+    await page.keyboard.press('Escape');
+    await page.mouse.up();
+
+    const c = await emptyColumn(page, 9);
+    await page.mouse.click(c.cx, c.at(9));
+    expect(await created(page)).not.toBeNull();
   });
 });

@@ -143,6 +143,12 @@ if (name === 'App') {
       // same way `MonthGrid`'s `onopen` is, so a spec can read exactly what it
       // was handed.
       (window as any).__lastCreate = null;
+      // How many forms have been asked for. `__lastCreate` alone cannot see a
+      // *second* create arriving right behind the first, which is exactly what
+      // a sweep produces if the click the browser dispatches after its
+      // `pointerup` is not swallowed — the user would see the last one, on the
+      // half hour the release landed in, rather than the span they swept.
+      (window as any).__createCount = 0;
       (window as any).__lastEdit = null;
       (window as any).__lastDelete = null;
       (window as any).__lastMove = null;
@@ -153,8 +159,12 @@ if (name === 'App') {
         props: {
           ...props,
           get week() { return week; },
-          oncreate: (startMs: unknown, rect: unknown) => {
-            (window as any).__lastCreate = { startMs, rect };
+          // `endMs` is present only when the grid names one — a sweep does, a
+          // click does not, and the difference is what leaves the duration of
+          // a clicked create to the form's own default.
+          oncreate: (startMs: unknown, rect: unknown, endMs?: unknown) => {
+            (window as any).__lastCreate = { startMs, rect, endMs };
+            (window as any).__createCount += 1;
           },
           onedit: (occurrence: unknown, rect: unknown) => {
             (window as any).__lastEdit = { occurrence, rect };
