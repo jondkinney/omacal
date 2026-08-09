@@ -4,7 +4,7 @@
   import { foregroundFor } from './ink';
   import type { Rect } from './position';
 
-  let { ribbon, onopen, oncreate }: {
+  let { ribbon, onopen, oncreate, openId = null, openStart = null }: {
     ribbon: BigYearPayload;
     /** Same contract as `WeekGrid`/`MonthGrid`: an anchor rect plus the
      *  clicked event, handed straight to `EventPopover` via `placePopover`. */
@@ -13,7 +13,53 @@
      *  day carries a date and no time, so the parent applies the app's default
      *  hour to it. */
     oncreate: (dayStartMs: number, rect: Rect) => void;
+    /** The occurrence whose popover is open, so its segments stay lit while it
+     *  is. Two primitives rather than the `UiEvent`, mirroring `App.svelte`'s
+     *  own `gridSelId`/`gridSelStart` — which is exactly where these come from,
+     *  since App is what opened the popover — and for the reason its comment
+     *  gives: the proxy identity of an object reassigned into `$state` is not
+     *  something to rest a later `===` on.
+     *
+     *  Optional, both of them, so a caller that does not run a popover (the
+     *  standalone mounts in `tests/harness`) need not pass anything. */
+    openId?: number | null;
+    openStart?: number | null;
   } = $props();
+
+  // Which occurrence the cursor is on. Local, because nothing outside this
+  // component has any use for it — unlike `openId`/`openStart`, which App owns
+  // because App owns the popover.
+  let hoverId = $state<number | null>(null);
+  let hoverStart = $state<number | null>(null);
+
+  /**
+   * Whether this segment belongs to the occurrence being pointed at, or the one
+   * whose popover is open.
+   *
+   * **The key is the occurrence — `id` *and* `start_ms` — and neither half is
+   * optional.**
+   *
+   * Not `lane.idx`: an event running past day 28 produces one `Lane` per row it
+   * touches, each landing in a *different* row's `pill_events` at a different
+   * index, so segments of one occurrence do not share one.
+   *
+   * And not `id` alone, which is the repair that looks right and is worse:
+   * every occurrence of a recurring series carries its master row's id
+   * (`to_ui(src, ...)` builds each expanded occurrence from the same
+   * `StoredEvent`), so hovering January's standup would light up all
+   * fifty-two.
+   *
+   * `start_ms` is what separates them, and that it does is a property of the
+   * assembler rather than a hope: `occurrences()` hands back each occurrence's
+   * own interval, and `expand()` (`recur.rs`) filters by the row window without
+   * ever clamping to it — so the row-segments of one occurrence carry one
+   * identical start, and two occurrences of a series never do. `App.svelte`'s
+   * `isGridSelected` already names an occurrence the same way, for the same
+   * reason.
+   */
+  const isLit = (ev: UiEvent) =>
+    (hoverId === ev.id && hoverStart === ev.start_ms)
+    || (openId === ev.id && openStart === ev.start_ms);
 
   // The data cap: `pack_lanes(&segments, 28, 3)` (commands.rs) never packs a
   // fourth overlapping span into a lane, folding it into `overflow` instead.
@@ -124,6 +170,9 @@
               class:cont={lane.cont_left || lane.cont_right}
               class:cl={lane.cont_left}
               class:cr={lane.cont_right}
+              class:lit={isLit(ev)}
+              onmouseenter={() => { hoverId = ev.id; hoverStart = ev.start_ms; }}
+              onmouseleave={() => { hoverId = null; hoverStart = null; }}
               style="
                 grid-row:{lane.lane + 1};
                 grid-column:{lane.start_col + 1} / {lane.end_col + 2};
@@ -347,6 +396,25 @@
   .pill.cl { border-top-left-radius: 0; border-bottom-left-radius: 0;
              border-left: 2px dashed var(--ink); }
   .pill.cr { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+
+  /* Lit: hovered, or the one whose popover is open. A trip runs across several
+     28-day rows and, with a dozen teal bars stacked, finding where one ends is
+     genuinely hard — so the whole occurrence lights at once, every row of it.
+
+     **Nothing here may move anything.** These pills sit under the cursor by
+     definition, and a highlight that changed a box would make the ribbon jump
+     out from under it — and, worse, could re-enter the pill and flicker.
+     `filter` and `box-shadow` are the two that paint outside the box model
+     without taking part in layout; neither reserves space, and `a highlight
+     changes nothing about where a pill sits` pins that.
+
+     `box-shadow` rather than `outline`: it follows `border-radius` on every
+     engine, which matters on a capsule, and being inset means the ring never
+     bleeds onto the day either side. `--ink` is the pill's own foreground, so
+     the ring is guaranteed to contrast with the fill whatever Google sent —
+     the same property `foregroundFor` picks it for. */
+  .pill.lit { filter: brightness(1.35);
+              box-shadow: inset 0 0 0 1px var(--ink); }
 
   .more { font-size: 8px; color: var(--muted); opacity: .8; }
 

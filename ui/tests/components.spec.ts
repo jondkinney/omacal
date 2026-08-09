@@ -1717,6 +1717,97 @@ test.describe('BigYearRibbon', () => {
     });
   });
 
+  // ---- an event lights up across its whole span ----------------------------
+
+  test('hovering a segment lights every row the same occurrence runs through', async ({ page }) => {
+    // The multi-row half. `crossing` is one occurrence with a segment in each
+    // of two rows, and the point of the feature is that both light at once —
+    // with a dozen bars stacked, finding where a trip ends is the problem.
+    await page.goto(show('crossing'));
+    const pills = page.locator('.pill');
+    await expect(pills).toHaveCount(2);
+    await expect(page.locator('.pill.lit')).toHaveCount(0);
+
+    await pills.nth(0).hover();
+    await expect(page.locator('.pill.lit')).toHaveCount(2);
+
+    // And it lets go. Without this a highlight that never cleared would satisfy
+    // every other assertion here.
+    await page.locator('.legend').hover();
+    await expect(page.locator('.pill.lit')).toHaveCount(0);
+  });
+
+  test('hovering one occurrence of a series lights that one only', async ({ page }) => {
+    // **The witness that matters.** Every occurrence of a recurring series
+    // carries its master row's id, so keying the highlight on `ev.id` — the
+    // obvious repair once `lane.idx` is ruled out — lights the whole series:
+    // hover January's standup and all fifty-two glow.
+    //
+    // A ribbon of single events cannot see that, because there id and
+    // occurrence are the same thing and the broken version passes. `recurring`
+    // is three occurrences sharing one id, plus one unrelated event.
+    //
+    // The middle occurrence, not the first: an implementation that lit "the
+    // first segment with this id" would be accidentally right on the first.
+    await page.goto(show('recurring'));
+    const pills = page.locator('.pill');
+    await expect(pills).toHaveCount(4);
+
+    // The fixture's premise, asserted rather than trusted: three of these pills
+    // really do share one id, and really do carry different starts. If that
+    // ever stopped being true the test below would still pass and would no
+    // longer be about anything.
+    const identity = await pills.evaluateAll((els) => els.map((el) => el.getAttribute('title')));
+    expect(identity.filter((t) => t === 'Standup')).toHaveLength(3);
+
+    await pills.nth(1).hover();
+    const lit = page.locator('.pill.lit');
+    await expect(lit).toHaveCount(1);
+    // …and it is the one under the cursor, not merely "one of them".
+    const litBox = (await lit.boundingBox())!;
+    const hoveredBox = (await pills.nth(1).boundingBox())!;
+    expect(litBox.x).toBeCloseTo(hoveredBox.x, 0);
+  });
+
+  test('the occurrence whose popover is open stays lit, across its rows', async ({ page }) => {
+    // The other input to the same predicate, and it arrives as a prop: App
+    // hands down the `gridSelId`/`gridSelStart` it already keeps for the open
+    // popover. Both segments of the crossing span light, with nothing hovered.
+    await page.goto(show('crossing-open'));
+    await expect(page.locator('.pill')).toHaveCount(2);
+    await expect(page.locator('.pill.lit')).toHaveCount(2);
+  });
+
+  test('an open popover on one occurrence of a series lights that one only', async ({ page }) => {
+    // The recurring trap through the prop rather than through the cursor. Both
+    // inputs go through one predicate, but only a spec per input can say so.
+    await page.goto(show('recurring-open'));
+    await expect(page.locator('.pill')).toHaveCount(4);
+    await expect(page.locator('.pill.lit')).toHaveCount(1);
+  });
+
+  test('a highlight changes nothing about where a pill sits', async ({ page }) => {
+    // These pills are under the cursor by definition. A highlight that moved
+    // anything would make the ribbon jump out from under it, and could re-enter
+    // the pill and flicker. `filter` and an inset `box-shadow` are chosen for
+    // exactly that: they paint without taking part in layout.
+    //
+    // Every segment's box is compared, not just the hovered one — a highlight
+    // that grew the hovered pill would push its neighbours about too, and the
+    // second row's segment is the one that would show it.
+    await page.goto(show('crossing'));
+    const pills = page.locator('.pill');
+    const boxes = async () => pills.evaluateAll((els) => els.map((el) => {
+      const r = el.getBoundingClientRect();
+      return [r.x, r.y, r.width, r.height].map((n) => Math.round(n * 100) / 100);
+    }));
+
+    const before = await boxes();
+    await pills.nth(0).hover();
+    await expect(page.locator('.pill.lit')).toHaveCount(2); // it really is lit
+    expect(await boxes()).toEqual(before);
+  });
+
   // ---- the day box is the container, and the event is drawn in it ----------
   //
   // What used to be here was "a fully packed row keeps its day strip, and its

@@ -839,6 +839,59 @@ const bigYear2026 = (): BigYearPayload => {
   return b;
 };
 
+/** The id every occurrence of `recurringBigYear`'s series shares. */
+export const RIBBON_SERIES_ID = 960;
+/** The start of the occurrence a highlight spec hovers — the second of three,
+ *  so a broken implementation that lit "the first" or "all of them" is not
+ *  accidentally right. Row 0, column 7. */
+export const RIBBON_SERIES_HOVERED = RIBBON_START + 7 * 24 * H;
+
+/** A weekly all-day series: three occurrences, **one shared `id`**, three
+ *  different `start_ms`, plus one unrelated event on the same row.
+ *
+ *  This is the fixture the highlight feature is actually dangerous without.
+ *  Every occurrence of a series carries its master row's id — `to_ui(src, ...)`
+ *  in `commands.rs` builds each expanded occurrence from the same `StoredEvent`
+ *  — so an implementation that lights "every pill with this id" lights the
+ *  whole year. A ribbon of single events cannot show that: there, id and
+ *  occurrence are the same thing, and the broken version passes.
+ *
+ *  What distinguishes them is `start_ms`, and that is a property of the
+ *  assembler rather than of this file: `occurrences()` returns each occurrence's
+ *  own interval, and `expand()` (`recur.rs`) *filters* by the row window
+ *  without ever clamping to it. So two occurrences of one series differ here,
+ *  and the row-segments of a single occurrence — `crossingBigYear` above — do
+ *  not.
+ *
+ *  Same weekday on purpose: a 28-day row puts a weekly series in one column,
+ *  which is what it looks like in the real ribbon. */
+const recurringBigYear = (): BigYearPayload => {
+  const b = emptyBigYear(2026, RIBBON_START, YEAR_2026_START, YEAR_2027_START);
+
+  const occurrence = (col: number) => ev({
+    id: RIBBON_SERIES_ID, title: 'Standup', is_all_day: true, color: '#5b8def',
+    start_ms: RIBBON_START + col * 24 * H,
+    end_ms: RIBBON_START + (col + 1) * 24 * H,
+  });
+
+  // A second event with a *different* id, so a spec can also say the highlight
+  // does not simply light everything on the row.
+  const other = ev({
+    id: 961, title: 'Diwali', is_all_day: true, color: '#e2a03f',
+    start_ms: RIBBON_START + 21 * 24 * H, end_ms: RIBBON_START + 22 * 24 * H,
+  });
+
+  b.rows[0].pill_events = [occurrence(0), occurrence(7), occurrence(14), other];
+  b.rows[0].pills = [
+    { idx: 0, lane: 0, start_col: 0, end_col: 0, cont_left: false, cont_right: false },
+    { idx: 1, lane: 0, start_col: 7, end_col: 7, cont_left: false, cont_right: false },
+    { idx: 2, lane: 0, start_col: 14, end_col: 14, cont_left: false, cont_right: false },
+    { idx: 3, lane: 0, start_col: 21, end_col: 21, cont_left: false, cont_right: false },
+  ];
+
+  return b;
+};
+
 /** Three pills in one row, chosen so a spec can see the *rendered* end of
  *  `foregroundFor` — not just its return value, which `components.spec.ts`
  *  tables directly.
@@ -911,12 +964,19 @@ const sameNameLegendBigYear = (): BigYearPayload => {
  *  reason `pill_events` is genuinely per-row (the same event appears twice,
  *  once in each row's own array) rather than shared across rows, same as
  *  `MonthRow.bar_events`. */
+/** `crossingBigYear`'s span: one occurrence, two row-segments, and the same
+ *  `start_ms` on both — which is what makes it the multi-row witness. Exported
+ *  so the `crossing-open` fixture below and its spec name the occurrence from
+ *  the one place the payload does, rather than each carrying a copy. */
+export const RIBBON_CROSSING_ID = 910;
+export const RIBBON_CROSSING_START = RIBBON_START + 25 * 24 * H;
+
 const crossingBigYear = (): BigYearPayload => {
   const b = emptyBigYear(2026, RIBBON_START, YEAR_2026_START, YEAR_2027_START);
 
   const spanEvent = (id: number) => ev({
     id, title: 'Sun-Tue trip', is_all_day: true, color: '#5b8def',
-    start_ms: RIBBON_START + 25 * 24 * H, end_ms: RIBBON_START + 30 * 24 * H,
+    start_ms: RIBBON_CROSSING_START, end_ms: RIBBON_START + 30 * 24 * H,
   });
 
   b.rows[0].pill_events = [spanEvent(910)];
@@ -1426,6 +1486,24 @@ export const FIXTURES: Record<string, Record<string, any>> = {
     'same-name-legend': { ribbon: sameNameLegendBigYear() },
     'three-lanes': { ribbon: threeLanesBigYear() },
     'three-lanes-exact': { ribbon: threeLanesExactBigYear() },
+    recurring: { ribbon: recurringBigYear() },
+    /* The crossing span with its popover open, which is the only way to reach
+     * the `openId`/`openStart` props from a standalone mount: in the app they
+     * come from `App.svelte`'s own `gridSelId`/`gridSelStart`, set when it
+     * opens the popover. */
+    'crossing-open': {
+      ribbon: crossingBigYear(),
+      openId: RIBBON_CROSSING_ID,
+      openStart: RIBBON_CROSSING_START,
+    },
+    /* An open popover on **one occurrence of a series** — the same trap as
+     * hovering, through the other input. Without this, `openId` alone would
+     * pass every spec here. */
+    'recurring-open': {
+      ribbon: recurringBigYear(),
+      openId: RIBBON_SERIES_ID,
+      openStart: RIBBON_SERIES_HOVERED,
+    },
     'pill-inks': { ribbon: pillInksBigYear() },
     unsynced: { ribbon: unsyncedBigYear() },
   },
