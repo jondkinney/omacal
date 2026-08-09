@@ -169,17 +169,36 @@ impl CalendarClient {
             .map_err(|e| ApiError::Transport(e.to_string()))
     }
 
-    /// Patch (partially update) an event, notifying attendees.
+    /// Patch (partially update) an event.
     ///
-    /// `sendUpdates=all` is deliberate: without it Google silently applies the
-    /// change and nobody is told. `etag`, when given, is sent as `If-Match` so
-    /// a change made elsewhere since the caller last fetched the event surfaces
-    /// as [`ApiError::PreconditionFailed`] instead of being clobbered.
+    /// `send_updates` is Google's own vocabulary — `"all"`, `"externalOnly"` or
+    /// `"none"` — and a parameter rather than a constant, the same shape as
+    /// [`Self::insert_event`], because the callers want different answers.
+    ///
+    /// **The reasoning that made it `"all"` still holds, for the caller it was
+    /// written about.** It read: *without it Google silently applies the change
+    /// and nobody is told.* That is right for the **form** — a new time was
+    /// typed on purpose and Save was pressed — so every edit and every RSVP
+    /// still passes `"all"`, and none of that behaviour changed when this
+    /// became a parameter.
+    ///
+    /// It is wrong for a **gesture**. A drag can happen by accident, and
+    /// mailing a meeting's whole guest list is not something a slip of the
+    /// mouse should do; spec §2 of the drag design is the ruling, and a drop
+    /// chooses `"none"` unless the user is asked and says otherwise. Hardcoding
+    /// `"all"` here is what would make that impossible to express — which is
+    /// why the choice is the caller's, and why the default was considered
+    /// rather than defaulted into.
+    ///
+    /// `etag`, when given, is sent as `If-Match` so a change made elsewhere
+    /// since the caller last fetched the event surfaces as
+    /// [`ApiError::PreconditionFailed`] instead of being clobbered.
     pub async fn patch_event(
         &self,
         cal: &str,
         event_id: &str,
         body: &serde_json::Value,
+        send_updates: &str,
         etag: Option<&str>,
     ) -> Result<model::Event, ApiError> {
         let mut req = self
@@ -191,7 +210,7 @@ impl CalendarClient {
                 urlencoding_path(event_id)
             ))
             .bearer_auth(&self.access_token)
-            .query(&[("sendUpdates", "all")])
+            .query(&[("sendUpdates", send_updates)])
             .json(body);
         if let Some(etag) = etag {
             req = req.header("If-Match", etag);
@@ -485,8 +504,42 @@ mod tests {
             .mount(&server).await;
 
         let c = CalendarClient::new(server.uri(), "at");
-        c.patch_event("cal@x.com", "ev1", &serde_json::json!({}), None).await.unwrap();
+        c.patch_event("cal@x.com", "ev1", &serde_json::json!({}), "all", None).await.unwrap();
         // `.expect(1)` fails the test on drop if sendUpdates=all was absent.
+    }
+
+    /// **The choice, not the constant.** A patch sends exactly the
+    /// `sendUpdates` it was handed, and both answers are asserted because they
+    /// are opposite instructions to Google: `all` mails the guest list, `none`
+    /// mails nobody.
+    ///
+    /// `query_param` **and** `.expect(1)`, for the reason
+    /// `delete_sends_if_match_and_notifies_guests` already spells out: a
+    /// request that omitted the parameter matches no mock, and wiremock's
+    /// unmatched-request 404 would come back through a path that does not
+    /// distinguish it from a transport failure. The matcher says what a
+    /// matching request looks like; `.expect(1)` is what insists one happened.
+    #[tokio::test]
+    async fn a_patch_sends_the_send_updates_it_was_given() {
+        for send_updates in ["all", "none"] {
+            let server = MockServer::start().await;
+            Mock::given(method("PATCH"))
+                .and(path("/calendars/cal%40x.com/events/ev1"))
+                .and(query_param("sendUpdates", send_updates))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "id": "ev1", "status": "confirmed"
+                })))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let c = CalendarClient::new(server.uri(), "at-1");
+            let ev = c
+                .patch_event("cal@x.com", "ev1", &serde_json::json!({}), send_updates, None)
+                .await
+                .unwrap();
+            assert_eq!(ev.id, "ev1");
+        }
     }
 
     #[tokio::test]
@@ -497,7 +550,7 @@ mod tests {
             .mount(&server).await;
 
         let c = CalendarClient::new(server.uri(), "at");
-        let err = c.patch_event("cal@x.com", "ev1", &serde_json::json!({}), Some("\"old\""))
+        let err = c.patch_event("cal@x.com", "ev1", &serde_json::json!({}), "all", Some("\"old\""))
             .await.unwrap_err();
         assert!(matches!(err, ApiError::PreconditionFailed), "got {err:?}");
     }
@@ -516,7 +569,7 @@ mod tests {
 
         let c = CalendarClient::new(server.uri(), "at-1");
         let ev = c
-            .patch_event("cal@x.com", "ev1", &serde_json::json!({"status": "cancelled"}), Some("\"old\""))
+            .patch_event("cal@x.com", "ev1", &serde_json::json!({"status": "cancelled"}), "all", Some("\"old\""))
             .await
             .unwrap();
         assert_eq!(ev.id, "ev1");
