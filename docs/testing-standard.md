@@ -27,6 +27,14 @@ suite runs. `.query(&[("sendUpdates", send_updates)])` occurs twice — once in
 `patch_event`, once in `insert_event` — and an edit aimed at the first landed
 wherever the tool found it.
 
+**And run the whole suite: `cargo test --workspace --no-fail-fast`.** Asserting
+the mutation is on disk says it applied; running everything is what says who
+catches it. Without the flag the run stops after the first failing binary, so a
+mutation recorded as caught by two tests was actually caught by five — the three
+in `omacal-core` written for that exact function were never reached. That
+misreports in the direction that costs: a net that looks narrower than it is,
+which is how you come to add tests you already have.
+
 ## 3. On disk is not the same as reachable
 
 **A mutation that reddens nothing is either a survivor or an inert edit, and the
