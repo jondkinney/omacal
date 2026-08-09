@@ -108,6 +108,20 @@ And a fixture must reach the code through **the call shape the app actually
 makes**. Two fixtures once had the zone right and entered through a signature
 nothing called.
 
+**The same failure has a second instrument: the locator.** A locator that cannot
+reach the state a rule is about will pass whatever the rule does, exactly as a
+fixture that cannot witness its hazard will.
+
+A spec for "a view shortcut does nothing while search is open" focused the `<li>`
+rather than the button inside it. A list item is not focusable, so focus stayed
+in the search field — where the key is already spared for a different reason —
+and the guard under test never ran. Another had every searchable fixture in the
+month the app opens on, so "the calendar moves to that date" moved it to where
+it already was, and an implementation that never moved the anchor passed.
+
+Selecting a *test* by a guessed name is the same mistake one level up: a `-g`
+pattern that matches nothing reports a clean run.
+
 ## 7. Prove an absence by an absence
 
 "Cancel writes nothing" is witnessed by **no request having been made**, never
