@@ -99,7 +99,7 @@ fn to_ui(src: &StoredEvent, start_ms: i64, end_ms: i64) -> UiEvent {
 /// must stop expanding into that slot — otherwise a moved instance renders
 /// twice (once at its new time, once as a ghost at the old one) and a deleted
 /// one never disappears at all.
-fn suppressed_slots(events: &[StoredEvent]) -> HashSet<(i64, &str, i64)> {
+pub(crate) fn suppressed_slots(events: &[StoredEvent]) -> HashSet<(i64, &str, i64)> {
     events
         .iter()
         .filter_map(|e| {
@@ -110,7 +110,7 @@ fn suppressed_slots(events: &[StoredEvent]) -> HashSet<(i64, &str, i64)> {
 }
 
 /// Expands one stored row into the concrete occurrences overlapping the window.
-fn occurrences(src: &StoredEvent, from_ms: i64, to_ms: i64) -> Vec<Interval> {
+pub(crate) fn occurrences(src: &StoredEvent, from_ms: i64, to_ms: i64) -> Vec<Interval> {
     let Some(rule) = &src.recurrence else {
         let iv = Interval { start_ms: src.start_utc, end_ms: src.end_utc };
         return if iv.start_ms < to_ms && iv.end_ms > from_ms { vec![iv] } else { vec![] };

@@ -9,6 +9,7 @@ mod fixtures;
 /// that reads or writes `ui/tests/` is compiled into the shipped app.
 #[cfg(test)]
 mod golden;
+mod notify_loop;
 mod status;
 mod sync_loop;
 mod theme;

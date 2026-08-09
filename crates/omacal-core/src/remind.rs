@@ -92,6 +92,21 @@ pub struct Due {
     /// in [`due_reminders`] — so a driver must treat a negative delay as "now"
     /// rather than sleeping on it.
     pub fire_at_ms: i64,
+    /// The end of the occurrence this reminder belongs to, carried straight
+    /// from its [`ScheduledEvent`].
+    ///
+    /// Here rather than looked up by the caller because it is the instant after
+    /// which this reminder can never be produced again — rule 7's own cutoff —
+    /// and so the only correct thing to record alongside it and prune on.
+    ///
+    /// A driver that instead searched its input for the matching event would
+    /// have to match on [`FiredKey::occurrence_ms`], which is the *anchor*
+    /// while `ScheduledEvent` holds the raw start. For an all-day occurrence on
+    /// a calendar whose zone has moved those differ, the search silently finds
+    /// nothing, and the row is recorded with whatever fallback the caller
+    /// invented — pruned early, then posted a second time. Carrying the value
+    /// deletes that whole class of mistake rather than documenting it.
+    pub occurrence_end_ms: i64,
 }
 
 /// Every reminder that should be posted, given the world at `now_ms`.
@@ -190,7 +205,11 @@ pub fn due_reminders(
             };
 
             if should_fire {
-                out.push(Due { key, fire_at_ms });
+                out.push(Due {
+                    key,
+                    fire_at_ms,
+                    occurrence_end_ms: ev.occurrence_end_ms,
+                });
             }
         }
     }
@@ -571,6 +590,36 @@ mod tests {
         // "over": at exactly `end` the event is no longer running either.
         let out = due(std::slice::from_ref(&ev), ev.occurrence_end_ms);
         assert!(out.is_empty(), "a finished meeting must not still notify");
+    }
+
+    /// Each result carries the end of the occurrence it belongs to — the
+    /// instant past which it can never be produced again, and so the only
+    /// correct thing for a driver to prune its record on. Taken from the
+    /// occurrence rather than derived from the anchor: an all-day occurrence
+    /// runs a day from its raw start, not a day from the midnight the anchor
+    /// normalised it to, and the two differ whenever the calendar's zone and
+    /// the event's stored zone do.
+    #[test]
+    fn each_result_carries_the_end_of_the_occurrence_it_belongs_to() {
+        let mut ev = timed(1, vec![popup(30)]);
+        ev.is_all_day = true;
+        ev.calendar_tz = AUCKLAND.into();
+        ev.occurrence_start_ms = SOFIA_MIDNIGHT_AUG10;
+        ev.occurrence_end_ms = SOFIA_MIDNIGHT_AUG10 + 24 * HOUR;
+
+        let out = due(&[ev], AUCKLAND_MIDNIGHT_AUG10 - 2 * HOUR);
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            out[0].occurrence_end_ms,
+            SOFIA_MIDNIGHT_AUG10 + 24 * HOUR,
+            "the occurrence's own end, not one derived from the anchor"
+        );
+        assert_ne!(
+            out[0].occurrence_end_ms,
+            AUCKLAND_MIDNIGHT_AUG10 + 24 * HOUR,
+            "fixture check: an anchor-derived end must be a different instant, \
+             or this test cannot tell the two apart"
+        );
     }
 
     /// Ordered by fire time, earliest first, so the driver can take the head

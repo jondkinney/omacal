@@ -4,7 +4,9 @@ use std::str::FromStr;
 
 pub mod calendars;
 pub mod events;
+pub mod reminders;
 pub use calendars::{calendar_for_write, list_calendars, set_selected, set_sync_enabled, CalendarRow};
+pub use reminders::{fired_keys, prune_fired, record_fired};
 pub use events::{
     delete_event, delete_series, event_by_id, event_for_write, events_in_window, exceptions_from,
     upsert_event, Attendee, Reminder, Reminders, StoredEvent,
