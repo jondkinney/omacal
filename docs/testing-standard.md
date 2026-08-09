@@ -56,6 +56,15 @@ unrelated-looking spec failures.
 
 Copy the file aside first. Move it back. Then `git diff --quiet`.
 
+**Restore, then `touch`, then re-run.** The copy fixes the content and
+introduces a second problem: moving a backup back **preserves the backup's
+mtime**, which is older than the artifact cargo just compiled from the mutated
+source. Cargo then considers its build current and keeps running **the mutant**.
+This surfaced as one Rust test failing under `cargo test --workspace` while
+passing under `cargo test -p omacal-store` and passing alone — which looks
+exactly like test pollution and is not. The two halves are one rule: the copy
+restores the bytes, the `touch` restores the build.
+
 ## 5. A fixture built from a stated hazard proves the statement, not the code
 
 Twice in one week a mutation caught a **fixture** rather than an implementation.
