@@ -85,12 +85,39 @@ same failure on every pass forever.
 
 Only calendars you have **selected** fire, not everything you sync. Deselecting
 a calendar cancels its pending reminders, which is the intended reading of that
-switch: if it is not worth drawing, it is not worth interrupting you.
+switch: if it is not worth drawing, it is not worth interrupting you. Search
+follows the same switch, for the same reason.
+
+Reminders can be turned off entirely in **Settings → Notifications**. That
+switch controls whether omacal fires anything at all; *what* fires is still each
+event's own Google reminders, which is what keeps this in step with your phone.
 
 A reminder that came due while omacal was not running fires at the next launch,
 provided the event has not already ended. Closing the window **hides** it rather
 than quitting — the scheduler is the point, and a closed window that stopped
 firing reminders would be a bug. Quit from the tray when you mean it.
+
+## Settings, colour, search and dragging
+
+These behave identically on both platforms, and the macOS guide describes them
+in full — [Settings](running-on-macos.md#settings), [per-calendar
+colour](running-on-macos.md#per-calendar-colour),
+[search](running-on-macos.md#search),
+[dragging](running-on-macos.md#dragging) and [guests](running-on-macos.md#guests-and-who-gets-an-email).
+Written once rather than twice: nothing about any of them is
+platform-specific, and a second copy is one that drifts.
+
+The four worth knowing without following a link:
+
+- **Settings** live behind the hamburger. The sync interval is a control there
+  now rather than an `sqlite3` incantation, and a value under a minute is
+  refused with a reason instead of being quietly clamped.
+- **A calendar's colour is local to omacal** and never reaches Google — your
+  phone, the web UI and anyone else subscribed see what they always saw.
+- **Search** is `/`, titles only, nearest to today first, and only across the
+  calendars you display.
+- **A drag never emails anybody by itself**; dropping an event with guests asks
+  first, and not notifying is the default answer.
 
 ## Where things live
 
@@ -102,6 +129,12 @@ firing reminders would be a bug. Quit from the tray when you mean it.
 
 The database is SQLite in WAL mode, so it is **three** files — `omacal.db`, plus
 `-wal` and `-shm`. Copy or delete all three together.
+
+Everything omacal remembers is in that database: your calendars and their
+events, the sync cursors, which reminders have fired, your settings, and your
+per-calendar colours. The one thing that is **not** there is the refresh token,
+which lives in the Secret Service. Deleting the database costs a resync, not a
+sign-in.
 
 ## Commands
 
