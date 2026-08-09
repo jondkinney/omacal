@@ -1,8 +1,9 @@
 <!-- ui/src/lib/Header.svelte -->
 <script lang="ts">
-  import { relativeTime, type AppStatus } from './status';
+  import { syncLight, type AppStatus } from './status';
   import type { Calendar } from './calendars';
   import CalendarPopover from './CalendarPopover.svelte';
+  import SettingsModal from './SettingsModal.svelte';
   import ViewSwitcher, { type View } from './ViewSwitcher.svelte';
 
   let {
@@ -65,8 +66,68 @@
     const id = setInterval(() => { now = Date.now(); }, 30_000);
     return () => clearInterval(id);
   });
-  const synced = $derived(relativeTime(status?.last_sync_ms ?? null, now));
+  /**
+   * The status light: one call, one answer, used for both the colour and the
+   * words (spec §2). See `syncLight` — deriving them separately is how a dot
+   * ends up green while announcing a failure.
+   */
+  const light = $derived(
+    syncLight(
+      { connected, busy, error, lastSyncMs: status?.last_sync_ms ?? null },
+      now,
+    ),
+  );
+
+  /** The hamburger's menu. Everything that used to sit in the header and is
+   *  used rarely now lives here (spec §1). */
+  let menuOpen = $state(false);
+  let settingsOpen = $state(false);
+
+  function openSettings() {
+    menuOpen = false;
+    settingsOpen = true;
+  }
+
+  /** Runs `fn` and shuts the menu — every item in it is a one-shot action, and
+   *  a menu left standing over the thing it just did is a menu the user has to
+   *  dismiss before they can see what happened. */
+  function fromMenu(fn: () => void) {
+    menuOpen = false;
+    fn();
+  }
+
+  /**
+   * **A parent-driven `open` opens the menu it now lives in.**
+   *
+   * `App` sets `open` after every sign-in so a freshly imported set of
+   * calendars — all switched on by default — is never left syncing behind the
+   * user's back without them having seen it. That worked while the picker sat
+   * directly in the header; behind a closed hamburger, `open` becoming true
+   * would render nothing at all and the behaviour would be silently gone.
+   *
+   * One-way on purpose: closing the picker leaves the menu standing, which is
+   * what makes the layers behave like layers.
+   */
+  $effect(() => {
+    if (open) menuOpen = true;
+  });
+
+  // Escape closes the menu — but only when it is the topmost thing open.
+  // `CalendarPopover` has its own `window` handler, so without the `!open`
+  // term one keystroke closes the picker *and* the menu it sits inside, and a
+  // user who meant "not that panel" loses both.
+  //
+  // There is deliberately no `!settingsOpen` term beside it. It reads as the
+  // matching precaution and is dead: `openSettings` closes the menu on the way
+  // to opening the modal, so `menuOpen` is already false whenever the modal is
+  // up. A guard that can never fire is a guard no test can prove, and this
+  // file has been through that once already.
+  function onKeydown(e: KeyboardEvent) {
+    if (e.key === 'Escape' && menuOpen && !open) menuOpen = false;
+  }
 </script>
+
+<svelte:window onkeydown={onKeydown} />
 
 <!-- `data-tauri-drag-region` here and on the title, not on a wrapper around
      everything: with `titleBarStyle: "Overlay"` there is no title bar left to
@@ -78,9 +139,16 @@
      button below stays a button.
 
      Deliberately not `data-tauri-drag-region="deep"`, which would hand the
-     whole subtree over: `CalendarPopover`'s open panel is inside this header,
-     and its account labels, calendar names and hint text would then drag the
-     window instead of being read. -->
+     whole subtree over. **The reason has changed and the constraint has not.**
+     It used to be `CalendarPopover`'s open panel, which sat directly in this
+     header; the picker has since moved behind the hamburger, but it moved
+     *into the menu*, which is still inside this header — so the panel's
+     account labels, calendar names and hint text are still here, joined now by
+     the menu's own items. `"deep"` would make every one of them a place to
+     drag the window from instead of a thing to read or click.
+
+     The settings modal is the one panel this no longer covers: it renders as a
+     sibling of `<header>`, outside it, so nothing about it depends on this. -->
 <header class:overlay={status?.overlay_titlebar} data-tauri-drag-region>
   <div class="left">
     <h1 data-tauri-drag-region>{title}</h1>
@@ -96,28 +164,85 @@
     {#if status?.demo}
       <span class="demo">DEMO DATA</span>
     {/if}
-    {#if calendars.length > 0}
-      <CalendarPopover {calendars} onchange={oncalendarchange} bind:open />
-    {/if}
-    {#if connected}
-      <span class="synced">{busy ? 'Syncing…' : `Synced ${synced}`}</span>
-      {#if !status?.demo}
-        <!-- Demo mode's seeded account never went through OAuth, so a sync
-             would only fail; offering the button at all would be a control
-             that exists solely to produce an error. Same reasoning covers
-             Add account: sign_in refuses server-side in demo mode
-             (demo_sync_guard) regardless of whether an account is already
-             connected. -->
-        <button onclick={onSync} disabled={busy}>Sync now</button>
-        <button onclick={onSignIn} disabled={busy}>Add account</button>
-      {/if}
-    {:else if !status?.demo}
+
+    <!-- **Spec §2: a light, not a sentence.** `is this stale?` is a question
+         answered by glancing, so the state stays in the header while the words
+         move into the hover.
+
+         `role="img"` with a name rather than a bare decorative span: a colour
+         alone is not a status, and this is what a screen reader and a spec
+         both read. Deliberately not `role="status"` — that is a live region and
+         would announce every routine sync, which is noise for the one state
+         (`synced`) that exists to be ignored. The failure case is announced by
+         the error banner below, which is real text. -->
+    <span
+      class="light {light.state}"
+      role="img"
+      aria-label={light.label}
+      title={light.label}
+    ></span>
+
+    {#if !connected && !status?.demo}
+      <!-- Stays in the header rather than moving behind the hamburger. The
+           three controls §1 moves are all *rare*; this is the one thing a new
+           user has to find, and it is the whole of the app until they do. -->
       <button class="primary" onclick={onSignIn} disabled={busy}>
         {busy ? 'Connecting…' : 'Connect Google Calendar'}
       </button>
     {/if}
+
+    <div class="menuwrap">
+      <button
+        class="burger"
+        aria-label="Menu"
+        aria-expanded={menuOpen}
+        onclick={(e) => {
+          menuOpen = !menuOpen;
+          // WebKit does not focus a <button> on click, only on Tab — the same
+          // reason `CalendarPopover.toggle` does this. Without it Escape has
+          // nothing local to bubble from until the user tabs somewhere.
+          if (menuOpen) (e.currentTarget as HTMLElement).focus();
+        }}
+      >☰</button>
+
+      {#if menuOpen}
+        <!-- Click-away, a sibling rather than a document listener: no global
+             state to leak if this unmounts while open. `CalendarPopover`'s own
+             scrim renders above this one when its panel is open, so dismissing
+             the picker and dismissing the menu are two separate clicks —
+             which is the honest behaviour for two nested layers. -->
+        <button class="scrim" aria-label="Close menu" onclick={() => (menuOpen = false)}></button>
+
+        <div class="menu" role="group" aria-label="Menu">
+          {#if calendars.length > 0}
+            <!-- **Rehomed, not rewritten.** The whole component moves inside
+                 the menu with its trigger, its panel and its `bind:open`
+                 intact, so everything it does — `selected` and `sync_enabled`
+                 staying separate, the busy set, the keyed each — travels
+                 unchanged. Its own specs mount it standalone and never knew
+                 where it lived. -->
+            <CalendarPopover {calendars} onchange={oncalendarchange} bind:open />
+          {/if}
+          {#if connected && !status?.demo}
+            <!-- Demo mode's seeded account never went through OAuth, so a sync
+                 would only fail; offering the button at all would be a control
+                 that exists solely to produce an error. Same reasoning covers
+                 Add account: sign_in refuses server-side in demo mode
+                 (demo_sync_guard) regardless of whether an account is already
+                 connected. -->
+            <button onclick={() => fromMenu(onSync)} disabled={busy}>Sync now</button>
+            <button onclick={() => fromMenu(onSignIn)} disabled={busy}>Add account</button>
+          {/if}
+          <button onclick={openSettings}>Settings…</button>
+        </div>
+      {/if}
+    </div>
   </div>
 </header>
+
+{#if settingsOpen}
+  <SettingsModal onclose={() => (settingsOpen = false)} />
+{/if}
 
 <!-- Below the header rather than inside it, and free to wrap. The likeliest
      first-run failure is the missing config file, whose actionable half —
@@ -165,8 +290,30 @@
   .nav button { width: 22px; padding: 3px 0; font-size: 13px; }
   .today { border: 1px solid color-mix(in srgb, var(--text) 12%, transparent); background: none; }
   .primary { background: var(--accent); color: var(--bg); font-weight: 600; }
-  .synced, .demo { font-size: 10.5px; }
-  .synced { color: var(--muted); }
+  .demo { font-size: 10.5px; }
+
+  /* Spec §2. Eight pixels, no label, and **the healthy state must not draw the
+     eye** — `--sync-ok` is a neutral at 30%/28% rather than a hue, so a synced
+     calendar reads as present and unremarkable. The two states worth noticing
+     borrow the variables that already mean those things. */
+  .light { width: 8px; height: 8px; border-radius: 50%; flex: none; display: block;
+           background: var(--sync-idle); }
+  .light.synced { background: var(--sync-ok); }
+  .light.syncing { background: var(--accent); }
+  .light.failed { background: var(--error); }
+
+  .menuwrap { position: relative; }
+  .burger { font-size: 13px; line-height: 1; padding: 3px 8px; }
+  .scrim { position: fixed; inset: 0; background: none; border: 0; cursor: default;
+           z-index: 40; }
+  /* Above its own scrim, and below `CalendarPopover`'s panel — which renders
+     inside this one and carries its own z-index of 41. */
+  .menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 41;
+          min-width: 150px; display: flex; flex-direction: column; gap: 2px;
+          background: var(--surface); border: 1px solid var(--hairline);
+          border-radius: 8px; padding: 6px; box-shadow: 0 8px 28px rgba(0, 0, 0, .45); }
+  .menu button { text-align: left; background: none; width: 100%; }
+  .menu button:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 6%, transparent); }
   .demo { color: var(--demo); letter-spacing: .06em; font-weight: 600; }
   .err { color: var(--error); font-size: 11.5px; line-height: 1.45; margin: 0 0 12px;
          padding: 7px 10px; border-radius: 6px;

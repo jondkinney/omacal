@@ -73,6 +73,25 @@ export function setPalette(p: Palette): void {
   /** The DEMO DATA badge: a standing warning that the data is synthetic, which
    *  is neither an error nor a clock. */
   r.setProperty('--demo', '#e2a03f');
+
+  // The two quiet states of the header's status light. Its two loud ones
+  // already have variables — `--accent` while a sync is running, `--error`
+  // when one failed — and adding hues for these would be adding colour to say
+  // "nothing is wrong", which is the opposite of what they mean.
+  //
+  // Neutral, and branching on `is_dark` like `--hairline` and its neighbours
+  // three blocks up, because unlike the ink pair these sit on the app's own
+  // background rather than on a calendar's colour.
+  /** Synced, and recently. **The normal case, and it must be quiet enough to
+   *  ignore**: present at a glance, never something the eye is drawn to. A
+   *  healthy state that announces itself is a status light that has to be
+   *  looked past all day. */
+  r.setProperty('--sync-ok', p.is_dark ? 'rgba(255,255,255,.30)' : 'rgba(0,0,0,.28)');
+  /** Nothing to be stale — signed out, or signed in and nothing fetched yet.
+   *  Dimmer than `--sync-ok` rather than a different hue: the difference
+   *  between "fine" and "nothing yet" is not worth a colour, and both are
+   *  states nobody needs to act on. */
+  r.setProperty('--sync-idle', p.is_dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.13)');
 }
 
 /** Fetches the resolved palette and applies it. Used once at startup. */
