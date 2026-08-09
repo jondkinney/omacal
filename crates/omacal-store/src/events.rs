@@ -433,6 +433,53 @@ pub async fn exceptions_from(
 /// An exception is also matched on `original_start_utc`, not only on its own
 /// times: an instance dragged out of the window still has to suppress the slot
 /// it left behind.
+/// Every event whose **title** contains `query`, on a calendar the user
+/// displays, newest sync state and all.
+///
+/// **`c.selected = 1`, exactly as [`events_in_window`] does it**, and for a
+/// reason search shares with notifications rather than one of its own: a result
+/// on a hidden calendar is one the user cannot land on. Click it, the view
+/// jumps to its date, and nothing is drawn — because hiding it is what they
+/// asked for. A result you cannot land on is worse than no result.
+///
+/// **Titles only** (search spec §2): `summary` and nothing else. Narrower than
+/// it could be, and chosen so every result is explicable from what was typed.
+/// Widening is additive — title matches are a strict subset of any broader
+/// rule — so location or guests can be added later without invalidating this.
+///
+/// **`%` and `_` in the query are escaped**, which is not pedantry: `LIKE`
+/// reads them as wildcards, so searching for a literal `50%` would otherwise
+/// match every event in the database and searching `a_b` would match `axb`.
+/// A user typing a percent sign means a percent sign; there is no query
+/// language here (§2) and this is what keeps that true.
+///
+/// Recurring masters are returned as the single row they are. Resolving which
+/// *occurrence* to show is [`omacal_core::search`]'s, against a clock the
+/// caller supplies.
+pub async fn search_events(pool: &SqlitePool, query: &str) -> anyhow::Result<Vec<StoredEvent>> {
+    // `\` as the escape character, applied to the two wildcards and to itself
+    // — escaping `%` and `_` while leaving a literal backslash unescaped would
+    // make `\%` mean "escaped percent" when the user typed two characters.
+    let escaped = query
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_");
+    let pattern = format!("%{escaped}%");
+
+    let sql = format!(
+        "SELECT {SELECT_COLS}
+         FROM events e
+         JOIN calendars c ON c.id = e.calendar_id
+         WHERE c.selected = 1
+           AND (e.status != 'cancelled' OR e.recurring_event_id IS NOT NULL)
+           AND e.summary IS NOT NULL
+           AND LOWER(e.summary) LIKE LOWER(?1) ESCAPE '\\'"
+    );
+
+    let rows = sqlx::query(&sql).bind(pattern).fetch_all(pool).await?;
+    Ok(rows.iter().map(row_to_event).collect())
+}
+
 pub async fn events_in_window(
     pool: &SqlitePool,
     from_ms: i64,

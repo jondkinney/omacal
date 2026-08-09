@@ -11,6 +11,7 @@ mod fixtures;
 mod golden;
 mod notify;
 mod notify_loop;
+mod search;
 mod settings;
 mod status;
 mod sync_loop;
@@ -391,7 +392,7 @@ async fn upsert_calendar(
     Ok(())
 }
 
-fn now_ms() -> i64 {
+pub(crate) fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
@@ -766,6 +767,7 @@ pub fn run() {
             calendars::set_calendar_selected,
             calendars::set_calendar_sync,
             calendars::set_calendar_color,
+            search::search_events,
             settings::get_settings,
             settings::set_sync_interval,
             settings::set_notifications_enabled,
