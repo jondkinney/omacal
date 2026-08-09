@@ -5,7 +5,8 @@
   import { offerableCalendarId, writableCalendars, type Calendar } from './calendars';
   import {
     CUSTOM_REPEAT, REPEAT_OPTIONS, endAfterStart, ruleInWords, shiftedEndDate, toEventInput,
-    toggledAllDay, type EventFormResult, type EventFormValue, type Scope,
+    timeProblem, toggledAllDay,
+    type EventFormResult, type EventFormValue, type Scope,
   } from './eventform';
 
   let {
@@ -55,6 +56,9 @@
    *  from `value`: a form that reddens while you are still typing the end time
    *  is telling you off for a sentence you have not finished. */
   let error = $state<string | null>(null);
+  /** Which time input the current `error` is about, so it can be marked rather
+   *  than only described. Cleared with `error` on any input. */
+  let invalidField = $state<'start' | 'end' | null>(null);
 
   /** The event arrived carrying a rule omacal cannot express. Read from
    *  `initial`, not `value`: once the user picks something else the entry stays
@@ -98,8 +102,22 @@
 
   function save() {
     error = null;
+    invalidField = null;
     if (value.calendarId === null) {
       error = 'There is no calendar here you can write to.';
+      return;
+    }
+    // Before `endAfterStart`, because it is the *reason* that check fails and
+    // the reason is what the user needs. A time typed into an hour the clocks
+    // skip is normalised forward by `toMs` without a word: when the shifted
+    // start lands on the instant the end already names, the span is zero and
+    // the generic "end must be after the start" is worse than unhelpful — both
+    // fields show times in the right order, so it describes a form the user
+    // cannot see. See `timeProblem`, and §7.3.
+    const problem = timeProblem(value);
+    if (problem) {
+      error = problem.message;
+      invalidField = problem.field;
       return;
     }
     // Refused, never corrected: silently swapping the two ends, or nudging the
@@ -141,7 +159,10 @@
       e.preventDefault();
       save();
     }}
-    oninput={() => (error = null)}
+    oninput={() => {
+      error = null;
+      invalidField = null;
+    }}
   >
     <label class="field">
       <span class="lab">Title</span>
@@ -168,7 +189,14 @@
       {#if !value.isAllDay}
         <label class="field">
           <span class="lab">Start</span>
-          <input type="time" bind:value={value.start} />
+          <!-- Marked, not only described: `aria-invalid` puts the answer on the
+               field it is about, which for a time that does not exist is the
+               whole difficulty — nothing else on the form looks wrong. -->
+          <input
+            type="time"
+            bind:value={value.start}
+            aria-invalid={invalidField === 'start' ? 'true' : undefined}
+          />
         </label>
       {/if}
       <label class="field">
@@ -183,7 +211,11 @@
       {#if !value.isAllDay}
         <label class="field">
           <span class="lab">End</span>
-          <input type="time" bind:value={value.end} />
+          <input
+            type="time"
+            bind:value={value.end}
+            aria-invalid={invalidField === 'end' ? 'true' : undefined}
+          />
         </label>
       {/if}
     </div>

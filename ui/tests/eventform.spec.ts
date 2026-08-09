@@ -285,10 +285,10 @@ test.describe('blankValueAt', () => {
 // "a create on a day whose midnight is skipped". Their comments are the
 // assertions now.
 //
-// **The one characterisation spec that remains was not one of the four.** It is
-// the same skipped hour reached from the other side, found while closing the
-// create: a time the **user typed** into an hour that does not exist. The two
-// look identical on screen and are different problems.
+// **A fifth characterisation spec sat here and is now gone too.** It was not
+// one of the four: it is the same skipped hour reached from the other side,
+// found while closing the create — a time the **user typed** into an hour that
+// does not exist. The two look identical on screen and are different problems.
 //
 //   - A create is the *app* choosing a time, so the app may choose another. The
 //     repair is arithmetic — re-anchor the moved pair on the instant it names —
@@ -296,14 +296,16 @@ test.describe('blankValueAt', () => {
 //   - A typed time is not the app's to move. Normalising it forward silently
 //     would be a move nobody asked for, and this branch has already ruled on
 //     that shape once: the per-side check refuses an incoherent pair honestly
-//     rather than dragging an untouched field along with it. Closing this one
-//     properly means the form *saying* the time does not exist, which is a
-//     form-level affordance, not a boundary conversion.
+//     rather than dragging an untouched field along with it. Closing it meant
+//     the form *saying* the time does not exist — a form-level affordance, not
+//     a boundary conversion — and that is what `timeProblem` and the specs
+//     under "a time typed into an hour that does not exist" now are (§7.3).
 //
 // So `new Date(y, m, d, h, min)` is still not a resolver — it picks a pass
-// silently and normalises a skipped hour forward without saying so — but that
-// is now a statement about what the remaining spec pins, not about work the
-// create was waiting on.
+// silently and normalises a skipped hour forward without saying so. Nothing
+// downstream trusts it to be one: the skipped hour is caught before a save and
+// reported, and the repeated hour is left to `instantOf`, which protects a
+// second-pass instant by never re-deriving one nobody touched.
 //
 // Probes behind the numbers: `scratchpad/t10rev/dst.mjs` and `anchor.mjs`
 // (the reviewer's), re-run in six zones — Europe/Sofia, America/New_York,
@@ -661,67 +663,208 @@ test.describe('a create on a day whose midnight is skipped', () => {
   });
 });
 
-test.describe('the form’s civil↔instant boundary (characterised, not fixed)', () => {
-  test.describe('America/Santiago — a time typed into the skipped hour', () => {
-    // The same 6 Sep 2026 gap, reached from the other side. The create above
-    // is fixed because the *app* chose the time it offered and may therefore
-    // choose another; this is the case where the **user** typed it, and moving
-    // a time somebody entered is a different act from moving a default.
-    test.use({ timezoneId: 'America/Santiago' });
+// --- A time typed into an hour that does not exist ------------------------
+//
+// **The inversion of `CHARACTERISED: typing a start into the skipped hour kills
+// Save with no field visibly wrong`** — §7.3, and the last of this branch's
+// characterisation specs. It asserted the wrong values on purpose and named the
+// right one in its comments; those comments are the assertions now.
+//
+// What used to happen: `toMs` normalises a skipped civil time **forward by the
+// size of the gap**, silently. Two shapes came out of that, and only one of
+// them was ever reported:
+//
+//   - the start shifts onto the instant the end already names, the span is
+//     zero, and Save dies while both inputs show times in the right order —
+//     the reported defect, and the *generic* "the end time must be after the
+//     start time" describes a form the user cannot see;
+//   - both times are inside the gap, both shift, the span survives, and the
+//     event **saves an hour from where it was typed** with no message at all.
+//     Nobody reported this one because nothing went wrong on screen.
+//
+// It is refused now, by the field, with the reason. **Not repaired** — the
+// alternative was advancing the start past the gap and dragging the end along
+// to keep the duration, which contradicts the ruling this form already made:
+// an incoherent pair is answered honestly rather than fixed by moving a field
+// the user did not touch.
+test.describe('a time typed into an hour that does not exist', () => {
+  // 6 Sep 2026: Santiago's clocks go forward 00:00 -> 01:00, so that day has
+  // no 00:30. **The browser's zone, not the calendar's** — a skipped hour is a
+  // property of the clock being typed into, so a fixture in a zone with no
+  // transition that day witnesses nothing and passes against the old code.
+  test.use({ timezoneId: 'America/Santiago' });
 
-    test('CHARACTERISED: typing a start into the skipped hour kills Save with no field visibly wrong', async ({ page }) => {
-      await page.goto(PURE);
-      const v = await page.evaluate(() => {
-        const ef = (window as any).__eventform;
-        const now = new Date(2026, 5, 15, 0, 0, 0, 0).getTime();
-        const day = new Date(2026, 8, 6, 0, 0, 0, 0).getTime(); // 6 Sep
-        const opened = ef.blankValue(now, 1, day);
-        // Exactly what `EventForm`'s two `<input type="time">` bindings write:
-        // the strings, and nothing else. Both source instants stay where
-        // opening the form put them, which is what the real form leaves them
-        // as too — `instantOf` is what decides they no longer apply.
-        const typed = { ...opened, start: '00:30', end: '01:30' };
-        const when = ef.whenOf(typed);
-        return {
-          skippedMidnightHour: new Date(day).getHours(),
-          start: typed.start, end: typed.end,
-          startMs: when.startMs, endMs: when.endMs,
-          span: when.endMs - when.startMs,
-          saveable: ef.endAfterStart(typed),
-        };
-      });
+  const typedOn6Sep = (page: any, start: string, end: string) =>
+    page.evaluate(([s0, e0]: [string, string]) => {
+      const ef = (window as any).__eventform;
+      const now = new Date(2026, 5, 15, 0, 0, 0, 0).getTime();
+      const day = new Date(2026, 8, 6, 0, 0, 0, 0).getTime(); // 6 Sep
+      const opened = ef.blankValue(now, 1, day);
+      // Exactly what the two `<input type="time">` bindings write: the
+      // strings, and nothing else.
+      const typed = { ...opened, start: s0, end: e0 };
+      return {
+        skippedMidnightHour: new Date(day).getHours(),
+        problem: ef.timeProblem(typed),
+        when: ef.whenOf(typed),
+      };
+    }, [start, end]);
 
-      expect(v.skippedMidnightHour).toBe(1);
+  test('the form says which time does not exist, and why', async ({ page }) => {
+    await page.goto(PURE);
+    const v = await typedOn6Sep(page, '00:30', '01:30');
 
-      // What the user sees on the two inputs. Both correct — these are the
-      // strings they typed, and nothing rewrites them.
-      expect(v.start).toBe('00:30');
-      expect(v.end).toBe('01:30');
+    // The gap itself, asserted rather than trusted: a tzdata update that moved
+    // this transition would otherwise leave every assertion below passing
+    // against a date with no gap on it.
+    expect(v.skippedMidnightHour).toBe(1);
 
-      // The end is honoured exactly: 01:30 exists on this date.
-      expect(v.endMs).toBe(Date.parse('2026-09-06T01:30:00-03:00'));
+    expect(v.problem).not.toBeNull();
+    expect(v.problem.field).toBe('start');
+    expect(v.problem.message).toContain('00:30');
+    expect(v.problem.message).toContain('2026-09-06');
+    expect(v.problem.message).toContain('does not exist');
+    // The reason, in the user's terms. Without it the message names a fact
+    // about their calendar that reads like a bug in the app.
+    expect(v.problem.message).toContain('clocks go forward');
+  });
 
-      // WRONG, and this is the defect. 00:30 does not exist on 6 Sep here, so
-      // `toMs` normalises it forward onto the very instant the end names: two
-      // different times on screen, one instant behind them, a span of zero and
-      // a dead Save button with nothing pointing at the field that cannot be
-      // honoured.
-      //
-      // **Correct: the form says so** — that 00:30 is not a time on this date.
-      // Closing it needs that message and the check behind it (a civil pair
-      // that does not read back as itself did not name the instant it was
-      // given), which is a form-level affordance this task does not own.
-      //
-      // What it must *not* be is the other repair available here: silently
-      // advancing the start to 01:30 and dragging the end to 02:30 to keep the
-      // hour. That contradicts the ruling this branch already made on the
-      // incoherent pair — the per-side check refuses an inconsistent form
-      // honestly rather than moving a field the user did not touch — and it
-      // would move a time somebody typed without telling them.
-      expect(v.startMs).toBe(v.endMs);
-      expect(v.span).toBe(0);
-      expect(v.saveable).toBe(false);
+  /**
+   * The half that never got reported, because it saved. Both times inside the
+   * gap both shift forward, so the span survives and `endAfterStart` is
+   * perfectly happy — a 00:00–00:30 event written to the calendar as
+   * 01:00–01:30, an hour from what was typed, silently.
+   */
+  test('a pair that shifts intact is refused too, not saved an hour late', async ({ page }) => {
+    await page.goto(PURE);
+    const v = await typedOn6Sep(page, '00:00', '00:30');
+
+    // The old behaviour, still true of the conversion and now caught before it
+    // matters: both instants land an hour on, and the span is untouched.
+    expect(v.when.endMs - v.when.startMs).toBe(30 * 60_000);
+    expect(v.when.startMs).toBe(Date.parse('2026-09-06T01:00:00-03:00'));
+
+    // So `endAfterStart` alone would have let this through. It is the reason
+    // `timeProblem` is asked first.
+    expect(v.problem).not.toBeNull();
+    expect(v.problem.field).toBe('start');
+  });
+
+  test('an end typed into the gap is named as the end', async ({ page }) => {
+    await page.goto(PURE);
+    // A real start, an impossible end: the message has to point at the second
+    // field, or it sends the user to correct one that is already right.
+    const v = await typedOn6Sep(page, '23:30', '00:30');
+
+    expect(v.problem).not.toBeNull();
+    expect(v.problem.field).toBe('end');
+    expect(v.problem.message).toContain('end time');
+  });
+
+  /**
+   * The all-day exemption, and it is **reachable rather than defensive**.
+   *
+   * Type an impossible time, then tick All day: §7.2's toggle changes only the
+   * flag, so the value still carries `00:30` in a field the form no longer
+   * shows and `whenOf` no longer sends. Without the exemption the form would
+   * refuse an all-day event on account of a hidden time — an error naming a
+   * field that is not on screen, which is the exact shape of the defect this
+   * whole section exists to close.
+   */
+  test('an all-day value is not refused for a time it does not use', async ({ page }) => {
+    await page.goto(PURE);
+    const v = await page.evaluate(() => {
+      const ef = (window as any).__eventform;
+      const now = new Date(2026, 5, 15, 0, 0, 0, 0).getTime();
+      const day = new Date(2026, 8, 6, 0, 0, 0, 0).getTime(); // 6 Sep
+      const typed = { ...ef.blankValue(now, 1, day), start: '00:30', end: '01:30' };
+      return {
+        timedProblem: ef.timeProblem(typed),
+        allDayProblem: ef.timeProblem(ef.toggledAllDay(typed, true)),
+        saveable: ef.endAfterStart(ef.toggledAllDay(typed, true)),
+      };
     });
+
+    // The premise: this very value *is* refused while it is timed, so the
+    // assertion below is about the flag and not about the time being fine.
+    expect(v.timedProblem).not.toBeNull();
+
+    expect(v.allDayProblem).toBeNull();
+    expect(v.saveable).toBe(true);
+  });
+
+  test('a time that does exist on that day is not complained about', async ({ page }) => {
+    await page.goto(PURE);
+    // 01:30 and 02:00 are both real on 6 Sep, on the far side of the same gap.
+    // Without this the specs above are satisfied by a form that refuses every
+    // time on a transition date.
+    const v = await typedOn6Sep(page, '01:30', '02:00');
+
+    expect(v.problem).toBeNull();
+    expect(v.when.startMs).toBe(Date.parse('2026-09-06T01:30:00-03:00'));
+  });
+});
+
+// --- An hour that happens twice -------------------------------------------
+//
+// The mirror of the gap, and **deliberately not an error**. A repeated hour is
+// a pair naming two instants rather than none: the time the user typed does
+// exist, twice, and `toMs` answers with the earlier pass. There is nothing to
+// refuse and nothing they could correct.
+//
+// The silence is the decision, so it is specified. Design §3 records an earlier
+// version of this plan that proposed resolving ambiguity explicitly to the
+// first pass, and why it was wrong — it does not close the drift it claims to,
+// it makes the drift deliberate. What protects a second-pass instant is
+// `instantOf`, by never re-deriving one nobody touched; a warning here would
+// land on the very case that is already right.
+test.describe('an hour that happens twice is saved, not refused', () => {
+  // 1 Nov 2026: New York's clocks go back 02:00 -> 01:00, so 01:30 happens
+  // twice. Again the browser's own zone.
+  test.use({ timezoneId: 'America/New_York' });
+
+  test('a repeated hour is not a problem, and names the earlier pass', async ({ page }) => {
+    await page.goto(PURE);
+    const v = await page.evaluate(() => {
+      const ef = (window as any).__eventform;
+      const now = new Date(2026, 5, 15, 0, 0, 0, 0).getTime();
+      const day = new Date(2026, 10, 1, 0, 0, 0, 0).getTime(); // 1 Nov
+      const typed = { ...ef.blankValue(now, 1, day), start: '01:30', end: '01:45' };
+      return {
+        ambiguous: ef.ambiguousLocalTime('2026-11-01', '01:30'),
+        skipped: ef.skippedLocalTime('2026-11-01', '01:30'),
+        problem: ef.timeProblem(typed),
+        saveable: ef.endAfterStart(typed),
+        when: ef.whenOf(typed),
+      };
+    });
+
+    // The premise: this pair really does name two instants that day.
+    expect(v.ambiguous).toBe(true);
+    // And it is not the other thing — a pair naming two is not a pair naming
+    // none, and only the second is refused.
+    expect(v.skipped).toBe(false);
+
+    expect(v.problem).toBeNull();
+    expect(v.saveable).toBe(true);
+    // The earlier of the two, which is what `toMs` answers and what this spec
+    // exists to pin rather than to justify.
+    expect(v.when.startMs).toBe(Date.parse('2026-11-01T01:30:00-04:00'));
+  });
+
+  test('an ordinary hour is neither skipped nor ambiguous', async ({ page }) => {
+    await page.goto(PURE);
+    // The control. Without it both predicates are satisfied by a function that
+    // always answers the same thing.
+    const v = await page.evaluate(() => {
+      const ef = (window as any).__eventform;
+      return {
+        skipped: ef.skippedLocalTime('2026-11-01', '09:30'),
+        ambiguous: ef.ambiguousLocalTime('2026-11-01', '09:30'),
+      };
+    });
+    expect(v.skipped).toBe(false);
+    expect(v.ambiguous).toBe(false);
   });
 });
 

@@ -2192,6 +2192,62 @@ test.describe('EventForm', () => {
     await expect(page.getByTestId('form-error')).toBeVisible();
   });
 
+  /**
+   * §7.3, driven through the real inputs.
+   *
+   * `eventform.spec.ts` proves `timeProblem` answers; this proves the **form
+   * asks it and shows the answer**, which is a different claim and the one the
+   * defect was about. A spec pointed only at the function stays green if the
+   * save handler stops calling it — the same trap §7.2 was caught by.
+   */
+  test.describe('a time typed into an hour that does not exist', () => {
+    // Santiago's clocks go forward 00:00 -> 01:00 on 6 Sep 2026, so that day
+    // has no 00:30. **The browser's zone**: a skipped hour is a property of the
+    // clock being typed into, and a fixture in a zone with no transition that
+    // day would pass against the old code.
+    test.use({ timezoneId: 'America/Santiago' });
+
+    test('save is refused, the reason is shown, and the field is marked', async ({ page }) => {
+      await open(page, 'create');
+
+      await page.getByLabel('Date', { exact: true }).fill('2026-09-06');
+      await page.getByLabel('Start', { exact: true }).fill('00:30');
+      await page.getByRole('button', { name: 'Create' }).click();
+
+      // The safety property first: nothing was written. A form that saved an
+      // event an hour from where it was typed and then explained itself would
+      // still have saved it.
+      expect(await saves(page)).toEqual([]);
+
+      const err = page.getByTestId('form-error');
+      await expect(err).toBeVisible();
+      // The time, the date, and the reason. Without the reason this names a
+      // fact about the user's calendar that reads like a bug in the app.
+      await expect(err).toContainText('00:30');
+      await expect(err).toContainText('2026-09-06');
+      await expect(err).toContainText('clocks go forward');
+
+      // Marked, not only described. Nothing else on this form looks wrong, so
+      // pointing at the field is most of the help.
+      await expect(page.getByLabel('Start', { exact: true })).toHaveAttribute('aria-invalid', 'true');
+      await expect(page.getByLabel('End', { exact: true })).not.toHaveAttribute('aria-invalid', 'true');
+    });
+
+    test('a real time on the same day saves', async ({ page }) => {
+      // The control, and it is not decoration: every assertion above is
+      // satisfied by a form that refuses everything on a transition date.
+      await open(page, 'create');
+
+      await page.getByLabel('Date', { exact: true }).fill('2026-09-06');
+      await page.getByLabel('Start', { exact: true }).fill('01:30');
+      await page.getByLabel('End', { exact: true }).fill('02:00');
+      await page.getByRole('button', { name: 'Create' }).click();
+
+      expect(await saves(page)).toHaveLength(1);
+      await expect(page.getByTestId('form-error')).toBeHidden();
+    });
+  });
+
   test('an unrepresentable repeat rule is shown as a disabled Custom option', async ({ page }) => {
     // Spec §6's UI half. `write::repeat_from_rrule` answered `custom` for this
     // fortnightly rule, and the form's job is to show what it cannot rewrite

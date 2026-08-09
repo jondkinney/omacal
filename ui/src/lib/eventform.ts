@@ -604,6 +604,112 @@ export const toggledAllDay = (value: EventFormValue, isAllDay: boolean): EventFo
 });
 
 /**
+ * Whether a civil pair names **no instant at all** in the browser's zone.
+ *
+ * On a spring-forward date the local clock jumps and an hour never happens: in
+ * `America/Santiago` on 6 Sep 2026 there is no 00:30, and in
+ * `America/New_York` on 8 Mar 2026 there is no 02:30. `new Date(y, m, d, h,
+ * min)` does not refuse such a pair — it **normalises it forward by the size of
+ * the gap**, so 00:30 comes back as 01:30 — which is why the check is "does
+ * this pair read back as itself" rather than anything about transitions. A pair
+ * that names an instant reads back as that pair; one that names none does not.
+ *
+ * The **time** alone decides it, and the date deliberately does not enter into
+ * it. A gap late in the day does normalise across midnight — 23:45 on a zone
+ * that springs forward at 23:30 lands on 00:45 the next day — but the time
+ * differs there too, so comparing dates as well adds a clause that can never
+ * be the one that fires. It would take a transition of a whole number of days
+ * to make the time match while the date did not, and there is no such
+ * transition. An earlier version compared both; a mutation sweep found the date
+ * half survived deletion, which is what unreachable code looks like from the
+ * outside.
+ *
+ * `false` for an unparseable pair. Half-typed is not nonexistent, and every
+ * caller here already treats `NaN` as "not finished" rather than as a time.
+ */
+export const skippedLocalTime = (date: string, time: string): boolean => {
+  // `date` is read by `toMs` — which day it is decides whether the hour exists
+  // at all — even though only the time is compared afterwards.
+  const ms = toMs(date, time);
+  if (!Number.isFinite(ms)) return false;
+  return timeOf(ms) !== time;
+};
+
+/**
+ * Whether a civil pair names **two** instants — the autumn repeat, where the
+ * clock goes back and an hour happens twice.
+ *
+ * The mirror of [`skippedLocalTime`] and, deliberately, **not an error**. The
+ * time the user typed does exist; it exists twice, and `toMs` answers with the
+ * earlier pass. There is nothing to refuse and nothing for them to correct, so
+ * nothing is said — see `EventForm`'s save handler, which asks only about the
+ * skipped case.
+ *
+ * It is exported and specified because the *silence* is the decision. §3 of the
+ * design records an earlier version of this plan that proposed resolving
+ * ambiguity explicitly to the first pass, and why that was wrong: it does not
+ * close the drift it claims to, it makes the drift deliberate. `instantOf` is
+ * what actually protects a second-pass instant, by never re-deriving one the
+ * user did not touch. Warning here would put a message on the very case that is
+ * already right.
+ *
+ * Probes an hour either side rather than reading a zone database: if some other
+ * instant reads back as this same pair, the pair does not name one instant.
+ * A transition of some other size — Lord Howe's half hour — is not detected,
+ * which costs nothing while this answer is advisory.
+ */
+export const ambiguousLocalTime = (date: string, time: string): boolean => {
+  const ms = toMs(date, time);
+  if (!Number.isFinite(ms)) return false;
+  const other = ms + 60 * MIN_MS;
+  return dateOf(other) === date && timeOf(other) === time;
+};
+
+/** Which field a form value cannot honour, and what to say about it. */
+export type TimeProblem = { field: 'start' | 'end'; message: string };
+
+/**
+ * The one thing a form value can be wrong about that **no field on it looks
+ * wrong for**: a time typed into an hour that does not exist.
+ *
+ * This is §7.3. `toMs` normalises such a time forward silently, so the two
+ * inputs go on showing exactly what was typed while naming instants an hour
+ * from them — and when the shifted start lands on the instant the end already
+ * names, the span is zero and Save dies with nothing to point at. Worse is the
+ * case that does *not* die: two times both inside the gap both shift, the span
+ * survives, and the event saves an hour from where it was typed without a word.
+ *
+ * **Refused, not repaired**, and that follows the ruling this form already
+ * made rather than being a fresh opinion: an incoherent pair is answered
+ * honestly instead of being fixed by moving a field the user did not touch.
+ * Advancing the start to the far side of the gap — and dragging the end along
+ * to keep the duration — would move a time somebody typed, silently, which is
+ * the act every other rule here exists to prevent.
+ *
+ * `null` for an all-day value: its times are `ALL_DAY_START`/`ALL_DAY_END`,
+ * never shown and never sent, so a gap they happened to land in would be a
+ * message about a field that is not on screen.
+ *
+ * The start is reported before the end when both are unhonourable, because the
+ * start is the field above.
+ */
+export function timeProblem(value: EventFormValue): TimeProblem | null {
+  if (value.isAllDay) return null;
+
+  const say = (which: string, time: string, date: string) =>
+    `The ${which} time ${time} does not exist on ${date} — the clocks go forward that day. ` +
+    'Pick a later time.';
+
+  if (skippedLocalTime(value.date, value.start)) {
+    return { field: 'start', message: say('start', value.start, value.date) };
+  }
+  if (skippedLocalTime(value.endDate, value.end)) {
+    return { field: 'end', message: say('end', value.end, value.endDate) };
+  }
+  return null;
+}
+
+/**
  * Whether a value's end is strictly after its start.
  *
  * Asked of the very values `whenOf` will send, in the units it will send them
