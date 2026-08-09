@@ -318,3 +318,35 @@ until the flick had a function of its own to call.
 Characterised, not fixed — see §3. Closing it needs the form to *say* the time
 does not exist on that date, and the check must **not** live in `toMs`, where the
 re-anchored create path would meet it and break.
+
+**CLOSED** by branch `feat/25-skipped-hour`. The check is `skippedLocalTime` —
+*does this civil pair read back as itself* — asked by `timeProblem` from the
+form's save handler, above `endAfterStart`. It is **not** in `toMs`, exactly as
+this section required: the re-anchored create still relies on `Date`
+normalisation and never meets it.
+
+**Refused, not resolved**, which follows the ruling this plan already made
+rather than being a fresh opinion — an incoherent pair is answered honestly
+instead of repaired by moving a field the user did not touch. The message names
+the field, the time, the date and the reason ("the clocks go forward that day"),
+and the input carries `aria-invalid`, because nothing else on the form looks
+wrong.
+
+Two harms, not one, and only the first had ever been reported:
+
+- **the collision** — the shifted start lands on the instant the end already
+  names, the span is zero, Save dies, and the generic "the end time must be
+  after the start time" describes a form the user cannot see;
+- **the silent shift** — both times inside the gap both move, the span
+  survives, and the event **saves an hour from where it was typed** with no
+  message at all. Nobody reported this one because nothing went wrong on
+  screen. Refusing on the *field* rather than on the span closes both.
+
+**The repeated hour is deliberately not an error.** A pair naming two instants
+is not a pair naming none: the time exists, twice, `toMs` answers with the
+earlier pass, and there is nothing to correct. §3's own history is why nothing
+is said — an earlier design resolved ambiguity explicitly and that was wrong,
+because what protects a second-pass instant is `instantOf` never re-deriving
+one nobody touched. A warning would land on the case that is already right.
+`ambiguousLocalTime` exists and is specified so the silence is a decision on
+the record rather than an omission.
