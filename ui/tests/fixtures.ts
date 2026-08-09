@@ -1194,6 +1194,26 @@ export const APP_SERIES_OCCURRENCE = APP_MON + 3 * 24 * H + 9 * H;
 export const APP_SERIES_ID = 4242;
 export const APP_ONE_OFF_ID = 4243;
 const APP_ONE_OFF_START = APP_MON + 14 * H;
+/** 4246, not 4245: `XZONE_ID` is read out of a golden payload rather than
+ *  declared here, and it happens to be 4245 — its own `POPOVER_DETAILS` entry
+ *  is assigned further down the file and silently replaced this one. The
+ *  collision cost an hour and left a fixture that looked right in the source
+ *  and was a Berlin trip at runtime. */
+export const APP_GUESTS_ID = 4246;
+/** A repeating event with **nobody on it**, and the only fixture that is one.
+ *
+ *  The confirmation's two questions are independent, and without this the
+ *  *repeats-but-no-guests* corner has no fixture at all: deleting the recurring
+ *  half of the check reddened nothing, because every repeating fixture also had
+ *  guests and every guest-free one was a one-off. §3 wants the scope prompt on
+ *  any series, guests or not. */
+export const APP_SOLO_SERIES_ID = 4247;
+/** Tuesday 10:00. The *column* it renders in is Monday's, like the other two —
+ *  `Placed` decides that, not this — so what this buys is only a start instant
+ *  distinct from its neighbours', which is what a spec asserting the moved
+ *  span needs. */
+const APP_GUESTS_START = APP_MON + 24 * H + 10 * H;
+const APP_SOLO_SERIES_START = APP_MON + 24 * H + 16 * H;
 export const APP_ALLDAY_ID = 4244;
 /** Monday 29 Jan 2024, all day — the all-day series' own DTSTART, and what
  *  `event_detail` reports as its master row's `start_ms`. */
@@ -1232,6 +1252,21 @@ const APP_ONE_OFF_BLOCK: UiEvent = ev({
   id: APP_ONE_OFF_ID, title: 'Board prep',
   start_ms: APP_ONE_OFF_START, end_ms: APP_ONE_OFF_START + 60 * 60_000,
 });
+/** A one-off **with guests**, and the only fixture that is one.
+ *
+ *  The drag confirmation turns on two independent questions — has it guests,
+ *  does it repeat — and the two blocks above answer them together: 'Board prep'
+ *  is neither, 'Standup' is both. Without this third block the guests-only case
+ *  has no fixture, and the panel it renders (notify buttons, *no* scope
+ *  chooser) is a shape nothing would ever draw. */
+const APP_GUESTS_BLOCK: UiEvent = ev({
+  id: APP_GUESTS_ID, title: 'Client call',
+  start_ms: APP_GUESTS_START, end_ms: APP_GUESTS_START + 30 * 60_000,
+});
+const APP_SOLO_SERIES_BLOCK: UiEvent = ev({
+  id: APP_SOLO_SERIES_ID, title: 'Gym',
+  start_ms: APP_SOLO_SERIES_START, end_ms: APP_SOLO_SERIES_START + 45 * 60_000,
+});
 /** The band chip. `commands::assemble_week` routes every `is_all_day` event
  *  into `all_day_events` and never into a day column, so a chip is the only
  *  representation this event ever gets — there is no `EventBlock` to fall back
@@ -1265,6 +1300,25 @@ POPOVER_DETAILS[APP_ONE_OFF_ID] = detail({
   start_ms: APP_ONE_OFF_START, end_ms: APP_ONE_OFF_START + 60 * 60_000,
 });
 
+POPOVER_DETAILS[APP_GUESTS_ID] = detail({
+  id: APP_GUESTS_ID, title: 'Client call', can_edit: true,
+  calendar_id: APP_PRIMARY_CALENDAR_ID,
+  start_ms: APP_GUESTS_START, end_ms: APP_GUESTS_START + 30 * 60_000,
+  attendees: [
+    attendee({ email: 'ana@x.com', display_name: 'Ana', response_status: 'accepted' }),
+    attendee({ email: 'me@x.com', is_self: true }),
+  ],
+});
+/** One guest, not two: the person doing the moving is never counted. */
+export const APP_GUESTS_COUNT = 1;
+
+POPOVER_DETAILS[APP_SOLO_SERIES_ID] = detail({
+  id: APP_SOLO_SERIES_ID, title: 'Gym', can_edit: true,
+  calendar_id: APP_PRIMARY_CALENDAR_ID,
+  is_recurring: true, recurrence: 'RRULE:FREQ=DAILY', repeat: 'daily',
+  start_ms: APP_SOLO_SERIES_START, end_ms: APP_SOLO_SERIES_START + 45 * 60_000,
+});
+
 /** The all-day series behind the band chip. `can_edit: true` **explicitly**:
  *  `detail()`'s own default is `false` (see its comment), so without this the
  *  Edit and Delete controls never render and the chip route cannot be driven
@@ -1295,19 +1349,26 @@ POPOVER_DETAILS[APP_ALLDAY_ID] = detail({
   ],
 });
 
-/** The `writable` scenario's week: both events on Monday's column and inside
- *  its top tenth, so a spec can click empty grid space further down without
- *  hitting either. Their on-screen positions come from `Placed`, not from
+/** The `writable` scenario's week: three events on Monday's column and inside
+ *  its top eighth, so a spec can click empty grid space further down without
+ *  hitting any of them. Their on-screen positions come from `Placed`, not from
  *  their own timestamps, which is what lets the recurring one keep a Thursday
- *  `start_ms` while rendering in Monday's column. */
+ *  `start_ms` while rendering in Monday's column.
+ *
+ *  The four answer the drag confirmation's two questions between them:
+ *  'Board prep' has neither guests nor a rule, 'Client call' has guests alone,
+ *  'Gym' repeats with nobody on it, and 'Standup' has both. All four corners,
+ *  because the two questions are independent and three of them leave one
+ *  undrawn. */
 export const appWritableWeek = (): WeekPayload => {
   const w = emptyWeekAt(APP_MON);
-  const events = [APP_SERIES_BLOCK, APP_ONE_OFF_BLOCK];
+  const events = [APP_SERIES_BLOCK, APP_ONE_OFF_BLOCK, APP_GUESTS_BLOCK, APP_SOLO_SERIES_BLOCK];
   w.days[0] = {
     start_ms: APP_MON,
     end_ms: APP_MON + 24 * H,
     events,
-    placed: [placed(0.02, 0.02, 0, 1, 0), placed(0.06, 0.02, 0, 1, 1)],
+    placed: [placed(0.02, 0.02, 0, 1, 0), placed(0.06, 0.02, 0, 1, 1),
+             placed(0.10, 0.02, 0, 1, 2), placed(0.14, 0.02, 0, 1, 3)],
   };
   // The all-day band, on Wednesday's column: one chip, on its own lane, well
   // clear of the two blocks above (which live in Monday's column, and in the

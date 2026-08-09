@@ -25,6 +25,7 @@
   import EventPopover from './lib/EventPopover.svelte';
   import EventForm from './lib/EventForm.svelte';
   import DeleteConfirm from './lib/DeleteConfirm.svelte';
+  import MoveConfirm from './lib/MoveConfirm.svelte';
   import ViewSwitcher, { type View } from './lib/ViewSwitcher.svelte';
 
   /** Midnight local on the day `ms` falls in — `T`'s target, and Day view's
@@ -606,37 +607,73 @@
   }
 
   /**
-   * A dropped drag, written.
+   * A drop that needs asking before it writes.
    *
-   * **`'none'`, always, and there is no argument here that could say
-   * otherwise.** A drag can happen by accident — a click that wandered five
-   * pixels — and mailing a meeting's whole guest list is not something a slip
-   * of the mouse gets to do. Drag spec §2. Task 5 introduces the dialog that
-   * asks, and that is the only thing that will ever pass `'all'` from a
-   * gesture; until then this path is structurally incapable of it.
+   * Held here, not written: the dialog is mounted from this, and the write
+   * happens in `commitMove` once the user has answered. `anchor` is the block
+   * as it was dropped, so the panel appears beside what was moved.
+   */
+  let pendingMove = $state<{
+    event: UiEvent;
+    span: { startMs: number; endMs: number };
+    detail: EventDetail;
+    anchor: Rect;
+  } | null>(null);
+
+  /**
+   * A dropped drag.
    *
-   * **Recurring occurrences are not moved yet.** §3 says a drag on a series
-   * opens the same three-scope prompt the form uses, because "this one", "this
-   * and following" and "all" are three different operations rather than three
-   * sizes of one — and silently picking one would hide a decision the user
-   * should be making. That prompt is Task 5's, so until it exists a drag on a
-   * series is refused with a word rather than guessed at.
+   * **Two questions decide whether anything is asked**, and both come off the
+   * detail rather than off the gesture: does this event have anybody to notify,
+   * and does it repeat. Neither → write immediately, `'none'`, no dialog. §2 is
+   * explicit that silence is correct where there is nobody to tell, and a
+   * confirmation nobody needs is a confirmation people learn to dismiss.
    *
-   * Everything else reuses the form's own pipeline: the detail this occurrence
-   * came from, through `valueFromDetail`, with only the times replaced, out
-   * through `toEventInput`. Nothing here builds a payload of its own — a
-   * second way of describing "an edit" is the thing that would drift.
+   * Either or both → one dialog (`MoveConfirm`), never two in sequence. When an
+   * event both repeats and has guests the scope prompt carries the notify
+   * choice, which is spec §3's "at most one dialog per drop".
    */
   async function moveOccurrence(event: UiEvent, span: { startMs: number; endMs: number }) {
     busy = true;
     error = null;
+    let detail: EventDetail;
+    try {
+      detail = await getEventDetail(event.id);
+    } catch (e) {
+      error = String(e);
+      return;
+    } finally {
+      busy = false;
+    }
+
+    const guests = detail.attendees.filter((a) => !a.is_self).length;
+    if (guests === 0 && !detail.is_recurring) {
+      // Nobody to tell and one occurrence to move: nothing to ask.
+      await commitMove(event, span, { scope: 'all', sendUpdates: 'none' });
+      return;
+    }
+
+    const anchor = gridRectFor(event);
+    pendingMove = { event, span, detail, anchor };
+  }
+
+  /**
+   * The write behind a drop, once there is an answer.
+   *
+   * `sendUpdates` arrives from the caller and is **never chosen here**: an
+   * unasked drop passes `'none'` above, and the only other caller is the
+   * dialog's own confirm. That is what makes `MoveConfirm`'s "Move and notify
+   * guests" button the one place in this path where `'all'` can come from.
+   */
+  async function commitMove(
+    event: UiEvent,
+    span: { startMs: number; endMs: number },
+    choice: { scope: Scope; sendUpdates: SendUpdates },
+  ) {
+    busy = true;
+    error = null;
     try {
       const detail = await getEventDetail(event.id);
-      if (detail.is_recurring) {
-        error = 'Dragging a repeating event is not available yet — open it and use Edit.';
-        return;
-      }
-
       const value = valueFromDetail(detail, event.start_ms, event.end_ms);
       // The source instants are carried through untouched, and that is
       // deliberate rather than an oversight: `instantOf` passes one through
@@ -654,15 +691,13 @@
         end: timeOf(span.endMs),
       };
 
-      // Both arguments named, because `'all'` and `'none'` sitting side by
-      // side on one line is exactly how a reader checking "can a drag notify
-      // anybody?" gets the wrong answer. The first is the **scope** — for a
-      // one-off, "all events" is the event itself, which is what
-      // `target_event_id` documents for a row with no series. The second is
-      // who gets emailed, and it is the only value this function can produce.
-      const scope: Scope = 'all';
-      const notify: SendUpdates = 'none';
-      await updateEvent(event.id, scope, event.start_ms, toEventInput(moved, value), notify);
+      await updateEvent(
+        event.id,
+        choice.scope,
+        event.start_ms,
+        toEventInput(moved, value),
+        choice.sendUpdates,
+      );
     } catch (e) {
       // The block is already back where it started — the grid returns it on
       // drop and only a refresh moves it — so a failure needs no undo, just
@@ -674,6 +709,18 @@
       busy = false;
     }
     await refreshAfterWrite();
+  }
+
+  /** The dropped block's own rect, for the dialog to sit beside. Falls back to
+   *  the viewport centre if the block is no longer in the DOM — a background
+   *  reload can replace the week between the drop and this call. */
+  function gridRectFor(event: UiEvent): Rect {
+    const el = [...document.querySelectorAll<HTMLElement>('.ev')].find(
+      (n) => n.getAttribute('title') === (event.title ?? ''),
+    );
+    if (!el) return { top: window.innerHeight / 2, left: window.innerWidth / 2, width: 0, height: 0 };
+    const r = el.getBoundingClientRect();
+    return { top: r.top, left: r.left, width: r.width, height: r.height };
   }
 
   async function runDelete(scope: Scope) {
@@ -786,6 +833,28 @@
     <WeekGrid {week} oncreate={newEventAt} onedit={openEdit} ondelete={askDelete} onmove={moveOccurrence} />
   {/if}
 </main>
+
+{#if pendingMove}
+  <!-- One dialog per drop, never two: `MoveConfirm` carries the scope choice
+       and the notify choice together when the event needs both. Cancelling
+       clears this and writes nothing — the block is already home. -->
+  {@const p = pendingMove}
+  <MoveConfirm
+    detail={p.detail}
+    anchor={p.anchor}
+    onconfirm={(choice) => {
+      // Read into plain locals **before** clearing `pendingMove`. `{@const}`
+      // is a lazily re-derived value in Svelte 5, not a snapshot taken at
+      // render, so `p` follows the state it was derived from — clearing first
+      // and reading `p.event` afterwards throws on null, which is precisely
+      // what it did.
+      const { event, span } = p;
+      pendingMove = null;
+      commitMove(event, span, choice);
+    }}
+    oncancel={() => (pendingMove = null)}
+  />
+{/if}
 
 {#if gridSelId !== null && gridSelStart !== null && gridAnchor && gridDetail}
   {@const startMs = gridSelStart}

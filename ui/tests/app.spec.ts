@@ -651,23 +651,172 @@ test.describe('App', () => {
      * started — the grid returns it on drop and only a refresh moves it — so
      * what a failure has to do is *say so*.
      */
+    /** The move confirmation, by its accessible name. */
+    const movePanel = (page: Page) => page.getByRole('dialog', { name: 'Move event' });
+
     /**
-     * §3: a drag on a series is three different operations — this one, this
-     * and following, all — and picking one silently would hide a decision the
-     * user should be making. The scope prompt is Task 5's, so until it exists
-     * a drag on a series is **refused with a word** rather than guessed at.
+     * **No dialog where there is nobody to tell and nothing to choose.**
      *
-     * This spec is expected to change in Task 5. It is here because the
-     * alternative — a drag that quietly rewrites one occurrence of somebody's
-     * weekly standup — is the failure §3 exists to prevent.
+     * §2 is explicit that silence is correct here, and it is not merely
+     * tidiness: a confirmation nobody needs is one people learn to dismiss
+     * without reading, which is exactly the habit the *other* cases depend on
+     * them not having.
      */
-    test('a drag on a repeating event is refused rather than guessed at', async ({ page }) => {
+    test('an event with no guests that does not repeat is moved without asking', async ({ page }) => {
+      await writable(page);
+      await dragBy(page, 'Board prep', 60);
+
+      await expect.poll(() => callsTo(page, 'update_event')).toHaveLength(1);
+      await expect(movePanel(page)).toBeHidden();
+      const [args] = await callsTo(page, 'update_event');
+      expect(args.sendUpdates).toBe('none');
+    });
+
+    test('an event with guests asks, and Move without notifying sends none', async ({ page }) => {
+      await writable(page);
+      await dragBy(page, 'Client call', 60);
+
+      await expect(movePanel(page)).toBeVisible();
+      // Nothing is written while the question is on screen.
+      expect(await callsTo(page, 'update_event')).toHaveLength(0);
+      // One guest, and the person doing the moving is not one of them.
+      await expect(page.getByTestId('move-guest-notice')).toContainText('1 guest');
+      // A one-off: there is no scope to choose, so the chooser is not offered.
+      await expect(movePanel(page).getByRole('radiogroup')).toHaveCount(0);
+
+      await movePanel(page).getByRole('button', { name: 'Move without notifying' }).click();
+
+      await expect.poll(() => callsTo(page, 'update_event')).toHaveLength(1);
+      const [args] = await callsTo(page, 'update_event');
+      expect(args.sendUpdates).toBe('none');
+    });
+
+    /**
+     * **The only route to `all` in the whole drag path.** Sending mail is the
+     * deliberate choice, never the default and never a side effect of a
+     * gesture — which is why the *other* button is the primary one.
+     */
+    test('Move and notify guests is the one path that sends all', async ({ page }) => {
+      await writable(page);
+      await dragBy(page, 'Client call', 60);
+
+      await movePanel(page).getByRole('button', { name: 'Move and notify guests' }).click();
+
+      await expect.poll(() => callsTo(page, 'update_event')).toHaveLength(1);
+      const [args] = await callsTo(page, 'update_event');
+      expect(args.sendUpdates).toBe('all');
+    });
+
+    /**
+     * **Cancel issues no request at all** — the absence of a call, never a
+     * no-op response or a returned success. The same shape as the no-op drop,
+     * and for the same reason: a dialog that is merely *visible* proves
+     * nothing about what happens when it closes.
+     */
+    test('Cancel issues no request at all and the block does not move', async ({ page }) => {
+      await writable(page);
+      const topOf = () =>
+        page.evaluate(() => {
+          const e = [...document.querySelectorAll('.ev')]
+            .find((n) => n.getAttribute('title') === 'Client call') as HTMLElement;
+          return e.offsetTop;
+        });
+
+      const before = await topOf();
+      await dragBy(page, 'Client call', 60);
+      await expect(movePanel(page)).toBeVisible();
+
+      await movePanel(page).getByRole('button', { name: 'Cancel' }).click();
+
+      // Given a moment to be wrong in: the write is async, so asserting the
+      // instant the panel closes would pass against a build that issued it a
+      // tick later.
+      await page.waitForTimeout(300);
+      expect(await callsTo(page, 'update_event')).toHaveLength(0);
+      await expect(movePanel(page)).toBeHidden();
+      expect(await topOf(), 'the block returns to where it was').toBeCloseTo(before, 0);
+    });
+
+    /**
+     * §3: **one dialog, never two.** An event that both repeats and has guests
+     * gets the scope prompt *carrying* the notify choice, rather than a second
+     * panel appearing behind the first.
+     */
+    test('a repeating event with guests gets exactly one dialog', async ({ page }) => {
       await writable(page);
       await dragBy(page, 'Standup', 60);
 
-      await expect(page.locator('.err')).toBeVisible();
-      await expect(page.locator('.err')).toContainText('repeating');
+      // One panel on screen, and it is the move one — asserted as a count so a
+      // second dialog stacked behind it fails here rather than passing a
+      // `toBeVisible` on whichever is on top.
+      await expect(page.getByRole('dialog')).toHaveCount(1);
+      await expect(movePanel(page)).toBeVisible();
+
+      // Both questions, in the one panel.
+      await expect(movePanel(page).getByRole('radiogroup', { name: 'Move' })).toBeVisible();
+      await expect(
+        movePanel(page).getByRole('button', { name: 'Move and notify guests' }),
+      ).toBeVisible();
+    });
+
+    /**
+     * §3: **a series asks even with nobody on it.** The scope question is not
+     * about notifying — "this one", "this and following" and "all" are three
+     * different writes whether or not anybody hears about them.
+     *
+     * Here because the two questions are independent and every other fixture
+     * answers them together: deleting the recurring half of the check reddened
+     * nothing until this existed, since every repeating event also had guests.
+     */
+    test('a repeating event with no guests still asks which occurrences', async ({ page }) => {
+      await writable(page);
+      await dragBy(page, 'Gym', 60);
+
+      await expect(movePanel(page)).toBeVisible();
       expect(await callsTo(page, 'update_event')).toHaveLength(0);
+      await expect(movePanel(page).getByRole('radiogroup', { name: 'Move' })).toBeVisible();
+
+      // And **no notify choice**, because there is nobody to notify. One
+      // button that moves, and Cancel.
+      await expect(page.getByTestId('move-guest-notice')).toHaveCount(0);
+      await expect(
+        movePanel(page).getByRole('button', { name: 'Move and notify guests' }),
+      ).toHaveCount(0);
+
+      await movePanel(page).getByRole('button', { name: 'Move', exact: true }).click();
+      await expect.poll(() => callsTo(page, 'update_event')).toHaveLength(1);
+      const [args] = await callsTo(page, 'update_event');
+      expect(args.sendUpdates).toBe('none');
+    });
+
+    /** Escape closes a confirmation and writes nothing — the same key that
+     *  closes everything else here, and the same guarantee as Cancel. */
+    test('Escape closes the dialog and issues no request', async ({ page }) => {
+      await writable(page);
+      await dragBy(page, 'Client call', 60);
+      await expect(movePanel(page)).toBeVisible();
+
+      await page.keyboard.press('Escape');
+
+      await expect(movePanel(page)).toBeHidden();
+      await page.waitForTimeout(300);
+      expect(await callsTo(page, 'update_event')).toHaveLength(0);
+    });
+
+    test('the scope chosen in the dialog is the scope written', async ({ page }) => {
+      await writable(page);
+      await dragBy(page, 'Standup', 60);
+
+      await movePanel(page).getByRole('radio', { name: 'All events' }).check();
+      await movePanel(page).getByRole('button', { name: 'Move without notifying' }).click();
+
+      await expect.poll(() => callsTo(page, 'update_event')).toHaveLength(1);
+      const [args] = await callsTo(page, 'update_event');
+      expect(args.scope).toBe('all');
+      // The default is 'this', so a dialog that ignored the radio would send
+      // that — this is not satisfied by whatever the panel happened to open on.
+      expect(args.scope).not.toBe('this');
+      expect(args.sendUpdates).toBe('none');
     });
 
     test('a write that fails is reported and moves nothing', async ({ page }) => {
