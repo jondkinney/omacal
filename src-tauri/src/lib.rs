@@ -15,6 +15,7 @@ mod status;
 mod sync_loop;
 mod theme;
 mod theme_watch;
+mod tray;
 mod write;
 
 use sqlx::SqlitePool;
@@ -665,7 +666,14 @@ pub fn run() {
     tracing_subscriber::fmt::init();
 
     #[allow(unused_mut)]
-    let mut builder = tauri::Builder::default().plugin(tauri_plugin_opener::init());
+    let mut builder = tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        // Registered unconditionally; *enabling* it is what the demo guard
+        // gates, in `setup` below. Registration alone adds no login item.
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ));
 
     // Registered so `app.notification()` resolves for `notify::MacNotifier`.
     // Registration alone posts nothing — it makes the transport available, and
@@ -699,12 +707,49 @@ pub fn run() {
             app.manage(AppState { pool, demo, tokens: Default::default() });
             sync_loop::spawn(app.handle().clone());
             theme_watch::spawn(app.handle().clone());
+
+            // The tray is the only way to quit, since closing the window hides
+            // it. A failure here is logged rather than fatal: an app that
+            // refuses to start because a system tray is unavailable is worse
+            // than one running without a tray icon.
+            if let Err(e) = tray::build(app.handle()) {
+                tracing::warn!(%e, "could not build the tray icon");
+            }
+
+            // Start on login (§2.6) — never in demo mode.
+            if tray::may_autostart(demo) {
+                use tauri_plugin_autostart::ManagerExt;
+                if let Err(e) = app.autolaunch().enable() {
+                    tracing::warn!(%e, "could not register start-on-login");
+                }
+            }
+
+            // The scheduler. `run_once` refuses in demo mode on its own — see
+            // `notify_loop::may_notify` — so this starts either way and the
+            // guard stays in the one place a test can reach it.
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            {
+                #[cfg(target_os = "linux")]
+                let notifier: Box<dyn notify::Notifier> = Box::new(notify::DbusNotifier);
+                #[cfg(target_os = "macos")]
+                let notifier: Box<dyn notify::Notifier> =
+                    Box::new(notify::MacNotifier { app: app.handle().clone() });
+                notify_loop::spawn(app.handle().clone(), notifier);
+            }
+
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if let tauri::WindowEvent::Focused(true) = event {
-                sync_loop::request_now(window.app_handle());
+        .on_window_event(|window, event| match event {
+            tauri::WindowEvent::Focused(true) => sync_loop::request_now(window.app_handle()),
+            // §2.6: closing hides. The scheduler is the whole point of the
+            // app, and a closed window that silently stopped firing reminders
+            // would be a bug rather than a feature. Quit is explicit, from the
+            // tray.
+            tauri::WindowEvent::CloseRequested { api, .. } if tray::hide_instead_of_closing() => {
+                api.prevent_close();
+                let _ = window.hide();
             }
+            _ => {}
         })
         .invoke_handler(tauri::generate_handler![
             get_palette,

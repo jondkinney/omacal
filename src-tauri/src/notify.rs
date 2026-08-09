@@ -39,12 +39,6 @@ pub(crate) enum Action {
     Snooze5m,
 }
 
-/// `#[allow(dead_code)]` for the same reason as `MacNotifier` below: on this
-/// host the only non-test constructor is inside a `cfg(target_os = "macos")`
-/// type that nothing builds until Task 5 wires the loop. The variant is
-/// constructed for real on both platforms; it is unreachable only because the
-/// scheduler has not been started yet.
-#[allow(dead_code)]
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum NotifyError {
     /// The transport would not take it. On macOS this is ordinary — see
@@ -202,12 +196,6 @@ impl Notifier for DbusNotifier {
 /// No actions. `tauri-plugin-notification` has no action buttons, which is why
 /// Linux uses `notify-rust` instead; on macOS the notification is informational
 /// and the app is one click away.
-///
-/// Not constructed yet: `notify_loop::spawn` is not wired into `run()` until
-/// Task 5, for the reason recorded there — a pass with no working transport
-/// would record every due reminder as fired while posting nothing. Hence the
-/// `allow`, which comes off the moment Task 5 builds one.
-#[allow(dead_code)]
 #[cfg(target_os = "macos")]
 pub(crate) struct MacNotifier {
     pub app: tauri::AppHandle,

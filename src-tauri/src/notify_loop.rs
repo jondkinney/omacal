@@ -107,7 +107,24 @@ async fn scheduled_events(
     Ok(out)
 }
 
+/// Whether this run is allowed to post at all.
+///
+/// **Demo mode posts no notifications** (§2.7) — the fourth enforcement point
+/// beside the separate database, `demo_sync_guard`, and
+/// `sync_loop::may_sync`/`should_sync`. Demo seeds synthetic events in the
+/// present so the views look alive, which is precisely what would make an
+/// unguarded scheduler buzz about meetings that do not exist.
+///
+/// Named, like `may_sync`, so the decision is one thing every caller routes
+/// through rather than an untested `if demo` copied about.
+pub(crate) fn may_notify(demo: bool) -> bool {
+    !demo
+}
+
 /// One pass of the scheduler, at a clock the caller supplies.
+///
+/// **Demo mode returns immediately**, having posted nothing and recorded
+/// nothing — see [`may_notify`].
 ///
 /// `tz` is the **display** zone — what the user reads the time in. It decides
 /// only wording; every firing decision was made against the calendar's zone
@@ -137,11 +154,22 @@ async fn scheduled_events(
 /// one reminder on the next pass; the other order silently swallows it forever.
 pub(crate) async fn run_once(
     pool: &SqlitePool,
+    demo: bool,
     now_ms: i64,
     horizon_ms: i64,
     tz: &str,
     notifier: &dyn crate::notify::Notifier,
 ) -> anyhow::Result<Pass> {
+    // Before any I/O, and the only place this is enforced. Guarding at `spawn`
+    // instead would keep the loop from starting, which sounds stronger and is
+    // weaker: the guard would then sit on a path no test can reach, and the
+    // test that matters is the one running through this function exactly as a
+    // real pass does. A pointless loop in demo mode costs a comparison every
+    // few minutes and returns here before touching the database.
+    if !may_notify(demo) {
+        return Ok(Pass::default());
+    }
+
     let events = scheduled_events(pool, now_ms, horizon_ms).await?;
 
     let fired: std::collections::HashSet<FiredKey> = omacal_store::fired_keys(pool)
@@ -212,23 +240,27 @@ pub(crate) fn next_wake_ms(next_fire_ms: Option<i64>, now_ms: i64, sync_interval
 /// decision it makes was made by [`run_once`] and [`next_wake_ms`], both of
 /// which take their clock as an argument.
 ///
-/// **Not wired into `run()` yet, and that is on purpose.** There is no notifier
-/// until Task 4, so a pass now would record every due reminder as fired while
-/// posting nothing — and a recorded reminder is never offered again. Starting
-/// this early would silently consume the first day of notifications. Task 5
-/// wires it, after the demo guard exists.
-#[allow(dead_code)]
+/// Started from `run()`'s `setup`, once the transport and the demo guard both
+/// exist. Deliberately not before: a pass with no working notifier would record
+/// every due reminder as fired while posting nothing, and a recorded reminder
+/// is never offered again — it would have silently consumed the first day of
+/// notifications.
 pub(crate) fn spawn(app: tauri::AppHandle, notifier: Box<dyn crate::notify::Notifier>) {
     tauri::async_runtime::spawn(async move {
         loop {
-            let (pool, interval) = {
+            let (pool, demo, interval) = {
                 let state = tauri::Manager::state::<crate::AppState>(&app);
-                (state.pool.clone(), crate::sync_loop::interval_ms(&state.pool).await)
+                (
+                    state.pool.clone(),
+                    state.demo,
+                    crate::sync_loop::interval_ms(&state.pool).await,
+                )
             };
 
             let now = crate::now_ms();
             let tz = crate::display_tz(&pool);
-            let next_fire = match run_once(&pool, now, HORIZON_MS, &tz, notifier.as_ref()).await {
+            let next_fire =
+                match run_once(&pool, demo, now, HORIZON_MS, &tz, notifier.as_ref()).await {
                 Ok(pass) => pass.next_fire_ms,
                 Err(e) => {
                     // Offline, a locked database, a malformed rule — all normal
@@ -324,7 +356,7 @@ mod tests {
         now_ms: i64,
         notifier: &crate::notify::RecordingNotifier,
     ) -> (Pass, Vec<(i64, i64)>) {
-        let pass = run_once(pool, now_ms, HORIZON_MS, SOFIA, notifier).await.unwrap();
+        let pass = run_once(pool, false, now_ms, HORIZON_MS, SOFIA, notifier).await.unwrap();
         let handed = pass.posted.iter().map(|d| (d.key.event_id, d.key.minutes)).collect();
         (pass, handed)
     }
@@ -648,7 +680,7 @@ mod tests {
             .await.unwrap();
 
         let failing = crate::notify::RecordingNotifier::failing();
-        let pass = run_once(&pool, T0900Z - 10 * MINUTE, HORIZON_MS, SOFIA, &failing)
+        let pass = run_once(&pool, false, T0900Z - 10 * MINUTE, HORIZON_MS, SOFIA, &failing)
             .await
             .expect("a refusing transport must not fail the pass");
 
@@ -664,6 +696,57 @@ mod tests {
         let second = crate::notify::RecordingNotifier::default();
         pass_with(&pool, T0900Z + 5 * MINUTE, &second).await;
         assert!(second.posted().is_empty(), "the record must suppress the retry");
+    }
+
+    /// **The fourth demo enforcement point** (§2.7), beside the separate
+    /// database, `demo_sync_guard`, and `should_sync`/`may_sync`.
+    ///
+    /// Demo mode seeds synthetic events *in the present* precisely so the views
+    /// look alive, which is exactly what makes an unguarded scheduler buzz
+    /// about meetings that do not exist.
+    ///
+    /// Both halves in one test, and that is the point of it. The demo half
+    /// alone would pass against a build where notifications were simply broken
+    /// — the same fixture, the same clock and the same call must post when
+    /// `demo` is false, or this proves nothing about the guard. It runs through
+    /// `run_once`, the path a real pass takes, rather than asserting about a
+    /// flag somewhere upstream.
+    #[tokio::test]
+    async fn demo_mode_posts_nothing_through_the_same_path_a_real_run_posts_on() {
+        let pool = seeded("UTC", "[]").await;
+        omacal_store::upsert_event(&pool, &event("e1", T0900Z, T0900Z + HOUR, own(10)))
+            .await.unwrap();
+        let now = T0900Z - 10 * MINUTE;
+
+        let in_demo = crate::notify::RecordingNotifier::default();
+        let pass = run_once(&pool, true, now, HORIZON_MS, SOFIA, &in_demo).await.unwrap();
+
+        assert!(in_demo.posted().is_empty(), "demo mode must post nothing at all");
+        assert!(pass.posted.is_empty());
+        assert!(
+            omacal_store::fired_keys(&pool).await.unwrap().is_empty(),
+            "demo mode must not record either: a reminder recorded but never posted is \
+             swallowed for good the moment demo mode is turned off"
+        );
+
+        // The same event, the same clock, the same call — with the guard off.
+        let for_real = crate::notify::RecordingNotifier::default();
+        run_once(&pool, false, now, HORIZON_MS, SOFIA, &for_real).await.unwrap();
+
+        assert_eq!(
+            for_real.posted().len(),
+            1,
+            "the guard must block demo mode, not disable notifications altogether"
+        );
+    }
+
+    /// Named and separate for the same reason `may_sync` is: the decision is
+    /// worth being able to point at, and every caller routes through it rather
+    /// than carrying its own untested `if demo`.
+    #[test]
+    fn only_a_real_run_may_notify() {
+        assert!(may_notify(false));
+        assert!(!may_notify(true), "demo mode posts no notifications at all");
     }
 
     #[test]
