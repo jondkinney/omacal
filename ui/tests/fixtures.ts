@@ -1713,6 +1713,26 @@ export const FIXTURES: Record<string, Record<string, any>> = {
     },
   },
   CalendarPopover: {
+    /**
+     * **Two calendars with the same name in one account** — the shape that
+     * actually trips `each_key_duplicate`, which is not quite the one the
+     * rows' comment used to describe.
+     *
+     * The key is on the *inner* loop, which iterates within a single account
+     * group, so two accounts each holding a "UK Holidays" never collide: they
+     * are two different `{#each}` instances. One account holding two is one
+     * instance with two identical keys, and Svelte **throws** there rather
+     * than rendering something merely odd. Google lets you create two
+     * calendars with the same name, so this is reachable rather than
+     * contrived.
+     */
+    'same-summary-one-account': {
+      calendars: [
+        cal({ id: 1, account_id: 1, account_email: 'me@x.com', summary: 'UK Holidays' }),
+        cal({ id: 2, account_id: 1, account_email: 'me@x.com', summary: 'UK Holidays' }),
+      ],
+      onchange: noop,
+    },
     'two-accounts': {
       calendars: [
         cal({ id: 1, account_id: 1, account_email: 'me@x.com', summary: 'Personal', is_primary: true }),

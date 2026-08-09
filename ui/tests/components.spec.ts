@@ -857,6 +857,65 @@ test.describe('Header', () => {
     await expect(modal).toContainText('Not less than 1 minute');
   });
 
+  /**
+   * **The rows in the tab are the same rows as in the popover** — the same
+   * component, not a second implementation. What makes that checkable is one
+   * file up: `CalendarPopover`'s own thirteen specs pass unchanged, because
+   * everything they assert is `CalendarList` now.
+   */
+  test('Calendars shows the calendar rows, grouped by account', async ({ page }) => {
+    await page.goto(show('Header', 'connected'));
+    const modal = await openSettings(page, 'Calendars');
+
+    await expect(modal.locator('.acct')).toHaveText(['me@x.com']);
+    await expect(modal.locator('.row')).toHaveCount(2);
+    await expect(modal.locator('.name')).toHaveText(['Personal', 'Team']);
+  });
+
+  /**
+   * §4's first invariant, asserted in the new host: **`selected` and
+   * `sync_enabled` are separate switches.** Unticking hides a calendar and
+   * keeps its events; Remove stops syncing it and deletes them. A tab that
+   * collapsed the two would make "not today" delete a year of history.
+   */
+  test('the tab keeps show and sync as two separate controls', async ({ page }) => {
+    await page.goto(show('Header', 'connected'));
+    const modal = await openSettings(page, 'Calendars');
+    const row = modal.locator('.row').first();
+
+    await expect(row.locator('input[type=checkbox]')).toBeVisible();
+    await expect(row.getByRole('button', { name: 'Remove' })).toBeVisible();
+    await expect(modal).toContainText('Unticking hides a calendar');
+  });
+
+  test('a calendar can be hidden from the tab, and the app is told', async ({ page }) => {
+    await page.goto(show('Header', 'connected'));
+    const modal = await openSettings(page, 'Calendars');
+    await modal.locator('input[type=checkbox]').first().uncheck();
+
+    // Through to the command, not just the checkbox: the tab is a second host
+    // for these rows and a host that rendered them without wiring them would
+    // look identical.
+    const calls = await page.evaluate(
+      () => (window as any).__harness.calls.filter((c: any) => c.cmd === 'set_calendar_selected'),
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0].args.on, 'unticking asks for selected: false').toBe(false);
+  });
+
+  test('changing a calendar from the tab tells the app to reload', async ({ page }) => {
+    // A different fact from the command having been sent, and the one a second
+    // host for these rows can silently drop: the rows call Google themselves,
+    // but only the host can ask `App` to reload the grid afterwards.
+    await page.goto(show('Header', 'connected'));
+    const modal = await openSettings(page, 'Calendars');
+    await modal.locator('input[type=checkbox]').first().uncheck();
+
+    await expect
+      .poll(() => page.evaluate(() => (window as any).__calendarChanges))
+      .toBeGreaterThan(0);
+  });
+
   test('Notifications turns reminders off and on', async ({ page }) => {
     await page.goto(show('Header', 'connected'));
     const modal = await openSettings(page, 'Notifications');
@@ -980,6 +1039,29 @@ test.describe('CalendarPopover', () => {
   test('it still starts closed by default', async ({ page }) => {
     await page.goto(show('two-accounts'));
     await expect(page.locator('.panel')).toHaveCount(0);
+  });
+
+  /**
+   * **The `each_key_duplicate` hazard §4 names**, and the reason the rows are
+   * keyed on `c.id` rather than on the summary.
+   *
+   * **Two calendars with the same name in one account**, and the account is
+   * the part that took a mutation to get right: the key is on the *inner*
+   * loop, which iterates within a single group, so the same name under two
+   * different accounts is two `{#each}` instances and never collides. The
+   * hazard as previously recorded named that shape, and it is not the one that
+   * throws.
+   *
+   * Google lets you create two calendars with the same name, so one account
+   * holding two is reachable — and Svelte throws on the duplicate key rather
+   * than rendering one row where two belong, taking the whole panel with it.
+   */
+  test('two calendars with the same name in one account both render', async ({ page }) => {
+    await page.goto(show('same-summary-one-account'));
+    await page.getByRole('button', { name: /Calendars/ }).click();
+
+    await expect(page.locator('.acct')).toHaveText(['me@x.com']);
+    await expect(page.locator('.name')).toHaveText(['UK Holidays', 'UK Holidays']);
   });
 
   test('counts only calendars that are both synced and shown', async ({ page }) => {
