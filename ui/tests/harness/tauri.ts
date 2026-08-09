@@ -51,6 +51,9 @@ export type Harness = {
   release(weekStartMs: number): Promise<void>;
   /** Make the next `get_week` reject, whoever asks for it. */
   failNextWeek(message: string): void;
+  /** Make the next `update_event` reject — what a drag spec uses to prove a
+   *  failed write is reported rather than silently swallowed. */
+  failNextUpdate(message: string): void;
   /** Make the next call to `set_calendar_selected` or `set_calendar_sync` reject —
    *  what a CalendarPopover spec uses to drive the failed-toggle path. */
   failNextCalendarCall(cmd: 'set_calendar_selected' | 'set_calendar_sync', message: string): void;
@@ -111,6 +114,7 @@ type CalendarDeferred = { resolve: (v: unknown) => void; reject: (e: unknown) =>
 
 let nextId = 1;
 let failWeekOnce: string | null = null;
+let failUpdateOnce: string | null = null;
 let failCalendarOnce: { cmd: string; message: string } | null = null;
 let holdCalendarOnce: string | null = null;
 const parkedCalendar = new Map<string, CalendarDeferred>();
@@ -163,6 +167,9 @@ const harness: Harness = {
   },
   failNextWeek(message) {
     failWeekOnce = message;
+  },
+  failNextUpdate(message) {
+    failUpdateOnce = message;
   },
   failNextCalendarCall(cmd, message) {
     failCalendarOnce = { cmd, message };
@@ -511,6 +518,11 @@ export function installTauriStub(scenario: string): Harness {
       case 'create_event':
         return CREATED_DETAIL;
       case 'update_event':
+        if (failUpdateOnce !== null) {
+          const m = failUpdateOnce;
+          failUpdateOnce = null;
+          throw new Error(m);
+        }
         // What the real command answers with: the freshly written detail. `App`
         // never reads it (it reloads the grid instead), so the unchanged
         // fixture is a truthful enough stand-in.

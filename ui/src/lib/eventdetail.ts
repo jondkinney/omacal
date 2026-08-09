@@ -210,7 +210,25 @@ export const updateEvent = (
   scope: 'this' | 'all' | 'following',
   occurrenceStartMs: number,
   fields: EventInput,
-) => invoke<EventDetail>('update_event', { id, scope, occurrenceStartMs, fields });
+  sendUpdates: SendUpdates,
+) => invoke<EventDetail>('update_event', { id, scope, occurrenceStartMs, fields, sendUpdates });
+
+/**
+ * Who Google mails about a write. Google's own vocabulary, and a required
+ * argument rather than a defaulted one on purpose: every caller has to say,
+ * and the two answers are opposite instructions.
+ *
+ * `'all'` is the **form's**, and the reasoning `patch_event` carries is still
+ * exactly right for it — a time typed on purpose and saved is the change
+ * guests need to hear about. `'none'` is a **drag's**, because a gesture can
+ * happen by accident and a slip of the mouse must not mail a meeting's whole
+ * guest list. Drag spec §2 is the ruling.
+ *
+ * There is no default. A default would be the value nobody chose, and this is
+ * the one argument in this file where nobody choosing is how somebody gets an
+ * email they should not have.
+ */
+export type SendUpdates = 'all' | 'none';
 
 /**
  * Deletes an event, or part of a recurring series, and resolves with nothing.

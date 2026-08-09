@@ -10,10 +10,10 @@
   import { getCalendars, offerableCalendarId, type Calendar } from './lib/calendars';
   import {
     createEvent, deleteEvent, getEventDetail, updateEvent,
-    type EventDetail, type Occurrence,
+    type EventDetail, type Occurrence, type SendUpdates,
   } from './lib/eventdetail';
   import {
-    blankValue, blankValueAt, valueFromDetail,
+    blankValue, blankValueAt, dateOf, timeOf, toEventInput, valueFromDetail,
     type EventFormResult, type EventFormValue, type Scope,
   } from './lib/eventform';
   import type { Rect } from './lib/position';
@@ -589,9 +589,85 @@
         // the second is the master's DTSTART, and an edit aimed at it patches
         // occurrence #0 with the whole form as its payload and `sendUpdates=all`
         // behind it. The scope comes from the form's own chooser (Task 9).
-        await updateEvent(request.id, result.scope, request.occurrenceStartMs, result.fields);
+        // `'all'`: the form is a deliberate edit — a time typed on purpose,
+        // Save pressed — which is exactly the change guests need to hear
+        // about. A drag says `'none'`; see `moveOccurrence`.
+        await updateEvent(
+          request.id, result.scope, request.occurrenceStartMs, result.fields, 'all',
+        );
       }
     } catch (e) {
+      error = String(e);
+      return;
+    } finally {
+      busy = false;
+    }
+    await refreshAfterWrite();
+  }
+
+  /**
+   * A dropped drag, written.
+   *
+   * **`'none'`, always, and there is no argument here that could say
+   * otherwise.** A drag can happen by accident — a click that wandered five
+   * pixels — and mailing a meeting's whole guest list is not something a slip
+   * of the mouse gets to do. Drag spec §2. Task 5 introduces the dialog that
+   * asks, and that is the only thing that will ever pass `'all'` from a
+   * gesture; until then this path is structurally incapable of it.
+   *
+   * **Recurring occurrences are not moved yet.** §3 says a drag on a series
+   * opens the same three-scope prompt the form uses, because "this one", "this
+   * and following" and "all" are three different operations rather than three
+   * sizes of one — and silently picking one would hide a decision the user
+   * should be making. That prompt is Task 5's, so until it exists a drag on a
+   * series is refused with a word rather than guessed at.
+   *
+   * Everything else reuses the form's own pipeline: the detail this occurrence
+   * came from, through `valueFromDetail`, with only the times replaced, out
+   * through `toEventInput`. Nothing here builds a payload of its own — a
+   * second way of describing "an edit" is the thing that would drift.
+   */
+  async function moveOccurrence(event: UiEvent, span: { startMs: number; endMs: number }) {
+    busy = true;
+    error = null;
+    try {
+      const detail = await getEventDetail(event.id);
+      if (detail.is_recurring) {
+        error = 'Dragging a repeating event is not available yet — open it and use Edit.';
+        return;
+      }
+
+      const value = valueFromDetail(detail, event.start_ms, event.end_ms);
+      // The source instants are carried through untouched, and that is
+      // deliberate rather than an oversight: `instantOf` passes one through
+      // only while the civil pair beside it still reads as that instant, which
+      // after a move it never does. Nulling them would be dead code here — a
+      // mutation keeping them reddened nothing — and actively wrong for the
+      // resize this grows into, where the *untouched* end should be sent as
+      // the instant it was read off rather than re-derived without its
+      // seconds.
+      const moved: EventFormValue = {
+        ...value,
+        date: dateOf(span.startMs),
+        endDate: dateOf(span.endMs),
+        start: timeOf(span.startMs),
+        end: timeOf(span.endMs),
+      };
+
+      // Both arguments named, because `'all'` and `'none'` sitting side by
+      // side on one line is exactly how a reader checking "can a drag notify
+      // anybody?" gets the wrong answer. The first is the **scope** — for a
+      // one-off, "all events" is the event itself, which is what
+      // `target_event_id` documents for a row with no series. The second is
+      // who gets emailed, and it is the only value this function can produce.
+      const scope: Scope = 'all';
+      const notify: SendUpdates = 'none';
+      await updateEvent(event.id, scope, event.start_ms, toEventInput(moved, value), notify);
+    } catch (e) {
+      // The block is already back where it started — the grid returns it on
+      // drop and only a refresh moves it — so a failure needs no undo, just
+      // saying. §6: a drag that appears to have worked and silently did not is
+      // worse than one that visibly refuses.
       error = String(e);
       return;
     } finally {
@@ -707,7 +783,7 @@
       />
     {/if}
   {:else if week}
-    <WeekGrid {week} oncreate={newEventAt} onedit={openEdit} ondelete={askDelete} />
+    <WeekGrid {week} oncreate={newEventAt} onedit={openEdit} ondelete={askDelete} onmove={moveOccurrence} />
   {/if}
 </main>
 

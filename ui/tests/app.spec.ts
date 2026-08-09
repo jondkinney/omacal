@@ -515,6 +515,189 @@ test.describe('App', () => {
   const editForm = (page: Page) => page.getByRole('dialog', { name: 'Edit event' });
   const confirmPanel = (page: Page) => page.getByRole('dialog', { name: 'Delete event' });
 
+  /**
+   * **A drag writes, and it cannot notify anybody.**
+   *
+   * Asserted here rather than in the grid because this is the boundary the app
+   * actually crosses: what the grid hands up is one thing, what reaches
+   * `update_event` is another, and only the second can email a guest list.
+   * (The other boundary — what reaches Google — is
+   * `events::tests::a_move_sends_the_send_updates_it_was_given`, on the wire
+   * with wiremock.)
+   */
+  test.describe('dragging an event writes without notifying anybody', () => {
+    /** Grabs `title`'s block and drags it `dy` px, releasing. */
+    const dragBy = async (page: Page, title: string, dy: number) => {
+      const b = block(page, title).first();
+      await b.scrollIntoViewIfNeeded();
+      const box = await b.boundingBox();
+      if (!box) throw new Error(`no box for ${title}`);
+      const cx = box.x + box.width / 2;
+      const cy = box.y + box.height / 2;
+      await page.mouse.move(cx, cy);
+      await page.mouse.down();
+      await page.mouse.move(cx, cy + dy, { steps: 4 });
+      await page.mouse.up();
+      return { cx, cy };
+    };
+
+    test('the value sent is none, never all', async ({ page }) => {
+      await writable(page);
+      await dragBy(page, 'Board prep', 60);
+
+      await expect.poll(() => callsTo(page, 'update_event')).toHaveLength(1);
+      const [args] = await callsTo(page, 'update_event');
+
+      expect(args.sendUpdates).toBe('none');
+      // Said twice on purpose. The line above fails if the value changes; this
+      // one fails if the argument is dropped altogether and the Rust side
+      // starts defaulting, which the line above would not notice.
+      expect(args.sendUpdates).not.toBe('all');
+    });
+
+    test('the moved span is what gets written', async ({ page }) => {
+      await writable(page);
+      // Four snap steps, computed rather than guessed: a 1200px column over a
+      // 24-hour day makes a 15-minute step 12.5px, so "an hour down" is 50px
+      // and not the round number it looks like.
+      const col = await page.locator('.col').first().boundingBox();
+      if (!col) throw new Error('no column');
+      await dragBy(page, 'Board prep', (col.height / 96) * 4);
+
+      await expect.poll(() => callsTo(page, 'update_event')).toHaveLength(1);
+      const [args] = await callsTo(page, 'update_event');
+
+      // `occurrenceStartMs` is the clicked block's own start — the invariant
+      // every write in this file turns on — and the payload's times are the
+      // ones it was dropped on, an hour later on a 1200px day.
+      expect(args.fields.when.kind).toBe('timed');
+      expect(args.fields.when.startMs - args.occurrenceStartMs).toBe(60 * 60_000);
+      expect(args.fields.when.endMs - args.fields.when.startMs).toBe(60 * 60_000);
+    });
+
+    /**
+     * A drag long enough to cross midnight writes the **next day**.
+     *
+     * Here because nothing else discriminates it: every other drag in this
+     * block stays inside one day, where the date the payload carries is the
+     * date it started on and sending the old one is indistinguishable. A
+     * mutation that never applied the moved date reddened nothing until this
+     * spec existed.
+     *
+     * Task 3's preview is vertical-only, so the block visibly runs past the
+     * bottom of its column on a drag this long — a rendering limitation
+     * recorded there, not a disagreement about the instant. What is written is
+     * where the pointer actually is.
+     */
+    test('a drag past midnight writes the next day, not the same time today', async ({ page }) => {
+      await writable(page);
+      const col = await page.locator('.col').first().boundingBox();
+      if (!col) throw new Error('no column');
+
+      // 'Board prep' sits at 14:00; twelve hours down is 02:00 tomorrow.
+      await dragBy(page, 'Board prep', (col.height / 24) * 12);
+
+      await expect.poll(() => callsTo(page, 'update_event')).toHaveLength(1);
+      const [args] = await callsTo(page, 'update_event');
+
+      expect(args.fields.when.startMs - args.occurrenceStartMs).toBe(12 * 60 * 60_000);
+      // Said as a date as well as a delta, because the delta alone is what a
+      // payload carrying the old date would still get right if the *time* had
+      // been applied on it.
+      const landedOn = await page.evaluate(
+        (ms) => new Date(ms).toISOString().slice(0, 10),
+        args.fields.when.startMs,
+      );
+      const startedOn = await page.evaluate(
+        (ms) => new Date(ms).toISOString().slice(0, 10),
+        args.occurrenceStartMs,
+      );
+      expect(landedOn).not.toBe(startedOn);
+    });
+
+    /**
+     * **The absence of a call, never a no-op response.** §4 says a drop that
+     * lands where it started takes no action at all, and the only way to say
+     * that is to look for a request that is not there.
+     */
+    test('a drop where it started issues no request at all', async ({ page }) => {
+      await writable(page);
+
+      const b = block(page, 'Board prep').first();
+      await b.scrollIntoViewIfNeeded();
+      const box = await b.boundingBox();
+      if (!box) throw new Error('no box');
+      const cx = box.x + box.width / 2;
+      const cy = box.y + box.height / 2;
+      await page.mouse.move(cx, cy);
+      await page.mouse.down();
+      await page.mouse.move(cx, cy + 80, { steps: 4 });
+      await page.mouse.move(cx, cy, { steps: 4 });
+      await page.mouse.up();
+
+      // Given a moment to be wrong in: `moveOccurrence` is async, so asserting
+      // immediately would pass against a build that issued the write a tick
+      // later.
+      await page.waitForTimeout(300);
+      expect(await callsTo(page, 'update_event')).toHaveLength(0);
+      // And nothing was even looked up — the guard is in the grid, before any
+      // of the write path is entered.
+      expect(await callsTo(page, 'event_detail')).toHaveLength(0);
+    });
+
+    /**
+     * §6: a drag that appears to have worked and silently did not is worse
+     * than one that visibly refuses. The block is already back where it
+     * started — the grid returns it on drop and only a refresh moves it — so
+     * what a failure has to do is *say so*.
+     */
+    /**
+     * §3: a drag on a series is three different operations — this one, this
+     * and following, all — and picking one silently would hide a decision the
+     * user should be making. The scope prompt is Task 5's, so until it exists
+     * a drag on a series is **refused with a word** rather than guessed at.
+     *
+     * This spec is expected to change in Task 5. It is here because the
+     * alternative — a drag that quietly rewrites one occurrence of somebody's
+     * weekly standup — is the failure §3 exists to prevent.
+     */
+    test('a drag on a repeating event is refused rather than guessed at', async ({ page }) => {
+      await writable(page);
+      await dragBy(page, 'Standup', 60);
+
+      await expect(page.locator('.err')).toBeVisible();
+      await expect(page.locator('.err')).toContainText('repeating');
+      expect(await callsTo(page, 'update_event')).toHaveLength(0);
+    });
+
+    test('a write that fails is reported and moves nothing', async ({ page }) => {
+      await writable(page);
+      await page.evaluate(() => window.__harness.failNextUpdate('that event is no longer here'));
+
+      // `offsetTop`, not a bounding box: the box is in viewport coordinates
+      // and this grid scrolls, so two measurements either side of a
+      // `scrollIntoViewIfNeeded` compare different origins — which is exactly
+      // what this spec did until it read -209 against 240. `offsetTop` is
+      // relative to the column the block is positioned in, which is the frame
+      // the drag actually moves it in.
+      const topOf = () =>
+        page.evaluate(() => {
+          const e = [...document.querySelectorAll('.ev')]
+            .find((n) => n.getAttribute('title') === 'Board prep') as HTMLElement;
+          return e.offsetTop;
+        });
+
+      const before = await topOf();
+      await dragBy(page, 'Board prep', 60);
+
+      await expect(page.locator('.err')).toBeVisible();
+      await expect(page.locator('.err')).toContainText('no longer here');
+
+      expect(await topOf(), 'a failed write must leave the block where it was')
+        .toBeCloseTo(before, 0);
+    });
+  });
+
   test('n opens the form on the anchor date', async ({ page }) => {
     // The anchor, not today. The clock is frozen to midday on Mon 29 Jan, so a
     // form built from `Date.now()` would open on the 29th — two `l`s away from
