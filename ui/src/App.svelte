@@ -24,6 +24,7 @@
   import Header from './lib/Header.svelte';
   import EventPopover from './lib/EventPopover.svelte';
   import EventForm from './lib/EventForm.svelte';
+  import SearchOverlay from './lib/SearchOverlay.svelte';
   import DeleteConfirm from './lib/DeleteConfirm.svelte';
   import MoveConfirm from './lib/MoveConfirm.svelte';
   import ViewSwitcher, { type View } from './lib/ViewSwitcher.svelte';
@@ -381,6 +382,24 @@
   // `selectedId`/`selectedStartMs` — see that component's comment for why
   // (proxy identity of an object reassigned into `$state` is not reliable
   // for a later `===`).
+  /** The search overlay, open. Spec §1: it sits *over* the calendar, and
+   *  closing without choosing changes nothing behind it. */
+  let searchOpen = $state(false);
+
+  /**
+   * A result was chosen (spec §6): move the calendar to that date **in the
+   * view the user is already in**, close search, and open the popover on it.
+   *
+   * The order matters. Search closes first so it does not linger behind the
+   * popover; the anchor moves before the popover opens so the block the
+   * popover is about is the one on screen.
+   */
+  async function goToHit(hit: { eventId: number; startMs: number; endMs: number }) {
+    searchOpen = false;
+    anchorMs = dayStart(hit.startMs);
+    await openOccurrence(hit.eventId, hit.startMs, hit.endMs, keyboardAnchor());
+  }
+
   let gridSelId = $state<number | null>(null);
   let gridSelStart = $state<number | null>(null);
   // Carried for the same reason `WeekGrid`'s own `selectedEndMs` is: the event
@@ -396,16 +415,33 @@
   }
 
   async function openGridEvent(event: UiEvent, rect: Rect) {
-    gridSelId = event.id;
-    gridSelStart = event.start_ms;
-    gridSelEnd = event.end_ms;
+    await openOccurrence(event.id, event.start_ms, event.end_ms, rect);
+  }
+
+  /**
+   * Opens the event popover on one occurrence.
+   *
+   * **The one way to reach an event's detail**, which is search spec §7's
+   * constraint rather than tidiness: a second path would be a second set of
+   * guards to keep in step, and the popover already owns every one it has.
+   * `openGridEvent` is this with a `UiEvent` unpacked; search calls it with a
+   * hit's three numbers.
+   */
+  async function openOccurrence(id: number, startMs: number, endMs: number, rect: Rect) {
+    gridSelId = id;
+    gridSelStart = startMs;
+    gridSelEnd = endMs;
     gridAnchor = rect;
     gridDetail = null;
+    // Captured, never re-read: `getEventDetail` is async and another block may
+    // be clicked while it is in flight, exactly as `openGridEvent` always
+    // guarded.
+    const mine = () => gridSelId === id && gridSelStart === startMs;
     try {
-      const d = await getEventDetail(event.id);
-      if (isGridSelected(event)) gridDetail = d;
+      const d = await getEventDetail(id);
+      if (mine()) gridDetail = d;
     } catch {
-      if (isGridSelected(event)) closeGridEvent();
+      if (mine()) closeGridEvent();
     }
   }
 
@@ -793,10 +829,19 @@
     // them unclickable, and `n` opening a second form on top of the first is
     // the same mistake by keyboard. Escape is unaffected: each panel listens
     // for it on `window` itself.
-    if (form || pendingDelete) return;
+    if (form || pendingDelete || searchOpen) return;
     const keyed = KEY_VIEW[e.key];
     if (keyed) {
       pick(keyed);
+      return;
+    }
+    // `/` joins the existing single-key family (`1`-`5`, `h`/`l`, `t`, `n`)
+    // rather than inventing a modifier chord: it is the search key everywhere
+    // that has one, it collides with nothing here, and it is unshifted on the
+    // layouts this ships to. `isTypingTarget` above already keeps it out of
+    // every field, which is what makes a punctuation key safe to claim.
+    if (e.key === '/') {
+      searchOpen = true;
       return;
     }
     switch (e.key.toLowerCase()) {
@@ -816,6 +861,7 @@
     onPrev={() => step(-1)}
     onNext={() => step(1)}
     onToday={goToday}
+    onSearch={() => (searchOpen = true)}
     onSignIn={handleSignIn}
     onSync={handleSync}
     oncalendarchange={handleCalendarChange}
@@ -874,6 +920,10 @@
     }}
     oncancel={() => (pendingMove = null)}
   />
+{/if}
+
+{#if searchOpen}
+  <SearchOverlay onclose={() => (searchOpen = false)} onpick={goToHit} />
 {/if}
 
 {#if gridSelId !== null && gridSelStart !== null && gridAnchor && gridDetail}
