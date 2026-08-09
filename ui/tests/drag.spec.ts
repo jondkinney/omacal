@@ -1,0 +1,321 @@
+import { test, expect } from '@playwright/test';
+
+/**
+ * The drag geometry, exercised in the page.
+ *
+ * In the page rather than in Node because every one of these answers depends on
+ * the browser's zone: the vertical axis is a fraction of a **day's own span**
+ * (a DST day is 23 or 25 hours), snapping is in local wall-clock minutes, and
+ * moving a day is civil-date arithmetic. Playwright's `timezoneId` reaches the
+ * browser context and not Node, so a Node-side spec could not put any of that
+ * under test — it would pass in one zone and say nothing about the rest.
+ *
+ * No DOM, no pointer events, no component: this module is the arithmetic on its
+ * own, which is the whole point of Task 2. What needs a browser is the gesture,
+ * and that is Task 3.
+ */
+const PURE = '/tests/harness/index.html?c=eventform&f=none';
+
+const MIN = 60_000;
+const HOUR = 60 * MIN;
+const DAY = 24 * HOUR;
+const SNAP = 15 * MIN;
+
+/** 2026-08-10T09:00:00Z, a Monday well clear of any transition. */
+const T0900Z = Date.UTC(2026, 7, 10, 9, 0);
+
+/** The origin span every case starts from: 09:00–09:30. */
+const ORIGIN = { startMs: T0900Z, endMs: T0900Z + 30 * MIN };
+
+type Span = { startMs: number; endMs: number };
+
+const drag = (page: import('@playwright/test').Page) =>
+  page.evaluate(() => Object.keys((window as any).__drag ?? {}));
+
+/** `spanForMove` in the page, with the fixture's own constants. */
+const move = (
+  page: import('@playwright/test').Page,
+  args: { origin?: Span; dyFrac: number; dayMs?: number; dayCols?: number; dxCols: number },
+): Promise<Span> =>
+  page.evaluate((a) => {
+    const d = (window as any).__drag;
+    return d.spanForMove(a.origin, a.dyFrac, a.dayMs, a.dayCols, a.dxCols, a.snap);
+  }, {
+    origin: args.origin ?? ORIGIN,
+    dyFrac: args.dyFrac,
+    dayMs: args.dayMs ?? DAY,
+    dayCols: args.dayCols ?? 7,
+    dxCols: args.dxCols,
+    snap: SNAP,
+  });
+
+/** `spanForResize` in the page. */
+const resize = (
+  page: import('@playwright/test').Page,
+  args: { origin?: Span; edge: 'start' | 'end'; dyFrac: number; dayMs?: number },
+): Promise<Span> =>
+  page.evaluate((a) => {
+    const d = (window as any).__drag;
+    return d.spanForResize(a.origin, a.edge, a.dyFrac, a.dayMs, a.snap);
+  }, {
+    origin: args.origin ?? ORIGIN,
+    edge: args.edge,
+    dyFrac: args.dyFrac,
+    dayMs: args.dayMs ?? DAY,
+    snap: SNAP,
+  });
+
+test.describe('snapping', () => {
+  /**
+   * The table. `within` is minutes past the hour going in, `expect` is minutes
+   * past the hour coming out, on a 15-minute snap.
+   *
+   * **The midpoint is a decision, not an accident.** 7.5 minutes is exactly
+   * between two slots and rounds **up**, which is `Math.round`'s own rule and
+   * the least surprising one to describe: "nearest, and ties go forward". The
+   * row below it — 7.49 — is what stops that being satisfied by a function that
+   * always rounds up.
+   */
+  const cases: Array<{ within: number; expect: number; why: string }> = [
+    { within: 0, expect: 0, why: 'already on a slot: unmoved' },
+    { within: 15, expect: 15, why: 'already on a slot, mid-hour' },
+    { within: 1, expect: 0, why: 'just past a slot rounds back' },
+    { within: 7.49, expect: 0, why: 'below the midpoint rounds down' },
+    { within: 7.5, expect: 15, why: 'exactly the midpoint rounds up' },
+    { within: 7.51, expect: 15, why: 'above the midpoint rounds up' },
+    { within: 14, expect: 15, why: 'just short of a slot rounds on' },
+    { within: 52.5, expect: 60, why: 'the midpoint of the last slot rolls the hour' },
+    { within: 59, expect: 60, why: 'nearly the hour rolls the hour' },
+  ];
+
+  for (const c of cases) {
+    test(`${c.within} minutes past the hour snaps to ${c.expect} — ${c.why}`, async ({ page }) => {
+      await page.goto(PURE);
+      const got = await page.evaluate(
+        (a) => (window as any).__drag.snapMs(a.ms, a.snap),
+        { ms: T0900Z + c.within * MIN, snap: SNAP },
+      );
+      expect(got).toBe(T0900Z + c.expect * MIN);
+    });
+  }
+});
+
+test.describe('moving', () => {
+  /**
+   * Time only: the column does not change, so nothing about the day may.
+   * Separate from the day-only case below **on purpose** — a fixture that moved
+   * both axes could not say which one was wrong.
+   */
+  test('a move down the column changes the time and not the day', async ({ page }) => {
+    await page.goto(PURE);
+    // One hour down a 24-hour day.
+    const got = await move(page, { dyFrac: 1 / 24, dxCols: 0 });
+
+    expect(got.startMs).toBe(T0900Z + HOUR);
+    expect(got.endMs).toBe(T0900Z + HOUR + 30 * MIN);
+  });
+
+  test('a move across columns changes the day and not the time', async ({ page }) => {
+    await page.goto(PURE);
+    // Two columns right, no vertical movement at all.
+    const got = await move(page, { dyFrac: 0, dxCols: 2 });
+
+    expect(got.startMs).toBe(T0900Z + 2 * DAY);
+    expect(got.endMs).toBe(T0900Z + 2 * DAY + 30 * MIN);
+  });
+
+  /**
+   * **Its own assertion, and not a corollary of where the block landed.** A
+   * move implemented as "set the start from the pointer, then recompute the end
+   * from the pointer too" passes a landing test and silently resizes the event
+   * by whatever the two roundings disagree about. Several offsets, including
+   * ones that do not land on a slot, so the rounding is exercised rather than
+   * avoided.
+   */
+  test('a move never changes the duration', async ({ page }) => {
+    await page.goto(PURE);
+    const origin = { startMs: T0900Z, endMs: T0900Z + 95 * MIN }; // deliberately not a slot multiple
+    const want = origin.endMs - origin.startMs;
+
+    for (const dyFrac of [0, 1 / 24, 0.013, -0.2, 0.5, 0.37]) {
+      for (const dxCols of [0, 1, -3]) {
+        const got = await move(page, { origin, dyFrac, dxCols });
+        expect(got.endMs - got.startMs, `dyFrac ${dyFrac}, dxCols ${dxCols}`).toBe(want);
+      }
+    }
+  });
+
+  /**
+   * §4: putting an event back where it came from must be free.
+   *
+   * **The origin is deliberately not on a slot.** An event at 09:07 — created
+   * elsewhere, or imported — grabbed and put back must come out at 09:07. Run
+   * through the ordinary path it would be snapped to 09:15, which is a move
+   * nobody asked for, on an event nobody dragged anywhere. A fixture starting
+   * at 09:00 cannot witness that: snapping an instant already on a boundary
+   * returns it, so both paths agree and the rule looks tested when it is not.
+   */
+  test('a move of nothing returns exactly what it was given', async ({ page }) => {
+    await page.goto(PURE);
+    const unaligned = { startMs: T0900Z + 7 * MIN, endMs: T0900Z + 37 * MIN };
+
+    const got = await move(page, { origin: unaligned, dyFrac: 0, dxCols: 0 });
+
+    expect(got).toEqual(unaligned);
+  });
+
+  /**
+   * And the converse, so the rule above is not satisfied by a function that
+   * never snaps at all: an actual move *from* that unaligned origin lands on a
+   * slot. 09:07 dragged an hour down is 10:07, which snaps back to 10:00.
+   */
+  test('a move from an unaligned origin lands on a slot', async ({ page }) => {
+    await page.goto(PURE);
+    const unaligned = { startMs: T0900Z + 7 * MIN, endMs: T0900Z + 37 * MIN };
+
+    const got = await move(page, { origin: unaligned, dyFrac: 1 / 24, dxCols: 0 });
+
+    expect(got.startMs).toBe(T0900Z + HOUR);
+    expect(got.endMs - got.startMs, 'and the duration is still its own').toBe(30 * MIN);
+  });
+});
+
+test.describe('moving across a daylight-saving boundary', () => {
+  // Sofia's clocks go forward at 03:00 on 29 Mar 2026. Two things here are not
+  // 24 hours: the day the event starts on, and the gap between the same wall
+  // time on either side of it.
+  test.use({ timezoneId: 'Europe/Sofia' });
+
+  /**
+   * A day is not `+ 86400000`.
+   *
+   * Dragging a 09:00 meeting from Saturday to Sunday across the spring-forward
+   * must leave it at **09:00 on Sunday**, which is 23 hours later, not 24. The
+   * naive arithmetic lands it at 10:00 — the same defect this project has now
+   * closed twice elsewhere, and the reason the day axis is civil rather than
+   * additive.
+   */
+  test('a day is a civil day, not twenty-four hours', async ({ page }) => {
+    await page.goto(PURE);
+    const sat0900 = Date.parse('2026-03-28T09:00:00+02:00');
+    const sun0900 = Date.parse('2026-03-29T09:00:00+03:00');
+
+    // The premise, asserted rather than trusted: these two are 23 hours apart,
+    // so a fixture that stopped straddling the transition fails here first.
+    expect(sun0900 - sat0900).toBe(23 * HOUR);
+
+    const got = await move(page, {
+      origin: { startMs: sat0900, endMs: sat0900 + 30 * MIN },
+      dyFrac: 0,
+      dxCols: 1,
+    });
+
+    expect(got.startMs).toBe(sun0900);
+    expect(got.endMs).toBe(sun0900 + 30 * MIN);
+  });
+
+  /**
+   * And the vertical axis is a fraction of **that day's own span**, which is
+   * what `WeekGrid`'s `hourFrac` and `slotAt` already do. Half way down a
+   * 23-hour Sunday is 11.5 hours, not 12.
+   */
+  test('the vertical axis is a fraction of the day it is dragged in', async ({ page }) => {
+    await page.goto(PURE);
+    const sunStart = Date.parse('2026-03-29T00:00:00+02:00');
+    const dayMs = Date.parse('2026-03-30T00:00:00+03:00') - sunStart;
+    expect(dayMs, 'fixture check: a spring-forward Sunday is 23 hours').toBe(23 * HOUR);
+
+    // The wall clock is read **in the page**, never here: `timezoneId` reaches
+    // the browser context and not Node, so `new Date(ms).getHours()` in this
+    // process answers in the host's zone and would assert nothing about Sofia.
+    // The harness says the same thing about `__eventform`; it caught this spec
+    // out first.
+    const got = await page.evaluate((a) => {
+      const d = (window as any).__drag;
+      const span = d.spanForMove(a.origin, 0.5, a.dayMs, 7, 0, a.snap);
+      const at = new Date(span.startMs);
+      return { ...span, localHour: at.getHours(), localMinute: at.getMinutes() };
+    }, {
+      origin: { startMs: sunStart, endMs: sunStart + 30 * MIN },
+      dayMs,
+      snap: SNAP,
+    });
+
+    // 11.5 hours past local midnight, snapped — and 11.5h after 00:00 on a day
+    // that loses an hour at 03:00 is 12:30 on the wall clock.
+    expect(got.startMs).toBe(sunStart + 11.5 * HOUR);
+    expect(got.localHour).toBe(12);
+    expect(got.localMinute).toBe(30);
+  });
+});
+
+test.describe('resizing', () => {
+  test('dragging the start edge moves the start and leaves the end', async ({ page }) => {
+    await page.goto(PURE);
+    // Half an hour up.
+    const got = await resize(page, { edge: 'start', dyFrac: -0.5 / 24 });
+
+    expect(got.startMs).toBe(T0900Z - 30 * MIN);
+    expect(got.endMs, 'the other edge stays put').toBe(ORIGIN.endMs);
+  });
+
+  test('dragging the end edge moves the end and leaves the start', async ({ page }) => {
+    await page.goto(PURE);
+    const got = await resize(page, { edge: 'end', dyFrac: 1 / 24 });
+
+    expect(got.endMs).toBe(ORIGIN.endMs + HOUR);
+    expect(got.startMs, 'the other edge stays put').toBe(ORIGIN.startMs);
+  });
+
+  /**
+   * §5: **a resize may not invert an event.** `endAfterStart` refuses a
+   * negative span in the form, so a grid able to construct one produces a block
+   * the form would reject — that inconsistency is the defect, not the negative
+   * number itself.
+   *
+   * The minimum is the snap interval, deliberately rather than a second
+   * constant: the smallest span the grid can express is the smallest one it
+   * should be able to produce.
+   */
+  test('dragging the start past the end clamps to a minimum instead of inverting', async ({ page }) => {
+    await page.goto(PURE);
+    // Three hours down, from a half-hour event: far past its own end.
+    const got = await resize(page, { edge: 'start', dyFrac: 3 / 24 });
+
+    expect(got.endMs - got.startMs).toBeGreaterThan(0);
+    expect(got.endMs - got.startMs).toBe(SNAP);
+    expect(got.endMs, 'the edge not being dragged is still untouched').toBe(ORIGIN.endMs);
+    expect(got.startMs).toBe(ORIGIN.endMs - SNAP);
+  });
+
+  test('dragging the end before the start clamps to a minimum instead of inverting', async ({ page }) => {
+    await page.goto(PURE);
+    const got = await resize(page, { edge: 'end', dyFrac: -3 / 24 });
+
+    expect(got.endMs - got.startMs).toBe(SNAP);
+    expect(got.startMs, 'the edge not being dragged is still untouched').toBe(ORIGIN.startMs);
+    expect(got.endMs).toBe(ORIGIN.startMs + SNAP);
+  });
+
+  /**
+   * The boundary of the clamp, from the safe side: a resize that lands exactly
+   * on the minimum is honoured rather than clamped, so the clamp cannot be
+   * satisfied by a function that always returns the minimum.
+   */
+  test('a resize down to exactly the minimum is left alone', async ({ page }) => {
+    await page.goto(PURE);
+    // The end back by 15 minutes, from a 30-minute event: exactly the minimum.
+    const got = await resize(page, { edge: 'end', dyFrac: -0.25 / 24 });
+
+    expect(got.endMs - got.startMs).toBe(SNAP);
+    expect(got.endMs).toBe(ORIGIN.endMs - 15 * MIN);
+  });
+});
+
+test('the module exports exactly the three functions the plan names', async ({ page }) => {
+  await page.goto(PURE);
+  // A guard on the shape rather than on any answer: Task 3 wires a component to
+  // these names, and a rename here would otherwise surface as a runtime
+  // undefined in a gesture spec rather than as a failure here.
+  expect((await drag(page)).sort()).toEqual(['snapMs', 'spanForMove', 'spanForResize']);
+});
