@@ -9,7 +9,7 @@
   import { getEventDetail, refreshEvent, type EventDetail, type Occurrence } from './eventdetail';
   import { SNAP_MS, beganDrag, spanForMove } from './drag';
 
-  let { week, oncreate, onedit, ondelete }: {
+  let { week, oncreate, onedit, ondelete, onmove }: {
     week: WeekPayload;
     /** A click on empty space in a day column, at the half hour it landed in.
      *  `rect` is the anchor to put the form beside — the column at the height
@@ -23,6 +23,11 @@
     /** Delete was clicked there, carrying the same `Occurrence` for the same
      *  reason. Nothing is deleted by this: the caller confirms first. */
     ondelete: (occurrence: Occurrence, rect: Rect) => void;
+    /** A completed drag, handed up rather than written here: the grid decides
+     *  *which occurrence* moved and *where to*, and `App` owns every write —
+     *  the same split `oncreate`/`onedit`/`ondelete` already use. `WeekGrid`
+     *  contains no `invoke`, and that is a property worth keeping. */
+    onmove: (event: UiEvent, span: { startMs: number; endMs: number }) => void;
   } = $props();
 
   const HOURS = [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22];
@@ -208,6 +213,10 @@
    * the block's own `top` is in.
    */
   type Drag = {
+    /** The occurrence being dragged, kept whole so the drop can hand it up
+     *  without the grid having to find it again in a `week` that may have been
+     *  replaced by a background reload while the pointer was down. */
+    event: UiEvent;
     id: number;
     startMs: number;
     originX: number;
@@ -251,6 +260,7 @@
     if (!col) return;
 
     drag = {
+      event,
       id: event.id,
       startMs: event.start_ms,
       originX: e.clientX,
@@ -296,10 +306,37 @@
 
   function onDragEnd() {
     if (!drag) return;
-    // §4: a drop where it started writes nothing. Here that is the whole of
-    // it — there is no write yet — and the block simply returns.
     draggedNotClicked = drag.moving;
+
+    // **§4: a drop that lands where it started takes no action at all.** Not
+    // "writes the same values" — no request, no dialog, nothing. Grabbing an
+    // event and putting it back must be free, and the only way to guarantee
+    // that is to decide it here, before anything downstream can be asked to
+    // notice that a write would be a no-op.
+    //
+    // Compared as instants rather than as pixels: two pointer positions inside
+    // one 15-minute slot are the same drop, and the geometry has already said
+    // so by returning the span it did.
+    // One question, asked of the span rather than of the gesture: a press that
+    // never passed the threshold has an offset of zero and so lands on its own
+    // origin, which is the same answer for the same reason. A `drag.moving`
+    // check here as well reddened nothing when deleted, because it could not
+    // disagree.
+    const landed = spanOf(drag);
+    const moved = landed.startMs !== drag.origin.startMs;
+    const event = drag.event;
+
     endDrag();
+    if (moved) onmove(event, landed);
+  }
+
+  /** The span the current drag has arrived at, in the geometry's own terms. */
+  function spanOf(d: Drag): { startMs: number; endMs: number } {
+    const shifted = (d.offsetPct / 100) * d.dayMs;
+    return {
+      startMs: d.origin.startMs + shifted,
+      endMs: d.origin.endMs + shifted,
+    };
   }
 
   function onDragKey(e: KeyboardEvent) {

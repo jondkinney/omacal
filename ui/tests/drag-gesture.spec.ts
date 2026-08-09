@@ -245,3 +245,88 @@ test.describe('what the gesture must not break', () => {
     await expect(page.locator('.pop')).toBeVisible();
   });
 });
+
+test.describe('a completed drag writes', () => {
+  /**
+   * What the grid hands up. `WeekGrid` still contains no `invoke` — it decides
+   * *which* occurrence moved and *where to*, and `App` owns the write, exactly
+   * as `oncreate`/`onedit`/`ondelete` already do.
+   */
+  test('a drop hands up the occurrence and the span it landed on', async ({ page }) => {
+    await open(page);
+    const col = await page.locator('.col').first().boundingBox();
+    if (!col) throw new Error('no column');
+    const step = col.height / 96; // 15 minutes of a 24-hour day
+
+    const before = await page.evaluate(() => {
+      const e = document.querySelector('.ev') as HTMLElement;
+      return { title: e.getAttribute('title') };
+    });
+
+    await grabAndMove(page, step * 4); // an hour down
+    await page.mouse.up();
+
+    const moved = await page.evaluate(() => (window as any).__lastMove);
+    expect(moved, 'a real move must be handed up').not.toBeNull();
+    expect(moved.event.title).toBe(before.title);
+    // An hour later, and the duration is the geometry's business rather than
+    // this spec's — `drag.spec.ts` pins that it cannot change.
+    expect(moved.span.startMs - moved.event.start_ms).toBe(60 * 60_000);
+    expect(moved.span.endMs - moved.span.startMs).toBe(
+      moved.event.end_ms - moved.event.start_ms,
+    );
+  });
+
+  /**
+   * **§4, and the assertion this task exists to make hard to weaken.**
+   *
+   * A drop that lands where it started takes **no action at all** — not a write
+   * that turns out to be a no-op, not a request the backend declines. Nothing
+   * is handed up, so nothing downstream is even asked.
+   *
+   * Task 3 wrote this as "the block is unmoved"; it is the absence of a call
+   * now, which is the form it keeps for good.
+   */
+  test('a drop where it started hands up nothing at all', async ({ page }) => {
+    await open(page);
+    const { cx, cy } = await grabAndMove(page, 80);
+    await page.mouse.move(cx, cy, { steps: 4 });
+    await page.mouse.up();
+
+    expect(await page.evaluate(() => (window as any).__lastMove)).toBeNull();
+  });
+
+  /**
+   * And the same for a drag small enough that the snap puts it back on its own
+   * slot: the pointer moved, the block did not, and there is nothing to write.
+   * Without this the guard could be satisfied by comparing pixels, which two
+   * positions inside one 15-minute slot disagree about.
+   */
+  test('a drag too small to change the slot hands up nothing', async ({ page }) => {
+    await open(page);
+    const col = await page.locator('.col').first().boundingBox();
+    if (!col) throw new Error('no column');
+    const step = col.height / 96;
+
+    // The band this spec needs is narrow and worth asserting rather than
+    // assuming: past the 4px threshold, so a drag genuinely begins, and short
+    // of half a slot, so the snap puts it straight back. On a 1200px column a
+    // step is 12.5px, which leaves 4 to 6.25.
+    const dy = step * 0.4;
+    expect(dy, 'must begin a drag at all').toBeGreaterThan(4);
+    expect(dy, 'must still snap back to its own slot').toBeLessThan(step / 2);
+    await grabAndMove(page, dy);
+    await page.mouse.up();
+
+    expect(await page.evaluate(() => (window as any).__lastMove)).toBeNull();
+  });
+
+  test('Escape hands up nothing, however far the block was dragged', async ({ page }) => {
+    await open(page);
+    await grabAndMove(page, 200);
+    await page.keyboard.press('Escape');
+    await page.mouse.up();
+
+    expect(await page.evaluate(() => (window as any).__lastMove)).toBeNull();
+  });
+});

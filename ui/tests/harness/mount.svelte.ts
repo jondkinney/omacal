@@ -145,6 +145,7 @@ if (name === 'App') {
       (window as any).__lastCreate = null;
       (window as any).__lastEdit = null;
       (window as any).__lastDelete = null;
+      (window as any).__lastMove = null;
       // Spread first, then shadow `week` with the live getter — naming only
       // `week` here would silently drop any second prop a fixture grows.
       mount(WeekGrid, {
@@ -160,6 +161,12 @@ if (name === 'App') {
           },
           ondelete: (occurrence: unknown, rect: unknown) => {
             (window as any).__lastDelete = { occurrence, rect };
+          },
+          // A completed drag, for the same reason as the three above: the grid
+          // hands the write up rather than making it, so a spec reads exactly
+          // what it was handed.
+          onmove: (event: unknown, span: unknown) => {
+            (window as any).__lastMove = { event, span };
           },
         },
       });

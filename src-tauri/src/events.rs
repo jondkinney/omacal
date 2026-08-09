@@ -981,6 +981,7 @@ pub async fn update_event(
     scope: String,
     occurrence_start_ms: i64,
     fields: crate::write::EventInput,
+    send_updates: String,
 ) -> Result<EventDetail, String> {
     update_impl(
         &state,
@@ -988,6 +989,7 @@ pub async fn update_event(
         &scope,
         occurrence_start_ms,
         crate::write::fields_from_input(fields),
+        &send_updates,
     )
     .await
     .map_err(|e| crate::errors::user_facing(&e))
@@ -999,18 +1001,27 @@ pub async fn update_event(
 /// `load_config` or the Keychain, and the guards above it stay reachable
 /// without a running app.
 ///
+/// `send_updates` is Google's own vocabulary, carried from the caller rather
+/// than chosen here — see `CalendarClient::patch_event`. The form sends
+/// `"all"`, because a time typed on purpose and saved is exactly the change
+/// guests need to hear about; a drag sends `"none"`, because a gesture can
+/// happen by accident and a slip of the mouse must not mail a guest list
+/// (drag spec §2).
+///
 /// The order of the four checks is the point of the function. Demo mode
 /// first, before any database access at all. Then `scope`, because it is a
 /// pure function of an argument and the two scopes this task implements are
 /// not the only two the UI will eventually send. Then the row, then
 /// writability — refused before `load_config`, the Keychain or Google ever
 /// see the request.
+#[allow(clippy::too_many_arguments)]
 async fn update_impl(
     state: &AppState,
     id: i64,
     scope: &str,
     occurrence_start_ms: i64,
     fields: crate::write::EventFields,
+    send_updates: &str,
 ) -> anyhow::Result<EventDetail> {
     if state.demo {
         anyhow::bail!("demo mode — there is nothing to save");
@@ -1061,6 +1072,7 @@ async fn update_impl(
         &cal_google_id,
         &cal_tz,
         fields,
+        send_updates,
         &client,
     )
     .await?;
@@ -1099,6 +1111,7 @@ async fn update_via_client(
     cal_google_id: &str,
     cal_tz: &str,
     after: crate::write::EventFields,
+    send_updates: &str,
     client: &omacal_google::CalendarClient,
 ) -> anyhow::Result<()> {
     // A row carrying `recurrence` is a series master; scope "this" must still
@@ -1260,15 +1273,18 @@ async fn update_via_client(
 
     let body =
         edit_patch_body(&ev, target_start, target_end, occurrence_start_ms, cal_tz, &after);
-    // Nothing changed. A PATCH with an empty body is not harmless: it still
-    // goes out with `sendUpdates=all`, so it would mail the guest list about
-    // an edit nobody made.
+    // Nothing changed. A PATCH with an empty body is not harmless: on the
+    // form's path it carries `sendUpdates=all`, so it would mail the guest
+    // list about an edit nobody made. A drag sends `"none"` and reaches here
+    // only if a drop landed back on its own slot — which the grid already
+    // declines to send at all, so this is the second of two guards rather
+    // than the only one.
     if body == serde_json::json!({}) {
         return Ok(());
     }
 
     let patched = match client
-        .patch_event(cal_google_id, &event_id, &body, "all", if_match.as_deref())
+        .patch_event(cal_google_id, &event_id, &body, send_updates, if_match.as_deref())
         .await
     {
         Ok(p) => p,
@@ -1289,7 +1305,7 @@ async fn update_via_client(
                 &after,
             );
             client
-                .patch_event(cal_google_id, &event_id, &retry, "all", row.etag.as_deref())
+                .patch_event(cal_google_id, &event_id, &retry, send_updates, row.etag.as_deref())
                 .await?
         }
         Err(e) => return Err(e.into()),
@@ -3575,6 +3591,7 @@ mod tests {
             "cal@x.com",
             "UTC",
             form("Standup (moved)", OCCURRENCE, OCCURRENCE + HOUR),
+            "all",
             &client,
         )
         .await
@@ -3626,6 +3643,7 @@ mod tests {
             "cal@x.com",
             "UTC",
             form("Standup (moved)", OCCURRENCE, OCCURRENCE + HOUR),
+            "all",
             &client,
         )
         .await
@@ -3676,6 +3694,7 @@ mod tests {
             "cal@x.com",
             "UTC",
             form("Standup (moved)", OCCURRENCE, OCCURRENCE + HOUR),
+            "all",
             &client,
         )
         .await
@@ -3763,6 +3782,7 @@ mod tests {
             "cal@x.com",
             "UTC",
             form("Standup (moved)", occ, occ + HOUR),
+            "all",
             &client,
         )
         .await
@@ -3818,6 +3838,7 @@ mod tests {
             "cal@x.com",
             "UTC",
             form("Retro (moved)", OCCURRENCE, OCCURRENCE + HOUR),
+            "all",
             &client,
         )
         .await
@@ -3885,6 +3906,7 @@ mod tests {
             "cal@x.com",
             "Pacific/Auckland",
             form("Standup", OCCURRENCE + HOUR, OCCURRENCE + 2 * HOUR),
+            "all",
             &client,
         )
         .await
@@ -3948,7 +3970,7 @@ mod tests {
             .await;
 
         let client = omacal_google::CalendarClient::new(server.uri(), "tok");
-        update_via_client(&pool, "all", OCCURRENCE, ev, "cal@x.com", "UTC", after, &client)
+        update_via_client(&pool, "all", OCCURRENCE, ev, "cal@x.com", "UTC", after, "all", &client)
             .await
             .unwrap();
 
@@ -3958,9 +3980,69 @@ mod tests {
         assert_eq!(row.summary.as_deref(), Some("Lunch with Ana"));
     }
 
-    /// A save with nothing changed must not become a request at all. Every
-    /// PATCH here goes out with `sendUpdates=all`, so an empty edit would
-    /// still mail the guest list about a change nobody made.
+    /// **What `sendUpdates` actually reaches Google**, asserted on the wire
+    /// rather than on an argument: an internal assertion passes happily while
+    /// the request carries something else.
+    ///
+    /// Both values, because they are opposite instructions. `"all"` is the
+    /// form's — a time typed on purpose deserves to be told about — and
+    /// `"none"` is a drag's, because a gesture can happen by accident and a
+    /// slip of the mouse must not mail a guest list (drag spec §2).
+    ///
+    /// `query_param` **and** `.expect(1)`: the matcher says what a matching
+    /// request looks like, and `.expect(1)` is what insists one happened. A
+    /// request carrying the other value matches no mock, and wiremock's
+    /// unmatched-request 404 would come back through a path that does not
+    /// distinguish it from a transport failure.
+    #[tokio::test]
+    async fn a_move_sends_the_send_updates_it_was_given() {
+        for send_updates in ["all", "none"] {
+            let mut ev = stored(vec![guest(true)]);
+            ev.summary = Some("Standup".into());
+            ev.start_utc = OCCURRENCE;
+            ev.end_utc = OCCURRENCE + HOUR;
+            let (pool, _id) = seeded_pool_on_cal(&mut ev.clone(), "UTC").await;
+
+            let server = wiremock::MockServer::start().await;
+            wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+                .and(wiremock::matchers::path("/calendars/cal%40x.com/events/ev1"))
+                .and(wiremock::matchers::query_param("sendUpdates", send_updates))
+                .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(
+                    serde_json::json!({
+                        "id": "ev1", "status": "confirmed", "etag": "\"e2\"",
+                        "summary": "Standup",
+                        "start": {"dateTime": omacal_sync::to_rfc3339(OCCURRENCE + HOUR)},
+                        "end":   {"dateTime": omacal_sync::to_rfc3339(OCCURRENCE + 2 * HOUR)}
+                    }),
+                ))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            // An hour later: a move, which is the only thing a drag changes.
+            let after = form("Standup", OCCURRENCE + HOUR, OCCURRENCE + 2 * HOUR);
+            let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+            update_via_client(
+                &pool,
+                "all",
+                OCCURRENCE,
+                ev,
+                "cal@x.com",
+                "UTC",
+                after,
+                send_updates,
+                &client,
+            )
+            .await
+            .unwrap();
+            // `.expect(1)` is checked when the server drops at the end of this
+            // iteration; the `unwrap` above catches a 404 first.
+        }
+    }
+
+    /// A save with nothing changed must not become a request at all. On the
+    /// form's path every PATCH carries `sendUpdates=all`, so an empty edit
+    /// would still mail the guest list about a change nobody made.
     #[tokio::test]
     async fn an_edit_that_changes_nothing_sends_no_request() {
         let mut ev = stored(vec![]);
@@ -3981,6 +4063,7 @@ mod tests {
             "cal@x.com",
             "UTC",
             form("Lunch", OCCURRENCE, OCCURRENCE + HOUR),
+            "all",
             &client,
         )
         .await
@@ -4411,6 +4494,7 @@ mod tests {
             "thisAndPrevious",
             OCCURRENCE,
             form("Standup (moved)", OCCURRENCE, OCCURRENCE + HOUR),
+            "all",
         )
         .await
         .unwrap_err();
@@ -4433,6 +4517,7 @@ mod tests {
             "all",
             OCCURRENCE,
             form("Standup (moved)", OCCURRENCE, OCCURRENCE + HOUR),
+            "all",
         )
         .await
         .unwrap_err();
@@ -4515,6 +4600,7 @@ mod tests {
             "cal@x.com",
             "UTC",
             form("Brunch (moved)", OCCURRENCE, OCCURRENCE + HOUR),
+            "all",
             &client,
         )
         .await
@@ -4565,6 +4651,7 @@ mod tests {
             "cal@x.com",
             "UTC",
             form("Lunch", OCCURRENCE + HOUR, OCCURRENCE + 2 * HOUR),
+            "all",
             &client,
         )
         .await
@@ -4643,6 +4730,7 @@ mod tests {
             "cal@x.com",
             "UTC",
             form("Standup (moved)", OCCURRENCE, OCCURRENCE + HOUR),
+            "all",
             &client,
         )
         .await
@@ -4727,6 +4815,7 @@ mod tests {
             "cal@x.com",
             "UTC",
             form("Standup", moved, moved + HOUR),
+            "all",
             &client,
         )
         .await
@@ -4811,6 +4900,7 @@ mod tests {
             "cal@x.com",
             "America/New_York",
             after,
+            "all",
             &client,
         )
         .await
@@ -4864,6 +4954,7 @@ mod tests {
             "cal@x.com",
             "America/New_York",
             after,
+            "all",
             &client,
         )
         .await
@@ -4900,6 +4991,7 @@ mod tests {
             "cal@x.com",
             "UTC",
             form("Standup (moved)", OCCURRENCE, OCCURRENCE + HOUR),
+            "all",
             &client,
         )
         .await
@@ -4933,6 +5025,7 @@ mod tests {
             "all",
             OCCURRENCE,
             form("Standup (moved)", OCCURRENCE, OCCURRENCE + HOUR),
+            "all",
         )
         .await
         .unwrap_err();
@@ -5087,6 +5180,7 @@ mod tests {
             "cal@x.com",
             "UTC",
             form("Standup (from here)", OCCURRENCE, OCCURRENCE + HOUR),
+            "all",
             &client,
         )
         .await
@@ -5183,6 +5277,7 @@ mod tests {
             "cal@x.com",
             "UTC",
             form("Standup", OCCURRENCE, OCCURRENCE + HOUR),
+            "all",
             &client,
         )
         .await
@@ -5252,6 +5347,7 @@ mod tests {
             "UTC",
             // The row's own summary and its own span: nothing the user touched.
             form("Standup", clicked, clicked + HOUR),
+            "all",
             &client,
         )
         .await
@@ -5318,6 +5414,7 @@ mod tests {
             "cal@x.com",
             "UTC",
             form("Standup (from here)", OCCURRENCE, OCCURRENCE + HOUR),
+            "all",
             &client,
         )
         .await
@@ -5391,6 +5488,7 @@ mod tests {
             "cal@x.com",
             "UTC",
             form("Standup (from here)", OCCURRENCE, OCCURRENCE + HOUR),
+            "all",
             &client,
         )
         .await
@@ -5457,6 +5555,7 @@ mod tests {
             "cal@x.com",
             "UTC",
             form("Standup (from here)", OCCURRENCE, OCCURRENCE + HOUR),
+            "all",
             &client,
         )
         .await
@@ -5508,7 +5607,7 @@ mod tests {
         after.recurrence = Some(Some("RRULE:FREQ=DAILY".into()));
 
         let client = omacal_google::CalendarClient::new(server.uri(), "tok");
-        update_via_client(&pool, "following", OCCURRENCE, ev, "cal@x.com", "UTC", after, &client)
+        update_via_client(&pool, "following", OCCURRENCE, ev, "cal@x.com", "UTC", after, "all", &client)
             .await
             .unwrap();
 
@@ -5563,6 +5662,7 @@ mod tests {
             "cal@x.com",
             "UTC",
             form("Standup", moved, moved + HOUR),
+            "all",
             &client,
         )
         .await
@@ -5616,6 +5716,7 @@ mod tests {
             "cal@x.com",
             "UTC",
             form("Standup (renamed)", DTSTART, DTSTART + HOUR),
+            "all",
             &client,
         )
         .await
@@ -5662,6 +5763,7 @@ mod tests {
             "cal@x.com",
             "UTC",
             form("Standup (from here)", OCCURRENCE, OCCURRENCE + HOUR),
+            "all",
             &client,
         )
         .await
@@ -5754,6 +5856,7 @@ mod tests {
             "cal@x.com",
             "UTC",
             form("Standup (from here)", OCCURRENCE, OCCURRENCE + HOUR),
+            "all",
             &client,
         )
         .await
@@ -5822,6 +5925,7 @@ mod tests {
             "cal@x.com",
             "UTC",
             form("Standup (from here)", clicked, clicked + HOUR),
+            "all",
             &client,
         )
         .await
@@ -5889,6 +5993,7 @@ mod tests {
             "cal@x.com",
             "UTC",
             form("Standup (from here)", OCCURRENCE, OCCURRENCE + HOUR),
+            "all",
             &client,
         )
         .await
@@ -5985,6 +6090,7 @@ mod tests {
             "cal@x.com",
             "Pacific/Auckland",
             after,
+            "all",
             &client,
         )
         .await
@@ -6093,6 +6199,7 @@ mod tests {
             "cal@x.com",
             "Pacific/Auckland",
             after,
+            "all",
             &client,
         )
         .await
@@ -6155,7 +6262,7 @@ mod tests {
         let after = all_day_form("Standup (from here)", "2026-08-10", "2026-08-11");
 
         let client = omacal_google::CalendarClient::new(server.uri(), "tok");
-        update_via_client(&pool, "following", OCCURRENCE, ev, "cal@x.com", "UTC", after, &client)
+        update_via_client(&pool, "following", OCCURRENCE, ev, "cal@x.com", "UTC", after, "all", &client)
             .await
             .unwrap();
 
@@ -6228,6 +6335,7 @@ mod tests {
             "cal@x.com",
             "UTC",
             form("Standup (from here)", OCCURRENCE, OCCURRENCE + HOUR),
+            "all",
             &client,
         )
         .await
@@ -6297,6 +6405,7 @@ mod tests {
             "cal@x.com",
             "UTC",
             form("Standup (from here)", clicked, clicked + HOUR),
+            "all",
             &client,
         )
         .await
@@ -6359,6 +6468,7 @@ mod tests {
             "cal@x.com",
             "UTC",
             form("Standup (renamed)", clicked, clicked + HOUR),
+            "all",
             &client,
         )
         .await
@@ -6418,6 +6528,7 @@ mod tests {
             "cal@x.com",
             "UTC",
             form("Standup (from here)", OCCURRENCE, OCCURRENCE + HOUR),
+            "all",
             &client,
         )
         .await
@@ -6470,6 +6581,7 @@ mod tests {
             "cal@x.com",
             "UTC",
             form("Brunch", OCCURRENCE, OCCURRENCE + HOUR),
+            "all",
             &client,
         )
         .await
@@ -6495,6 +6607,7 @@ mod tests {
             "following",
             OCCURRENCE,
             form("Standup", OCCURRENCE, OCCURRENCE + HOUR),
+            "all",
         )
         .await
         .unwrap_err();
