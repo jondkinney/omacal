@@ -14,7 +14,9 @@ import type { AppStatus } from '../../src/lib/status';
 import type { Calendar } from '../../src/lib/calendars';
 import type { EventDetail } from '../../src/lib/eventdetail';
 import {
-  labelledWeek, weekLabel, APP_FIVE_MIN_AGO, POPOVER_DETAILS, busyDayMonth,
+  labelledWeek, weekLabel, APP_FIVE_MIN_AGO, APP_NOW, APP_SERIES_ID, APP_SERIES_OCCURRENCE,
+  APP_ONE_OFF_ID, APP_ONE_OFF_START, APP_GUESTS_ID, APP_SOLO_SERIES_ID,
+  POPOVER_DETAILS, busyDayMonth,
   appWritableWeek, APP_WRITE_CALENDARS, CREATED_DETAIL, crossZoneWeek,
   XZONE_WEEK_START,
 } from '../fixtures';
@@ -69,6 +71,14 @@ export type Harness = {
    *  while another's detail is still loading), the after-paint refresh
    *  (control when it lands), and closing a popover while its own RSVP is
    *  still in flight (control when *that* lands). */
+  /** Parks the next `search_events` call. What it is for is the race a
+   *  search-as-you-type overlay has: a response to an *earlier* query arriving
+   *  after a later one and overwriting it. Holding the first and letting the
+   *  second answer immediately is the only way to produce that ordering
+   *  deliberately. */
+  holdNextSearch(): void;
+  /** Releases the oldest parked search call. */
+  releaseSearch(): Promise<void>;
   holdNextEventCall(cmd: 'event_detail' | 'refresh_event' | 'respond_to_event', id: number): void;
   /** Answer the parked call for this command and id, then let its `.then`
    *  chain — including `WeekGrid`'s own `detail = fresh` — actually run. */
@@ -116,6 +126,11 @@ let nextId = 1;
 let failWeekOnce: string | null = null;
 let failUpdateOnce: string | null = null;
 let failCalendarOnce: { cmd: string; message: string } | null = null;
+/** Held search calls, oldest first — see `holdNextSearch`. Module level, like
+ *  the calendar and event parks beside it: the harness object that releases
+ *  them is module level too. */
+const parkedSearch: Array<{ query: string; resolve: () => void }> = [];
+let holdSearchOnce = false;
 let holdCalendarOnce: string | null = null;
 const parkedCalendar = new Map<string, CalendarDeferred>();
 
@@ -183,6 +198,15 @@ const harness: Harness = {
     // Same reasoning as `release` above: let the resolution's `.then` chain —
     // `onchange()`, `markBusy(id, false)`, the focus restore — actually run
     // before the spec asserts on it.
+    await new Promise((r) => setTimeout(r, 50));
+  },
+  holdNextSearch() {
+    holdSearchOnce = true;
+  },
+  async releaseSearch() {
+    parkedSearch.shift()?.resolve();
+    // Let the resolution's own `.then` run before a spec asserts on it, the
+    // same reason `release` above waits.
     await new Promise((r) => setTimeout(r, 50));
   },
   holdNextEventCall(cmd, id) {
@@ -414,6 +438,37 @@ function getBigYearStub(y: number): BigYearPayload {
 }
 
 /** Installs the stub. Call before mounting anything that talks to Tauri. */
+/**
+ * What `search_events` answers from, filtered by the query.
+ *
+ * Both sides of the app's frozen clock (`APP_NOW`, Mon 29 Jan 2024) on
+ * purpose: with everything in the future, nearest-first and soonest-first are
+ * the same order and the ordering assertion would say nothing. The Rust side
+ * owns the real ordering; this exists so the overlay can be driven.
+ */
+const SEARCHABLE = [
+  {
+    eventId: APP_SERIES_ID, title: 'Standup',
+    startMs: APP_SERIES_OCCURRENCE, endMs: APP_SERIES_OCCURRENCE + 30 * 60_000,
+  },
+  {
+    eventId: APP_ONE_OFF_ID, title: 'Board prep',
+    startMs: APP_ONE_OFF_START, endMs: APP_ONE_OFF_START + 60 * 60_000,
+  },
+  {
+    eventId: APP_GUESTS_ID, title: 'Standup review',
+    startMs: APP_NOW - 48 * 3_600_000, endMs: APP_NOW - 47 * 3_600_000,
+  },
+  // **A different month from the one the app opens on**, which is what makes
+  // "the calendar moves to that date" witnessable at all: every other entry
+  // here sits in the same January the anchor already starts in, so choosing
+  // one moves nothing and a version that never moved would pass.
+  {
+    eventId: APP_SOLO_SERIES_ID, title: 'Dentist',
+    startMs: APP_NOW + 45 * 24 * 3_600_000, endMs: APP_NOW + 45 * 24 * 3_600_000 + 3_600_000,
+  },
+];
+
 export function installTauriStub(scenario: string): Harness {
   // Reassigned by `sign_in` for the `sign-in-adds-account` scenario: a real
   // `sign_in` leaves the account durably connected, so the next `get_status`
@@ -478,6 +533,23 @@ export function installTauriStub(scenario: string): Harness {
       // returned as constants, because half of what its specs assert is that a
       // value **came back changed** — a stub answering the same thing forever
       // cannot tell a saved setting from an ignored one.
+      // Search. Results come from the scenario's own events so a spec can
+      // assert on titles it seeded, and the *query* is honoured here rather
+      // than in the app — a stub that answered the same list for every query
+      // could not tell a superseded response from a current one.
+      case 'search_events': {
+        const q = String(args.query ?? '').trim().toLowerCase();
+        const hits = q === ''
+          ? []
+          : SEARCHABLE.filter((h) => h.title.toLowerCase().includes(q));
+        if (holdSearchOnce) {
+          holdSearchOnce = false;
+          return new Promise((resolve) => {
+            parkedSearch.push({ query: q, resolve: () => resolve(hits) });
+          });
+        }
+        return hits;
+      }
       case 'get_settings':
         return { ...settings };
       case 'set_sync_interval': {

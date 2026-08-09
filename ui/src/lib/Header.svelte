@@ -9,7 +9,7 @@
 
   let {
     status, anchorMs, weekStartMs, busy, error, calendars, view, onpick,
-    onPrev, onNext, onToday, onSignIn, onSync, oncalendarchange,
+    onPrev, onNext, onToday, onSearch, onSignIn, onSync, oncalendarchange,
     open = $bindable(false),
   }: {
     status: AppStatus | null;
@@ -27,6 +27,10 @@
     /** Forwarded straight to `ViewSwitcher`'s `onpick`. */
     onpick: (v: View) => void;
     onPrev: () => void; onNext: () => void; onToday: () => void;
+    /** Opens the search overlay. A small control rather than a field: the
+     *  header was emptied on purpose (settings spec §1) and putting a
+     *  permanent input back into it would undo that. */
+    onSearch: () => void;
     onSignIn: () => void; onSync: () => void; oncalendarchange: () => void;
     /** Bound through to `CalendarPopover` — lets `App` open the picker
      *  straight after a sign-in, from outside the popover's own trigger. */
@@ -188,6 +192,8 @@
       </button>
     {/if}
 
+    <button class="search" aria-label="Search" title="Search (/)" onclick={onSearch}>⌕</button>
+
     <div class="menuwrap">
       <button
         class="burger"
@@ -308,6 +314,10 @@
   .light.synced { background: var(--sync-ok); }
   .light.syncing { background: var(--accent); }
   .light.failed { background: var(--error); }
+
+  /* A glyph, not a field. The magnifier is the one control search gets in the
+     header; the overlay is where the typing happens. */
+  .search { font-size: 15px; line-height: 1; padding: 2px 8px; }
 
   .menuwrap { position: relative; }
   .burger { font-size: 13px; line-height: 1; padding: 3px 8px; }

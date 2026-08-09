@@ -240,7 +240,8 @@ const noop = () => {};
 const header = (status: AppStatus, busy = false) => ({
   status, anchorMs: MON, weekStartMs: MON, busy, error: null as string | null, calendars: [] as Calendar[],
   view: 'week' as View, onpick: noop,
-  onPrev: noop, onNext: noop, onToday: noop, onSignIn: noop, onSync: noop, oncalendarchange: noop,
+  onPrev: noop, onNext: noop, onToday: noop, onSearch: noop, onSignIn: noop, onSync: noop,
+  oncalendarchange: noop,
 });
 
 /** Exactly five minutes before `FIXED_NOW`, so a frozen clock always reads "5 min ago". */
@@ -1196,7 +1197,7 @@ export const APP_SERIES_DTSTART = APP_MON + 9 * H;
 export const APP_SERIES_OCCURRENCE = APP_MON + 3 * 24 * H + 9 * H;
 export const APP_SERIES_ID = 4242;
 export const APP_ONE_OFF_ID = 4243;
-const APP_ONE_OFF_START = APP_MON + 14 * H;
+export const APP_ONE_OFF_START = APP_MON + 14 * H;
 /** 4246, not 4245: `XZONE_ID` is read out of a golden payload rather than
  *  declared here, and it happens to be 4245 — its own `POPOVER_DETAILS` entry
  *  is assigned further down the file and silently replaced this one. The

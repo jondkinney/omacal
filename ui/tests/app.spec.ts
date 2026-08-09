@@ -1447,6 +1447,174 @@ test.describe('App', () => {
     await expect(newForm(page)).toBeVisible();
   });
 
+  // --- Search (spec §1, §6, §7) --------------------------------------------
+
+  const search = (page: Page) => page.getByRole('dialog', { name: 'Search' });
+  const field = (page: Page) => page.getByLabel('Search events');
+  const results = (page: Page) => search(page).getByRole('listitem');
+
+  test('slash opens search, and Escape closes it leaving the view alone', async ({ page }) => {
+    // §1: the calendar is still behind it, and closing without choosing leaves
+    // the user exactly where they were. The month title is the witness — it is
+    // what moves when the anchor does.
+    await writable(page);
+    const title = await page.locator('h1').textContent();
+
+    await page.keyboard.press('/');
+    await expect(search(page)).toBeVisible();
+    await expect(field(page)).toBeFocused();
+
+    await page.keyboard.press('Escape');
+    await expect(search(page)).toHaveCount(0);
+    expect(await page.locator('h1').textContent()).toBe(title);
+  });
+
+  test('the header offers a control, not a field', async ({ page }) => {
+    // The header was emptied on purpose; putting a permanent input back into
+    // it would undo that.
+    await writable(page);
+    await expect(page.locator('header input')).toHaveCount(0);
+    await page.getByRole('button', { name: 'Search' }).click();
+    await expect(search(page)).toBeVisible();
+  });
+
+  test('results appear as you type, and clear when the field does', async ({ page }) => {
+    await writable(page);
+    await page.keyboard.press('/');
+    await field(page).fill('standup');
+
+    await expect(results(page)).toHaveCount(2);
+    await expect(results(page).first()).toContainText('Standup');
+
+    await field(page).fill('');
+    await expect(results(page)).toHaveCount(0);
+  });
+
+  test('a query that matches nothing says so', async ({ page }) => {
+    await writable(page);
+    await page.keyboard.press('/');
+    await field(page).fill('zzzz');
+    await expect(search(page)).toContainText('Nothing matches');
+  });
+
+  /**
+   * **The race, driven deliberately.**
+   *
+   * Type `stan`, then `board`. The first query is held and released *after*
+   * the second has already answered — which is exactly the ordering that
+   * overwrites current results with stale ones, and exactly what a debounce
+   * makes rarer rather than impossible.
+   *
+   * The overlay tags each request and drops any answer that is not the latest.
+   * Without that guard this shows `Standup` after the user typed `board`, with
+   * no keystroke left to correct it because the field already says `board`.
+   */
+  test('a slow answer to an earlier query does not overwrite a later one', async ({ page }) => {
+    await writable(page);
+    await page.keyboard.press('/');
+
+    await page.evaluate(() => window.__harness.holdNextSearch());
+    await field(page).fill('stan');          // held
+    await field(page).fill('board');         // answers immediately
+    await expect(results(page)).toHaveCount(1);
+    await expect(results(page).first()).toContainText('Board prep');
+
+    // The stale answer arrives now.
+    await page.evaluate(() => window.__harness.releaseSearch());
+
+    await expect(results(page)).toHaveCount(1);
+    await expect(
+      results(page).first(),
+      'the superseded query must not replace what is on screen',
+    ).toContainText('Board prep');
+  });
+
+  /**
+   * §6: the calendar moves to that date **in the view already on screen**, the
+   * popover opens, and search closes rather than lingering behind it.
+   */
+  test('choosing a result moves the calendar and opens the event', async ({ page }) => {
+    await writable(page);
+    await page.keyboard.press('4'); // Year — the view must not change either
+    await expect(page.locator('.ygrid')).toBeVisible();
+
+    await page.keyboard.press('/');
+    await field(page).fill('board');
+    await results(page).first().click();
+
+    await expect(search(page), 'search does not linger behind the popover').toHaveCount(0);
+    await expect(page.getByRole('dialog', { name: 'Board prep' })).toBeVisible();
+    await expect(page.locator('.ygrid'), 'still the view they were in').toBeVisible();
+  });
+
+  /**
+   * §6's first half, on its own: **the calendar moves to the result's date.**
+   *
+   * The `Dentist` fixture sits 45 days out, in a different month from the one
+   * the app opens on — which is what makes the move witnessable. Every other
+   * searchable event is in the same January as the anchor, so choosing one
+   * moves nothing and a version that never moved the anchor would pass.
+   */
+  test('choosing a result moves the calendar to that date', async ({ page }) => {
+    await writable(page);
+    await expect(page.locator('h1')).toHaveText('January 2024');
+
+    await page.keyboard.press('/');
+    await field(page).fill('dentist');
+    await results(page).first().click();
+
+    await expect(page.locator('h1')).toHaveText('March 2024');
+  });
+
+  /**
+   * The single-key shortcuts must not fire while search is open — and the
+   * *field* is not the whole of it. `isTypingTarget` already spares an input;
+   * what it cannot spare is focus on a **result button**, which is one Tab
+   * away and where `4` would otherwise switch view out from under the panel.
+   */
+  test('a view shortcut does nothing while search is open', async ({ page }) => {
+    await writable(page);
+    await page.keyboard.press('/');
+    await field(page).fill('board');
+    // The **button**, not the `<li>` around it. A list item is not focusable,
+    // so focusing one leaves focus in the field — where `isTypingTarget`
+    // already spares the key, and the guard under test never runs. That is
+    // what the first version of this spec did, and a mutation is what said so.
+    await results(page).first().getByRole('button').focus();
+    await expect(field(page)).not.toBeFocused();
+
+    await page.keyboard.press('4');
+
+    await expect(search(page), 'search must still be open').toBeVisible();
+    await expect(page.locator('.ygrid'), 'and Year must not have opened').toHaveCount(0);
+  });
+
+  /** §7: a lookup and nothing else. Opening and choosing must not write. */
+  test('searching and choosing writes nothing', async ({ page }) => {
+    await writable(page);
+    await page.keyboard.press('/');
+    await field(page).fill('board');
+    await results(page).first().click();
+    await expect(page.getByRole('dialog', { name: 'Board prep' })).toBeVisible();
+
+    for (const cmd of ['update_event', 'create_event', 'delete_event_cmd', 'sync_now']) {
+      expect(await callsTo(page, cmd), `${cmd} must not have been called`).toHaveLength(0);
+    }
+  });
+
+  test('typing in the search field does not trigger the view shortcuts', async ({ page }) => {
+    // `1`-`5`, `h`, `l`, `t`, `n` and `/` are all bare keys, and a search field
+    // is full of them. Without the guard, typing "lunch" walks the calendar
+    // forward, jumps to today and opens an event form.
+    await writable(page);
+    await page.keyboard.press('/');
+    await field(page).fill('lunch');
+
+    await expect(field(page)).toHaveValue('lunch');
+    await expect(newForm(page), 'the n in lunch must not open a form').toHaveCount(0);
+    await expect(search(page)).toBeVisible();
+  });
+
   test('edit and delete are hidden when can_edit is false', async ({ page }) => {
     // The default scenario's one event takes `detail()`'s own `can_edit: false`
     // — which is why that default is `false` (see fixtures.ts): a fixture list
