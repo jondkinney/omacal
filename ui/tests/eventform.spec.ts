@@ -2,8 +2,9 @@ import { test, expect } from '@playwright/test';
 import { offerableCalendarId, type Calendar } from '../src/lib/calendars';
 import type { EventDetail } from '../src/lib/eventdetail';
 import {
-  blankValue, blankValueAt, endAfterStart, ruleInWords, shiftedEndDate,
-  toEventInput, valueFromDetail, whenOf, type EventFormValue,
+  addGuest, blankValue, blankValueAt, endAfterStart, isAddress, removableGuest,
+  removeGuest, ruleInWords, sameGuests, shiftedEndDate, toEventInput,
+  toggledGuestOptional, valueFromDetail, whenOf, type EventFormValue,
 } from '../src/lib/eventform';
 
 /** How long a **timed** value is, in ms.
@@ -1646,4 +1647,274 @@ test('an all-day value carries no source instants, because its times were not re
 
   expect(v.sourceStartMs).toBeNull();
   expect(v.sourceEndMs).toBeNull();
+});
+
+// --- The guest list ------------------------------------------------------
+//
+// Pure, and exercised directly for the reason the block at the top of this file
+// gives: driving them through a rendered form would reach only the cases the
+// form happens to offer, and the ones that matter here — a duplicate spelled
+// differently, an address that is not one, the organizer — are exactly the ones
+// a form makes hard to produce.
+
+/** `timedDetail` with a guest list on it. */
+const withGuests = (attendees: EventDetail['attendees'], organizer?: string): EventDetail => ({
+  ...timedDetail(0, 30 * 60_000),
+  organizer_email: organizer ?? null,
+  attendees,
+});
+
+const attendee = (
+  email: string,
+  extra: Partial<EventDetail['attendees'][number]> = {},
+): EventDetail['attendees'][number] => ({
+  email,
+  display_name: null,
+  response_status: 'needsAction',
+  optional: false,
+  is_self: false,
+  ...extra,
+});
+
+test.describe('the guest list a form edits', () => {
+  /**
+   * **Everyone, the signed-in user included.**
+   *
+   * `guestCount` excludes the self row because it counts who would be *mailed*,
+   * and this list is a different thing entirely: it is what the event's
+   * attendees would become. Excluding yourself here would take you off every
+   * event you ever saved — and, because the drag path shares this value, off
+   * every event you ever dragged.
+   */
+  test('carries every attendee, the signed-in user included', () => {
+    const value = valueFromDetail(
+      withGuests([
+        attendee('ana@x.com', { response_status: 'accepted' }),
+        attendee('me@x.com', { is_self: true }),
+        attendee('bo@x.com', { optional: true }),
+      ]),
+      0,
+      30 * 60_000,
+    );
+
+    expect(value.guests.map((g) => g.email)).toEqual(['ana@x.com', 'me@x.com', 'bo@x.com']);
+    expect(value.guests[2].optional, 'the stored optional flag comes through').toBe(true);
+    // …and the count beside it still excludes the self row, because the two
+    // answer different questions.
+    expect(value.guestCount).toBe(2);
+  });
+
+  test('a create starts with nobody on it', () => {
+    expect(blankValueAt(0, 1).guests).toEqual([]);
+  });
+
+  test('carries the organizer, so the row that cannot be removed can be found', () => {
+    const value = valueFromDetail(
+      withGuests([attendee('ana@x.com')], 'ana@x.com'),
+      0,
+      30 * 60_000,
+    );
+    expect(value.organizerEmail).toBe('ana@x.com');
+  });
+
+  test('carries which row is yours, and null when you are not on the event', () => {
+    const mine = valueFromDetail(
+      withGuests([attendee('ana@x.com'), attendee('me@x.com', { is_self: true })]),
+      0, 30 * 60_000,
+    );
+    expect(mine.selfEmail).toBe('me@x.com');
+
+    const theirs = valueFromDetail(withGuests([attendee('ana@x.com')]), 0, 30 * 60_000);
+    expect(theirs.selfEmail).toBeNull();
+  });
+});
+
+test.describe('adding a guest', () => {
+  const list = [{ email: 'ana@x.com', optional: false }];
+
+  test('appends the address', () => {
+    expect(addGuest(list, 'bo@x.com')).toEqual([
+      { email: 'ana@x.com', optional: false },
+      { email: 'bo@x.com', optional: false },
+    ]);
+  });
+
+  test('trims what was typed', () => {
+    expect(addGuest([], '  bo@x.com  ')[0].email).toBe('bo@x.com');
+  });
+
+  /**
+   * §5: **a duplicate address is a no-op, not an error and not a second row.**
+   * Returning the same list rather than a copy is what lets a caller compare by
+   * identity and know nothing happened.
+   */
+  test('an address already on the list changes nothing', () => {
+    expect(addGuest(list, 'ana@x.com')).toBe(list);
+  });
+
+  test('and neither does the same address spelled differently', () => {
+    expect(addGuest(list, ' Ana@X.com ')).toBe(list);
+  });
+
+  /** Nothing typed is not an address. Its own case because an empty add is
+   *  what a stray Return in the field produces. */
+  test('an empty address changes nothing', () => {
+    expect(addGuest(list, '   ')).toBe(list);
+  });
+});
+
+test.describe('an address that is not an address', () => {
+  /**
+   * §5: refused **in the form, before Save** — never by a 400 coming back from
+   * Google. A table, because the shapes people actually type are the point and
+   * a form can only produce a handful of them.
+   */
+  const cases: Array<[address: string, ok: boolean, why: string]> = [
+    ['ana@x.com', true, 'the ordinary case'],
+    ['ana.b+tag@sub.example.co.uk', true, 'dots, a plus and a long domain'],
+    ['ANA@X.COM', true, 'case is not a validity question'],
+    ['  ana@x.com  ', true, 'surrounding space is trimmed, not rejected'],
+    ['', false, 'nothing typed'],
+    ['ana', false, 'no domain at all'],
+    ['ana@', false, 'nothing after the at'],
+    ['@x.com', false, 'nothing before it'],
+    ['ana@x', false, 'a domain with no dot is not one anybody can be mailed at'],
+    ['ana x@y.com', false, 'a space inside'],
+    ['ana@@x.com', false, 'two ats'],
+    ['ana@x..com', false, 'an empty domain label'],
+  ];
+
+  for (const [address, ok, why] of cases) {
+    test(`"${address}" is ${ok ? 'an address' : 'refused'} — ${why}`, () => {
+      expect(isAddress(address)).toBe(ok);
+    });
+  }
+});
+
+test.describe('removing a guest', () => {
+  const list = [
+    { email: 'ana@x.com', optional: false },
+    { email: 'me@x.com', optional: false },
+  ];
+
+  test('takes that one off and leaves the rest', () => {
+    expect(removeGuest(list, 'ana@x.com')).toEqual([{ email: 'me@x.com', optional: false }]);
+  });
+
+  test('matches an address however it is spelled', () => {
+    expect(removeGuest(list, 'ANA@x.com')).toEqual([{ email: 'me@x.com', optional: false }]);
+  });
+
+  /**
+   * §5: **the organizer cannot be removed.** Google refuses it, so a UI that
+   * offered it would produce a save that fails for a reason the user cannot see
+   * — and this is the predicate the row's own control is built from, so the
+   * button is absent rather than present and disappointing.
+   */
+  test('the organizer is not removable', () => {
+    expect(removableGuest('ana@x.com', 'ana@x.com')).toBe(false);
+    expect(removableGuest('me@x.com', 'ana@x.com')).toBe(true);
+    // Spelled differently, still the organizer.
+    expect(removableGuest('Ana@X.com', 'ana@x.com')).toBe(false);
+  });
+
+  /** An event with no organizer on it — Google omits the field for some — makes
+   *  nobody unremovable rather than everybody. */
+  test('no organizer means no protected row', () => {
+    expect(removableGuest('ana@x.com', null)).toBe(true);
+  });
+});
+
+test.describe('marking a guest optional', () => {
+  const list = [
+    { email: 'ana@x.com', optional: false },
+    { email: 'bo@x.com', optional: true },
+  ];
+
+  test('flips that one and leaves the rest', () => {
+    expect(toggledGuestOptional(list, 'ana@x.com')).toEqual([
+      { email: 'ana@x.com', optional: true },
+      { email: 'bo@x.com', optional: true },
+    ]);
+  });
+
+  test('flips back off again', () => {
+    expect(toggledGuestOptional(list, 'bo@x.com')[1].optional).toBe(false);
+  });
+});
+
+test.describe('whether the guest list changed', () => {
+  const list = [
+    { email: 'ana@x.com', optional: false },
+    { email: 'bo@x.com', optional: true },
+  ];
+
+  test('the same list is the same list', () => {
+    expect(sameGuests(list, list.map((g) => ({ ...g })))).toBe(true);
+  });
+
+  test('an added or removed address is a change', () => {
+    expect(sameGuests(list, [...list, { email: 'cy@x.com', optional: false }])).toBe(false);
+    expect(sameGuests(list, [list[0]])).toBe(false);
+  });
+
+  test('a flipped optional flag is a change', () => {
+    expect(sameGuests(list, [list[0], { email: 'bo@x.com', optional: false }])).toBe(false);
+  });
+
+  /**
+   * **Order is not a change.** The Rust side compares the array it would send
+   * against the array the event already has, and reorders come out equal there
+   * — so a form that called a reshuffle a change would send a whole-list
+   * replace nobody asked for, on an event nobody edited.
+   */
+  test('a reordered list is not a change', () => {
+    expect(sameGuests(list, [list[1], list[0]])).toBe(true);
+  });
+});
+
+test.describe('what a save sends about guests', () => {
+  const detail = withGuests(
+    [attendee('ana@x.com'), attendee('me@x.com', { is_self: true })],
+    'ana@x.com',
+  );
+  const initial = () => valueFromDetail(detail, 0, 30 * 60_000);
+
+  /**
+   * **Unchanged means absent**, the same three-state `repeat` runs on and for a
+   * sharper reason: `attendees` is a whole-list replace on Google's side, so a
+   * payload that carried the list on every save would rewrite every attendee of
+   * every event this form ever touched, from whatever omacal last read.
+   *
+   * It is also what makes a **drag** structurally unable to change a guest
+   * list: the drag builds its input from this same value with only the times
+   * moved, so the lists compare equal and no `guests` key is sent at all.
+   */
+  test('a save that left the guest list alone sends no guests', () => {
+    const value = initial();
+    expect(toEventInput(value, initial()).guests).toBeUndefined();
+
+    // The drag's own shape: the same value with the times moved.
+    const moved = { ...value, start: '10:00', end: '10:30', sourceStartMs: null, sourceEndMs: null };
+    expect(toEventInput(moved, initial()).guests).toBeUndefined();
+  });
+
+  test('a save that changed it sends the whole list', () => {
+    const value = initial();
+    value.guests = addGuest(value.guests, 'bo@x.com');
+
+    expect(toEventInput(value, initial()).guests).toEqual([
+      { email: 'ana@x.com', optional: false },
+      { email: 'me@x.com', optional: false },
+      { email: 'bo@x.com', optional: false },
+    ]);
+  });
+
+  /** Removing everybody is a change like any other, and `[]` is what says so —
+   *  distinct from the absent field, which means "leave the list alone". */
+  test('removing everyone sends an empty list, not an absent one', () => {
+    const value = initial();
+    value.guests = [];
+    expect(toEventInput(value, initial()).guests).toEqual([]);
+  });
 });

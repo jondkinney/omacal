@@ -113,12 +113,33 @@ the loopback listener. Close it and retry.
 
 **Blank window** — check `npm --prefix ui run build` succeeds, then rerun.
 
+## Guests, and who gets an email
+
+You can add somebody by address, remove them, and mark them optional, in the
+event form beside everything else about an event.
+
+**Save asks whether to tell them.** It used to always mail the guest list, on
+the reasoning that a time you typed on purpose is exactly what people need to
+hear about. That stopped being right once the same Save could fix a typo in an
+address: *Save without notifying* is the default action, and *Save and notify
+guests* is the only thing on that panel that sends mail. A drag never mails
+anybody without asking either.
+
+Two rules the form enforces rather than letting Google refuse them: the
+organizer cannot be removed, and an address that is not an address is refused
+before Save rather than coming back as an error afterwards. Removing **yourself**
+is offered and is not the same as declining — it takes you off the event, where
+declining keeps you on it and tells the organizer. Use the RSVP buttons on the
+event for that.
+
+Inviting guests to a **brand-new** event is not built: create it first, then add
+them by editing it. omacal says so rather than creating the event and quietly
+dropping the list.
+
 ## What is not built yet
 
-Editing the guest list — you can see who is coming, but omacal never adds or
-removes anyone. Drag to create, move or resize. Search. Per-calendar colour
-overrides. Offline writes: a save needs the network and says so rather than
-queueing.
+Guests on a create, as above. Search. Per-calendar colour overrides. Offline
+writes: a save needs the network and says so rather than queueing.
 
 **Reliable notifications on macOS.** `UNUserNotificationCenter` wants a correctly
 signed bundle and this one is unsigned, so a reminder may simply never appear.

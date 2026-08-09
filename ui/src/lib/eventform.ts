@@ -7,7 +7,7 @@
 // three-state `repeat` — are testable as functions rather than only through a
 // rendered form.
 
-import type { EventDetail, EventInput, WhenInput } from './eventdetail';
+import type { EventDetail, EventInput, SendUpdates, WhenInput } from './eventdetail';
 
 /** Which occurrences an edit applies to. Mirrors `update_event`'s own scopes. */
 export type Scope = 'this' | 'all' | 'following';
@@ -26,6 +26,16 @@ export type EventFormResult = {
   /** Meaningless for a create, and for a one-off edit; always `'this'` there. */
   scope: Scope;
   fields: EventInput;
+  /**
+   * Who Google mails about this save (spec §3).
+   *
+   * A required field rather than a defaulted one, for the reason
+   * `SendUpdates`' own doc comment gives: this is the one value where nobody
+   * choosing is how somebody gets an email they should not have. The form
+   * asks when there is anybody to ask about, and answers `'none'` when there
+   * is not — so `'all'` appears only where a person chose it.
+   */
+  notify: SendUpdates;
 };
 
 /**
@@ -134,12 +144,44 @@ export type EventFormValue = {
   /** How many people a save would email. Always 0 on a create: a new event has
    *  no attendees, and this form cannot add any. */
   guestCount: number;
+  /**
+   * **The guest list the event would end up with — everyone, including the
+   * signed-in user.**
+   *
+   * Not to be confused with `guestCount` above, which is deliberately one
+   * smaller: that counts who a save would *mail*, and telling somebody they are
+   * about to notify themselves is wrong. This is what the attendee array
+   * becomes, and a version that dropped the self row to match the count would
+   * take the user off every event they saved — and, since a drag builds its
+   * input from this same value, off every event they dragged.
+   *
+   * Two fields per guest, because two are all a user can author. Everything
+   * else an attendee carries — their answer, their display name, their comment
+   * — belongs to that person and is echoed back on the Rust side from what is
+   * stored (`events::attendees_for_edit`). There is no field here through which
+   * this form could overwrite somebody's RSVP.
+   */
+  guests: Guest[];
+  /** Whoever owns the event, or `null` when Google names nobody. §5: the
+   *  organizer cannot be removed, and this is how the row is recognised. */
+  organizerEmail: string | null;
+  /** The signed-in user's own address, when they are on the event at all.
+   *  §5 again: removing yourself is a real thing and is *not* declining, so the
+   *  row has to be tellable from the others in order to say so. */
+  selfEmail: string | null;
   /** An edit, rather than a create. Decides the Save label, whether the scope
-   *  chooser and the guest notice appear, and whether the calendar can still
+   *  chooser and the guest editor appear, and whether the calendar can still
    *  be chosen (`update_event` cannot move an event between calendars). */
   isEdit: boolean;
   /** Part of a series — the only case where a scope choice means anything. */
   isRecurring: boolean;
+};
+
+/** One guest, as the form holds them. Mirrors `write::Guest` on the Rust side,
+ *  field for field, and for the reason that type's own comment gives. */
+export type Guest = {
+  email: string;
+  optional: boolean;
 };
 
 const MIN_MS = 60_000;
@@ -168,6 +210,105 @@ const HALF_HOUR_MS = 30 * MIN_MS;
 const ALL_DAY_START = '09:00';
 const ALL_DAY_END = '09:30';
 const DAY_MS = 24 * 3_600_000;
+
+// --- The guest list -------------------------------------------------------
+//
+// Pure, and here rather than in the component for the reason the module's own
+// header gives: these are the fiddly parts, and every one of §5's rules is a
+// predicate somebody could otherwise write inline in Svelte with no table
+// under it.
+
+/** An address as it is **compared**: trimmed and lower-cased. Google treats a
+ *  mailbox case-insensitively, and so must anything deciding whether two rows
+ *  are the same person — otherwise `Ana@X.com` typed beside a stored
+ *  `ana@x.com` produces a second row, and that second row carries no answer,
+ *  which is the RSVP reset the whole design is about wearing a duplicate's
+ *  clothes. The Rust side compares the same way. */
+const sameAddress = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
+/**
+ * Whether `address` is one somebody could be mailed at.
+ *
+ * §5: **refused in the form, before Save**, the way every other invalid field
+ * already is — never by a 400 coming back from Google, which arrives after the
+ * user has stopped looking and says nothing they can act on.
+ *
+ * Deliberately not RFC 5322. That grammar admits quoted local parts, comments
+ * and bare-hostname domains, and implementing it would refuse nothing anybody
+ * types while accepting `ana@localhost` — an address Google will reject anyway.
+ * This asks the three questions a typo actually fails: one `@`, something
+ * either side of it, and a domain with a dot and no empty label.
+ */
+export const isAddress = (address: string): boolean => {
+  const at = address.trim();
+  if (/\s/.test(at)) return false;
+  const parts = at.split('@');
+  if (parts.length !== 2) return false;
+  const [local, domain] = parts;
+  if (local.length === 0 || domain.length === 0) return false;
+  const labels = domain.split('.');
+  return labels.length >= 2 && labels.every((l) => l.length > 0);
+};
+
+/**
+ * `guests` with `address` invited, or **the very same array** when there is
+ * nothing to do.
+ *
+ * §5: a duplicate address is a no-op rather than an error. Somebody typing a
+ * name that is already on the list has asked for a state the list is already
+ * in, and answering that with an error message would be the form inventing a
+ * problem. Returning the identical array — not a copy — is what lets a caller
+ * tell "nothing happened" from "nothing changed" by identity alone.
+ *
+ * An empty address is the same answer for the same reason: a stray Return in
+ * the field is not a request.
+ */
+export const addGuest = (guests: Guest[], address: string): Guest[] => {
+  const email = address.trim();
+  if (email === '') return guests;
+  if (guests.some((g) => sameAddress(g.email, email))) return guests;
+  return [...guests, { email, optional: false }];
+};
+
+/** `guests` without `email`, matched however either side spells it. */
+export const removeGuest = (guests: Guest[], email: string): Guest[] =>
+  guests.filter((g) => !sameAddress(g.email, email));
+
+/**
+ * Whether the row for `email` may be taken off the event.
+ *
+ * §5: **the organizer cannot be removed.** Google refuses it outright, so a UI
+ * offering it would produce a save that fails for a reason nothing on screen
+ * explains. The control is absent rather than present-and-disappointing, which
+ * is what this predicate is for.
+ *
+ * An event Google names no organizer for makes nobody protected rather than
+ * everybody — the failure mode of getting that backwards is a guest list nobody
+ * can edit at all.
+ */
+export const removableGuest = (email: string, organizerEmail: string | null): boolean =>
+  organizerEmail === null || !sameAddress(email, organizerEmail);
+
+/** `guests` with `email`'s optional flag flipped. §4: it rides on the same
+ *  whole-list replace as everything else, so there is nothing special about it
+ *  beyond being the one field of somebody else's row this form may author. */
+export const toggledGuestOptional = (guests: Guest[], email: string): Guest[] =>
+  guests.map((g) => (sameAddress(g.email, email) ? { ...g, optional: !g.optional } : g));
+
+/**
+ * Whether two guest lists say the same thing.
+ *
+ * **Order is not part of it.** The Rust side builds the array it would send in
+ * the event's own stored order and compares that against what the event
+ * already has, so a reorder comes out equal there — and a form that called a
+ * reshuffle a change would send a whole-list replace on an event nobody edited.
+ * Membership and the optional flag are the whole question.
+ */
+export const sameGuests = (a: Guest[], b: Guest[]): boolean => {
+  if (a.length !== b.length) return false;
+  return a.every((g) =>
+    b.some((h) => sameAddress(g.email, h.email) && g.optional === h.optional));
+};
 
 const pad = (n: number) => String(n).padStart(2, '0');
 
@@ -296,6 +437,12 @@ export function blankValueAt(
     repeat: 'never',
     recurrence: null,
     guestCount: 0,
+    // A create invites nobody: this form offers no guest editing on that path,
+    // and `create_impl` refuses a create that carries guests rather than
+    // dropping them, because the notify choice for one does not exist yet.
+    guests: [],
+    organizerEmail: null,
+    selfEmail: null,
     isEdit: false,
     isRecurring: false,
   };
@@ -512,6 +659,12 @@ export function valueFromDetail(
     repeat: detail.repeat,
     recurrence: detail.recurrence,
     guestCount: detail.attendees.filter((a) => !a.is_self).length,
+    // **Everyone**, unlike the count above — see `EventFormValue.guests`. The
+    // two are one line apart on purpose: the difference between them is the
+    // difference between who gets an email and who is on the event.
+    guests: detail.attendees.map((a) => ({ email: a.email, optional: a.optional })),
+    organizerEmail: detail.organizer_email,
+    selfEmail: detail.attendees.find((a) => a.is_self)?.email ?? null,
     isEdit: true,
     isRecurring: detail.is_recurring,
   };
@@ -775,6 +928,18 @@ export function toEventInput(value: EventFormValue, initial: EventFormValue): Ev
     when: whenOf(value),
     tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
     ...(value.repeat === initial.repeat ? {} : { repeat: value.repeat }),
+    // **Unchanged means absent**, the same three-state `repeat` runs on, and
+    // here it is load bearing rather than tidy: `attendees` is a whole-list
+    // replace on Google's side, so a payload that carried the list on every
+    // save would rewrite every attendee of every event this form touched, from
+    // whatever omacal last read — quietly un-inviting anyone added elsewhere
+    // since. Absent is a PATCH saying "leave the list alone".
+    //
+    // It is also what makes a **drag** structurally unable to change a guest
+    // list. A drag builds its input from this same value with only the times
+    // moved, so the two lists compare equal and no `guests` key is sent at all
+    // — the same shape as `sendUpdates: 'none'`, one field along.
+    ...(sameGuests(value.guests, initial.guests) ? {} : { guests: value.guests }),
   };
 }
 
