@@ -330,6 +330,15 @@ pub(crate) fn attendees_for_edit(
     out
 }
 
+/// What the user is told when a create arrives carrying guests, which nothing
+/// on the create path can honour yet — see [`create_impl`]'s own guard for why
+/// it refuses rather than implementing.
+///
+/// A named constant for the same reason [`CONFLICT_GUESTS`] is.
+pub(crate) const NO_GUESTS_ON_CREATE: &str =
+    "omacal cannot invite guests to a brand-new event yet — create it first, then add them by \
+     editing it";
+
 /// What the user is told when a guest-list change loses a race.
 ///
 /// A named constant because it is asserted in two places that must not drift:
@@ -744,6 +753,37 @@ async fn create_impl(
 ) -> anyhow::Result<EventDetail> {
     if state.demo {
         anyhow::bail!("demo mode — there is nothing to create");
+    }
+
+    // **A create cannot invite anybody yet, and says so rather than dropping
+    // them.**
+    //
+    // `EventFields::guests` can reach here because it is one struct for both
+    // writes, and [`create_via_client`] builds its body from the fields it
+    // understands — so a list arriving on this path would be discarded in
+    // silence. Accepting a guest list and creating the event without it is the
+    // worst of the three outcomes: the user watches the event appear and has no
+    // way to learn that nobody was invited.
+    //
+    // A refusal rather than an implementation, and the reason is not effort —
+    // the array itself would be `attendees_for_edit(&[], wanted)`, the same
+    // rule, three lines. It is that **the notify question has no answer yet.**
+    // `create_via_client` sends `sendUpdates=none`, correctly, because a create
+    // today has no attendees; hanging a guest list on that body would invite
+    // real people and tell none of them. Guest-list spec §3 puts that choice on
+    // Save, beside the one a drag makes, and it is a UI decision this task is
+    // deliberately not making. Whoever builds it deletes this guard, and the
+    // guard is what makes sure they notice it needs deleting.
+    //
+    // `Some(vec![])` passes: a form that always sends its guest list sends an
+    // empty one for an event with no guests, and there is nothing to drop.
+    //
+    // Second, straight after demo mode and **before any database access**,
+    // which is [`update_impl`]'s stated ordering rule applied here: a pure
+    // function of an argument is decided before a row is read, let alone before
+    // `load_config` or the Keychain.
+    if fields.guests.as_ref().is_some_and(|g| !g.is_empty()) {
+        anyhow::bail!(NO_GUESTS_ON_CREATE);
     }
 
     let (cal_google_id, access_role, account_email, cal_tz) =
@@ -1678,7 +1718,45 @@ async fn split_series(
         }
     }
 
-    let attendees = attendees_verbatim(&master_row.attendees);
+    // **The tail carries the guest list the user asked for.**
+    //
+    // "This and following" means *from here on, it is like this*, so a guest
+    // change made on this save belongs to the tail — the half the user is
+    // authoring — exactly as their new title and their new time do. Copying
+    // the series' own list across regardless would drop the change silently:
+    // the truncation below carries `recurrence` and nothing else, so there is
+    // no second write for it to land in, and the user would see the guest they
+    // removed still invited to every occurrence from here on.
+    //
+    // The master keeps its own list untouched, which is the same rule the rest
+    // of this function follows: the user's edits belong to the tail, and
+    // shortening a series must not rewrite who was invited to the part that
+    // already happened.
+    //
+    // **Reconciled against `master_row`**, which is the row this edit was based
+    // on and the one whose attendees carry the answers worth preserving —
+    // `attendees_for_edit` is the same echo-back the patch path uses, so
+    // everyone carried across keeps their `responseStatus`, `displayName`,
+    // `comment` and `additionalGuests` rather than being reduced to an address.
+    //
+    // One approximation, deliberately, and it is worth knowing about. When the
+    // clicked occurrence is a *materialised exception* its attendee list can
+    // differ from the master's. Somebody the master has and the exception does
+    // not is dropped, which is right: the user was looking at a list without
+    // that person and did not add them. But somebody carried across whose
+    // **answer** differs between the two — accepted on the exception, still
+    // `needsAction` on the master — goes out with the master's. That is a
+    // cosmetic divergence in one field, corrected by the next sync of the tail,
+    // and not a lost invitation or a cancellation. The alternative is to read
+    // the exception's own list as well, which costs a request on every split to
+    // fix a field Google is about to restate anyway.
+    let attendees = match &after.guests {
+        Some(wanted) => attendees_for_edit(&master_row.attendees, wanted),
+        None => attendees_verbatim(&master_row.attendees),
+    };
+    // An empty array is omitted rather than sent, which is also the right
+    // answer for a user who removed every guest: an insert with no `attendees`
+    // key creates an event with no attendees, which is what they asked for.
     if !attendees.is_empty() {
         body["attendees"] = serde_json::json!(attendees);
     }
@@ -3585,6 +3663,63 @@ mod tests {
         let err = create_impl(&state_with(pool, false), cal, sample_fields()).await.unwrap_err();
         assert!(err.to_string().contains("not writable"), "got: {err}");
         assert_eq!(crate::errors::user_facing(&err), "this calendar is not writable from omacal");
+    }
+
+    /// **A create carrying guests refuses rather than dropping them.**
+    ///
+    /// `EventFields` is one struct for both writes, so a guest list can reach
+    /// the create path — where `create_via_client` builds its body from the
+    /// fields it understands and would discard this one in silence. The user
+    /// would watch the event appear and never learn that nobody was invited.
+    ///
+    /// A refusal rather than an implementation because the *notify* question
+    /// has no answer yet: the create sends `sendUpdates=none`, correctly for an
+    /// event with no attendees, and hanging a guest list on that body invites
+    /// real people and tells none of them. See the guard's own comment.
+    ///
+    /// On a **reader** calendar, which is the fixture rule
+    /// `seeded_pool_on_read_only_cal` documents: the guard under test sits
+    /// above the writability check, so a second gate underneath it means a
+    /// future task that implements guests-on-create fails here loudly instead
+    /// of falling through to a credential no test may touch. The assertion
+    /// stays just as discriminating — delete the guard and the message is
+    /// "not writable" either way.
+    #[tokio::test]
+    async fn creating_an_event_with_guests_refuses_rather_than_dropping_them() {
+        let pool = omacal_store::connect_memory().await.unwrap();
+        let cal = seed_calendar(&pool, "reader").await;
+        let fields = crate::write::EventFields {
+            guests: Some(vec![crate::write::Guest {
+                email: "dan@x.com".into(),
+                optional: false,
+            }]),
+            ..sample_fields()
+        };
+
+        let err = create_impl(&state_with(pool, false), cal, fields).await.unwrap_err();
+
+        assert_eq!(err.to_string(), NO_GUESTS_ON_CREATE);
+        assert_eq!(crate::errors::user_facing(&err), NO_GUESTS_ON_CREATE);
+    }
+
+    /// …and an **empty** list is not a drop, so it is not refused: a form that
+    /// always sends its guest list sends an empty one for an event with no
+    /// guests, and refusing there would make every ordinary create fail.
+    ///
+    /// Run on a **reader** calendar so that getting past the guard lands on the
+    /// writability check rather than on `load_config` and the real Keychain —
+    /// the fixture rule `seeded_pool_on_read_only_cal` documents, applied to a
+    /// test whose subject is a gate *above* that one.
+    #[tokio::test]
+    async fn creating_an_event_with_an_empty_guest_list_is_not_refused() {
+        let pool = omacal_store::connect_memory().await.unwrap();
+        let cal = seed_calendar(&pool, "reader").await;
+        let fields = crate::write::EventFields { guests: Some(vec![]), ..sample_fields() };
+
+        let err = create_impl(&state_with(pool, false), cal, fields).await.unwrap_err();
+
+        assert_ne!(err.to_string(), NO_GUESTS_ON_CREATE, "an empty list was read as a drop");
+        assert!(err.to_string().contains("not writable"), "got: {err}");
     }
 
     /// The end-to-end write-back: `create_via_client` posts to Google, then
@@ -5794,6 +5929,161 @@ mod tests {
             .await
             .expect("the new series was not stored locally");
         assert_ne!(tail, row.id, "the tail was written over the master's own row");
+    }
+
+    /// **"This and following" carries the guest list the user asked for.**
+    ///
+    /// The split is two writes and only one of them can hold a guest list: the
+    /// truncation below is `recurrence` and nothing else, by design. So a guest
+    /// change made on this scope either rides on the tail's POST or is lost —
+    /// and lost is what it was, silently, until this test.
+    ///
+    /// Bo removed, Dan invited, **and the title left alone**, which does two
+    /// jobs. It keeps the assertion about guests rather than about everything.
+    /// And it drives the case where a guest change is the *only* change, which
+    /// the `"following"` no-op guard sees first: that guard reads
+    /// `edit_patch_body`'s emptiness, so a version whose body did not carry
+    /// attendees would return before either write and this would fail on the
+    /// absent POST rather than on its contents.
+    ///
+    /// Everyone carried across keeps what they had — `attendees_for_edit` is
+    /// the same echo-back the patch path uses — and the master's own PATCH is
+    /// asserted as `recurrence` alone, so the truncation cannot grow an
+    /// attendee list by accident.
+    #[tokio::test]
+    async fn a_following_save_that_changes_the_guest_list_carries_the_new_list_to_the_tail() {
+        let mut ev = weekly_master("RRULE:FREQ=WEEKLY");
+        let (pool, _id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+
+        let server = wiremock::MockServer::start().await;
+        mount_master(&server, &["RRULE:FREQ=WEEKLY"]).await;
+
+        // Ana and Cy carried across with their own answers; Bo gone; Dan new
+        // and un-answered. Stored order first, the addition after.
+        let reconciled = serde_json::json!([
+            {"email": "ana@x.com", "displayName": "Ana", "responseStatus": "accepted",
+             "optional": false, "additionalGuests": 0},
+            {"email": "cy@x.com", "displayName": "Cy", "responseStatus": "needsAction",
+             "optional": false, "additionalGuests": 0},
+            {"email": "dan@x.com", "responseStatus": "needsAction",
+             "optional": false, "additionalGuests": 0}
+        ]);
+
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events"))
+            .and(wiremock::matchers::body_json(serde_json::json!({
+                "start": timed_json(OCCURRENCE, OCCURRENCE + HOUR, "UTC").0,
+                "end":   timed_json(OCCURRENCE, OCCURRENCE + HOUR, "UTC").1,
+                "summary": "Standup",
+                "recurrence": ["RRULE:FREQ=WEEKLY"],
+                "attendees": reconciled,
+            })))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(wire_new_series(OCCURRENCE)),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        // `recurrence` and nothing else. The people who were invited to the
+        // occurrences that already happened are not the user's to rewrite from
+        // a save aimed at the future.
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/master1"))
+            .and(wiremock::matchers::body_json(serde_json::json!({
+                "recurrence": [UNTIL_BEFORE_OCCURRENCE],
+            })))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "master1", "status": "confirmed", "etag": "\"m2\"",
+                "summary": "Standup",
+                "recurrence": [UNTIL_BEFORE_OCCURRENCE],
+                "attendees": wire_guests(),
+                "start": {"dateTime": omacal_sync::to_rfc3339(DTSTART)},
+                "end":   {"dateTime": omacal_sync::to_rfc3339(DTSTART + HOUR)}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let after = crate::write::EventFields {
+            guests: Some(vec![
+                crate::write::Guest { email: "ana@x.com".into(), optional: false },
+                crate::write::Guest { email: "cy@x.com".into(), optional: false },
+                crate::write::Guest { email: "dan@x.com".into(), optional: false },
+            ]),
+            ..form("Standup", OCCURRENCE, OCCURRENCE + HOUR)
+        };
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        update_via_client(
+            &pool, "following", OCCURRENCE, ev, "cal@x.com", "UTC", after, "all", &client,
+        )
+        .await
+        .unwrap();
+    }
+
+    /// And the other side of the same `match`, so it cannot be satisfied by a
+    /// version that reconciles unconditionally: a `"following"` save whose form
+    /// hands back the list **unchanged** still sends the series' own guest list
+    /// across, with every answer on it.
+    ///
+    /// The distinction matters because the form always sends a list. "No guest
+    /// change" therefore means "the same list", never "the field was absent",
+    /// and the two arms have to agree about what that produces.
+    #[tokio::test]
+    async fn a_following_save_that_leaves_the_guest_list_alone_carries_the_series_list_across() {
+        let mut ev = weekly_master("RRULE:FREQ=WEEKLY");
+        let (pool, _id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+
+        let server = wiremock::MockServer::start().await;
+        mount_master(&server, &["RRULE:FREQ=WEEKLY"]).await;
+
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events"))
+            .and(wiremock::matchers::body_json(serde_json::json!({
+                "start": timed_json(OCCURRENCE, OCCURRENCE + HOUR, "UTC").0,
+                "end":   timed_json(OCCURRENCE, OCCURRENCE + HOUR, "UTC").1,
+                "summary": "Standup (from here)",
+                "recurrence": ["RRULE:FREQ=WEEKLY"],
+                "attendees": expected_guests(),
+            })))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200).set_body_json(wire_new_series(OCCURRENCE)),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/master1"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "master1", "status": "confirmed", "etag": "\"m2\"",
+                "summary": "Standup",
+                "recurrence": [UNTIL_BEFORE_OCCURRENCE],
+                "attendees": wire_guests(),
+                "start": {"dateTime": omacal_sync::to_rfc3339(DTSTART)},
+                "end":   {"dateTime": omacal_sync::to_rfc3339(DTSTART + HOUR)}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        // The master's list as the form would show it: Bo is stored optional,
+        // and saying so is what makes this an *unchanged* list rather than one
+        // that quietly demotes him.
+        let after = crate::write::EventFields {
+            guests: Some(vec![
+                crate::write::Guest { email: "ana@x.com".into(), optional: false },
+                crate::write::Guest { email: "bo@x.com".into(), optional: true },
+                crate::write::Guest { email: "cy@x.com".into(), optional: false },
+            ]),
+            ..form("Standup (from here)", OCCURRENCE, OCCURRENCE + HOUR)
+        };
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+        update_via_client(
+            &pool, "following", OCCURRENCE, ev, "cal@x.com", "UTC", after, "all", &client,
+        )
+        .await
+        .unwrap();
     }
 
     /// `an_edit_that_changes_nothing_sends_no_request`'s rule, for the one
