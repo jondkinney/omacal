@@ -2750,6 +2750,39 @@ test.describe('EventForm', () => {
     expect(saved.fields.repeat).toBe('weekly');
   });
 
+  /**
+   * **A closed panel stops listening — and this is the only spec that can say
+   * so.**
+   *
+   * `escapeCloses` puts the handler on `window`, which it must: focus does not
+   * stay put, and nothing short of `window` hears Escape from `<body>`. The
+   * price is that the component now owns removing it, where five
+   * `<svelte:window>` elements used to have Svelte own it — unprovable but
+   * unbreakable. This is what buys that guarantee back.
+   *
+   * The leak is invisible while the panel is *closed*, because every call
+   * site's guard reads false. It is visible when a panel is destroyed while
+   * **open**: the closure still captures the state it had, the guard still
+   * passes, and the parent is told to close a component that no longer exists.
+   *
+   * That shape has already cost this project a real defect one layer over — a
+   * drag whose `window` handlers outlived their grid sent a write to Google
+   * from a view the user had left. Counted rather than flagged, because a
+   * boolean cannot tell one call from two.
+   */
+  test('a form destroyed by Escape does not answer the next one', async ({ page }) => {
+    await open(page, 'create');
+    const cancels = () => page.evaluate(() => (window as any).__cancels as number);
+
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.pop')).toHaveCount(0);
+    expect(await cancels(), 'the first Escape closes it').toBe(1);
+
+    // The form is gone. A listener that outlived it would answer this one too.
+    await page.keyboard.press('Escape');
+    expect(await cancels(), 'a destroyed form must not still be listening').toBe(1);
+  });
+
   // --- The guest list (spec §1, §4, §5) ------------------------------------
 
   /** The rows currently on the form, by address. */
