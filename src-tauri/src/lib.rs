@@ -765,6 +765,7 @@ pub fn run() {
             calendars::get_calendars,
             calendars::set_calendar_selected,
             calendars::set_calendar_sync,
+            calendars::set_calendar_color,
             settings::get_settings,
             settings::set_sync_interval,
             settings::set_notifications_enabled,

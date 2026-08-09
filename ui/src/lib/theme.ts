@@ -94,6 +94,40 @@ export function setPalette(p: Palette): void {
   r.setProperty('--sync-idle', p.is_dark ? 'rgba(255,255,255,.14)' : 'rgba(0,0,0,.13)');
 }
 
+/**
+ * **The colours a user may give a calendar**, and the only place they are
+ * written down.
+ *
+ * A curated set rather than a free colour picker, for one reason that decides
+ * it: omacal draws on both a light and a dark Omarchy theme, and a colour a
+ * user picks at 2am on a dark background can be unreadable on a light one.
+ * Every entry here was chosen to hold up on both — `ink.ts` then guarantees the
+ * *text* on top reads correctly for any of them, by relative luminance, so
+ * nothing here has to also carry a foreground.
+ *
+ * Hex rather than `rgba()`, unlike the variables above, and deliberately:
+ * these are not theme colours. They travel to Google's own colour field's
+ * neighbour in the database, are stored per calendar, and are composited by
+ * `color-mix` against whatever the theme's background happens to be. A value
+ * that changed with the theme would mean an event silently changing colour
+ * when the desktop did.
+ *
+ * Named because the names are what a control announces: a swatch a screen
+ * reader calls "button" is a swatch nobody can choose deliberately.
+ */
+export const CALENDAR_COLOURS: Array<[name: string, hex: string]> = [
+  ['Blue', '#5b8def'],
+  ['Teal', '#2aa198'],
+  ['Green', '#5aa84f'],
+  ['Olive', '#8a9a3b'],
+  ['Amber', '#e2a03f'],
+  ['Orange', '#e07b39'],
+  ['Red', '#e2564a'],
+  ['Pink', '#e06c9f'],
+  ['Purple', '#9a7bd0'],
+  ['Slate', '#7b8a9a'],
+];
+
 /** Fetches the resolved palette and applies it. Used once at startup. */
 export async function applyPalette(): Promise<Palette> {
   const p = await invoke<Palette>('get_palette');

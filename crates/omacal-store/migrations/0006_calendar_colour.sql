@@ -1,0 +1,19 @@
+-- Per-calendar colour, chosen here and **never sent to Google**.
+--
+-- A column of its own rather than overwriting `color_hex`, and that is the
+-- whole of the design. `color_hex` is Google's answer and keeps arriving on
+-- every sign-in; this is the user's, and the two have to be separable because
+-- **clearing an override is a different state from setting it to whatever
+-- Google currently uses**. Store the latter and the two look identical until
+-- Google changes its colour, at which point a calendar the user never touched
+-- silently stops following it — and there is no record of which of the two the
+-- user meant.
+--
+-- Nullable, with NULL meaning "no override". Every existing row gets that for
+-- free, which is exactly right: nobody has chosen anything yet.
+--
+-- No `DELETE FROM sync_state` here, unlike 0003 and 0004. Those backfilled
+-- data that Google had been sending all along into columns that had never been
+-- written; there is nothing to backfill here, because this column holds
+-- something Google has never had and never will.
+ALTER TABLE calendars ADD COLUMN color_override TEXT;
