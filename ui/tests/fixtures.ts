@@ -249,6 +249,9 @@ const FIVE_MIN_AGO = FIXED_NOW - 5 * 60_000;
 const cal = (o: Partial<Calendar> & { id: number; account_email: string; summary: string }): Calendar => ({
   account_id: 1,
   color_hex: '#5b8def',
+  // No override by default: every fixture that predates per-calendar colour
+  // describes a calendar following Google's own, which is what they all were.
+  color_override: null,
   selected: true,
   sync_enabled: true,
   is_primary: false,
@@ -1726,6 +1729,19 @@ export const FIXTURES: Record<string, Record<string, any>> = {
      * calendars with the same name, so this is reachable rather than
      * contrived.
      */
+    /** One calendar following Google's colour, one with an override — so the
+     *  swatch row can show a chosen state and a cleared one in the same mount,
+     *  and "Use Google's" has both a live case and a disabled one. */
+    'colours': {
+      calendars: [
+        cal({ id: 1, account_id: 1, account_email: 'me@x.com', summary: 'Work' }),
+        cal({
+          id: 2, account_id: 1, account_email: 'me@x.com', summary: 'Personal',
+          color_hex: '#e2a03f', color_override: '#e2a03f',
+        }),
+      ],
+      onchange: noop,
+    },
     'same-summary-one-account': {
       calendars: [
         cal({ id: 1, account_id: 1, account_email: 'me@x.com', summary: 'UK Holidays' }),

@@ -7,7 +7,19 @@ pub struct CalendarRow {
     pub account_id: i64,
     pub account_email: String,
     pub summary: String,
+    /// **The colour to draw this calendar in** — its override if it has one,
+    /// and Google's own otherwise, resolved by the same `COALESCE` the event
+    /// read uses. Every consumer that only wants to *draw* something reads
+    /// this and needs to know nothing about overrides.
     pub color_hex: Option<String>,
+    /// The override itself, or `None` when there is not one.
+    ///
+    /// Separate from the field above because **clearing an override is a
+    /// different state from setting it to whatever Google currently uses**,
+    /// and only this field can tell them apart — the settings row needs it to
+    /// show which swatch is chosen and whether there is anything to clear. See
+    /// `0006_calendar_colour.sql`.
+    pub color_override: Option<String>,
     /// Drawn in the grid.
     pub selected: bool,
     /// Fetched from Google at all.
@@ -30,7 +42,9 @@ pub struct CalendarRow {
 pub async fn list_calendars(pool: &SqlitePool) -> anyhow::Result<Vec<CalendarRow>> {
     let rows = sqlx::query(
         "SELECT c.id, c.account_id, a.email AS account_email, c.summary,
-                c.color_hex, c.selected, c.sync_enabled, c.is_primary, c.access_role
+                COALESCE(c.color_override, c.color_hex) AS color_hex,
+                c.color_override,
+                c.selected, c.sync_enabled, c.is_primary, c.access_role
          FROM calendars c
          JOIN accounts a ON a.id = c.account_id
          ORDER BY a.email, c.is_primary DESC, c.summary COLLATE NOCASE",
@@ -46,6 +60,7 @@ pub async fn list_calendars(pool: &SqlitePool) -> anyhow::Result<Vec<CalendarRow
             account_email: r.get("account_email"),
             summary: r.get("summary"),
             color_hex: r.get("color_hex"),
+            color_override: r.get("color_override"),
             selected: r.get::<i64, _>("selected") != 0,
             sync_enabled: r.get::<i64, _>("sync_enabled") != 0,
             is_primary: r.get::<i64, _>("is_primary") != 0,
@@ -90,6 +105,28 @@ pub async fn set_selected(pool: &SqlitePool, id: i64, on: bool) -> anyhow::Resul
     sqlx::query("UPDATE calendars SET selected = ?2 WHERE id = ?1")
         .bind(id)
         .bind(on as i64)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Sets or clears a calendar's colour override.
+///
+/// `None` **clears** it, which is not the same as storing whatever Google
+/// currently uses: a cleared calendar follows Google's colour from then on,
+/// including when Google changes it. See `0006_calendar_colour.sql`.
+///
+/// Nothing about this reaches Google. It is a display preference of this
+/// install's, and the phone, the web UI and anyone sharing the calendar are
+/// untouched by it.
+pub async fn set_color_override(
+    pool: &SqlitePool,
+    id: i64,
+    hex: Option<&str>,
+) -> anyhow::Result<()> {
+    sqlx::query("UPDATE calendars SET color_override = ?2 WHERE id = ?1")
+        .bind(id)
+        .bind(hex)
         .execute(pool)
         .await?;
     Ok(())
@@ -145,6 +182,14 @@ mod tests {
                 .bind(gid).bind(name).bind(primary)
                 .execute(pool).await.unwrap();
         }
+    }
+
+    /// A pool with the two seeded calendars, which is what every colour test
+    /// below starts from.
+    async fn seeded() -> SqlitePool {
+        let pool = connect_memory().await.unwrap();
+        seed(&pool).await;
+        pool
     }
 
     fn ev(cal: i64, gid: &str) -> StoredEvent {
@@ -354,5 +399,73 @@ mod tests {
         // failure the user cannot act on.
         assert!(set_selected(&pool, 999, false).await.is_ok());
         assert_eq!(set_sync_enabled(&pool, 999, false).await.unwrap(), 0);
+    }
+
+    /// **The colour to draw is the override when there is one, and Google's
+    /// otherwise** — resolved in the `SELECT`, which is why nothing downstream
+    /// of it knows an override exists.
+    #[tokio::test]
+    async fn an_override_is_the_colour_the_list_reports() {
+        let pool = seeded().await;
+        let before = list_calendars(&pool).await.unwrap();
+        let id = before[0].id;
+        assert_eq!(before[0].color_hex.as_deref(), Some("#5b8def"), "Google's own");
+        assert_eq!(before[0].color_override, None, "nothing chosen yet");
+
+        set_color_override(&pool, id, Some("#e2a03f")).await.unwrap();
+
+        let after = list_calendars(&pool).await.unwrap();
+        assert_eq!(after[0].color_hex.as_deref(), Some("#e2a03f"), "the colour to draw");
+        assert_eq!(after[0].color_override.as_deref(), Some("#e2a03f"), "and it is a choice");
+    }
+
+    /// **Clearing is not the same as choosing Google's current colour**, and
+    /// this is the test that says so: after a clear, a *change on Google's
+    /// side* is followed. Store the colour instead of a NULL and the calendar
+    /// silently stops following it, with nothing recording which the user
+    /// meant.
+    #[tokio::test]
+    async fn a_cleared_override_follows_google_again_even_when_google_changes() {
+        let pool = seeded().await;
+        let id = list_calendars(&pool).await.unwrap()[0].id;
+        set_color_override(&pool, id, Some("#e2a03f")).await.unwrap();
+
+        set_color_override(&pool, id, None).await.unwrap();
+        let cleared = list_calendars(&pool).await.unwrap();
+        assert_eq!(cleared[0].color_hex.as_deref(), Some("#5b8def"));
+        assert_eq!(cleared[0].color_override, None);
+
+        // The half that a stored-copy implementation passes right up until
+        // here: Google recolours the calendar on its next sign-in.
+        sqlx::query("UPDATE calendars SET color_hex = '#b58900' WHERE id = ?1")
+            .bind(id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let followed = list_calendars(&pool).await.unwrap();
+        assert_eq!(
+            followed[0].color_hex.as_deref(),
+            Some("#b58900"),
+            "a cleared calendar must follow Google's colour, including its changes",
+        );
+    }
+
+    /// And an override does **not** follow Google — that is what choosing one
+    /// means, and without this the rule above is satisfied by never storing an
+    /// override at all.
+    #[tokio::test]
+    async fn an_override_survives_google_changing_its_own_colour() {
+        let pool = seeded().await;
+        let id = list_calendars(&pool).await.unwrap()[0].id;
+        set_color_override(&pool, id, Some("#e2a03f")).await.unwrap();
+
+        sqlx::query("UPDATE calendars SET color_hex = '#b58900' WHERE id = ?1")
+            .bind(id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        assert_eq!(list_calendars(&pool).await.unwrap()[0].color_hex.as_deref(), Some("#e2a03f"));
     }
 }

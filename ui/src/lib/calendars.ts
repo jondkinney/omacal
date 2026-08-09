@@ -5,7 +5,15 @@ export type Calendar = {
   account_id: number;
   account_email: string;
   summary: string;
+  /** **The colour to draw this calendar in** — its override if it has one, and
+   *  Google's own otherwise, resolved in SQL. Anything that only wants to draw
+   *  reads this and needs to know nothing about overrides. */
   color_hex: string | null;
+  /** The override itself, or `null` when there is none. Distinct from the
+   *  field above because *clearing* an override is a different state from
+   *  setting it to whatever Google currently uses — only this can tell them
+   *  apart, and the swatch row needs to. */
+  color_override: string | null;
   /** Drawn in the grid. */
   selected: boolean;
   /** Fetched from Google at all. */
@@ -52,6 +60,17 @@ export const setCalendarSelected = (id: number, on: boolean) =>
 /** Resolves to the number of local events the removal deleted. */
 export const setCalendarSync = (id: number, on: boolean) =>
   invoke<number>('set_calendar_sync', { id, on });
+
+/**
+ * Sets or clears a calendar's colour, **locally and only locally**.
+ *
+ * `null` clears the override, and the calendar follows Google's colour again —
+ * including when Google changes it. Nothing here is sent to Google: the user's
+ * phone, the web UI and anyone else subscribed to the same calendar are
+ * untouched.
+ */
+export const setCalendarColor = (id: number, hex: string | null) =>
+  invoke<void>('set_calendar_color', { id, hex });
 
 /** Calendars grouped by account, preserving the order the backend returned. */
 export function byAccount(cals: Calendar[]): Array<[string, Calendar[]]> {

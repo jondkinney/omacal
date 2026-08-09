@@ -1,7 +1,10 @@
 <!-- ui/src/lib/CalendarList.svelte -->
 <script lang="ts">
   import { tick } from 'svelte';
-  import { byAccount, setCalendarSelected, setCalendarSync, type Calendar } from './calendars';
+  import {
+    byAccount, setCalendarColor, setCalendarSelected, setCalendarSync, type Calendar,
+  } from './calendars';
+  import { CALENDAR_COLOURS } from './theme';
 
   let {
     calendars,
@@ -27,6 +30,31 @@
   let message = $state<{ text: string; kind: 'info' | 'error' } | null>(null);
 
   const groups = $derived(byAccount(calendars));
+
+  /** Which row's swatches are open, by id. One at a time: ten swatches per row
+   *  across a dozen calendars is a wall, and the colour is a rare choice. */
+  let picking = $state<number | null>(null);
+
+  /**
+   * Sets or clears a calendar's colour.
+   *
+   * `null` clears, and that is a distinct request rather than "set it to the
+   * colour Google uses" — a cleared calendar follows Google's from then on,
+   * including when Google changes it. See `0006_calendar_colour.sql`.
+   */
+  async function chooseColour(c: Calendar, hex: string | null) {
+    message = null;
+    picking = null;
+    markBusy(c.id, true);
+    try {
+      await setCalendarColor(c.id, hex);
+      onchange();
+    } catch (err) {
+      message = { text: `${c.summary} · ${String(err)}`, kind: 'error' };
+    } finally {
+      markBusy(c.id, false);
+    }
+  }
 
   function markBusy(id: number, on: boolean) {
     const next = new Set(busy);
@@ -130,6 +158,16 @@
           <span class="dot" aria-hidden="true" style="background:{c.color_hex ?? 'var(--accent)'}"></span>
           <span class="name" title={c.summary}>{c.summary}</span>
         </label>
+        <!-- The colour control. On the row, so it appears in both hosts — the
+             header's popover and the settings tab — from one place. -->
+        <button
+          class="swatch"
+          aria-label="Colour for {c.summary}"
+          aria-expanded={picking === c.id}
+          disabled={busy.has(c.id)}
+          style="background:{c.color_hex ?? 'var(--accent)'}"
+          onclick={() => (picking = picking === c.id ? null : c.id)}
+        ></button>
         <button
           class="sync"
           disabled={busy.has(c.id)}
@@ -139,6 +177,32 @@
           onclick={(e) => toggleSync(c, e)}
         >{c.sync_enabled ? 'Remove' : 'Add'}</button>
       </div>
+      {#if picking === c.id}
+        <!-- A curated set, from `theme.ts` — no free picker. omacal draws on
+             both a light and a dark Omarchy theme, and a colour chosen against
+             one can be unreadable on the other; `ink.ts` then guarantees the
+             text on top reads correctly for anything in the set. -->
+        <div class="swatches" role="group" aria-label="Colour for {c.summary}">
+          {#each CALENDAR_COLOURS as [label, hex] (hex)}
+            <button
+              class="pick"
+              class:on={c.color_override === hex}
+              aria-label={label}
+              aria-pressed={c.color_override === hex}
+              style="background:{hex}"
+              onclick={() => chooseColour(c, hex)}
+            ></button>
+          {/each}
+          <!-- **Clearing is its own action, not a swatch.** Choosing the colour
+               Google happens to use today would look identical and stop
+               following it the moment Google changed. -->
+          <button
+            class="clear"
+            disabled={c.color_override === null}
+            onclick={() => chooseColour(c, null)}
+          >Use Google’s</button>
+        </div>
+      {/if}
     {/each}
   {/each}
   {#if message}
@@ -168,6 +232,22 @@
           cursor: pointer; min-width: 0; }
   .dot { width: 8px; height: 8px; border-radius: 2.5px; flex: none; display: block; }
   .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  .swatch { width: 14px; height: 14px; border-radius: 4px; flex: none; cursor: pointer;
+            border: 1px solid color-mix(in srgb, var(--text) 20%, transparent); padding: 0; }
+  .swatch:disabled { opacity: .5; cursor: default; }
+
+  .swatches { display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
+              padding: 4px 6px 8px; }
+  .pick { width: 16px; height: 16px; border-radius: 4px; cursor: pointer; padding: 0;
+          border: 1px solid color-mix(in srgb, var(--text) 20%, transparent); }
+  /* The chosen one, marked by a ring rather than by a tick: a glyph on a
+     16px swatch is unreadable against half the palette. */
+  .pick.on { outline: 2px solid var(--text); outline-offset: 1px; }
+  .clear { font: inherit; font-size: 9.5px; color: var(--muted); cursor: pointer;
+           background: none; border: 1px solid var(--hairline); border-radius: 5px;
+           padding: 2px 6px; margin-left: 2px; }
+  .clear:disabled { opacity: .45; cursor: default; }
 
   .sync { font: inherit; font-size: 10px; color: var(--muted); cursor: pointer;
           background: none; border: 1px solid var(--hairline); border-radius: 5px;

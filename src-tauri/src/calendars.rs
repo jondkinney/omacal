@@ -19,6 +19,27 @@ pub async fn set_calendar_selected(
         .map_err(|e| crate::errors::user_facing(&e))
 }
 
+/// Sets or clears a calendar's colour, **locally and only locally**.
+///
+/// `hex` of `None` clears the override and the calendar follows Google's own
+/// colour again — a different state from setting it to whatever Google happens
+/// to use today, which would silently stop following it.
+///
+/// **Nothing here reaches Google.** This is a display preference of this
+/// install's: the user's phone, the web UI, and anyone else subscribed to the
+/// same calendar are untouched. That is the whole reason it is a column beside
+/// Google's colour rather than a `calendarList.patch`.
+#[tauri::command]
+pub async fn set_calendar_color(
+    state: tauri::State<'_, AppState>,
+    id: i64,
+    hex: Option<String>,
+) -> Result<(), String> {
+    omacal_store::set_color_override(&state.pool, id, hex.as_deref())
+        .await
+        .map_err(|e| crate::errors::user_facing(&e))
+}
+
 /// Returns how many events were removed, so the UI can say what happened.
 #[tauri::command]
 pub async fn set_calendar_sync(

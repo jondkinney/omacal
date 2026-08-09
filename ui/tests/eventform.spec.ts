@@ -27,7 +27,8 @@ const spanOf = (value: EventFormValue): number => {
 
 const cal = (id: number, access_role: string): Calendar => ({
   id, account_id: 1, account_email: 'me@x.com', summary: `Cal ${id}`,
-  color_hex: null, selected: true, sync_enabled: true, is_primary: false, access_role,
+  color_hex: null, color_override: null, selected: true, sync_enabled: true,
+  is_primary: false, access_role,
 });
 
 const CALS = [cal(1, 'owner'), cal(2, 'writer'), cal(3, 'reader'), cal(4, 'freeBusyReader')];

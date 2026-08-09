@@ -31,6 +31,13 @@ pub struct StoredEvent {
     /// The owning calendar's colour, joined in by `events_in_window`. It lives
     /// on `calendars`, not `events`, so `upsert_event` neither reads nor writes
     /// it; a hand-built `StoredEvent` on the write path leaves it `None`.
+    /// **The colour to draw this event in** — the calendar's override if it has
+    /// one, and Google's own colour otherwise. The `COALESCE` in `SELECT_COLS`
+    /// is where those two become one answer, which is why nothing downstream
+    /// of this field knows an override exists: the grid, the month bars, the
+    /// Big Year pills and their legend all read it and are all correct without
+    /// a line of their own. See `0006_calendar_colour.sql` for why the two are
+    /// stored separately.
     pub color_hex: Option<String>,
     /// The owning calendar's own `timezone`, joined in by `events_in_window`
     /// alongside `color_hex`. **Not** `start_tz`/`end_tz` above — those are the
@@ -106,7 +113,8 @@ pub struct Attendee {
 const SELECT_COLS: &str = "e.id, e.calendar_id, e.google_id, e.summary, e.location,
      e.start_utc, e.end_utc, e.start_tz, e.end_tz, e.is_all_day, e.recurrence,
      e.recurring_event_id, e.original_start_utc,
-     e.status, e.self_response, e.conference_uri, c.color_hex, c.timezone,
+     e.status, e.self_response, e.conference_uri,
+     COALESCE(c.color_override, c.color_hex) AS color_hex, c.timezone,
      e.description, e.etag, e.sequence, e.organizer_email, e.attendees_json,
      e.reminders_json, c.default_reminders_json";
 
@@ -839,6 +847,48 @@ mod tests {
         sqlx::query("UPDATE calendars SET color_hex = '#b58900'")
             .execute(&pool).await.unwrap();
         upsert_event(&pool, &ev(cal, "a", 1000, 2000)).await.unwrap();
+        let out = events_in_window(&pool, 0, 5000).await.unwrap();
+        assert_eq!(out[0].color_hex.as_deref(), Some("#b58900"));
+    }
+
+    /**
+     * **The seam the whole per-calendar-colour design rests on.**
+     *
+     * An override joins onto every event through the same `COALESCE` the
+     * calendar list uses, which is why nothing downstream knows overrides
+     * exist: the week grid, the month bars, the Big Year pills and their
+     * legend are all correct without a line of their own. Delete the
+     * `COALESCE` here and the settings row still shows the chosen colour while
+     * every event stays Google's — the exact half-applied state a reader would
+     * report as "the colour did not take".
+     */
+    #[tokio::test]
+    async fn an_overridden_calendar_colours_its_events() {
+        let pool = connect_memory().await.unwrap();
+        let cal = seed(&pool).await;
+        sqlx::query("UPDATE calendars SET color_hex = '#b58900', color_override = '#e2a03f'")
+            .execute(&pool).await.unwrap();
+        upsert_event(&pool, &ev(cal, "a", 1000, 2000)).await.unwrap();
+
+        let out = events_in_window(&pool, 0, 5000).await.unwrap();
+        assert_eq!(
+            out[0].color_hex.as_deref(),
+            Some("#e2a03f"),
+            "the event must take the override, not Google's colour",
+        );
+    }
+
+    /// And with the override cleared it goes back to Google's — so the rule
+    /// above cannot be satisfied by a version that ignores `color_hex`
+    /// entirely.
+    #[tokio::test]
+    async fn a_cleared_override_leaves_events_on_googles_colour() {
+        let pool = connect_memory().await.unwrap();
+        let cal = seed(&pool).await;
+        sqlx::query("UPDATE calendars SET color_hex = '#b58900', color_override = NULL")
+            .execute(&pool).await.unwrap();
+        upsert_event(&pool, &ev(cal, "a", 1000, 2000)).await.unwrap();
+
         let out = events_in_window(&pool, 0, 5000).await.unwrap();
         assert_eq!(out[0].color_hex.as_deref(), Some("#b58900"));
     }

@@ -294,13 +294,13 @@ function statusFor(scenario: string): AppStatus {
  *  it switched on by default, exactly as a real `sign_in` leaves it. */
 const SIGNED_IN_CALENDARS: Calendar[] = [
   { id: 1, account_id: 1, account_email: 'new@x.com', summary: 'Personal',
-    color_hex: '#5b8def', selected: true, sync_enabled: true, is_primary: true,
+    color_hex: '#5b8def', color_override: null, selected: true, sync_enabled: true, is_primary: true,
     access_role: 'owner' },
   // A subscribed holiday calendar really is a `reader`, and this is the one
   // fixture in the suite that stands in for a real `sign_in` import — so it
   // carries the role a real one would rather than a uniformly writable list.
   { id: 2, account_id: 1, account_email: 'new@x.com', summary: 'Holidays',
-    color_hex: '#e2a03f', selected: true, sync_enabled: true, is_primary: false,
+    color_hex: '#e2a03f', color_override: null, selected: true, sync_enabled: true, is_primary: false,
     access_role: 'reader' },
 ];
 
@@ -496,6 +496,8 @@ export function installTauriStub(scenario: string): Harness {
       case 'set_notifications_enabled':
         settings = { ...settings, notificationsEnabled: args.on as boolean };
         return { ...settings };
+      case 'set_calendar_color':
+        return calendarResult(cmd, undefined);
       case 'set_calendar_selected':
         return calendarResult(cmd, undefined);
       case 'set_calendar_sync':

@@ -1064,6 +1064,90 @@ test.describe('CalendarPopover', () => {
     await expect(page.locator('.name')).toHaveText(['UK Holidays', 'UK Holidays']);
   });
 
+  // --- Per-calendar colour ------------------------------------------------
+
+  const openColours = async (page: import('@playwright/test').Page, name: string) => {
+    await page.getByRole('button', { name: /Calendars/ }).click();
+    await page.getByRole('button', { name: `Colour for ${name}` }).click();
+  };
+
+  test('a calendar offers the curated set, and no free picker', async ({ page }) => {
+    // Curated because omacal draws on both a light and a dark Omarchy theme,
+    // and a colour chosen against one can be unreadable on the other.
+    await page.goto(show('colours'));
+    await openColours(page, 'Work');
+
+    await expect(page.locator('.swatches .pick')).toHaveCount(10);
+    await expect(page.locator('input[type=color]'), 'no free picker').toHaveCount(0);
+    // Named, not just coloured: a swatch a screen reader calls "button" is one
+    // nobody can choose deliberately.
+    await expect(page.getByRole('button', { name: 'Amber' })).toBeVisible();
+  });
+
+  test('choosing a colour asks for it, locally', async ({ page }) => {
+    await page.goto(show('colours'));
+    await openColours(page, 'Work');
+    await page.getByRole('button', { name: 'Amber' }).click();
+
+    const calls = await page.evaluate(() => window.__harness.calls);
+    const set = calls.filter((c) => c.cmd === 'set_calendar_color');
+    expect(set).toHaveLength(1);
+    expect(set[0].args).toEqual({ id: 1, hex: '#e2a03f' });
+    // **Nothing reaches Google.** The whole design is a column beside Google's
+    // colour rather than a `calendarList.patch`, so an event write here would
+    // be the defect rather than a detail.
+    expect(calls.filter((c) => c.cmd === 'update_event')).toHaveLength(0);
+  });
+
+  test('the chosen swatch is marked, and only on the calendar that chose it', async ({ page }) => {
+    await page.goto(show('colours'));
+    await openColours(page, 'Personal');
+    await expect(page.getByRole('button', { name: 'Amber' })).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.getByRole('button', { name: 'Blue' })).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  /**
+   * **Clearing is its own action, not a swatch** — and the offer is only live
+   * where there is something to clear. Choosing the colour Google happens to
+   * use today would look identical on screen and stop following it the moment
+   * Google changed.
+   */
+  test('clearing an override is offered only where there is one', async ({ page }) => {
+    await page.goto(show('colours'));
+    await openColours(page, 'Work');
+    await expect(page.getByRole('button', { name: /Use Google/ })).toBeDisabled();
+
+    await page.keyboard.press('Escape');
+    await openColours(page, 'Personal');
+    await expect(page.getByRole('button', { name: /Use Google/ })).toBeEnabled();
+  });
+
+  test('clearing asks for null, not for a colour', async ({ page }) => {
+    // The half a stored-copy implementation gets wrong: it would send the hex
+    // Google currently uses, which reads identically until Google changes it.
+    await page.goto(show('colours'));
+    await openColours(page, 'Personal');
+    await page.getByRole('button', { name: /Use Google/ }).click();
+
+    const [call] = await page.evaluate(() =>
+      window.__harness.calls.filter((c) => c.cmd === 'set_calendar_color'),
+    );
+    expect(call.args).toEqual({ id: 2, hex: null });
+  });
+
+  test('the row dot shows the colour the calendar is actually drawn in', async ({ page }) => {
+    // The override, where there is one — the same `COALESCE` the grid reads,
+    // so the row and the events can never disagree.
+    await page.goto(show('colours'));
+    await page.getByRole('button', { name: /Calendars/ }).click();
+    // The computed fill, not the inline attribute: Svelte may normalise the
+    // style string, and what matters is what is painted.
+    const fill = await page.locator('.row .dot').nth(1).evaluate(
+      (el) => getComputedStyle(el).backgroundColor,
+    );
+    expect(fill).toBe('rgb(226, 160, 63)'); // #e2a03f
+  });
+
   test('counts only calendars that are both synced and shown', async ({ page }) => {
     await page.goto(show('mixed'));
     // 3 calendars: one hidden, one removed, one visible.
