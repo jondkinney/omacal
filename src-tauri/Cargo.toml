@@ -35,7 +35,19 @@ tracing-subscriber = "0.3.23"
 sqlx = { version = "0.8.6", features = ["runtime-tokio", "sqlite"] }
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time"] }
 anyhow.workspace = true
+thiserror.workspace = true
+# The *file watcher* for live theme reload. Not `notify-rust`, which is the
+# D-Bus notification client below and is a different crate entirely.
 notify = "8.2.0"
+
+# Omarchy's notification transport. D-Bus rather than the Tauri plugin because
+# only this one has action buttons, and Join/Snooze are half the feature.
+[target.'cfg(target_os = "linux")'.dependencies]
+notify-rust = "4"
+
+# macOS, best-effort (spec §2.4): an unsigned bundle may simply be refused.
+[target.'cfg(target_os = "macos")'.dependencies]
+tauri-plugin-notification = "2"
 
 [dev-dependencies]
 wiremock = "0.6.5"

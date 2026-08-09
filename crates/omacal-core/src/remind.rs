@@ -65,6 +65,16 @@ pub struct ScheduledEvent {
     pub overrides: Vec<Reminder>,
     /// The owning calendar's `defaultReminders`.
     pub calendar_defaults: Vec<Reminder>,
+    /// The event's summary. `None` for an event Google holds with no title.
+    ///
+    /// This and the two below are carried, never read: nothing here formats or
+    /// interprets them. They are here so a [`Due`] can be self-sufficient —
+    /// see that type for why a driver must not have to look its event back up.
+    pub title: Option<String>,
+    pub location: Option<String>,
+    /// The occurrence's conferencing link, when it has one. Whether a *Join*
+    /// action appears is decided by whether this is `Some`.
+    pub conference_uri: Option<String>,
 }
 
 /// What identifies one posted reminder, and exactly the primary key of the
@@ -107,6 +117,24 @@ pub struct Due {
     /// invented — pruned early, then posted a second time. Carrying the value
     /// deletes that whole class of mistake rather than documenting it.
     pub occurrence_end_ms: i64,
+    /// Copied from the [`ScheduledEvent`] this came from, for the same reason
+    /// as `occurrence_end_ms` above: **a `Due` carries everything needed to
+    /// post and record it**, so nothing downstream has to search its way back
+    /// to the event.
+    ///
+    /// That search is not hypothetical. It would have to match
+    /// [`FiredKey::occurrence_ms`] — an anchor — against
+    /// `ScheduledEvent::occurrence_start_ms` — a raw start — and for an all-day
+    /// occurrence on a calendar whose zone has moved those differ. Returning an
+    /// index into the caller's slice instead would be worse still: a caller
+    /// that filtered or reordered its events between the call and the use would
+    /// silently post a different meeting's name.
+    pub title: Option<String>,
+    pub location: Option<String>,
+    pub conference_uri: Option<String>,
+    /// Whether this occurrence is all-day, so a caller can say "All day"
+    /// rather than rendering the anchor as a time.
+    pub is_all_day: bool,
 }
 
 /// Every reminder that should be posted, given the world at `now_ms`.
@@ -209,6 +237,10 @@ pub fn due_reminders(
                     key,
                     fire_at_ms,
                     occurrence_end_ms: ev.occurrence_end_ms,
+                    title: ev.title.clone(),
+                    location: ev.location.clone(),
+                    conference_uri: ev.conference_uri.clone(),
+                    is_all_day: ev.is_all_day,
                 });
             }
         }
@@ -284,6 +316,9 @@ mod tests {
             use_default_reminders: false,
             overrides: reminders,
             calendar_defaults: Vec::new(),
+            title: Some("Standup".into()),
+            location: None,
+            conference_uri: None,
         }
     }
 
