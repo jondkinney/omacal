@@ -277,6 +277,42 @@ spec**. `valueFromDetail`'s comment says the toggle-off answers "coincide", whic
 is true of the two conversions and reads as a claim the resulting value is sound.
 It is not.
 
+**CLOSED** by branch `feat/24-allday-toggle`. The four combinations now have
+specs, in both browser projects, and the acceptance property is asserted on each:
+**toggling a switch is not a way to reach a state Save refuses.**
+
+What the specs found, written before any fix and run against the old code:
+
+| combination | before |
+| --- | --- |
+| all-day → timed, **single day** | **refused** — both ends read as one clock, span zero |
+| all-day → timed, **multi-day** | saveable, but the times were a zone artefact (`03:00`/`15:00`) |
+| timed → all-day, within a day | already correct |
+| timed → all-day, past midnight | already correct |
+
+So only the *off* direction was defective, and only its single-day case was
+actually unsaveable — the section's own repro. The multi-day case was worse than
+it looked in a different way: saveable, so nothing complained, while showing
+times nobody chose.
+
+**The root cause was not the toggle.** `valueFromDetail` filled an all-day
+value's hidden time fields with `timeOf(startMs)`/`timeOf(endMs)` — the
+*browser's* reading of a midnight stored in the *calendar's* zone. Unticking the
+box revealed them. They are now `ALL_DAY_START`/`ALL_DAY_END` (09:00/09:30,
+matching the duration `blankValueAt` gives a new event), and the source instants
+on that arm are `null`, since a constant was not read off them.
+
+**Toggling changes nothing but the flag**, in `toggledAllDay`, so the switch is
+reversible. The tempting alternative — converting the all-day extent to instants,
+first day 00:00 to the day after the last at 00:00 — is the more faithful reading
+of the event's length and is *not* reversible: `endDate` is the inclusive last
+day, so a round trip grows the trip by a day each time. That alternative is the
+mutation the two round-trip specs exist to redden.
+
+The switch stopped being a `bind:checked` for that reason: a spec pointed at a
+bare bind can only re-implement it, and both round-trip specs were tautologies
+until the flick had a function of its own to call.
+
 ### 7.3 A time typed into a skipped hour
 
 Characterised, not fixed — see §3. Closing it needs the form to *say* the time

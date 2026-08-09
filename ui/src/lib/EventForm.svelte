@@ -5,7 +5,7 @@
   import { offerableCalendarId, writableCalendars, type Calendar } from './calendars';
   import {
     CUSTOM_REPEAT, REPEAT_OPTIONS, endAfterStart, ruleInWords, shiftedEndDate, toEventInput,
-    type EventFormResult, type EventFormValue, type Scope,
+    toggledAllDay, type EventFormResult, type EventFormValue, type Scope,
   } from './eventform';
 
   let {
@@ -149,7 +149,14 @@
     </label>
 
     <label class="allday">
-      <input type="checkbox" bind:checked={value.isAllDay} />
+      <!-- Not `bind:checked`: what a flick does is a rule with specs on it,
+           and it lives in `toggledAllDay` so those specs exercise the real
+           thing rather than a copy of it. See §7.2. -->
+      <input
+        type="checkbox"
+        checked={value.isAllDay}
+        onchange={(e) => (value = toggledAllDay(value, e.currentTarget.checked))}
+      />
       All day
     </label>
 
