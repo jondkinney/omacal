@@ -2,6 +2,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
 
+  import { escapeCloses } from './dismiss.svelte';
   import CalendarList from './CalendarList.svelte';
   import type { Calendar } from './calendars';
   import {
@@ -126,12 +127,9 @@
     panelEl?.querySelector<HTMLButtonElement>('[role="tab"]')?.focus();
   });
 
-  // A window-level listener rather than one on the panel, for the reason every
-  // other panel in this app documents: focus does not stay put, and nothing
-  // short of `window` hears Escape from `<body>`.
-  function onKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape') onclose();
-  }
+  // Nothing opens over the settings modal, so it is always the topmost layer
+  // while it exists. See `escapeCloses` for why this is a `window` listener.
+  escapeCloses(() => true, () => onclose());
 </script>
 
 <!--
@@ -157,8 +155,6 @@
   right time to extract it is once this modal has content — extracting against
   an empty shell would be guessing at what the fifth caller needs.
 -->
-<svelte:window onkeydown={onKeydown} />
-
 <!-- A sibling of `.modal`, not a wrapper, so a click inside never reaches it.
      Spec §5: the modal does not close on a click inside itself. -->
 <button class="scrim" aria-label="Close settings" onclick={onclose}></button>

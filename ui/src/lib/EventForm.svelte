@@ -1,6 +1,7 @@
 <!-- ui/src/lib/EventForm.svelte -->
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { escapeCloses } from './dismiss.svelte';
   import { placePopover, type Rect } from './position';
   import { offerableCalendarId, writableCalendars, type Calendar } from './calendars';
   import SaveConfirm from './SaveConfirm.svelte';
@@ -205,20 +206,13 @@
     invalidField = null;
   }
 
-  // A window-level listener rather than one on the panel, for the reason
-  // `EventPopover` and `CalendarPopover` both document: focus does not stay
-  // put, and nothing short of `window` hears Escape from `<body>`.
-  //
   // **Silent while the notify choice is open**, and that guard is load bearing:
-  // `ConfirmPanel` listens on `window` too, and has to, so without this one
-  // Escape would dismiss the choice *and* close the form behind it — losing
-  // everything typed into it, for a keystroke that meant "not that dialog".
-  function onKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape' && !asking) oncancel();
-  }
+  // the confirmation is a `ConfirmPanel`, which listens on `window` too and has
+  // to, so without this one Escape would dismiss the choice *and* close the
+  // form behind it — losing everything typed into it, for a keystroke that
+  // meant "not that dialog".
+  escapeCloses(() => !asking, () => oncancel());
 </script>
-
-<svelte:window onkeydown={onKeydown} />
 
 <!-- A sibling of `.pop`, not a wrapper, so a click inside the panel never
      reaches this button. -->

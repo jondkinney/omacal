@@ -287,6 +287,13 @@ if (name === 'App') {
       // specs assert is that a *refused* save called nothing at all, and a
       // single slot cannot tell "never called" from "called and overwritten".
       (window as any).__saves = [];
+      // How many times the parent has been told to close. **Counted, not
+      // flagged**, and that is the whole of what makes an unmount leak
+      // observable: a cancel that arrives *after* the component was destroyed
+      // is a second call, and a boolean cannot tell one from two. See
+      // `dismiss.svelte.ts` — the listener lives on `window`, so a missing
+      // teardown leaves it firing into a closure whose component is gone.
+      (window as any).__cancels = 0;
       let app: object;
       app = mount(EventForm, {
         target,
@@ -298,7 +305,10 @@ if (name === 'App') {
           // Same reasoning as `EventPopover` above: in the real app the parent
           // owns whether the form exists at all, so cancelling has to actually
           // remove it here or "Escape closes it" would have nothing to observe.
-          oncancel: () => unmount(app),
+          oncancel: () => {
+            (window as any).__cancels += 1;
+            unmount(app);
+          },
         },
       });
     } else {

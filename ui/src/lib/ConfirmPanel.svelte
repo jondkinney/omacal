@@ -1,6 +1,7 @@
 <!-- ui/src/lib/ConfirmPanel.svelte -->
 <script lang="ts">
   import { onMount, type Snippet } from 'svelte';
+  import { escapeCloses } from './dismiss.svelte';
   import { placePopover, type Rect } from './position';
 
   let {
@@ -53,15 +54,11 @@
     panelEl?.querySelector<HTMLButtonElement>('[data-cancel]')?.focus();
   });
 
-  // A window-level listener rather than one on the panel, for the reason
-  // `EventPopover`, `EventForm` and `CalendarPopover` all document: focus does
-  // not stay put, and nothing short of `window` hears Escape from `<body>`.
-  function onKeydown(e: KeyboardEvent) {
-    if (e.key === 'Escape') oncancel();
-  }
+  // Escape closes this panel. `escapeCloses` carries the whole reason it is a
+  // `window` listener; `() => true` is this panel saying it is the topmost
+  // thing whenever it is open, which it is — nothing opens over a confirmation.
+  escapeCloses(() => true, () => oncancel());
 </script>
-
-<svelte:window onkeydown={onKeydown} />
 
 <!-- A sibling of `.pop`, not a wrapper, so a click inside the panel never
      reaches this button. -->
