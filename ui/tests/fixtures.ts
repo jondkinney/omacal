@@ -1663,7 +1663,20 @@ export const FIXTURES: Record<string, Record<string, any>> = {
   },
   Header: {
     disconnected: header({ accounts: [], last_sync_ms: null, demo: false, overlay_titlebar: false }),
-    connected: header({ accounts: ['me@x.com'], last_sync_ms: FIVE_MIN_AGO, demo: false, overlay_titlebar: false }),
+    // **With calendars**, unlike every other fixture in this block, which
+    // predate the picker living behind the hamburger and left the list empty.
+    // `Calendars` is one of the three controls §1 moves, so at least one
+    // fixture has to be a connected account that actually has some — otherwise
+    // "the hamburger holds all three" is asserting two.
+    connected: {
+      ...header({
+        accounts: ['me@x.com'], last_sync_ms: FIVE_MIN_AGO, demo: false, overlay_titlebar: false,
+      }),
+      calendars: [
+        cal({ id: 1, account_id: 1, account_email: 'me@x.com', summary: 'Personal', is_primary: true }),
+        cal({ id: 2, account_id: 1, account_email: 'me@x.com', summary: 'Team' }),
+      ],
+    },
     demo: header({ accounts: [], last_sync_ms: null, demo: true, overlay_titlebar: false }),
     // Every fixture in this block is `overlay_titlebar: false` — Omarchy, and
     // macOS before this window asked for `titleBarStyle: "Overlay"` — so the
@@ -1685,6 +1698,18 @@ export const FIXTURES: Record<string, Record<string, any>> = {
     'error-and-demo': {
       ...header({ accounts: [], last_sync_ms: null, demo: true, overlay_titlebar: false }),
       error: 'Sync failed.' as string | null,
+    },
+    // A **connected** account with a recent successful sync *and* an error.
+    // Both halves are load bearing: `last_sync_ms` is still set after a sync
+    // fails — it records the last one that worked — so a light reading it
+    // before the error would report "Synced 5 min ago" in the quiet colour
+    // while the calendar goes stale. That is the defect the light exists to
+    // make visible, and this is the only fixture that can catch it.
+    error: {
+      ...header({
+        accounts: ['me@x.com'], last_sync_ms: FIVE_MIN_AGO, demo: false, overlay_titlebar: false,
+      }),
+      error: 'network unreachable' as string | null,
     },
   },
   CalendarPopover: {

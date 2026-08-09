@@ -619,22 +619,86 @@ test.describe('AllDayBand chip corners', () => {
 });
 
 test.describe('Header', () => {
+  /** Opens the hamburger. Everything rare lives behind it now (spec §1), so
+   *  most of the specs below have to get there first — which is itself the
+   *  behaviour being asserted. */
+  const openMenu = (page: import('@playwright/test').Page) =>
+    page.getByRole('button', { name: 'Menu' }).click();
+
+  /** The status light, by what it *says* rather than by what colour it is —
+   *  spec §5. Reading a computed colour would prove the stylesheet resolved a
+   *  variable, which is a fact about CSS and not about sync. */
+  const lightName = async (page: import('@playwright/test').Page) =>
+    page.locator('.light').getAttribute('aria-label');
+
   test('disconnected state offers to connect', async ({ page }) => {
     await page.goto(show('Header', 'disconnected'));
     await expect(page.getByRole('button', { name: 'Connect Google Calendar' })).toBeVisible();
-    await expect(page.locator('.synced')).toHaveCount(0);
     await expect(page.locator('header')).toHaveScreenshot('header-disconnected.png');
   });
 
-  test('connected state shows the relative sync time', async ({ page }) => {
-    // `relativeTime` reads the real wall clock, so the page clock is frozen to
-    // the same instant the fixture's `last_sync_ms` is offset from — otherwise
-    // the "N min ago" text (and any screenshot of it) drifts with the run date.
+  /**
+   * **The sentence moved into the light** (spec §2). `Synced 5 min ago` used to
+   * be text in the header; it is now the dot's accessible name and its `title`,
+   * so hovering still answers *when* precisely while the header stays quiet.
+   *
+   * The clock is frozen for the reason it always was: `relativeTime` reads the
+   * real wall clock, so "N min ago" drifts with the run date otherwise.
+   */
+  test('connected state carries the sync time in the light, not in words', async ({ page }) => {
     await page.clock.setFixedTime(FIXED_NOW);
     await page.goto(show('Header', 'connected'));
-    await expect(page.locator('.synced')).toHaveText('Synced 5 min ago');
-    await expect(page.getByRole('button', { name: 'Sync now' })).toBeEnabled();
+
+    expect(await lightName(page)).toBe('Synced 5 min ago');
+    await expect(page.locator('.light')).toHaveAttribute('title', 'Synced 5 min ago');
+    await expect(page.locator('.light')).toHaveClass(/\bsynced\b/);
+    // And nothing in the header says it out loud any more.
+    await expect(page.locator('header')).not.toContainText('Synced');
     await expect(page.locator('header')).toHaveScreenshot('header-connected.png');
+  });
+
+  /** §1: the three rare controls are gone from the header itself. Asserted as
+   *  an absence *before* the menu is opened, which is the half that says they
+   *  moved rather than merely that they exist somewhere. */
+  test('the header itself carries none of the three moved controls', async ({ page }) => {
+    await page.clock.setFixedTime(FIXED_NOW);
+    await page.goto(show('Header', 'connected'));
+
+    await expect(page.getByRole('button', { name: 'Sync now' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Add account' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /^Calendars/ })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Menu' })).toBeVisible();
+  });
+
+  test('the hamburger holds all three', async ({ page }) => {
+    await page.clock.setFixedTime(FIXED_NOW);
+    await page.goto(show('Header', 'connected'));
+    await openMenu(page);
+
+    await expect(page.getByRole('button', { name: 'Sync now' })).toBeEnabled();
+    await expect(page.getByRole('button', { name: 'Add account' })).toBeVisible();
+    await expect(page.getByRole('button', { name: /^Calendars/ })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Settings…' })).toBeVisible();
+  });
+
+  test('Escape closes the menu', async ({ page }) => {
+    await page.goto(show('Header', 'connected'));
+    await openMenu(page);
+    await expect(page.getByRole('button', { name: 'Settings…' })).toBeVisible();
+
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('button', { name: 'Settings…' })).toHaveCount(0);
+  });
+
+  test('choosing something from the menu closes it', async ({ page }) => {
+    // A menu left standing over the thing it just did has to be dismissed
+    // before the user can see what happened.
+    await page.clock.setFixedTime(FIXED_NOW);
+    await page.goto(show('Header', 'connected'));
+    await openMenu(page);
+    await page.getByRole('button', { name: 'Sync now' }).click();
+
+    await expect(page.getByRole('button', { name: 'Settings…' })).toHaveCount(0);
   });
 
   test('the DEMO DATA badge appears when demo is true', async ({ page }) => {
@@ -649,9 +713,9 @@ test.describe('Header', () => {
     await page.clock.setFixedTime(FIXED_NOW);
     await page.goto(show('Header', 'connected-demo'));
     await expect(page.locator('.demo')).toHaveText('DEMO DATA');
-    await expect(page.locator('.synced')).toHaveText('Synced 5 min ago');
+    expect(await lightName(page)).toBe('Synced 5 min ago');
+    await openMenu(page);
     await expect(page.getByRole('button', { name: 'Sync now' })).toHaveCount(0);
-    await expect(page.locator('header')).toHaveScreenshot('header-connected-demo.png');
   });
 
   test('busy disables the connect button while signing in', async ({ page }) => {
@@ -661,34 +725,88 @@ test.describe('Header', () => {
     await expect(btn).toBeDisabled();
   });
 
-  test('busy disables the sync button while syncing', async ({ page }) => {
+  test('busy shows the light as syncing, and disables the sync button', async ({ page }) => {
     await page.clock.setFixedTime(FIXED_NOW);
     await page.goto(show('Header', 'busy-connected'));
-    await expect(page.locator('.synced')).toHaveText('Syncing…');
+    expect(await lightName(page)).toBe('Syncing now');
+    await expect(page.locator('.light')).toHaveClass(/\bsyncing\b/);
+
+    await openMenu(page);
     await expect(page.getByRole('button', { name: 'Sync now' })).toBeDisabled();
   });
 
   test('busy disables the add account button while syncing', async ({ page }) => {
     await page.clock.setFixedTime(FIXED_NOW);
     await page.goto(show('Header', 'busy-connected'));
+    await openMenu(page);
     await expect(page.getByRole('button', { name: 'Add account' })).toBeDisabled();
   });
 
   test('a connected account can add another', async ({ page }) => {
     await page.goto(show('Header', 'connected'));
+    await openMenu(page);
     await expect(page.getByRole('button', { name: 'Add account' })).toBeVisible();
   });
 
   test('a disconnected user is asked to connect, not to add', async ({ page }) => {
     await page.goto(show('Header', 'disconnected'));
+    // Connect stays in the header rather than moving behind the hamburger: the
+    // three controls §1 moves are all rare, and this is the one thing a new
+    // user has to find.
     await expect(page.getByRole('button', { name: /Connect Google Calendar/ })).toBeVisible();
+    await openMenu(page);
     await expect(page.getByRole('button', { name: 'Add account' })).toHaveCount(0);
+  });
+
+  test('a signed-out light is muted, and says so rather than reading as broken', async ({ page }) => {
+    // A red dot on a fresh install would be the app telling a new user it is
+    // broken. Nothing has gone wrong; there is nothing to sync.
+    await page.goto(show('Header', 'disconnected'));
+    expect(await lightName(page)).toBe('Not signed in');
+    await expect(page.locator('.light')).toHaveClass(/\bnever\b/);
+  });
+
+  test('an error turns the light to failed, and the banner still says why', async ({ page }) => {
+    // Both halves: a colour alone is not a status, so the words are on the dot
+    // *and* the failure keeps its own readable banner.
+    await page.goto(show('Header', 'error'));
+    expect(await lightName(page)).toBe('Last sync failed');
+    await expect(page.locator('.light')).toHaveClass(/\bfailed\b/);
+    await expect(page.locator('.err')).toContainText('network unreachable');
   });
 
   test('demo mode offers neither', async ({ page }) => {
     await page.goto(show('Header', 'demo'));
+    await openMenu(page);
     await expect(page.getByRole('button', { name: 'Add account' })).toHaveCount(0);
     await expect(page.getByRole('button', { name: /Connect/ })).toHaveCount(0);
+  });
+
+  test('the hamburger opens the settings modal, and Escape closes it', async ({ page }) => {
+    await page.goto(show('Header', 'connected'));
+    await openMenu(page);
+    await page.getByRole('button', { name: 'Settings…' }).click();
+
+    const modal = page.getByRole('dialog', { name: 'Settings' });
+    await expect(modal).toBeVisible();
+    await expect(modal.getByRole('tab')).toHaveCount(4);
+
+    await page.keyboard.press('Escape');
+    await expect(modal).toHaveCount(0);
+  });
+
+  test('the settings modal does not close on a click inside it', async ({ page }) => {
+    // Spec §5. A modal that dismisses when you click its own tabs is a modal
+    // nobody can use.
+    await page.goto(show('Header', 'connected'));
+    await openMenu(page);
+    await page.getByRole('button', { name: 'Settings…' }).click();
+
+    const modal = page.getByRole('dialog', { name: 'Settings' });
+    await modal.getByRole('tab', { name: 'Calendars' }).click();
+    await expect(modal).toBeVisible();
+    await expect(modal.getByRole('tab', { name: 'Calendars' }))
+      .toHaveAttribute('aria-selected', 'true');
   });
 
   /**

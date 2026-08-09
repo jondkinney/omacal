@@ -33,7 +33,10 @@ test.describe('App', () => {
     await page.goto(app());
     await expect(page.locator('h1')).toHaveText('January 2024');
     await expect(page.locator('.ev b')).toHaveText(weekLabel(W1));
-    await expect(page.locator('.synced')).toHaveText('Synced 5 min ago');
+    // The sentence lives on the status light now (spec §2) rather than in the
+    // header's own text. Same fact, same precision — a glance gets the colour
+    // and a hover gets the minutes.
+    await expect(page.locator('.light')).toHaveAttribute('aria-label', 'Synced 5 min ago');
     await expect(page.locator('.err')).toHaveCount(0);
   });
 
@@ -90,10 +93,13 @@ test.describe('App', () => {
   test('the synced label keeps counting while nothing happens', async ({ page }) => {
     await page.clock.install({ time: APP_NOW });
     await page.goto(app());
-    await expect(page.locator('.synced')).toHaveText('Synced 5 min ago');
+    await expect(page.locator('.light')).toHaveAttribute('aria-label', 'Synced 5 min ago');
 
     await page.clock.fastForward('10:00');
-    await expect(page.locator('.synced')).toHaveText('Synced 15 min ago');
+    // Unweakened by the move: the light's name is built from the same
+    // `relativeTime` the label was, so this still catches a value that froze
+    // at its last sync — which is exactly when its staleness is worth seeing.
+    await expect(page.locator('.light')).toHaveAttribute('aria-label', 'Synced 15 min ago');
   });
 
   // D6. This reload used to sit outside any try/catch, so a failure here was
@@ -151,6 +157,8 @@ test.describe('App', () => {
     await expect.poll(calendarCalls).toBeGreaterThan(0);
     const before = await calendarCalls();
 
+    // Behind the hamburger now (spec §1), so getting to it is part of the act.
+    await page.getByRole('button', { name: 'Menu' }).click();
     await page.getByRole('button', { name: 'Add account' }).click();
     await expect.poll(calendarCalls).toBeGreaterThan(before);
   });
@@ -178,7 +186,10 @@ test.describe('App', () => {
     await expect(page.locator('.panel')).toBeVisible();
     await page.keyboard.press('Escape');
     await expect(page.locator('.panel')).toHaveCount(0);
-
+    // **One Escape closes one layer.** The picker is gone and the menu it
+    // opened inside is still standing, which is what lets the next click reach
+    // Add account — and is the behaviour three `window` keydown listeners
+    // would otherwise collapse into one keystroke.
     await page.getByRole('button', { name: 'Add account' }).click();
     await expect(page.locator('.panel')).toBeVisible();
   });
@@ -190,7 +201,9 @@ test.describe('App', () => {
     await page.goto(app('sign-in-adds-account'));
     await page.getByRole('button', { name: /Connect|Add account/ }).click();
     await expect(page.locator('.panel')).toBeVisible();
-    await page.locator('.scrim').click();
+    // **The picker's own scrim**, named exactly: the menu it now sits inside
+    // has one too, and clicking the wrong one would close the wrong layer.
+    await page.getByRole('button', { name: 'Close', exact: true }).click();
     await expect(page.locator('.panel')).toHaveCount(0);
 
     await page.getByRole('button', { name: 'Add account' }).click();
@@ -494,14 +507,22 @@ test.describe('App', () => {
   /** The `writable` scenario, opened and settled: two editable events on
    *  Monday's column, and a calendar list that has actually landed.
    *
-   *  Waiting for `.trigger` — Header's calendar picker button, which only
+   *  Waiting for `.trigger` — the calendar picker's own button, which only
    *  exists once `calendars` is non-empty — is not decoration. `App` seeds a
    *  new event's calendar from that list, and `EventForm` snapshots the seed on
    *  mount; a form opened before `get_calendars` answered would carry `null`
-   *  and refuse to save, intermittently. */
+   *  and refuse to save, intermittently.
+   *
+   *  The picker now lives behind the hamburger, so the menu has to be opened to
+   *  see it and closed again afterwards. Deliberately the same signal rather
+   *  than a weaker one that happens to be visible: what this waits for is
+   *  `get_calendars` having answered, and nothing else in the header says so. */
   const writable = async (page: Page) => {
     await page.goto(app('writable'));
+    await page.getByRole('button', { name: 'Menu' }).click();
     await expect(page.locator('.trigger')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.trigger')).toHaveCount(0);
     await expect(page.locator('.vswitch button')).toHaveCount(5); // mount race — see above
   };
 
@@ -2010,6 +2031,10 @@ test.describe('App: one band, not two', () => {
    */
   test('the calendar panel is text to read, not somewhere to drag the window from', async ({ page }) => {
     await page.goto(app('writable'));
+    // Two clicks now: the picker moved behind the hamburger, and it moved
+    // *into the menu* — which is still inside `<header>`, so this assertion is
+    // about exactly the same ancestry it always was.
+    await page.getByRole('button', { name: 'Menu' }).click();
     await page.getByRole('button', { name: /^Calendars/ }).click();
     await expect(page.locator('.panel')).toBeVisible();
 
