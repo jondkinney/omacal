@@ -11,6 +11,7 @@ import EventPopover from '../../src/lib/EventPopover.svelte';
 import EventForm from '../../src/lib/EventForm.svelte';
 import DeleteConfirm from '../../src/lib/DeleteConfirm.svelte';
 import * as eventform from '../../src/lib/eventform';
+import * as drag from '../../src/lib/drag';
 import { FIXTURES } from '../fixtures';
 import { installTauriStub } from './tauri';
 import { setPalette } from '../../src/lib/theme';
@@ -25,6 +26,11 @@ import { VIEW_BOX_CSS } from './viewbox';
 // and reach the module through here. Assigned before the branching below, so a
 // spec can ask for a URL that mounts nothing at all.
 (window as any).__eventform = eventform;
+
+// The drag geometry, reachable from `drag.spec.ts` for the same reason: every
+// answer it gives depends on the browser's zone, and `timezoneId` reaches the
+// browser context rather than Node.
+(window as any).__drag = drag;
 
 // Palette normally arrives from the Rust get_palette command; the harness
 // applies the same `fallback_dark` values (`src-tauri/src/theme.rs`) so
