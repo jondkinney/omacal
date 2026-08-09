@@ -694,7 +694,17 @@
     {/if}
   {:else if view === 'bigyear'}
     {#if bigYear}
-      <BigYearRibbon ribbon={bigYear} onopen={openGridEvent} oncreate={newEventOnDay} />
+      <!-- `gridSelId`/`gridSelStart` are handed straight down: they already
+           name the occurrence whose popover is open — `isGridSelected` above
+           tests exactly this pair — and the ribbon keeps every segment of it
+           lit while it is. Nothing new is tracked here; the state existed. -->
+      <BigYearRibbon
+        ribbon={bigYear}
+        openId={gridSelId}
+        openStart={gridSelStart}
+        onopen={openGridEvent}
+        oncreate={newEventOnDay}
+      />
     {/if}
   {:else if week}
     <WeekGrid {week} oncreate={newEventAt} onedit={openEdit} ondelete={askDelete} />

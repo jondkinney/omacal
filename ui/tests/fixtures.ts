@@ -335,6 +335,13 @@ const detail = (o: Partial<EventDetail> & { id: number }): EventDetail => ({
  *  itself (that's `position.spec.ts`'s job), only on what the popover shows. */
 const ANCHOR: Rect = { top: 100, left: 100, width: 120, height: 40 };
 
+/** 200 characters with no break opportunity anywhere in them.
+ *
+ *  Exported so a spec can assert its own premise — that the token really is
+ *  longer than the 320px panel could ever lay out on one line — rather than
+ *  trusting a literal it cannot see. Used by the `unbreakable` fixture below. */
+export const UNBREAKABLE = 'w'.repeat(200);
+
 /** Monday 10 Aug 2026 06:00 UTC — a series' DTSTART, used as `detail.start_ms`
  *  for the recurring fixtures below. This is the value the trap named in the
  *  task brief passes to `respondToEvent` when it's read off `detail` instead
@@ -832,6 +839,59 @@ const bigYear2026 = (): BigYearPayload => {
   return b;
 };
 
+/** The id every occurrence of `recurringBigYear`'s series shares. */
+export const RIBBON_SERIES_ID = 960;
+/** The start of the occurrence a highlight spec hovers — the second of three,
+ *  so a broken implementation that lit "the first" or "all of them" is not
+ *  accidentally right. Row 0, column 7. */
+export const RIBBON_SERIES_HOVERED = RIBBON_START + 7 * 24 * H;
+
+/** A weekly all-day series: three occurrences, **one shared `id`**, three
+ *  different `start_ms`, plus one unrelated event on the same row.
+ *
+ *  This is the fixture the highlight feature is actually dangerous without.
+ *  Every occurrence of a series carries its master row's id — `to_ui(src, ...)`
+ *  in `commands.rs` builds each expanded occurrence from the same `StoredEvent`
+ *  — so an implementation that lights "every pill with this id" lights the
+ *  whole year. A ribbon of single events cannot show that: there, id and
+ *  occurrence are the same thing, and the broken version passes.
+ *
+ *  What distinguishes them is `start_ms`, and that is a property of the
+ *  assembler rather than of this file: `occurrences()` returns each occurrence's
+ *  own interval, and `expand()` (`recur.rs`) *filters* by the row window
+ *  without ever clamping to it. So two occurrences of one series differ here,
+ *  and the row-segments of a single occurrence — `crossingBigYear` above — do
+ *  not.
+ *
+ *  Same weekday on purpose: a 28-day row puts a weekly series in one column,
+ *  which is what it looks like in the real ribbon. */
+const recurringBigYear = (): BigYearPayload => {
+  const b = emptyBigYear(2026, RIBBON_START, YEAR_2026_START, YEAR_2027_START);
+
+  const occurrence = (col: number) => ev({
+    id: RIBBON_SERIES_ID, title: 'Standup', is_all_day: true, color: '#5b8def',
+    start_ms: RIBBON_START + col * 24 * H,
+    end_ms: RIBBON_START + (col + 1) * 24 * H,
+  });
+
+  // A second event with a *different* id, so a spec can also say the highlight
+  // does not simply light everything on the row.
+  const other = ev({
+    id: 961, title: 'Diwali', is_all_day: true, color: '#e2a03f',
+    start_ms: RIBBON_START + 21 * 24 * H, end_ms: RIBBON_START + 22 * 24 * H,
+  });
+
+  b.rows[0].pill_events = [occurrence(0), occurrence(7), occurrence(14), other];
+  b.rows[0].pills = [
+    { idx: 0, lane: 0, start_col: 0, end_col: 0, cont_left: false, cont_right: false },
+    { idx: 1, lane: 0, start_col: 7, end_col: 7, cont_left: false, cont_right: false },
+    { idx: 2, lane: 0, start_col: 14, end_col: 14, cont_left: false, cont_right: false },
+    { idx: 3, lane: 0, start_col: 21, end_col: 21, cont_left: false, cont_right: false },
+  ];
+
+  return b;
+};
+
 /** Three pills in one row, chosen so a spec can see the *rendered* end of
  *  `foregroundFor` — not just its return value, which `components.spec.ts`
  *  tables directly.
@@ -904,12 +964,19 @@ const sameNameLegendBigYear = (): BigYearPayload => {
  *  reason `pill_events` is genuinely per-row (the same event appears twice,
  *  once in each row's own array) rather than shared across rows, same as
  *  `MonthRow.bar_events`. */
+/** `crossingBigYear`'s span: one occurrence, two row-segments, and the same
+ *  `start_ms` on both — which is what makes it the multi-row witness. Exported
+ *  so the `crossing-open` fixture below and its spec name the occurrence from
+ *  the one place the payload does, rather than each carrying a copy. */
+export const RIBBON_CROSSING_ID = 910;
+export const RIBBON_CROSSING_START = RIBBON_START + 25 * 24 * H;
+
 const crossingBigYear = (): BigYearPayload => {
   const b = emptyBigYear(2026, RIBBON_START, YEAR_2026_START, YEAR_2027_START);
 
   const spanEvent = (id: number) => ev({
     id, title: 'Sun-Tue trip', is_all_day: true, color: '#5b8def',
-    start_ms: RIBBON_START + 25 * 24 * H, end_ms: RIBBON_START + 30 * 24 * H,
+    start_ms: RIBBON_CROSSING_START, end_ms: RIBBON_START + 30 * 24 * H,
   });
 
   b.rows[0].pill_events = [spanEvent(910)];
@@ -1419,6 +1486,24 @@ export const FIXTURES: Record<string, Record<string, any>> = {
     'same-name-legend': { ribbon: sameNameLegendBigYear() },
     'three-lanes': { ribbon: threeLanesBigYear() },
     'three-lanes-exact': { ribbon: threeLanesExactBigYear() },
+    recurring: { ribbon: recurringBigYear() },
+    /* The crossing span with its popover open, which is the only way to reach
+     * the `openId`/`openStart` props from a standalone mount: in the app they
+     * come from `App.svelte`'s own `gridSelId`/`gridSelStart`, set when it
+     * opens the popover. */
+    'crossing-open': {
+      ribbon: crossingBigYear(),
+      openId: RIBBON_CROSSING_ID,
+      openStart: RIBBON_CROSSING_START,
+    },
+    /* An open popover on **one occurrence of a series** — the same trap as
+     * hovering, through the other input. Without this, `openId` alone would
+     * pass every spec here. */
+    'recurring-open': {
+      ribbon: recurringBigYear(),
+      openId: RIBBON_SERIES_ID,
+      openStart: RIBBON_SERIES_HOVERED,
+    },
     'pill-inks': { ribbon: pillInksBigYear() },
     unsynced: { ribbon: unsyncedBigYear() },
   },
@@ -1609,6 +1694,53 @@ export const FIXTURES: Record<string, Record<string, any>> = {
         is_recurring: true,
         attendees: [attendee({ email: 'me@x.com', is_self: true })],
       }),
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, occurrenceEndMs: MON + 9 * H + 30 * 60_000,
+      onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
+    },
+    /* Every text field the panel has, each carrying one 200-character token
+     * with nothing in it a line may break at.
+     *
+     * The reported defect came from the organizer alone, and suppressing that
+     * one address (`organizer.ts`) fixes the reported case without fixing the
+     * panel. So this fixture deliberately puts the same shape everywhere else
+     * as well — title, location, description, conference URI, an attendee's
+     * address — and gives the organizer a *real* domain, so it renders and is
+     * stressed rather than being suppressed out of the test.
+     *
+     * `UNBREAKABLE` is one repeated character on purpose: no punctuation, no
+     * case change, nothing an engine could treat as a soft break opportunity.
+     * A long e-mail address or URL would leave the test at the mercy of each
+     * engine's opinion about breaking after `@`, `.` or `/`, and the two do
+     * not have to agree. */
+    unbreakable: {
+      detail: detail({
+        id: 8,
+        title: UNBREAKABLE,
+        location: UNBREAKABLE,
+        description: UNBREAKABLE,
+        conference_uri: `https://meet.example.com/${UNBREAKABLE}`,
+        organizer_email: `${UNBREAKABLE}@example.com`,
+        attendees: [attendee({ email: `${UNBREAKABLE}@example.com`, is_self: true })],
+      }),
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, occurrenceEndMs: MON + 9 * H + 30 * 60_000,
+      onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
+    },
+    /* The address Plamen's own calendar produced: a shared calendar organizing
+     * its own events. `c_` plus 40 hex characters is Google's own shape for
+     * one, kept here rather than shortened, because the length is half of why
+     * printing it is wrong. */
+    'machine-organizer': {
+      detail: detail({
+        id: 9,
+        organizer_email: 'c_ea77f957e2638e631988cb58ff34ac160c507eac4f5c90b40f3d6c1a2b8e7d94@group.calendar.google.com',
+      }),
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, occurrenceEndMs: MON + 9 * H + 30 * 60_000,
+      onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
+    },
+    /* The other side of the pair. Without it, "the organizer row is hidden"
+     * would be satisfied by a component that never renders the row at all. */
+    'human-organizer': {
+      detail: detail({ id: 10, organizer_email: 'plamen@excitel.com' }),
       anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, occurrenceEndMs: MON + 9 * H + 30 * 60_000,
       onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
     },

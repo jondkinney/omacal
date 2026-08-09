@@ -4,6 +4,7 @@
   import { placePopover, type Rect } from './position';
   import { descriptionSegments } from './sanitize';
   import { occurrenceDate } from './eventform';
+  import { isMachineAddress } from './organizer';
   import { respondToEvent, type Attendee, type EventDetail } from './eventdetail';
 
   let {
@@ -266,7 +267,13 @@
   {#if detail.conference_uri}
     <a class="conf" href={detail.conference_uri} target="_blank" rel="noopener noreferrer">Join video call</a>
   {/if}
-  {#if detail.organizer_email}<p class="organizer">Organized by {detail.organizer_email}</p>{/if}
+  <!-- Suppressed for the addresses Google mints for shared calendars and
+       meeting rooms: "Organized by" followed by forty hex characters is worse
+       than nothing, and there is no name to fall back to — `EventDetail`
+       carries no `organizer.displayName`. See `organizer.ts`. -->
+  {#if detail.organizer_email && !isMachineAddress(detail.organizer_email)}
+    <p class="organizer">Organized by {detail.organizer_email}</p>
+  {/if}
 
   {#if shownAttendees.length}
     <div class="guests">
@@ -330,10 +337,42 @@
 <style>
   .scrim { position: fixed; inset: 0; background: none; border: 0; cursor: default; z-index: 40; }
 
+  /* `overflow-wrap: anywhere` is on the *panel*, not on the field that
+     reported the bug, and that is the point of it.
+
+     What was seen: a full-width horizontal scrollbar along the bottom of the
+     popover, from an organizer address of the form
+     `c_<40 hex>@group.calendar.google.com`. `.organizer` had colour and size
+     and no wrap handling, so the unbreakable token pushed past 320px — and
+     because `overflow-y: auto` makes the other axis `auto` too rather than
+     `visible`, the panel answered with a scroller.
+
+     Suppressing that address (see the markup) fixes the case that was reported
+     and none of the others. Measured against the `unbreakable` fixture with
+     this declaration removed: the panel's 2008px of scroll width comes from
+     the *title* (1994px) and would come from the location (1589px) and the
+     organizer (1658px) on their own — three block-level fields that had no
+     wrap handling of their own. `.desc` was never a contributor; it carries
+     its own `word-break: break-word`. One declaration here covers all of them
+     and every field the panel gains later.
+
+     Two fields that look like they belong on that list and do not, both
+     checked rather than assumed: `.conf`'s *text* is the fixed label "Join
+     video call" — the long URI is only ever in its `href` — and `.who` clips
+     itself with `overflow: hidden` and an ellipsis, so its own 1684px never
+     reaches the panel's scroll width.
+
+     `anywhere` rather than `break-word` is the stronger of the two: only
+     `anywhere` also counts the break when working out a box's *minimum* width,
+     which is what a shrink-to-fit box would size itself against. Worth being
+     honest about, though — **this panel has no such box today, and no test
+     here distinguishes the two.** Swapping `anywhere` for `break-word` keeps
+     every spec green (measured). It is chosen as the safer default, not
+     because something currently needs it. */
   .pop { position: fixed; z-index: 41; width: 320px; max-height: 70vh; overflow-y: auto;
          background: var(--surface); border: 1px solid var(--hairline);
          border-radius: 8px; padding: 12px 14px; box-shadow: 0 8px 28px rgba(0, 0, 0, .45);
-         font-size: 12px; }
+         font-size: 12px; overflow-wrap: anywhere; }
   /* The panel is focused on mount to contain the tab order, not because it is
      itself operable — a ring around the whole popover would only be noise.
      The controls inside keep theirs. */

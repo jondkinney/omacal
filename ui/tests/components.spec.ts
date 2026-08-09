@@ -2,7 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 import {
   FIXED_NOW, FORM_FALLBACK_ID, FORM_NOW, FORM_UNWRITABLE_ID, FORM_UNWRITABLE_NAMES,
   MON, MONTH_2026_NOW, POPOVER_DETAILS, POPOVER_REFRESHED_DETAIL,
-  TRIP_END_DATE, TRIP_FIRST_DAY, TRIP_LAST_DAY, popoverWeekWithResponse,
+  TRIP_END_DATE, TRIP_FIRST_DAY, TRIP_LAST_DAY, popoverWeekWithResponse, UNBREAKABLE,
   WEEK_NOW, WEEK_NOW_INSIDE, YEAR_2026_NOW,
 } from './fixtures';
 import { CALENDAR_SYNC_REMOVED } from './harness/tauri';
@@ -909,6 +909,70 @@ test.describe('CalendarPopover', () => {
 test.describe('EventPopover', () => {
   const show = (f: string) => `/tests/harness/index.html?c=EventPopover&f=${f}`;
 
+  test('the panel never scrolls sideways, whatever a field holds', async ({ page }) => {
+    // Reported from Plamen's calendar: a full-width horizontal scrollbar along
+    // the bottom of the popover. It came from an organizer address —
+    // `c_<40 hex>@group.calendar.google.com` — but the organizer field is not
+    // what this asserts, on purpose. Suppressing that one address fixes the
+    // case that was reported and leaves the panel just as fragile: a title, a
+    // location, a conference URI or an attendee address can each be one long
+    // unbroken token. This is the spec for the panel, and it is the one that
+    // has to hold when the next such field is added.
+    //
+    // `.pop` is 320px wide with `overflow-y: auto`, which makes the other axis
+    // `auto` as well rather than `visible` — so overflowing content does not
+    // spill, it grows a scroller. `scrollWidth > clientWidth` is exactly that
+    // scroller, and is the thing the user saw.
+    await page.goto(show('unbreakable'));
+    const pop = page.locator('.pop');
+    await expect(pop).toBeVisible();
+
+    // The fixture's own premise: the token really is far longer than the panel
+    // can lay out on one line. Asserted rather than assumed, so shortening
+    // `UNBREAKABLE` cannot quietly leave this test measuring nothing.
+    expect(UNBREAKABLE.length).toBeGreaterThan(150);
+    const width = (await pop.boundingBox())!.width;
+    expect(width).toBeLessThan(400);
+
+    // The three fields that actually drive the panel's overflow, measured with
+    // the guard removed: the title (1994px on its own), the location (1589px)
+    // and the organizer (1658px). More than one, deliberately — a fix applied
+    // to whichever selector was reported would pass a single-field version of
+    // this test and still ship the bug.
+    //
+    // `.desc`, `.conf` and `.who` are *not* on this list and it is worth
+    // saying why, so nobody adds them thinking the list was an oversight:
+    // `.desc` carries its own `word-break: break-word`, `.conf`'s text is the
+    // fixed label "Join video call" (its long URI never leaves the `href`),
+    // and `.who` clips itself with an ellipsis so its own overflow never
+    // reaches the panel.
+    for (const sel of ['h2', '.loc', '.organizer']) {
+      await expect(pop.locator(sel), sel).toBeVisible();
+      await expect(pop.locator(sel), sel).toContainText(UNBREAKABLE);
+    }
+
+    const scroll = await pop.evaluate((el) => ({
+      scrollWidth: el.scrollWidth, clientWidth: el.clientWidth,
+    }));
+    expect(scroll.scrollWidth).toBeLessThanOrEqual(scroll.clientWidth);
+  });
+
+  test('a generated calendar address is not shown as the organizer', async ({ page }) => {
+    // "Organized by" followed by forty hex characters names no one. `.pop` is
+    // asserted visible first so this cannot pass by the popover having failed
+    // to render at all, which is the way a hidden-row assertion usually lies.
+    await page.goto(show('machine-organizer'));
+    await expect(page.locator('.pop')).toBeVisible();
+    await expect(page.locator('.organizer')).toHaveCount(0);
+  });
+
+  test('a real organizer address is still shown', async ({ page }) => {
+    // The other half of the pair, and not optional: without it the assertion
+    // above is satisfied by a component that stopped rendering the row at all.
+    await page.goto(show('human-organizer'));
+    await expect(page.locator('.organizer')).toHaveText('Organized by plamen@excitel.com');
+  });
+
   test('shows the guest list with each response', async ({ page }) => {
     await page.goto(show('standup'));
     await expect(page.locator('.guest')).toHaveCount(3);
@@ -1651,6 +1715,97 @@ test.describe('BigYearRibbon', () => {
     expect(await page.evaluate(() => (window as any).__lastCreate)).toMatchObject({
       startMs: Date.UTC(2026, 0, 2),
     });
+  });
+
+  // ---- an event lights up across its whole span ----------------------------
+
+  test('hovering a segment lights every row the same occurrence runs through', async ({ page }) => {
+    // The multi-row half. `crossing` is one occurrence with a segment in each
+    // of two rows, and the point of the feature is that both light at once —
+    // with a dozen bars stacked, finding where a trip ends is the problem.
+    await page.goto(show('crossing'));
+    const pills = page.locator('.pill');
+    await expect(pills).toHaveCount(2);
+    await expect(page.locator('.pill.lit')).toHaveCount(0);
+
+    await pills.nth(0).hover();
+    await expect(page.locator('.pill.lit')).toHaveCount(2);
+
+    // And it lets go. Without this a highlight that never cleared would satisfy
+    // every other assertion here.
+    await page.locator('.legend').hover();
+    await expect(page.locator('.pill.lit')).toHaveCount(0);
+  });
+
+  test('hovering one occurrence of a series lights that one only', async ({ page }) => {
+    // **The witness that matters.** Every occurrence of a recurring series
+    // carries its master row's id, so keying the highlight on `ev.id` — the
+    // obvious repair once `lane.idx` is ruled out — lights the whole series:
+    // hover January's standup and all fifty-two glow.
+    //
+    // A ribbon of single events cannot see that, because there id and
+    // occurrence are the same thing and the broken version passes. `recurring`
+    // is three occurrences sharing one id, plus one unrelated event.
+    //
+    // The middle occurrence, not the first: an implementation that lit "the
+    // first segment with this id" would be accidentally right on the first.
+    await page.goto(show('recurring'));
+    const pills = page.locator('.pill');
+    await expect(pills).toHaveCount(4);
+
+    // The fixture's premise, asserted rather than trusted: three of these pills
+    // really do share one id, and really do carry different starts. If that
+    // ever stopped being true the test below would still pass and would no
+    // longer be about anything.
+    const identity = await pills.evaluateAll((els) => els.map((el) => el.getAttribute('title')));
+    expect(identity.filter((t) => t === 'Standup')).toHaveLength(3);
+
+    await pills.nth(1).hover();
+    const lit = page.locator('.pill.lit');
+    await expect(lit).toHaveCount(1);
+    // …and it is the one under the cursor, not merely "one of them".
+    const litBox = (await lit.boundingBox())!;
+    const hoveredBox = (await pills.nth(1).boundingBox())!;
+    expect(litBox.x).toBeCloseTo(hoveredBox.x, 0);
+  });
+
+  test('the occurrence whose popover is open stays lit, across its rows', async ({ page }) => {
+    // The other input to the same predicate, and it arrives as a prop: App
+    // hands down the `gridSelId`/`gridSelStart` it already keeps for the open
+    // popover. Both segments of the crossing span light, with nothing hovered.
+    await page.goto(show('crossing-open'));
+    await expect(page.locator('.pill')).toHaveCount(2);
+    await expect(page.locator('.pill.lit')).toHaveCount(2);
+  });
+
+  test('an open popover on one occurrence of a series lights that one only', async ({ page }) => {
+    // The recurring trap through the prop rather than through the cursor. Both
+    // inputs go through one predicate, but only a spec per input can say so.
+    await page.goto(show('recurring-open'));
+    await expect(page.locator('.pill')).toHaveCount(4);
+    await expect(page.locator('.pill.lit')).toHaveCount(1);
+  });
+
+  test('a highlight changes nothing about where a pill sits', async ({ page }) => {
+    // These pills are under the cursor by definition. A highlight that moved
+    // anything would make the ribbon jump out from under it, and could re-enter
+    // the pill and flicker. `filter` and an inset `box-shadow` are chosen for
+    // exactly that: they paint without taking part in layout.
+    //
+    // Every segment's box is compared, not just the hovered one — a highlight
+    // that grew the hovered pill would push its neighbours about too, and the
+    // second row's segment is the one that would show it.
+    await page.goto(show('crossing'));
+    const pills = page.locator('.pill');
+    const boxes = async () => pills.evaluateAll((els) => els.map((el) => {
+      const r = el.getBoundingClientRect();
+      return [r.x, r.y, r.width, r.height].map((n) => Math.round(n * 100) / 100);
+    }));
+
+    const before = await boxes();
+    await pills.nth(0).hover();
+    await expect(page.locator('.pill.lit')).toHaveCount(2); // it really is lit
+    expect(await boxes()).toEqual(before);
   });
 
   // ---- the day box is the container, and the event is drawn in it ----------
