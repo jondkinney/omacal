@@ -7,6 +7,7 @@
   import AllDayBand from './AllDayBand.svelte';
   import EventPopover from './EventPopover.svelte';
   import { getEventDetail, refreshEvent, type EventDetail, type Occurrence } from './eventdetail';
+  import { SNAP_MS, beganDrag, spanForMove } from './drag';
 
   let { week, oncreate, onedit, ondelete }: {
     week: WeekPayload;
@@ -194,7 +195,135 @@
     })),
   );
 
+  /**
+   * An in-flight drag, or `null`.
+   *
+   * **Task 3 writes nothing.** This moves a block and puts it back; the write,
+   * the notify dialog and the recurring-scope question are Task 4's. Keeping
+   * the gesture on its own first is what lets it be got right while being
+   * wrong is free.
+   *
+   * `offsetPct` is what the block is rendered with, and is a percentage of the
+   * column so it lands wherever the column happens to be sized — the same unit
+   * the block's own `top` is in.
+   */
+  type Drag = {
+    id: number;
+    startMs: number;
+    originX: number;
+    originY: number;
+    colHeight: number;
+    dayMs: number;
+    origin: { startMs: number; endMs: number };
+    /** Past the threshold. Below it this is still a click. */
+    moving: boolean;
+    offsetPct: number;
+  };
+  let drag = $state<Drag | null>(null);
+
+  /**
+   * Whether the press that just ended was a *drag*, so the `click` the browser
+   * dispatches after `pointerup` does not also open the popover.
+   *
+   * **Assigned on every release, never merely set**, which is what stops it
+   * outliving the gesture it describes. A drag cancelled by Escape leaves it
+   * true with no click to consume it; the next press's own `pointerup` then
+   * assigns it `false` before that press's `click` is dispatched, so a stale
+   * `true` can never reach a click that deserved to open something.
+   *
+   * An earlier version also cleared it on `pointerdown`. That read as prudent
+   * and was dead: the release above already assigns it on every gesture, and a
+   * mutation deleting the clear reddened nothing at all.
+   */
+  let draggedNotClicked = false;
+
+  /** Whether `event` is the one currently being dragged. */
+  const dragOffsetFor = (event: UiEvent): number =>
+    drag && drag.moving && drag.id === event.id && drag.startMs === event.start_ms
+      ? drag.offsetPct
+      : 0;
+
+  function startDrag(event: UiEvent, day: { start_ms: number; end_ms: number }, e: PointerEvent) {
+    // Primary button only: a right-click opens a context menu and must not
+    // leave a half-armed drag behind it.
+    if (e.button !== 0) return;
+    const col = (e.currentTarget as HTMLElement).closest('.col');
+    if (!col) return;
+
+    drag = {
+      id: event.id,
+      startMs: event.start_ms,
+      originX: e.clientX,
+      originY: e.clientY,
+      colHeight: col.getBoundingClientRect().height,
+      dayMs: day.end_ms - day.start_ms,
+      origin: { startMs: event.start_ms, endMs: event.end_ms },
+      moving: false,
+      offsetPct: 0,
+    };
+
+    window.addEventListener('pointermove', onDragMove);
+    window.addEventListener('pointerup', onDragEnd);
+    window.addEventListener('keydown', onDragKey);
+  }
+
+  function onDragMove(e: PointerEvent) {
+    if (!drag) return;
+    const dx = e.clientX - drag.originX;
+    const dy = e.clientY - drag.originY;
+
+    // Below the threshold this is still a click, and nothing has moved yet.
+    if (!drag.moving && !beganDrag(dx, dy)) return;
+    drag.moving = true;
+
+    // The geometry is `drag.ts`'s, never recomputed here — the snap, the
+    // duration rule and the civil day all live there with a table each.
+    // `dxCols` is 0: this task moves a block within its own column, and
+    // rendering it in a different one is a change to how the grid is laid
+    // out rather than to the gesture.
+    const span = spanForMove(
+      drag.origin,
+      drag.colHeight === 0 ? 0 : dy / drag.colHeight,
+      drag.dayMs,
+      week.days.length,
+      0,
+      SNAP_MS,
+    );
+    // Back into the column's own units, from the instant the geometry chose,
+    // so what is drawn is what would be written.
+    drag.offsetPct = ((span.startMs - drag.origin.startMs) / drag.dayMs) * 100;
+  }
+
+  function onDragEnd() {
+    if (!drag) return;
+    // §4: a drop where it started writes nothing. Here that is the whole of
+    // it — there is no write yet — and the block simply returns.
+    draggedNotClicked = drag.moving;
+    endDrag();
+  }
+
+  function onDragKey(e: KeyboardEvent) {
+    if (e.key !== 'Escape' || !drag) return;
+    // Cancelled: the block returns to its origin and the pointer release that
+    // follows must not be read as a drop.
+    e.stopPropagation();
+    draggedNotClicked = drag.moving;
+    endDrag();
+  }
+
+  function endDrag() {
+    drag = null;
+    window.removeEventListener('pointermove', onDragMove);
+    window.removeEventListener('pointerup', onDragEnd);
+    window.removeEventListener('keydown', onDragKey);
+  }
+
   async function openPopover(event: UiEvent, rect: Rect) {
+    // The `click` that follows a drag's `pointerup` is not a click on this
+    // block; swallow it. See `draggedNotClicked` for why the flag is cleared
+    // on press rather than here.
+    if (draggedNotClicked) return;
+
     selectedId = event.id;
     selectedStartMs = event.start_ms;
     selectedEndMs = event.end_ms;
@@ -376,7 +505,13 @@
       {/each}
 
       {#each day.placed as p}
-        <EventBlock event={day.events[p.idx]} placed={p} onopen={openPopover} />
+        <EventBlock
+          event={day.events[p.idx]}
+          placed={p}
+          onopen={openPopover}
+          ongrab={(ev, e) => startDrag(ev, day, e)}
+          offsetPct={dragOffsetFor(day.events[p.idx])}
+        />
       {/each}
 
       {#if isToday}

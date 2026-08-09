@@ -312,10 +312,42 @@ test.describe('resizing', () => {
   });
 });
 
-test('the module exports exactly the three functions the plan names', async ({ page }) => {
+/**
+ * The threshold, as arithmetic. Its *behavioural* witness is
+ * `drag-gesture.spec.ts`'s "a click still opens the popover" — this is the
+ * table underneath it, and the reason the predicate is not written inline in
+ * Svelte.
+ */
+test.describe('the drag threshold', () => {
+  const cases: Array<{ dx: number; dy: number; began: boolean; why: string }> = [
+    { dx: 0, dy: 0, began: false, why: 'a press that has not moved is a click' },
+    { dx: 0, dy: 3, began: false, why: 'the jitter every real click has' },
+    { dx: 0, dy: 4, began: true, why: 'exactly the threshold begins a drag' },
+    { dx: 4, dy: 0, began: true, why: 'and the same sideways' },
+    { dx: 0, dy: -4, began: true, why: 'and upward: it is distance, not direction' },
+    { dx: 3, dy: 3, began: true, why: 'three each way is 4.24 of travel, not three' },
+    { dx: 2, dy: 2, began: false, why: 'two each way is 2.83, still a click' },
+  ];
+
+  for (const c of cases) {
+    test(`dx ${c.dx}, dy ${c.dy} ${c.began ? 'begins a drag' : 'is still a click'} — ${c.why}`,
+      async ({ page }) => {
+        await page.goto(PURE);
+        const got = await page.evaluate(
+          (a) => (window as any).__drag.beganDrag(a.dx, a.dy),
+          { dx: c.dx, dy: c.dy },
+        );
+        expect(got).toBe(c.began);
+      });
+  }
+});
+
+test('the module exports the geometry the plan names, and the gesture constants', async ({ page }) => {
   await page.goto(PURE);
   // A guard on the shape rather than on any answer: Task 3 wires a component to
   // these names, and a rename here would otherwise surface as a runtime
   // undefined in a gesture spec rather than as a failure here.
-  expect((await drag(page)).sort()).toEqual(['snapMs', 'spanForMove', 'spanForResize']);
+  expect((await drag(page)).sort()).toEqual(
+    ['DRAG_THRESHOLD_PX', 'SNAP_MS', 'beganDrag', 'snapMs', 'spanForMove', 'spanForResize'],
+  );
 });
