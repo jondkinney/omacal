@@ -2,7 +2,7 @@ import { test, expect, type Page } from '@playwright/test';
 import {
   FIXED_NOW, FORM_FALLBACK_ID, FORM_NOW, FORM_UNWRITABLE_ID, FORM_UNWRITABLE_NAMES,
   MON, MONTH_2026_NOW, POPOVER_DETAILS, POPOVER_REFRESHED_DETAIL,
-  TRIP_END_DATE, TRIP_FIRST_DAY, TRIP_LAST_DAY, popoverWeekWithResponse,
+  TRIP_END_DATE, TRIP_FIRST_DAY, TRIP_LAST_DAY, popoverWeekWithResponse, UNBREAKABLE,
   WEEK_NOW, WEEK_NOW_INSIDE, YEAR_2026_NOW,
 } from './fixtures';
 import { CALENDAR_SYNC_REMOVED } from './harness/tauri';
@@ -908,6 +908,70 @@ test.describe('CalendarPopover', () => {
 
 test.describe('EventPopover', () => {
   const show = (f: string) => `/tests/harness/index.html?c=EventPopover&f=${f}`;
+
+  test('the panel never scrolls sideways, whatever a field holds', async ({ page }) => {
+    // Reported from Plamen's calendar: a full-width horizontal scrollbar along
+    // the bottom of the popover. It came from an organizer address —
+    // `c_<40 hex>@group.calendar.google.com` — but the organizer field is not
+    // what this asserts, on purpose. Suppressing that one address fixes the
+    // case that was reported and leaves the panel just as fragile: a title, a
+    // location, a conference URI or an attendee address can each be one long
+    // unbroken token. This is the spec for the panel, and it is the one that
+    // has to hold when the next such field is added.
+    //
+    // `.pop` is 320px wide with `overflow-y: auto`, which makes the other axis
+    // `auto` as well rather than `visible` — so overflowing content does not
+    // spill, it grows a scroller. `scrollWidth > clientWidth` is exactly that
+    // scroller, and is the thing the user saw.
+    await page.goto(show('unbreakable'));
+    const pop = page.locator('.pop');
+    await expect(pop).toBeVisible();
+
+    // The fixture's own premise: the token really is far longer than the panel
+    // can lay out on one line. Asserted rather than assumed, so shortening
+    // `UNBREAKABLE` cannot quietly leave this test measuring nothing.
+    expect(UNBREAKABLE.length).toBeGreaterThan(150);
+    const width = (await pop.boundingBox())!.width;
+    expect(width).toBeLessThan(400);
+
+    // The three fields that actually drive the panel's overflow, measured with
+    // the guard removed: the title (1994px on its own), the location (1589px)
+    // and the organizer (1658px). More than one, deliberately — a fix applied
+    // to whichever selector was reported would pass a single-field version of
+    // this test and still ship the bug.
+    //
+    // `.desc`, `.conf` and `.who` are *not* on this list and it is worth
+    // saying why, so nobody adds them thinking the list was an oversight:
+    // `.desc` carries its own `word-break: break-word`, `.conf`'s text is the
+    // fixed label "Join video call" (its long URI never leaves the `href`),
+    // and `.who` clips itself with an ellipsis so its own overflow never
+    // reaches the panel.
+    for (const sel of ['h2', '.loc', '.organizer']) {
+      await expect(pop.locator(sel), sel).toBeVisible();
+      await expect(pop.locator(sel), sel).toContainText(UNBREAKABLE);
+    }
+
+    const scroll = await pop.evaluate((el) => ({
+      scrollWidth: el.scrollWidth, clientWidth: el.clientWidth,
+    }));
+    expect(scroll.scrollWidth).toBeLessThanOrEqual(scroll.clientWidth);
+  });
+
+  test('a generated calendar address is not shown as the organizer', async ({ page }) => {
+    // "Organized by" followed by forty hex characters names no one. `.pop` is
+    // asserted visible first so this cannot pass by the popover having failed
+    // to render at all, which is the way a hidden-row assertion usually lies.
+    await page.goto(show('machine-organizer'));
+    await expect(page.locator('.pop')).toBeVisible();
+    await expect(page.locator('.organizer')).toHaveCount(0);
+  });
+
+  test('a real organizer address is still shown', async ({ page }) => {
+    // The other half of the pair, and not optional: without it the assertion
+    // above is satisfied by a component that stopped rendering the row at all.
+    await page.goto(show('human-organizer'));
+    await expect(page.locator('.organizer')).toHaveText('Organized by plamen@excitel.com');
+  });
 
   test('shows the guest list with each response', async ({ page }) => {
     await page.goto(show('standup'));

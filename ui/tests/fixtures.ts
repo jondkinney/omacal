@@ -335,6 +335,13 @@ const detail = (o: Partial<EventDetail> & { id: number }): EventDetail => ({
  *  itself (that's `position.spec.ts`'s job), only on what the popover shows. */
 const ANCHOR: Rect = { top: 100, left: 100, width: 120, height: 40 };
 
+/** 200 characters with no break opportunity anywhere in them.
+ *
+ *  Exported so a spec can assert its own premise — that the token really is
+ *  longer than the 320px panel could ever lay out on one line — rather than
+ *  trusting a literal it cannot see. Used by the `unbreakable` fixture below. */
+export const UNBREAKABLE = 'w'.repeat(200);
+
 /** Monday 10 Aug 2026 06:00 UTC — a series' DTSTART, used as `detail.start_ms`
  *  for the recurring fixtures below. This is the value the trap named in the
  *  task brief passes to `respondToEvent` when it's read off `detail` instead
@@ -1609,6 +1616,53 @@ export const FIXTURES: Record<string, Record<string, any>> = {
         is_recurring: true,
         attendees: [attendee({ email: 'me@x.com', is_self: true })],
       }),
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, occurrenceEndMs: MON + 9 * H + 30 * 60_000,
+      onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
+    },
+    /* Every text field the panel has, each carrying one 200-character token
+     * with nothing in it a line may break at.
+     *
+     * The reported defect came from the organizer alone, and suppressing that
+     * one address (`organizer.ts`) fixes the reported case without fixing the
+     * panel. So this fixture deliberately puts the same shape everywhere else
+     * as well — title, location, description, conference URI, an attendee's
+     * address — and gives the organizer a *real* domain, so it renders and is
+     * stressed rather than being suppressed out of the test.
+     *
+     * `UNBREAKABLE` is one repeated character on purpose: no punctuation, no
+     * case change, nothing an engine could treat as a soft break opportunity.
+     * A long e-mail address or URL would leave the test at the mercy of each
+     * engine's opinion about breaking after `@`, `.` or `/`, and the two do
+     * not have to agree. */
+    unbreakable: {
+      detail: detail({
+        id: 8,
+        title: UNBREAKABLE,
+        location: UNBREAKABLE,
+        description: UNBREAKABLE,
+        conference_uri: `https://meet.example.com/${UNBREAKABLE}`,
+        organizer_email: `${UNBREAKABLE}@example.com`,
+        attendees: [attendee({ email: `${UNBREAKABLE}@example.com`, is_self: true })],
+      }),
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, occurrenceEndMs: MON + 9 * H + 30 * 60_000,
+      onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
+    },
+    /* The address Plamen's own calendar produced: a shared calendar organizing
+     * its own events. `c_` plus 40 hex characters is Google's own shape for
+     * one, kept here rather than shortened, because the length is half of why
+     * printing it is wrong. */
+    'machine-organizer': {
+      detail: detail({
+        id: 9,
+        organizer_email: 'c_ea77f957e2638e631988cb58ff34ac160c507eac4f5c90b40f3d6c1a2b8e7d94@group.calendar.google.com',
+      }),
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, occurrenceEndMs: MON + 9 * H + 30 * 60_000,
+      onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
+    },
+    /* The other side of the pair. Without it, "the organizer row is hidden"
+     * would be satisfied by a component that never renders the row at all. */
+    'human-organizer': {
+      detail: detail({ id: 10, organizer_email: 'plamen@excitel.com' }),
       anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, occurrenceEndMs: MON + 9 * H + 30 * 60_000,
       onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
     },
