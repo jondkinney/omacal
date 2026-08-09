@@ -530,7 +530,10 @@ async fn respond_via_client(
     };
 
     let body = serde_json::json!({ "attendees": body_attendees });
-    let patched = match client.patch_event(cal_google_id, &event_id, &body, if_match.as_deref()).await {
+    let patched = match client
+        .patch_event(cal_google_id, &event_id, &body, "all", if_match.as_deref())
+        .await
+    {
         Ok(p) => p,
         Err(omacal_google::ApiError::PreconditionFailed) => {
             // Someone edited the event while the popover was open. Re-read,
@@ -546,6 +549,7 @@ async fn respond_via_client(
                     cal_google_id,
                     &event_id,
                     &serde_json::json!({ "attendees": retry }),
+                    "all",
                     fresh.etag.as_deref(),
                 )
                 .await?
@@ -1263,7 +1267,9 @@ async fn update_via_client(
         return Ok(());
     }
 
-    let patched = match client.patch_event(cal_google_id, &event_id, &body, if_match.as_deref()).await
+    let patched = match client
+        .patch_event(cal_google_id, &event_id, &body, "all", if_match.as_deref())
+        .await
     {
         Ok(p) => p,
         Err(omacal_google::ApiError::PreconditionFailed) => {
@@ -1283,7 +1289,7 @@ async fn update_via_client(
                 &after,
             );
             client
-                .patch_event(cal_google_id, &event_id, &retry, row.etag.as_deref())
+                .patch_event(cal_google_id, &event_id, &retry, "all", row.etag.as_deref())
                 .await?
         }
         Err(e) => return Err(e.into()),
@@ -1543,6 +1549,7 @@ async fn split_series(
             cal_google_id,
             &master.id,
             &serde_json::json!({ "recurrence": shortened }),
+            "all",
             master.etag.as_deref(),
         )
         .await
@@ -1970,6 +1977,7 @@ async fn truncate_series(
             cal_google_id,
             &master.id,
             &serde_json::json!({ "recurrence": shortened }),
+            "all",
             master.etag.as_deref(),
         )
         .await?;
