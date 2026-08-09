@@ -965,6 +965,99 @@ test.describe('App', () => {
     await expect(newForm(page).getByLabel('End', { exact: true })).toHaveValue('10:30');
   });
 
+  /**
+   * Task 6, at the top of the stack: **sweeping empty grid opens the form on
+   * the span that was swept**, rather than creating anything silently.
+   *
+   * Here rather than only in `WeekGrid`'s own specs for the reason the two
+   * Month/Big Year specs below give: a callback prop asserted at the component
+   * proves the grid hands a span up, and says nothing about whether `App` does
+   * anything with it. `oncreate={() => {}}` left the suite green once already.
+   *
+   * The end is the half of it that can regress on its own — the start reaches
+   * the form through the same argument a click has always used, so a build that
+   * dropped the span entirely would still open on 10:00 and only the **End**
+   * field would disagree.
+   */
+  test('sweeping empty grid space opens the form on the swept span', async ({ page }) => {
+    await writable(page);
+    const col = page.locator('.col').first();
+    await expect(col).toHaveAttribute('data-start-ms', String(APP_MON));
+    // Scrolled so both ends of the sweep are on screen; the pane is ~590px of
+    // a 1200px column, and it opens part-way down.
+    await page.locator('[data-testid="week-body"]').evaluate((el) => {
+      el.scrollTop = Math.max(0, (10.5 / 24) * el.scrollHeight - el.clientHeight / 2);
+    });
+    const box = (await col.boundingBox())!;
+    const x = box.x + box.width / 2;
+    const y = (hour: number) => box.y + (box.height * hour) / 24;
+
+    await page.mouse.move(x, y(10));
+    await page.mouse.down();
+    await page.mouse.move(x, y(11), { steps: 6 });
+    await page.mouse.up();
+
+    await expect(newForm(page)).toBeVisible();
+    await expect(newForm(page).getByLabel('Date', { exact: true })).toHaveValue('2024-01-29');
+    await expect(newForm(page).getByLabel('Start', { exact: true })).toHaveValue('10:00');
+    await expect(newForm(page).getByLabel('End', { exact: true })).toHaveValue('11:00');
+  });
+
+  /**
+   * **A gesture cannot outlive the grid it was made in.**
+   *
+   * `WeekGrid` hangs its pointer handlers off `window` while a sweep or a drag
+   * is in flight, because a pointer that leaves the column must still be
+   * followed. Nothing removes them if the component goes away first — switching
+   * view unmounts it — so the release lands in a closure belonging to a grid
+   * that is no longer on screen, and asks `App` for a form on a span from it.
+   *
+   * Only reachable at this level: the component's own specs never unmount it.
+   */
+  test('a sweep abandoned by switching view opens no form', async ({ page }) => {
+    await writable(page);
+    const col = page.locator('.col').first();
+    const box = (await col.boundingBox())!;
+    const x = box.x + box.width / 2;
+
+    await page.mouse.move(x, box.y + box.height * (10 / 24));
+    await page.mouse.down();
+    await page.mouse.move(x, box.y + box.height * (11 / 24), { steps: 6 });
+
+    await page.keyboard.press('3'); // Month — this grid unmounts
+    await expect(page.locator('.mcell').first()).toBeVisible();
+    await page.mouse.up();
+
+    await expect(newForm(page), 'a grid that is gone asks for nothing').toHaveCount(0);
+  });
+
+  /**
+   * The same rule for the more expensive gesture, and the reason the one above
+   * is worth fixing rather than tolerating: an abandoned *drag* does not open a
+   * form, it **writes** — a request to Google from a grid the user left.
+   *
+   * The drag path has had this since Task 3. It is asserted here now because
+   * the sweep was about to be a second copy of it.
+   */
+  test('a drag abandoned by switching view writes nothing', async ({ page }) => {
+    await writable(page);
+    const b = page.locator('.ev').filter({ hasText: 'Board prep' }).first();
+    await b.scrollIntoViewIfNeeded();
+    const box = (await b.boundingBox())!;
+    const cx = box.x + box.width / 2;
+    const cy = box.y + box.height / 2;
+
+    await page.mouse.move(cx, cy);
+    await page.mouse.down();
+    await page.mouse.move(cx, cy + 60, { steps: 4 });
+
+    await page.keyboard.press('3'); // Month — this grid unmounts
+    await expect(page.locator('.mcell').first()).toBeVisible();
+    await page.mouse.up();
+
+    await expect.poll(() => callsTo(page, 'update_event')).toHaveLength(0);
+  });
+
   // Year and Big Year keep their own counters and never touch `anchorMs`, so
   // `n` there used to open a form in the year the user had navigated *away*
   // from. That matters more in Year than anywhere else: it is the one view

@@ -7,14 +7,22 @@
   import AllDayBand from './AllDayBand.svelte';
   import EventPopover from './EventPopover.svelte';
   import { getEventDetail, refreshEvent, type EventDetail, type Occurrence } from './eventdetail';
-  import { SNAP_MS, beganDrag, colsMoved, edgeAt, spanForMove, spanForResize } from './drag';
+  import {
+    SNAP_MS, beganDrag, colsMoved, edgeAt, spanForMove, spanForResize, spanForSweep,
+  } from './drag';
 
   let { week, oncreate, onedit, ondelete, onmove }: {
     week: WeekPayload;
-    /** A click on empty space in a day column, at the half hour it landed in.
+    /** A click on empty space in a day column, at the half hour it landed in,
+     *  or a **sweep** across it, which names an `endMs` as well.
      *  `rect` is the anchor to put the form beside — the column at the height
-     *  of the click, so the form appears next to where the user pointed. */
-    oncreate: (startMs: number, rect: Rect) => void;
+     *  of the click, so the form appears next to where the user pointed.
+     *
+     *  One callback for both, deliberately: a sweep and a click ask for the
+     *  same thing — the event form, opened on a time — and differ only in
+     *  whether the grid knows how long. A second prop would be a second way to
+     *  create an event, and this grid still creates none of them itself. */
+    oncreate: (startMs: number, rect: Rect, endMs?: number) => void;
     /** Edit was clicked in this grid's own popover. The `Occurrence` carries
      *  the *clicked block's* own `start_ms`/`end_ms` alongside the detail —
      *  never `detail.start_ms`, which for a series is the master's DTSTART.
@@ -462,11 +470,189 @@
   }
 
   function startCreate(day: { start_ms: number; end_ms: number }, e: MouseEvent) {
+    // The `click` the browser dispatches after a sweep's `pointerup` is not a
+    // click on empty grid — it is the tail of a gesture that has already asked
+    // for a form. Without this the user gets two: one on the span they swept,
+    // and then one on the half hour the release happened to land in, which is
+    // the one that wins. Same flag, and the same reasoning, as `openPopover`.
+    if (draggedNotClicked) return;
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
     // Anchored at the click's own height rather than the column's top: the
     // column is 1200px tall inside a scrolling body, and a form placed against
     // its top edge would open somewhere off-screen above the click.
     oncreate(slotAt(day, e), { top: e.clientY, left: r.left, width: r.width, height: 0 });
+  }
+
+  /**
+   * A sweep across empty grid, or `null`.
+   *
+   * **This creates nothing.** It ends by handing a span up through `oncreate`,
+   * the same callback a click already uses, and the form does the creating
+   * through the path it has always used — a new event needs a title, and the
+   * form is where that lives. A create command reached from here would be a
+   * second way to make an event, and the less-used one rots.
+   *
+   * Separate state from `drag` rather than a fourth `edge` value on it: the two
+   * gestures start on different elements, one has an occurrence and the other
+   * has a column, and only one of them can be in flight at a time anyway. A
+   * union would have made every field of both optional.
+   *
+   * **One column.** Only the vertical travel is read; sideways movement counts
+   * towards the threshold and nothing else. Spec §1 keeps this pass to timed
+   * events in a single day, and a sweep that silently produced a three-day
+   * meeting would be the same class of surprise the all-day boundary is
+   * deliberately being kept away from.
+   */
+  type Sweep = {
+    /** The day swept in — both the arithmetic and which column draws it. */
+    dayStartMs: number;
+    dayMs: number;
+    /** The column's box at the press. `colHeight` is what the pointer's travel
+     *  is divided by; the other two only place the form. */
+    colHeight: number;
+    colLeft: number;
+    colWidth: number;
+    originX: number;
+    originY: number;
+    /** Where the press landed, as a fraction of the column's height. The one
+     *  absolute reading this gesture takes — it names a *time*, once. */
+    fromFrac: number;
+    /** The last pointer position, for the rect the form opens beside — the
+     *  same "next to where the user pointed" rule `startCreate` follows. */
+    clientY: number;
+    /** Past the threshold. Below it this is still a click. */
+    sweeping: boolean;
+    /** The span the form would open on. `null` until it has moved at all. */
+    span: { startMs: number; endMs: number } | null;
+  };
+  let sweep = $state<Sweep | null>(null);
+
+  function startSweep(day: { start_ms: number; end_ms: number }, e: PointerEvent) {
+    // Primary button only, for the same reason `startDrag` says so.
+    if (e.button !== 0) return;
+    const box = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    sweep = {
+      dayStartMs: day.start_ms,
+      dayMs: day.end_ms - day.start_ms,
+      colHeight: box.height,
+      colLeft: box.left,
+      colWidth: box.width,
+      originX: e.clientX,
+      originY: e.clientY,
+      fromFrac: box.height === 0 ? 0 : (e.clientY - box.top) / box.height,
+      clientY: e.clientY,
+      sweeping: false,
+      span: null,
+    };
+
+    window.addEventListener('pointermove', onSweepMove);
+    window.addEventListener('pointerup', onSweepEnd);
+    window.addEventListener('keydown', onSweepKey);
+  }
+
+  function onSweepMove(e: PointerEvent) {
+    if (!sweep) return;
+    const dx = e.clientX - sweep.originX;
+    const dy = e.clientY - sweep.originY;
+
+    // Below the threshold this is still a click on empty grid, and a click
+    // still creates at the half hour it landed in.
+    if (!sweep.sweeping && !beganDrag(dx, dy)) return;
+    sweep.sweeping = true;
+    sweep.clientY = e.clientY;
+
+    // The far end is the near end **plus how far the hand travelled**, never a
+    // second absolute reading of where the pointer is. The column is 1200px
+    // inside a pane that scrolls, so an absolute reading would need the box
+    // re-measured on every move and would then make the span answer to the
+    // *pane* as well as to the hand: flick the trackpad with the button held
+    // and a sweep nobody moved would grow. A delta answers to the hand only,
+    // which is what the move and the resize beside it already do.
+    //
+    // The geometry itself is `drag.ts`'s: the snap, the direction rule and the
+    // minimum span all live there with a table each.
+    const toFrac = sweep.colHeight === 0 ? 0 : sweep.fromFrac + dy / sweep.colHeight;
+    sweep.span = spanForSweep(sweep.dayStartMs, sweep.dayMs, sweep.fromFrac, toFrac, SNAP_MS);
+  }
+
+  function onSweepEnd() {
+    if (!sweep) return;
+    const s = sweep;
+    // Assigned on every release, never merely set — see `draggedNotClicked`.
+    draggedNotClicked = s.sweeping;
+    endSweep();
+    // `span` is assigned only once the threshold has been passed, so this is
+    // the whole question: a press that never became a sweep has none, and the
+    // `click` behind this release is what creates. Asking `sweeping` as well
+    // would read as prudent and be dead — the two are set on the same line.
+    if (!s.span) return;
+    oncreate(
+      s.span.startMs,
+      { top: s.clientY, left: s.colLeft, width: s.colWidth, height: 0 },
+      s.span.endMs,
+    );
+  }
+
+  function onSweepKey(e: KeyboardEvent) {
+    if (e.key !== 'Escape' || !sweep) return;
+    // Cancelled: no form is asked for, and the release that follows must not be
+    // read as the end of a sweep.
+    e.stopPropagation();
+    draggedNotClicked = sweep.sweeping;
+    endSweep();
+  }
+
+  /**
+   * Ends a sweep and takes its handlers back off `window`.
+   *
+   * The three removals are **not** covered by a spec and cannot be: identical
+   * `(handler, options)` pairs are deduplicated by `addEventListener`, so a
+   * leak never doubles anything, and every handler above returns immediately
+   * once `sweep` is null. They earn their place by cost rather than by
+   * behaviour — a window-level `pointermove` that fires on every mouse move for
+   * the life of the view. The case that *was* observable is the unmount below.
+   */
+  function endSweep() {
+    sweep = null;
+    window.removeEventListener('pointermove', onSweepMove);
+    window.removeEventListener('pointerup', onSweepEnd);
+    window.removeEventListener('keydown', onSweepKey);
+  }
+
+  /**
+   * **A gesture cannot outlive the grid it was made in.**
+   *
+   * Both gestures hang their handlers off `window` on purpose — a pointer that
+   * leaves the column must still be followed — and both take them off again
+   * when they end. Neither ends if the component goes away first: switching to
+   * Month unmounts this grid with the button still down, and the release then
+   * lands in a closure belonging to a grid nobody is looking at. A sweep asked
+   * `App` for a form on a span from a week that had gone; a **drag wrote**,
+   * which is the same shape and costs a request to Google.
+   *
+   * Nothing else here needed a teardown, which is why there was none: every
+   * other listener in this file is `$effect`-owned and Svelte removes it. These
+   * two are added from an event handler, so they are this component's to clean
+   * up. The drag half of this has been true since Task 3; it is fixed here
+   * rather than left because the sweep was about to be a second copy of it.
+   */
+  $effect(() => () => { endDrag(); endSweep(); });
+
+  /**
+   * The inline style for the ghost drawn over `day` while it is being swept,
+   * or `null` when nothing is being swept there.
+   *
+   * §6 for the one gesture with no block to follow: without it the user drags
+   * across nothing at all and a form appears afterwards carrying times they
+   * never watched being chosen. Percentages of the column, like every other
+   * position in this grid, so it lands wherever the column happens to be sized.
+   */
+  function sweepStyle(day: { start_ms: number; end_ms: number }): string | null {
+    if (!sweep?.span || sweep.dayStartMs !== day.start_ms) return null;
+    const span = day.end_ms - day.start_ms;
+    const top = ((sweep.span.startMs - day.start_ms) / span) * 100;
+    const height = ((sweep.span.endMs - sweep.span.startMs) / span) * 100;
+    return `top:${top}%;height:${height}%`;
   }
 
   /**
@@ -560,23 +746,37 @@
 
   {#each effectiveDays as day}
     {@const isToday = day.start_ms === todayStart}
+    {@const ghost = sweepStyle(day)}
     <div class="col" class:today={isToday} data-start-ms={day.start_ms}>
       <!-- Empty grid space, as a real control rather than a click handler on
            the column div: the role, the pointer target and the accessible name
            come with the element. First in the column so every block, rule and
            now-line paints over it, and `tabindex="-1"` because seven identical
            invisible tab stops per week would be noise — the keyboard route to
-           the same form is `n`, which needs no target at all. -->
+           the same form is `n`, which needs no target at all.
+
+           Both a click and a press: a click creates at the half hour it landed
+           in, exactly as it always has, and a press that then travels 4px
+           sweeps a span out instead. The threshold is what keeps the older of
+           the two working. -->
       <button
         class="newhere"
         aria-label="New event"
         tabindex="-1"
         onclick={(e) => startCreate(day, e)}
+        onpointerdown={(e) => startSweep(day, e)}
       ></button>
 
       {#each HOURS as h}
         <div class="rule" style="top:{hourFrac(day, h) * 100}%"></div>
       {/each}
+
+      <!-- After the rules so it reads above them, before the blocks so it never
+           covers a real event, and transparent to the pointer so the sweep it
+           is drawing cannot be interrupted by its own ghost. -->
+      {#if ghost}
+        <div class="sweep" style={ghost}></div>
+      {/if}
 
       {#each day.placed as p}
         <EventBlock
@@ -682,6 +882,16 @@
      one-line declaration. */
   .rule { position: absolute; left: 0; right: 0; border-top: 1px solid var(--hour-rule);
           pointer-events: none; }
+
+  /* The span being swept out, drawn as the event it is about to become: the
+     same 6px radius and the same left spine an `EventBlock` has, so what the
+     gesture promises and what appears afterwards read as the same object.
+     Built from `--accent` rather than a calendar colour because no calendar has
+     been chosen yet — that is the form's first question. */
+  .sweep { position: absolute; left: 3px; right: 3px; border-radius: 6px;
+           background: color-mix(in srgb, var(--accent) 14%, var(--bg));
+           box-shadow: inset 2px 0 0 0 var(--accent);
+           pointer-events: none; z-index: 4; }
 
   /* The loudest thing on screen, deliberately. */
   .now { position: absolute; left: 0; right: 0; border-top: 1.5px solid var(--now); z-index: 5;

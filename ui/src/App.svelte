@@ -500,9 +500,23 @@
     };
   }
 
-  /** Day and Week: the grid names a real time, so the form opens at it. */
-  function newEventAt(startMs: number, rect: Rect) {
-    form = { mode: 'create', anchor: rect, initial: blankValueAt(startMs, createCalendarId) };
+  /**
+   * Day and Week: the grid names a real time, so the form opens at it.
+   *
+   * `endMs` arrives only from a **sweep** — a drag across empty grid, which
+   * names both ends. A click names only the moment it landed on, and leaves the
+   * duration to `blankValueAt`'s own half hour; passing one there would move
+   * the decision out of the form module and into the grid.
+   *
+   * Nothing is created here either way. The form does the creating, through the
+   * path it has always used, which is why a sweep needs no command of its own —
+   * a second way to make an event is a second thing to keep correct, and the
+   * less-used one rots.
+   */
+  function newEventAt(startMs: number, rect: Rect, endMs?: number) {
+    form = {
+      mode: 'create', anchor: rect, initial: blankValueAt(startMs, createCalendarId, endMs),
+    };
   }
 
   /** Month and Big Year: the grid names a date and no time, so the form takes

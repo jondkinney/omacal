@@ -215,6 +215,59 @@ export function spanForResize(
   return { startMs: origin.startMs, endMs: Math.max(wanted, origin.startMs + minimum) };
 }
 
+/**
+ * The span swept out over empty grid, from `fromFrac` to `toFrac` down a
+ * column whose day starts at `dayStartMs` and runs for `dayMs`.
+ *
+ * **Nothing is created by this.** It answers which two instants the event form
+ * opens on; the form is what makes an event, because a new event needs a title
+ * and that is where a title lives.
+ *
+ * Both fractions are of the column's own height and both ends snap
+ * independently, so a sweep lands on the grid rather than under the finger at
+ * either end. `dayMs` rather than a constant day for the reason `spanForMove`
+ * gives: a day either side of a transition is 23 or 25 hours, and dividing by a
+ * fixed 24 puts every sweep after it an hour out.
+ *
+ * **A sweep has no direction.** Dragging from 15:00 up to 14:00 is the same
+ * gesture read backwards and produces 14:00–15:00 — never a negative span,
+ * which `endAfterStart` would refuse and which would open a form that cannot be
+ * saved. Same family as `spanForResize`'s inversion clamp, different code path.
+ *
+ * **And a minimum, which is not cosmetic.** A hand that twitches between press
+ * and release sweeps a few pixels, both ends snap to the same slot, and the raw
+ * span is zero — a form that opens already refusing to save with no field on it
+ * visibly wrong (§7.2 of the form-time spec, arriving through a new door). The
+ * minimum is the snap interval, the same value and for the same reason
+ * `spanForResize` uses it: the smallest span the grid can express is the
+ * smallest one it should be able to produce.
+ *
+ * It always extends the **end** forward from the earlier of the two points, so
+ * a sweep of nothing gives the same answer whichever way the hand moved.
+ *
+ * A pointer dragged off the top or bottom of the column pins to the day's own
+ * ends rather than sweeping into its neighbours, which is the clamp `slotAt`
+ * already applies to a click — including its one odd corner, that a sweep
+ * pinned to the very bottom names the following midnight. That is the honest
+ * reading of "swept to the end of the day", and it is what a click there has
+ * always done.
+ */
+export function spanForSweep(
+  dayStartMs: number,
+  dayMs: number,
+  fromFrac: number,
+  toFrac: number,
+  snapInterval: number,
+): Span {
+  const instantAt = (frac: number) =>
+    snapMs(dayStartMs + clamp(frac, 0, 1) * dayMs, snapInterval);
+
+  const a = instantAt(fromFrac);
+  const b = instantAt(toFrac);
+  const startMs = Math.min(a, b);
+  return { startMs, endMs: Math.max(Math.max(a, b), startMs + snapInterval) };
+}
+
 /** `n` whole **civil** days on from `ms`, keeping the local wall-clock time. */
 function addDays(ms: number, n: number): number {
   if (n === 0) return ms;
