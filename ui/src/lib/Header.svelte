@@ -79,6 +79,18 @@
     const id = setInterval(() => { now = Date.now(); }, 30_000);
     return () => clearInterval(id);
   });
+
+  // The zone every time on screen is drawn in — the browser's, which is the
+  // system's. Named in the header because nothing else says it: 15:00 reads
+  // identically in Sofia and in Delhi, and which one the grid means was
+  // otherwise something the user had to remember. The offset rides in the
+  // hover off `now`, so a DST change while the app is open is not shown stale.
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const zoneOffset = $derived(
+    new Intl.DateTimeFormat(undefined, { timeZoneName: 'shortOffset' })
+      .formatToParts(new Date(now))
+      .find((p) => p.type === 'timeZoneName')?.value ?? ''
+  );
   /**
    * The status light: one call, one answer, used for both the colour and the
    * words (spec §2). See `syncLight` — deriving them separately is how a dot
@@ -189,6 +201,8 @@
   </div>
 
   <div class="right">
+    <span class="tz" title="{zone} · {zoneOffset}">{zone}</span>
+
     {#if status?.demo}
       <span class="demo">DEMO DATA</span>
     {/if}
@@ -367,6 +381,9 @@
   .menu button { text-align: left; background: none; width: 100%; }
   .menu button:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 6%, transparent); }
   .demo { color: var(--demo); letter-spacing: .06em; font-weight: 600; }
+
+  .tz { font-size: 10px; color: var(--muted); letter-spacing: .03em;
+        white-space: nowrap; }
   .err { color: var(--error); font-size: 11.5px; line-height: 1.45; margin: 0 0 12px;
          padding: 7px 10px; border-radius: 6px;
          background: color-mix(in srgb, var(--error) 9%, transparent);
