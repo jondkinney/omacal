@@ -796,6 +796,7 @@ pub fn run() {
             settings::set_sync_interval,
             settings::set_notifications_enabled,
             settings::set_list_mode,
+            settings::set_fallback_reminders,
             events::event_detail,
             events::respond_to_event,
             events::refresh_event,

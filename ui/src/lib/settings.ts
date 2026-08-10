@@ -23,6 +23,10 @@ export type AppSettings = {
    *  view switcher — but it is a preference and is stored beside the others,
    *  which is what makes it survive a restart. */
   listMode: boolean;
+  /** Minutes-before for the fallback reminders (fallback spec §3): what fires
+   *  for a timed event that follows its calendar's defaults when the calendar
+   *  has none. Popup by construction — omacal never sends email. */
+  fallbackReminderMinutes: number[];
 };
 
 export const getSettings = () => invoke<AppSettings>('get_settings');
@@ -45,6 +49,12 @@ export const setNotificationsEnabled = (on: boolean) =>
  *  there is no value of a boolean the app has to protect anything from. */
 export const setListMode = (on: boolean) =>
   invoke<AppSettings>('set_list_mode', { on });
+
+/** Stores the fallback reminder rows. The backend refuses out-of-bounds
+ *  values with the limit named (fallback spec §3); `[]` is accepted and is
+ *  the feature turned off. */
+export const setFallbackReminders = (minutes: number[]) =>
+  invoke<AppSettings>('set_fallback_reminders', { minutes });
 
 /** Minutes, as the General tab shows them. Stored in milliseconds because
  *  that is what `sync_loop` compares against a clock. */

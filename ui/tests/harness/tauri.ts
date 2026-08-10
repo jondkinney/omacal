@@ -483,6 +483,7 @@ type StubSettings = {
   notificationsEnabled: boolean;
   minSyncIntervalMs: number;
   listMode: boolean;
+  fallbackReminderMinutes: number[];
 };
 
 const SETTINGS_KEY = 'omacal-stub-settings';
@@ -491,6 +492,8 @@ const DEFAULT_SETTINGS: StubSettings = {
   syncIntervalMs: 5 * 60_000,
   notificationsEnabled: true,
   minSyncIntervalMs: 60_000,
+  // The backend's own shipped default (fallback spec §3).
+  fallbackReminderMinutes: [60, 10],
   listMode: false,
 };
 
@@ -666,6 +669,17 @@ export function installTauriStub(scenario: string): Harness {
       case 'set_list_mode':
         settings = saveSettings({ ...settings, listMode: args.on as boolean });
         return { ...settings };
+      case 'set_fallback_reminders': {
+        const minutes = args.minutes as number[];
+        // The backend's own refusals, mirrored so a spec can watch the form
+        // surface them: 5 rows, four weeks, nothing negative.
+        if (minutes.length > 5) throw new Error('an event can carry at most 5 reminders');
+        if (minutes.some((m) => m < 0 || m > 40_320)) {
+          throw new Error('a reminder must be 0 to 40320 minutes (four weeks) ahead');
+        }
+        settings = saveSettings({ ...settings, fallbackReminderMinutes: minutes });
+        return { ...settings };
+      }
       case 'set_calendar_color':
         return calendarResult(cmd, undefined);
       case 'set_calendar_selected':

@@ -146,7 +146,14 @@ pub struct Due {
 /// 2. **An all-day occurrence is anchored to midnight in the calendar's own
 ///    zone**, never the display zone and never UTC. §2.1.
 /// 3. **`use_default_reminders` chooses the list**: the calendar's defaults, or
-///    the event's own overrides — one or the other, never merged.
+///    the event's own overrides — one or the other, never merged. And when the
+///    chosen defaults are **empty** and the occurrence is **timed**, the
+///    caller's `fallback` applies instead (fallback spec §1): a receiving-only
+///    account sees no reminders on a shared calendar at all, and every meeting
+///    on it was silent. A fallback, never a merge — real overrides and real
+///    defaults are untouched — and never for an all-day occurrence, whose
+///    anchor is midnight and whose "60 minutes before" would knock at 23:00
+///    the night before every trip.
 /// 4. **Only `method == "popup"` fires.** Google sends the `email` ones itself.
 /// 5. **Already-recorded reminders are excluded**, keyed by
 ///    [`FiredKey`], which is what stops a restart re-posting everything.
@@ -170,6 +177,7 @@ pub fn due_reminders(
     fired: &HashSet<FiredKey>,
     now_ms: i64,
     horizon_ms: i64,
+    fallback: &[Reminder],
 ) -> Vec<Due> {
     let mut out: Vec<Due> = Vec::new();
 
@@ -199,9 +207,18 @@ pub fn due_reminders(
             ev.occurrence_start_ms
         };
 
-        // Rule 3.
-        let reminders =
+        // Rule 3, both halves. The second asks about the *chosen* list, not
+        // about the event: overrides that happen to be empty chose "no
+        // reminders" on purpose (`use_default: false, overrides: []` is what
+        // the form writes for exactly that), and the fallback must not
+        // overrule a person who said none.
+        let chosen =
             if ev.use_default_reminders { &ev.calendar_defaults } else { &ev.overrides };
+        let reminders = if ev.use_default_reminders && chosen.is_empty() && !ev.is_all_day {
+            fallback
+        } else {
+            chosen
+        };
 
         for r in reminders {
             // Rule 4.
@@ -323,7 +340,7 @@ mod tests {
     }
 
     fn due(events: &[ScheduledEvent], now_ms: i64) -> Vec<Due> {
-        due_reminders(events, &HashSet::new(), now_ms, HORIZON)
+        due_reminders(events, &HashSet::new(), now_ms, HORIZON, &[])
     }
 
     /// `(event_id, minutes, fire_at_ms)` per result — the whole of what a
@@ -471,7 +488,7 @@ mod tests {
         .into_iter()
         .collect();
         assert!(
-            due_reminders(&[all_day()], &by_anchor, now, HORIZON).is_empty(),
+            due_reminders(&[all_day()], &by_anchor, now, HORIZON, &[]).is_empty(),
             "a reminder recorded under the anchor must not be posted twice"
         );
 
@@ -483,7 +500,7 @@ mod tests {
         .into_iter()
         .collect();
         assert_eq!(
-            triples(&due_reminders(&[all_day()], &by_raw_start, now, HORIZON)),
+            triples(&due_reminders(&[all_day()], &by_raw_start, now, HORIZON, &[])),
             vec![(1, 30, AUCKLAND_MIDNIGHT_AUG10 - 30 * MINUTE)],
             "the raw expansion instant is not the key this function computes"
         );
@@ -526,7 +543,7 @@ mod tests {
         let fired: HashSet<FiredKey> =
             [FiredKey { event_id: 1, occurrence_ms: T0900Z, minutes: 10 }].into_iter().collect();
 
-        let out = due_reminders(&events, &fired, T0900Z - 2 * HOUR, HORIZON);
+        let out = due_reminders(&events, &fired, T0900Z - 2 * HOUR, HORIZON, &[]);
         assert_eq!(triples(&out), vec![(2, 10, T0900Z - 10 * MINUTE)]);
     }
 
@@ -548,6 +565,7 @@ mod tests {
             &fired,
             T0900Z - 2 * HOUR,
             8 * 24 * HOUR,
+            &[],
         );
         assert_eq!(triples(&out), vec![(1, 10, T0900Z + 7 * 24 * HOUR - 10 * MINUTE)]);
     }
@@ -564,6 +582,7 @@ mod tests {
             &fired,
             T0900Z - 2 * HOUR,
             HORIZON,
+            &[],
         );
         assert_eq!(triples(&out), vec![(1, 1, T0900Z - MINUTE)]);
     }
@@ -676,5 +695,64 @@ mod tests {
                 (1, 1, T0900Z - MINUTE),
             ]
         );
+    }
+
+    // --- The fallback (fallback spec §1) ---------------------------------
+
+    /// The one positive case, leading as the control: without it, the three
+    /// negatives below are satisfied by a fallback that never applies at all.
+    #[test]
+    fn the_fallback_fills_empty_defaults_on_a_timed_occurrence() {
+        let mut ev = timed(1, vec![]);
+        ev.use_default_reminders = true;
+        let fb = vec![popup(60), popup(10)];
+
+        let out = due_reminders(&[ev], &HashSet::new(), T0900Z - 2 * HOUR, HORIZON, &fb);
+        assert_eq!(
+            triples(&out),
+            vec![(1, 60, T0900Z - HOUR), (1, 10, T0900Z - 10 * MINUTE)]
+        );
+    }
+
+    #[test]
+    fn real_calendar_defaults_keep_the_fallback_out() {
+        let mut ev = timed(1, vec![]);
+        ev.use_default_reminders = true;
+        ev.calendar_defaults = vec![popup(30)];
+
+        let out = due_reminders(
+            &[ev],
+            &HashSet::new(),
+            T0900Z - 2 * HOUR,
+            HORIZON,
+            &[popup(60), popup(10)],
+        );
+        assert_eq!(triples(&out), vec![(1, 30, T0900Z - 30 * MINUTE)]);
+    }
+
+    /// `use_default: false, overrides: []` is "no reminders", chosen on
+    /// purpose — the form writes exactly that when every row is removed — and
+    /// the fallback must not overrule a person who said none.
+    #[test]
+    fn empty_overrides_mean_none_and_the_fallback_respects_that() {
+        let ev = timed(1, vec![]);
+        let out =
+            due_reminders(&[ev], &HashSet::new(), T0900Z - 2 * HOUR, HORIZON, &[popup(10)]);
+        assert!(out.is_empty());
+    }
+
+    /// All-day occurrences are excluded (spec §1): their anchor is midnight,
+    /// and "60 minutes before" would knock at 23:00 the night before every
+    /// trip and holiday on the calendar.
+    #[test]
+    fn the_fallback_never_touches_an_all_day_occurrence() {
+        let mut ev = timed(1, vec![]);
+        ev.use_default_reminders = true;
+        ev.is_all_day = true;
+        ev.occurrence_end_ms = T0900Z + 24 * HOUR;
+
+        let out =
+            due_reminders(&[ev], &HashSet::new(), T0900Z - 2 * HOUR, HORIZON, &[popup(60)]);
+        assert!(out.is_empty());
     }
 }

@@ -14,6 +14,7 @@ use crate::AppState;
 const SYNC_INTERVAL_KEY: &str = "sync_interval_ms";
 const NOTIFICATIONS_KEY: &str = "notifications_enabled";
 const LIST_MODE_KEY: &str = "list_mode";
+const FALLBACK_KEY: &str = "fallback_reminder_minutes";
 
 /// What the General and Notifications tabs show.
 ///
@@ -41,6 +42,12 @@ pub struct AppSettings {
     /// `▦`/`☰` beside the view switcher, and a second control for the same
     /// value in a modal would be a second place for it to disagree.
     pub list_mode: bool,
+    /// Minutes-before for the fallback reminders (fallback spec §3): what
+    /// fires for a timed event that follows its calendar's defaults when the
+    /// calendar has none. Minutes alone, because the fallback is popup by
+    /// construction — omacal never sends email, so a method field here could
+    /// only ever hold one value.
+    pub fallback_reminder_minutes: Vec<i64>,
 }
 
 async fn read(pool: &SqlitePool, key: &str) -> Option<String> {
@@ -93,6 +100,15 @@ pub async fn read_settings(pool: &SqlitePool) -> AppSettings {
         // hand-edited row lands on that same default rather than silently
         // turning the calendar into a list.
         list_mode: read(pool, LIST_MODE_KEY).await.map(|v| v == "1").unwrap_or(false),
+        // **Shipped as 60 and 10, not empty** (fallback spec §3): the gap
+        // this fills is real meetings going silent on receive-only shared
+        // calendars, and an empty default would leave a fresh install with
+        // exactly that surprise. `[]` stored is a real choice — the feature
+        // off — and survives; only an absent or unparseable row lands here.
+        fallback_reminder_minutes: read(pool, FALLBACK_KEY)
+            .await
+            .and_then(|v| serde_json::from_str(&v).ok())
+            .unwrap_or_else(|| vec![60, 10]),
     }
 }
 
@@ -147,6 +163,36 @@ pub async fn set_notifications_enabled(
     Ok(read_settings(&state.pool).await)
 }
 
+/// Stores the fallback reminder rows, through the same bounds the event
+/// form's rows are held to — `write::validate_reminders`, so the two cannot
+/// drift apart — and refused with the limit named, never clamped (spec §3).
+/// `[]` is accepted and meaningful: it is the feature turned off.
+#[tauri::command]
+pub async fn set_fallback_reminders(
+    state: tauri::State<'_, AppState>,
+    minutes: Vec<i64>,
+) -> Result<AppSettings, String> {
+    set_fallback_reminders_impl(&state.pool, minutes)
+        .await
+        .map_err(|e| crate::errors::user_facing(&e))
+}
+
+pub(crate) async fn set_fallback_reminders_impl(
+    pool: &SqlitePool,
+    minutes: Vec<i64>,
+) -> anyhow::Result<AppSettings> {
+    let as_input = crate::write::RemindersInput {
+        use_default: false,
+        overrides: minutes
+            .iter()
+            .map(|&m| crate::write::ReminderInput { method: "popup".into(), minutes: m })
+            .collect(),
+    };
+    crate::write::validate_reminders(&as_input).map_err(|m| anyhow::anyhow!(m))?;
+    write(pool, FALLBACK_KEY, &serde_json::to_string(&minutes)?).await?;
+    Ok(read_settings(pool).await)
+}
+
 /// Stores the filmstrip toggle. Nothing is refused and nothing is clamped —
 /// unlike the sync interval, there is no value of a boolean the app has to
 /// protect Google's quota from.
@@ -178,6 +224,41 @@ mod tests {
         assert!(s.notifications_enabled, "reminders must be on until turned off");
         assert_eq!(s.min_sync_interval_ms, crate::sync_loop::MIN_INTERVAL_MS);
         assert!(!s.list_mode, "a fresh install draws the grid, not a list");
+        assert_eq!(
+            s.fallback_reminder_minutes,
+            vec![60, 10],
+            "shipped as 60 and 10, not empty — an empty default is today's silence again"
+        );
+    }
+
+    /// `[]` stored is a real choice — the feature off — and must read back as
+    /// itself, never as the shipped default (fallback spec §3).
+    #[tokio::test]
+    async fn fallback_reminders_round_trip_including_none() {
+        let p = pool().await;
+
+        let s = set_fallback_reminders_impl(&p, vec![15]).await.unwrap();
+        assert_eq!(s.fallback_reminder_minutes, vec![15]);
+        assert_eq!(read_settings(&p).await.fallback_reminder_minutes, vec![15]);
+
+        let s = set_fallback_reminders_impl(&p, vec![]).await.unwrap();
+        assert!(s.fallback_reminder_minutes.is_empty());
+        assert!(read_settings(&p).await.fallback_reminder_minutes.is_empty());
+    }
+
+    /// The event form's own bounds, through the same function, refused with
+    /// the limit named — and the stored value untouched by a refused write.
+    #[tokio::test]
+    async fn fallback_reminders_are_held_to_googles_bounds() {
+        let p = pool().await;
+        assert!(set_fallback_reminders_impl(&p, vec![40_321]).await.is_err());
+        assert!(set_fallback_reminders_impl(&p, (0..6).collect()).await.is_err());
+        assert!(set_fallback_reminders_impl(&p, vec![-1]).await.is_err());
+        assert_eq!(
+            read_settings(&p).await.fallback_reminder_minutes,
+            vec![60, 10],
+            "a refused write must leave the stored value alone"
+        );
     }
 
     #[tokio::test]
