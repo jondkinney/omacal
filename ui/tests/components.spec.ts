@@ -477,9 +477,17 @@ test.describe('EventBlock RSVP states at 15 minutes', () => {
     });
   }
 
-  test('an unanswered invite carries its marker', async ({ page }) => {
-    await page.goto(show('EventBlock', 'rsvp-needsAction-15'));
+  // `?` means maybe here too — one language across the grid and the popover.
+  // Both halves asserted, because a marker that moved to the wrong state
+  // passes either test alone.
+  test('a maybe carries its marker', async ({ page }) => {
+    await page.goto(show('EventBlock', 'rsvp-tentative-15'));
     await expect(page.locator('.ev .rs')).toHaveText('?');
+  });
+
+  test('an unanswered invite carries no letter, only its dashed ring', async ({ page }) => {
+    await page.goto(show('EventBlock', 'rsvp-needsAction-15'));
+    await expect(page.locator('.ev .rs')).toHaveCount(0);
   });
 });
 
@@ -1464,7 +1472,11 @@ test.describe('EventPopover', () => {
     await page.goto(show('standup'));
     await expect(page.locator('.guest.accepted .mark')).toHaveText('✓');
     await expect(page.locator('.guest.declined .mark')).toHaveText('✕');
-    await expect(page.locator('.guest.needsAction .mark')).toHaveText('?');
+    // `?` means maybe, the letter Google and Outlook use for it; an
+    // unanswered guest is the empty ring — nothing there, honestly. The ring
+    // itself still renders (the count above includes this row), so empty text
+    // is a statement, not a missing element.
+    await expect(page.locator('.guest.needsAction .mark')).toHaveText('');
   });
 
   test('the status is said on hover, not only drawn', async ({ page }) => {

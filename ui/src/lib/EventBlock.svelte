@@ -81,7 +81,10 @@
   onclick={open}
   onpointerdown={(e) => ongrab?.(event, e)}
 >
-  {#if event.response === 'needsAction'}<i class="rs">?</i>{/if}
+  <!-- `?` means MAYBE — the answer niki gave, in the letter Google and
+       Outlook both use for it (2026-08-10, by request). An unanswered invite
+       carries no letter: its dashed ring is the whole of "nothing yet". -->
+  {#if event.response === 'tentative'}<i class="rs">?</i>{/if}
   <b>{event.title}</b>
   {#if showTime}<em>{hhmm(event.start_ms)} – {hhmm(event.end_ms)}</em>{/if}
   {#if showMeta && meta}<em>{meta}</em>{/if}
@@ -155,7 +158,7 @@
        it reads as two competing left edges. */
     --spine: color-mix(in srgb, var(--cal) 70%, var(--bg));
   }
-  .ev.needsAction .rs { opacity: .55; font-weight: 600; }
+  .ev.tentative .rs { opacity: .55; font-weight: 600; }
   .ev.tentative { background-image: repeating-linear-gradient(135deg,
                   rgba(128,128,128,.16) 0 3px, transparent 3px 7px); }
   /* Faded via its own colours rather than element opacity: `opacity` would make

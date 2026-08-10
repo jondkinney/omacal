@@ -168,14 +168,19 @@
   let freshAttendees = $state<Attendee[] | null>(null);
   const shownAttendees = $derived(freshAttendees ?? detail.attendees);
 
-  // Google can send a `responseStatus` we do not model, so both tables are
-  // read with a `needsAction` fallback rather than indexed blindly — an
-  // unknown status should read as "hasn't answered", never as a blank circle.
+  // `?` means MAYBE — the letter Google and Outlook both use for it, and the
+  // reading everyone brought to it anyway (2026-08-10, by request; it
+  // previously meant no-reply and the tilde it displaced read as nothing at
+  // all). "No reply yet" is the empty ring: nothing there, honestly. Google
+  // can send a `responseStatus` we do not model, so both tables are read with
+  // a `needsAction` fallback rather than indexed blindly — an unknown status
+  // reads as "hasn't answered", which the empty ring now *is*; the hover word
+  // beside it says so in words.
   const MARK: Record<string, string> = {
     accepted: '✓',
     declined: '✕',
-    tentative: '~',
-    needsAction: '?',
+    tentative: '?',
+    needsAction: '',
   };
   const STATUS_WORD: Record<string, string> = {
     accepted: 'accepted',
@@ -406,9 +411,6 @@
     display: grid; place-items: center;
     font-size: 8px; font-style: normal; line-height: 1;
   }
-  /* At 8px a tilde collapses into a dash nobody can name. Larger and bold it
-     reads as the wave it is; the other three glyphs are fine at 8. */
-  .guest.tentative .mark { font-size: 11px; font-weight: 700; }
 
   /* Answered-yes is the only row at full strength; everything else recedes.
      That inverts the old styling, where four states shared two greys and the
