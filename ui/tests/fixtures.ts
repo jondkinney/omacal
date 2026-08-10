@@ -389,6 +389,8 @@ const detail = (o: Partial<EventDetail> & { id: number }): EventDetail => ({
   // proves the controls appear, so the pair discriminates in both directions.
   can_edit: false,
   attendees: [],
+  reminders: { use_default: true, overrides: [] },
+  calendar_default_reminders: [],
   ...o,
 });
 

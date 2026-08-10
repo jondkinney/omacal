@@ -59,6 +59,14 @@ pub struct EventDetail {
     pub can_respond: bool,
     pub can_edit: bool,
     pub attendees: Vec<omacal_store::Attendee>,
+    /// What this event asks for: the calendar's defaults, or its own
+    /// overrides — the store's shape, unconverted (reminders spec §3).
+    pub reminders: omacal_store::Reminders,
+    /// What "the calendar's defaults" means for this event, so the form can
+    /// show the effective rows when `reminders.use_default` — carried with the
+    /// event for the reason `StoredEvent` documents: one is the question, the
+    /// other the answer, and neither reads alone.
+    pub calendar_default_reminders: Vec<omacal_store::Reminder>,
 }
 
 /// Whether the RSVP controls are shown at all.
@@ -168,6 +176,8 @@ async fn event_detail_impl(state: &AppState, id: i64) -> anyhow::Result<EventDet
         can_respond,
         can_edit: can_edit(state.demo, &access_role),
         attendees: event.attendees,
+        reminders: event.reminders,
+        calendar_default_reminders: event.calendar_default_reminders,
     })
 }
 
@@ -786,6 +796,12 @@ async fn create_impl(
         anyhow::bail!(NO_GUESTS_ON_CREATE);
     }
 
+    // Same ordering rule: a pure check of the argument, decided before any
+    // row is read (reminders spec §4).
+    if let Some(r) = &fields.reminders {
+        crate::write::validate_reminders(r).map_err(|m| anyhow::anyhow!(m))?;
+    }
+
     let (cal_google_id, access_role, account_email, cal_tz) =
         omacal_store::calendar_for_write(&state.pool, calendar_id)
             .await?
@@ -860,6 +876,13 @@ async fn create_via_client(
     if let Some(s) = &f.description { body["description"] = s.clone().into(); }
     if let Some(Some(rule)) = &f.recurrence {
         body["recurrence"] = serde_json::json!([rule]);
+    }
+    // Unlike `guests`, read on the create path too: a reminder invites nobody
+    // and mails nobody, so there is no notify question to defer (reminders
+    // spec §2). Absent means Google applies the calendar's defaults, which is
+    // what an untouched form asked for.
+    if let Some(r) = &f.reminders {
+        body["reminders"] = crate::write::reminders_json(r);
     }
 
     // `"none"`: this create is the new-event form, which cannot add guests, so
@@ -982,6 +1005,9 @@ pub(crate) fn edit_patch_body(
         // is compared below against the row's own attendees, which carry fields
         // `EventFields` has no room for.
         guests: None,
+        // And likewise again: compared below against `ev.reminders`, the row's
+        // own settings, not against a before-side this struct would carry.
+        reminders: None,
     };
 
     let anchor = if is_recurring(&ev.recurrence, &ev.recurring_event_id) {
@@ -1036,7 +1062,34 @@ pub(crate) fn edit_patch_body(
         }
     }
 
+    // **Reminders, and only when they actually changed** — the guest rule one
+    // paragraph up, applied to a simpler object: both sides carry exactly
+    // `method` and `minutes`, so the stored row converts losslessly into the
+    // wire shape and equality means "the user changed nothing" with no echo
+    // subtleties. An absent `reminders` is a PATCH saying leave them alone
+    // (reminders spec §2), which matters doubly here because the object is a
+    // whole replace: a form that always resent it would rewrite the event's
+    // settings from whatever omacal last read.
+    if let Some(wanted) = &after.reminders {
+        if *wanted != reminders_as_input(&ev.reminders) {
+            body["reminders"] = crate::write::reminders_json(wanted);
+        }
+    }
+
     body
+}
+
+/// The stored settings in the wire shape, so `edit_patch_body` can ask "is
+/// this what the form sent back?" with plain equality.
+pub(crate) fn reminders_as_input(r: &omacal_store::Reminders) -> crate::write::RemindersInput {
+    crate::write::RemindersInput {
+        use_default: r.use_default,
+        overrides: r
+            .overrides
+            .iter()
+            .map(|o| crate::write::ReminderInput { method: o.method.clone(), minutes: o.minutes })
+            .collect(),
+    }
 }
 
 /// The resource being patched, as a [`crate::write::When`].
@@ -1210,6 +1263,12 @@ async fn update_impl(
     // not something to explain to a user.
     if !matches!(scope, "this" | "all" | "following") {
         anyhow::bail!("that edit scope is not available yet");
+    }
+
+    // A pure check of an argument, so it sits with `scope` — before the row
+    // (reminders spec §4).
+    if let Some(r) = &fields.reminders {
+        crate::write::validate_reminders(r).map_err(|m| anyhow::anyhow!(m))?;
     }
 
     let (ev, access_role, cal_google_id, account_email) =
@@ -3434,7 +3493,7 @@ mod tests {
             "conference_uri", "start_ms", "end_ms", "start_date", "end_date",
             "is_all_day", "is_recurring", "recurrence", "repeat", "color",
             "organizer_email", "self_response", "can_respond", "can_edit",
-            "attendees",
+            "attendees", "reminders", "calendar_default_reminders",
         ];
         expected.sort_unstable();
         assert_eq!(keys, expected, "the UI reads these by name off `invoke`'s result");
@@ -3625,6 +3684,15 @@ mod tests {
             tz: "Europe/Sofia".into(),
             recurrence: Some(Some("RRULE:FREQ=WEEKLY".into())),
             guests: None,
+            // `Some` for `recurrence`'s own reason above: the whole-body
+            // assertion must have a `reminders` key to lose.
+            reminders: Some(crate::write::RemindersInput {
+                use_default: false,
+                overrides: vec![crate::write::ReminderInput {
+                    method: "popup".into(),
+                    minutes: 10,
+                }],
+            }),
         }
     }
 
@@ -3752,6 +3820,8 @@ mod tests {
             "end":   end,
             "summary": "Lunch",
             "recurrence": ["RRULE:FREQ=WEEKLY"],
+            "reminders": { "useDefault": false,
+                           "overrides": [{ "method": "popup", "minutes": 10 }] },
         });
 
         let server = wiremock::MockServer::start().await;
@@ -3802,6 +3872,8 @@ mod tests {
                 "end":   {"date": "2026-08-11"},
                 "summary": "Lunch",
                 "recurrence": ["RRULE:FREQ=WEEKLY"],
+                "reminders": { "useDefault": false,
+                               "overrides": [{ "method": "popup", "minutes": 10 }] },
             })))
             .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "id": "g-allday", "status": "confirmed", "etag": "\"e1\"",
@@ -3940,6 +4012,8 @@ mod tests {
             // guest editing says so through this field, which is what keeps
             // them assertions about the fields they are actually named for.
             guests: None,
+            // Likewise untouched, for the same reason.
+            reminders: None,
         }
     }
 
@@ -4778,6 +4852,58 @@ mod tests {
         let body =
             edit_patch_body(&ev, OCCURRENCE, OCCURRENCE + HOUR, OCCURRENCE, "UTC", &untouched);
         assert_eq!(body, serde_json::json!({}));
+    }
+
+    /// Reminders the user did not touch send **no `reminders` at all** —
+    /// spec §2's absent state, and the guest rule again: for a whole-object
+    /// replace built from a possibly-stale read, absence is the only safe
+    /// instruction. Both faces of untouched are here: a form that echoed the
+    /// stored value back exactly (equality, no key), and a path with no
+    /// reminder editing at all (absence, no key).
+    #[test]
+    fn reminders_that_did_not_change_send_nothing() {
+        let mut ev = stored(three());
+        ev.summary = Some("Lunch".into());
+        ev.start_utc = OCCURRENCE;
+        ev.end_utc = OCCURRENCE + HOUR;
+        ev.reminders = omacal_store::Reminders {
+            use_default: false,
+            overrides: vec![omacal_store::Reminder { method: "popup".into(), minutes: 10 }],
+        };
+
+        let mut after = form("Lunch", OCCURRENCE, OCCURRENCE + HOUR);
+        after.reminders = Some(reminders_as_input(&ev.reminders));
+        let body = edit_patch_body(&ev, OCCURRENCE, OCCURRENCE + HOUR, OCCURRENCE, "UTC", &after);
+        assert_eq!(body, serde_json::json!({}), "unchanged reminders reached the wire");
+
+        let untouched = form("Lunch", OCCURRENCE, OCCURRENCE + HOUR);
+        assert!(untouched.reminders.is_none());
+        let body =
+            edit_patch_body(&ev, OCCURRENCE, OCCURRENCE + HOUR, OCCURRENCE, "UTC", &untouched);
+        assert_eq!(body, serde_json::json!({}));
+    }
+
+    /// …and a reminder change alone is a real edit, carrying the **whole**
+    /// object — the only shape Google accepts for `reminders` (spec §2).
+    #[test]
+    fn a_reminder_change_alone_is_a_real_edit() {
+        let mut ev = stored(three());
+        ev.summary = Some("Lunch".into());
+        ev.start_utc = OCCURRENCE;
+        ev.end_utc = OCCURRENCE + HOUR;
+        ev.reminders = omacal_store::Reminders { use_default: true, overrides: Vec::new() };
+
+        let mut after = form("Lunch", OCCURRENCE, OCCURRENCE + HOUR);
+        after.reminders = Some(crate::write::RemindersInput {
+            use_default: false,
+            overrides: vec![crate::write::ReminderInput { method: "popup".into(), minutes: 15 }],
+        });
+        let body = edit_patch_body(&ev, OCCURRENCE, OCCURRENCE + HOUR, OCCURRENCE, "UTC", &after);
+        assert_eq!(
+            body,
+            serde_json::json!({ "reminders": { "useDefault": false,
+                "overrides": [{ "method": "popup", "minutes": 15 }] } })
+        );
     }
 
     /// …and a guest change on its own is **not** an empty body, so the two

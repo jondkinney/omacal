@@ -328,6 +328,7 @@ const timedDetail = (startMs: number, endMs: number): EventDetail => ({
   is_recurring: false, recurrence: null, repeat: 'never', color: null,
   organizer_email: null, self_response: null, can_respond: true, can_edit: true,
   attendees: [],
+  reminders: { use_default: true, overrides: [] }, calendar_default_reminders: [],
 });
 
 test.describe('a timed value is sent as the instants it was read off', () => {
@@ -919,6 +920,7 @@ const allDayDetail = (startDate: string, lastDate: string, startMs: number, endM
   is_all_day: true, is_recurring: false, recurrence: null, repeat: 'never', color: null,
   organizer_email: null, self_response: null, can_respond: true, can_edit: true,
   attendees: [],
+  reminders: { use_default: true, overrides: [] }, calendar_default_reminders: [],
 });
 
 /** Midnight on `date` in Auckland, as the store holds an all-day event.
@@ -1917,5 +1919,110 @@ test.describe('what a save sends about guests', () => {
     const value = initial();
     value.guests = [];
     expect(toEventInput(value, initial()).guests).toEqual([]);
+  });
+});
+
+// --- Reminders (reminders spec §§1–3) --------------------------------------
+
+test.describe('reminders in the value and on the wire', () => {
+  /** A timed detail whose reminder settings are the case under test. */
+  const withReminders = (
+    reminders: EventDetail['reminders'],
+    defaults: EventDetail['calendar_default_reminders'] = [],
+  ): EventDetail => ({
+    ...timedDetail(1_785_398_400_000, 1_785_400_200_000),
+    reminders,
+    calendar_default_reminders: defaults,
+  });
+
+  const opened = (d: EventDetail) => valueFromDetail(d, d.start_ms, d.end_ms);
+
+  test('an event with overrides opens showing its popup rows, emails carried unseen', () => {
+    const value = opened(withReminders({
+      use_default: false,
+      overrides: [
+        { method: 'popup', minutes: 15 },
+        { method: 'email', minutes: 1440 },
+        { method: 'popup', minutes: 120 },
+      ],
+    }));
+    expect(value.popupReminders).toEqual([15, 120]);
+    expect(value.emailReminders).toEqual([{ method: 'email', minutes: 1440 }]);
+    expect(value.remindersWereDefault).toBe(false);
+  });
+
+  test('an event on calendar defaults opens showing those rows', () => {
+    const value = opened(withReminders(
+      { use_default: true, overrides: [] },
+      [{ method: 'popup', minutes: 30 }, { method: 'email', minutes: 60 }],
+    ));
+    expect(value.popupReminders).toEqual([30]);
+    // Seeded from the defaults, so flipping this event to explicit overrides
+    // does not silently drop a default email reminder.
+    expect(value.emailReminders).toEqual([{ method: 'email', minutes: 60 }]);
+    expect(value.remindersWereDefault).toBe(true);
+  });
+
+  test('reminders nobody touched send no reminders at all', () => {
+    const d = withReminders({
+      use_default: false,
+      overrides: [{ method: 'popup', minutes: 10 }],
+    });
+    expect('reminders' in toEventInput(opened(d), opened(d))).toBe(false);
+  });
+
+  /** The rows are a set as far as meaning goes: an order Google happens to
+   *  permute must not read as an edit, or a title-only save would freeze an
+   *  event's "calendar defaults" into copies of them. */
+  test('a reordered list is not a change', () => {
+    const d = withReminders({
+      use_default: false,
+      overrides: [{ method: 'popup', minutes: 10 }, { method: 'popup', minutes: 60 }],
+    });
+    const value = opened(d);
+    value.popupReminders = [60, 10];
+    expect('reminders' in toEventInput(value, opened(d))).toBe(false);
+  });
+
+  test('an added row sends the whole object, preserved emails included', () => {
+    const d = withReminders({
+      use_default: false,
+      overrides: [{ method: 'popup', minutes: 10 }, { method: 'email', minutes: 1440 }],
+    });
+    const value = opened(d);
+    value.popupReminders = [...value.popupReminders, 15];
+    expect(toEventInput(value, opened(d)).reminders).toEqual({
+      useDefault: false,
+      overrides: [
+        { method: 'popup', minutes: 10 },
+        { method: 'popup', minutes: 15 },
+        { method: 'email', minutes: 1440 },
+      ],
+    });
+  });
+
+  test('a row added on a create sends explicit overrides', () => {
+    const initial = blankValueAt(1_785_398_400_000, 1);
+    const value = { ...initial, popupReminders: [15] };
+    expect(toEventInput(value, initial).reminders).toEqual({
+      useDefault: false,
+      overrides: [{ method: 'popup', minutes: 15 }],
+    });
+  });
+
+  /** Removing every row is a change like any other — `overrides: []` with
+   *  `useDefault: false` is "no reminders", distinct from the absent field,
+   *  which means "leave them alone" (spec §2). */
+  test('removing every row sends none, not absence', () => {
+    const d = withReminders({
+      use_default: false,
+      overrides: [{ method: 'popup', minutes: 10 }],
+    });
+    const value = opened(d);
+    value.popupReminders = [];
+    expect(toEventInput(value, opened(d)).reminders).toEqual({
+      useDefault: false,
+      overrides: [],
+    });
   });
 });

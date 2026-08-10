@@ -1157,6 +1157,29 @@ test.describe('App', () => {
     expect(args.fields.summary).toBe('Lunch');
   });
 
+  /**
+   * The reminder rows through the rendered form, not only the pure layer —
+   * a markup wired to nothing keeps every `eventform.spec.ts` test green.
+   * The add control's default row is 15 minutes, and one added row must reach
+   * `create_event` as explicit overrides (reminders spec §§2–3).
+   */
+  test('a reminder added in the form reaches the create', async ({ page }) => {
+    await writable(page);
+    await page.keyboard.press('n');
+    await expect(newForm(page)).toBeVisible();
+    await newForm(page).getByLabel('Title', { exact: true }).fill('Lunch');
+    await newForm(page).getByRole('button', { name: '+ Add notification' }).click();
+    await expect(newForm(page).getByLabel('Reminder amount')).toHaveValue('15');
+    await newForm(page).getByRole('button', { name: 'Create' }).click();
+    await expect(newForm(page)).toHaveCount(0);
+
+    const [args] = await callsTo(page, 'create_event');
+    expect(args.fields.reminders).toEqual({
+      useDefault: false,
+      overrides: [{ method: 'popup', minutes: 15 }],
+    });
+  });
+
   /// The occurrence-identity property, at the top of the stack: the clicked
   /// block's own start_ms must reach the command, not detail.start_ms.
   test('editing an occurrence sends the clicked block start, not the series start', async ({ page }) => {

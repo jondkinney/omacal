@@ -169,6 +169,25 @@ export type EventFormValue = {
    *  §5 again: removing yourself is a real thing and is *not* declining, so the
    *  row has to be tellable from the others in order to say so. */
   selfEmail: string | null;
+  /**
+   * The popup reminders the form shows and edits, as minutes before the
+   * start — the event's own overrides, or the calendar's defaults when the
+   * event runs on those (reminders spec §3). Rows only; whether anything is
+   * *sent* is `toEventInput`'s unchanged-means-absent rule, same as guests.
+   */
+  popupReminders: number[];
+  /**
+   * The event's `email` reminders, preserved verbatim and never shown as
+   * editable — Google sends those, not omacal (spec §1). Carried so an edit
+   * that touches popups re-sends them unchanged: `reminders` is a
+   * whole-object replace, and a payload without them would strip them.
+   * Seeded from the calendar's defaults when the event runs on those, so
+   * flipping to explicit overrides does not silently drop a default email.
+   */
+  emailReminders: { method: string; minutes: number }[];
+  /** Display only: the rows above came from the calendar's defaults rather
+   *  than the event's own overrides. Decides the hint, nothing else. */
+  remindersWereDefault: boolean;
   /** An edit, rather than a create. Decides the Save label, whether the scope
    *  chooser and the guest editor appear, and whether the calendar can still
    *  be chosen (`update_event` cannot move an event between calendars). */
@@ -443,6 +462,11 @@ export function blankValueAt(
     guests: [],
     organizerEmail: null,
     selfEmail: null,
+    // No rows: untouched means absent means the calendar's defaults
+    // (reminders spec §3), which is what every other client gives a new event.
+    popupReminders: [],
+    emailReminders: [],
+    remindersWereDefault: true,
     isEdit: false,
     isRecurring: false,
   };
@@ -665,9 +689,26 @@ export function valueFromDetail(
     guests: detail.attendees.map((a) => ({ email: a.email, optional: a.optional })),
     organizerEmail: detail.organizer_email,
     selfEmail: detail.attendees.find((a) => a.is_self)?.email ?? null,
+    // The *effective* rows (reminders spec §3): the event's own overrides, or
+    // the calendar's defaults when it runs on those. The email rows ride
+    // along from the same source, so an edit that flips this event to
+    // explicit overrides carries them rather than silently dropping them.
+    popupReminders: effectiveReminders(detail)
+      .filter((r) => r.method === 'popup')
+      .map((r) => r.minutes),
+    emailReminders: effectiveReminders(detail).filter((r) => r.method === 'email'),
+    remindersWereDefault: detail.reminders.use_default,
     isEdit: true,
     isRecurring: detail.is_recurring,
   };
+}
+
+/** The rows the event actually runs on — its overrides, or the calendar's
+ *  defaults when `use_default` (reminders spec §3). */
+function effectiveReminders(detail: EventDetail): { method: string; minutes: number }[] {
+  return detail.reminders.use_default
+    ? detail.calendar_default_reminders
+    : detail.reminders.overrides;
 }
 
 /**
@@ -940,7 +981,38 @@ export function toEventInput(value: EventFormValue, initial: EventFormValue): Ev
     // moved, so the two lists compare equal and no `guests` key is sent at all
     // — the same shape as `sendUpdates: 'none'`, one field along.
     ...(sameGuests(value.guests, initial.guests) ? {} : { guests: value.guests }),
+    // The same rule a third time, and here the object is a whole replace too:
+    // absent leaves the event's reminders exactly as they are, which is the
+    // only safe thing for rows nobody touched (reminders spec §2). A change
+    // sends explicit overrides — the edited popups plus the preserved email
+    // rows — never `useDefault: true`, because the form edits rows and a row
+    // is an override by definition.
+    ...(sameReminders(value, initial)
+      ? {}
+      : {
+          reminders: {
+            useDefault: false,
+            overrides: [
+              ...value.popupReminders.map((minutes) => ({ method: 'popup', minutes })),
+              ...value.emailReminders,
+            ],
+          },
+        }),
   };
+}
+
+/**
+ * Whether the reminder rows still read as they opened. Sorted before
+ * comparing: the form can only add, remove or edit rows, so order carries no
+ * meaning, and a stored order Google happens to permute must not read as an
+ * edit — that would flip an event from "calendar defaults" to frozen copies
+ * of them on a save that touched the title.
+ */
+function sameReminders(value: EventFormValue, initial: EventFormValue): boolean {
+  const sorted = (xs: number[]) => [...xs].sort((a, b) => a - b);
+  const a = sorted(value.popupReminders);
+  const b = sorted(initial.popupReminders);
+  return a.length === b.length && a.every((m, i) => m === b[i]);
 }
 
 // --- Showing an RRULE in words -------------------------------------------

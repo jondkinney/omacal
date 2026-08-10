@@ -66,6 +66,12 @@ export type EventDetail = {
   can_respond: boolean;
   can_edit: boolean;
   attendees: Attendee[];
+  /** What this event asks for: the calendar's defaults, or its own
+   *  overrides — the two fields are alternatives (reminders spec §3). */
+  reminders: { use_default: boolean; overrides: { method: string; minutes: number }[] };
+  /** What "the calendar's defaults" means for this event, so the form can
+   *  show the effective rows when `use_default`. */
+  calendar_default_reminders: { method: string; minutes: number }[];
 };
 
 export const getEventDetail = (id: number) => invoke<EventDetail>('event_detail', { id });
@@ -126,6 +132,15 @@ export type EventInput = {
    * through which a form could overwrite an RSVP.
    */
   guests?: { email: string; optional: boolean }[];
+  /**
+   * The reminder settings the event should end up with, or **absent** when
+   * the user did not touch them — `guests`' distinction again, and again
+   * load bearing: Google's `reminders` is a whole-object replace (reminders
+   * spec §2). Overrides carry both the edited popup rows and the event's
+   * email rows echoed back verbatim, because a replace without them would
+   * strip them.
+   */
+  reminders?: { useDefault: boolean; overrides: { method: string; minutes: number }[] };
 };
 
 /**
