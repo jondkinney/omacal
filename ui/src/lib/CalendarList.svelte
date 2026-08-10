@@ -223,13 +223,17 @@
 
   .acct { font-size: 9.5px; color: var(--muted); letter-spacing: .05em;
           padding: 6px 6px 3px; }
-  .row { display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  /* The label absorbs the slack, so the swatch and the sync button pack into a
+     fixed right-hand column instead of trailing each row's name — with
+     `space-between` the swatch's x followed the label's width, and four rows
+     gave four columns. */
+  .row { display: flex; align-items: center; gap: 8px;
          padding: 3px 6px; border-radius: 5px; }
   .row:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
   .row.off .name { opacity: .45; }
 
   label { display: flex; align-items: center; gap: 7px; font-size: 11.5px;
-          cursor: pointer; min-width: 0; }
+          cursor: pointer; min-width: 0; flex: 1; }
   .dot { width: 8px; height: 8px; border-radius: 2.5px; flex: none; display: block; }
   .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
@@ -249,9 +253,11 @@
            padding: 2px 6px; margin-left: 2px; }
   .clear:disabled { opacity: .45; cursor: default; }
 
+  /* Wide enough for either word, so a mixed list of Remove and Add rows does
+     not push the swatch column about. */
   .sync { font: inherit; font-size: 10px; color: var(--muted); cursor: pointer;
           background: none; border: 1px solid var(--hairline); border-radius: 5px;
-          padding: 2px 7px; flex: none; }
+          padding: 2px 7px; flex: none; min-width: 52px; text-align: center; }
 
   .note { font-size: 10.5px; color: var(--muted); line-height: 1.4;
           margin: 8px 6px 0; padding: 6px 8px; border-radius: 5px;
