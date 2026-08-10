@@ -101,6 +101,14 @@
   const showScope = $derived(initial.isEdit && initial.isRecurring);
   const accounts = $derived(new Set(offerable.map((c) => c.account_email)).size);
 
+  // The chosen calendar's colour, worn beside the picker: names identify
+  // calendars to a reader who knows them, colour to everyone (2026-08-10, by
+  // request). `color_hex` is already the effective colour — the store
+  // COALESCEs the local override in — so this cannot disagree with the grid.
+  const chosenColor = $derived(
+    offerable.find((c) => c.id === value.calendarId)?.color_hex ?? 'var(--accent)',
+  );
+
   let panelEl: HTMLDivElement | undefined = $state();
   let titleEl: HTMLInputElement | undefined = $state();
   // A neutral default so the panel renders — and is measurable — before
@@ -383,16 +391,22 @@
            text content is "Calendar Personal Team" and the accessible name
            would carry the whole list with it. The same applies to Repeat
            below; the plain inputs need nothing, having no text of their own. -->
-      <select
-        aria-label="Calendar"
-        bind:value={value.calendarId}
-        disabled={initial.isEdit}
-        title={initial.isEdit ? 'An event cannot be moved between calendars from omacal' : undefined}
-      >
-        {#each offerable as c (c.id)}
-          <option value={c.id}>{accounts > 1 ? `${c.summary} · ${c.account_email}` : c.summary}</option>
-        {/each}
-      </select>
+      <div class="calrow">
+        <span class="caldot" aria-hidden="true" style="background:{chosenColor}"></span>
+        <select
+          aria-label="Calendar"
+          bind:value={value.calendarId}
+          disabled={initial.isEdit}
+          title={initial.isEdit ? 'An event cannot be moved between calendars from omacal' : undefined}
+        >
+          {#each offerable as c (c.id)}
+            <!-- The option text tinted too, where the engine honours it in
+                 the dropped-down list; the dot above is the guarantee. -->
+            <option value={c.id} style="color: {c.color_hex ?? 'inherit'}"
+              >{accounts > 1 ? `${c.summary} · ${c.account_email}` : c.summary}</option>
+          {/each}
+        </select>
+      </div>
     </label>
 
     <label class="field">
@@ -591,6 +605,10 @@
     background-repeat: no-repeat;
   }
   select:disabled { opacity: .6; }
+
+  .calrow { display: flex; align-items: center; gap: 7px; }
+  .calrow select { flex: 1; min-width: 0; }
+  .caldot { width: 10px; height: 10px; border-radius: 3px; flex: none; }
   textarea { resize: vertical; line-height: 1.45; }
   .title { font-size: 13px; }
 

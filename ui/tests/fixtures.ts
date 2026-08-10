@@ -1334,7 +1334,9 @@ export const APP_READER_CALENDAR_ID = 7;
 export const APP_WRITE_CALENDARS: Calendar[] = [
   cal({ id: APP_READER_CALENDAR_ID, account_email: 'me@x.com',
         summary: 'Holidays in Bulgaria', access_role: 'reader' }),
-  cal({ id: 8, account_email: 'me@x.com', summary: 'Team', access_role: 'writer' }),
+  // Its own colour, so a spec can watch the form's dot follow the picker.
+  cal({ id: 8, account_email: 'me@x.com', summary: 'Team', access_role: 'writer',
+        color_hex: '#2fbf71' }),
   cal({ id: APP_PRIMARY_CALENDAR_ID, account_email: 'me@x.com', summary: 'Personal',
         is_primary: true, access_role: 'owner' }),
 ];
