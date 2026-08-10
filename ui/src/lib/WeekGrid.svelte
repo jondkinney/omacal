@@ -38,7 +38,9 @@
     onmove: (event: UiEvent, span: { startMs: number; endMs: number }) => void;
   } = $props();
 
-  const HOURS = [0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22];
+  // Every hour, not every second one: a rule at 10:00 with nothing at 11:00
+  // makes a meeting's edge unplaceable by eye.
+  const HOURS = Array.from({ length: 24 }, (_, i) => i);
   const DOW = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
   // Named from the day's own date, not its position in the week — the same
   // rule works for a 7-column week and a 1-column day.
@@ -869,7 +871,7 @@
      hour lines and the current-time line swallow the click instead: probed in
      both engines, a point within half a pixel of an hour line returns `.rule`
      from `elementFromPoint`, and further away returns `.newhere`. That is a
-     1px dead band every two hours, sitting exactly on the line somebody aims
+     1px dead band every hour, sitting exactly on the line somebody aims
      at to make a 10:00 meeting. `WeekGrid`'s "clicking exactly on an hour
      line" spec fails the moment the declaration on `.rule` goes.
 
