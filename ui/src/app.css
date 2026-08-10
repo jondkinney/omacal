@@ -1,0 +1,31 @@
+/* Platform-widget resets, app-wide. WebKitGTK paints selects and number
+   spinners with the platform's own light chrome unless appearance is off,
+   and every component that styled its own was one more surface to
+   rediscover that on — the event form was fixed (fix/50) and the settings
+   tab shipped the same defect the same day. A real stylesheet rather than
+   `:global` in App.svelte, because the component test harness mounts
+   components without App and must live under the same rules the app does.
+   Components keep owning background-color and border; the chevron is two
+   gradients off var(--muted), so it follows the theme. */
+
+select {
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 22px;
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+    linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: calc(100% - 13px) 55%, calc(100% - 8px) 55%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+}
+
+input[type='number'] {
+  appearance: textfield;
+  -webkit-appearance: textfield;
+}
+input[type='number']::-webkit-inner-spin-button,
+input[type='number']::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}

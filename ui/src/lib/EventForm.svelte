@@ -577,14 +577,11 @@
     padding: 4px 6px; min-width: 0; width: 100%; box-sizing: border-box;
   }
   input:focus, select:focus, textarea:focus { outline: 1px solid var(--accent); outline-offset: -1px; }
-  /* WebKitGTK paints a select with the platform's own light widget background
-     unless appearance is off, and the form's light text vanishes on it —
-     Chromium and WKWebView honour the background above, which is why only the
-     Linux build showed it. Off, plus a chevron the shorthand above would
-     otherwise reset (this rule is later on purpose), drawn from two gradients
-     so it follows the theme rather than a baked-in colour. */
+  /* The appearance/chevron rule is global now — App.svelte, and fix/56's
+     commit message for why. Only the background shorthand's reset needs
+     compensating here: it clears the global background-image, so the chevron
+     longhands are restated after it. */
   select {
-    appearance: none; -webkit-appearance: none;
     padding-right: 22px;
     background-image:
       linear-gradient(45deg, transparent 50%, var(--muted) 50%),
