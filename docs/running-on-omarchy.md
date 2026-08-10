@@ -147,6 +147,37 @@ sign-in.
 | `npm --prefix ui run check` | TypeScript and Svelte type checking |
 | `cargo tauri build` | Build a release binary |
 
+## The UI suite on Arch
+
+`npm --prefix ui run test:ui` needs Playwright's own browsers, and on Arch
+two things stand between you and them. Without the browsers **the suite does
+not fail — it reports the ~260 node-side tests as passed and lists the ~880
+browser tests as failures above the summary**, which a piped `tail` happily
+truncates into what looks like a green run. Check the exit code, not the last
+line.
+
+First, the download refuses because Arch is not a supported host:
+
+    PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=true npx --prefix ui playwright install
+
+Chromium then runs as-is. WebKit is an Ubuntu 24.04 build and wants five
+libraries under Ubuntu's sonames — ICU 74, `libxml2.so.2` and the flite
+voices — which Arch does not ship. No `sudo` required: the bundle already
+carries a `sys/lib` for exactly this, so extract the three noble debs
+(`libicu74`, `libxml2`, `libflite1`) and copy their `*.so.*` into **both**
+
+    ~/.cache/ms-playwright/webkit-*/minibrowser-gtk/sys/lib/
+    ~/.cache/ms-playwright/webkit-*/minibrowser-wpe/sys/lib/
+
+— headed runs use the GTK bundle, headless the WPE one, and a reinstall of
+the browsers wipes both (the suite then fails loudly on launch, which is the
+signal to redo this).
+
+One known failure remains on Linux: `a standalone view gets the same box the
+app gives it` is off by 1px on both engines, because `APP_CHROME_PX` was
+measured against macOS font metrics. It is an environment constant going
+stale, not a layout regression.
+
 ## Troubleshooting
 
 **Sign-in fails with `No matching credential found`** — no Secret Service is
