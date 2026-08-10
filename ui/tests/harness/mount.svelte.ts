@@ -3,6 +3,7 @@ import WeekGrid from '../../src/lib/WeekGrid.svelte';
 import MonthGrid from '../../src/lib/MonthGrid.svelte';
 import YearGrid from '../../src/lib/YearGrid.svelte';
 import BigYearRibbon from '../../src/lib/BigYearRibbon.svelte';
+import Filmstrip from '../../src/lib/Filmstrip.svelte';
 import EventBlock from '../../src/lib/EventBlock.svelte';
 import AllDayBand from '../../src/lib/AllDayBand.svelte';
 import Header from '../../src/lib/Header.svelte';
@@ -56,8 +57,8 @@ const name = params.get('c') ?? 'WeekGrid';
 const fixture = params.get('f') ?? 'default';
 
 const COMPONENTS: Record<string, any> = {
-  WeekGrid, MonthGrid, YearGrid, BigYearRibbon, EventBlock, AllDayBand, Header, CalendarPopover,
-  EventPopover, EventForm, DeleteConfirm,
+  WeekGrid, MonthGrid, YearGrid, BigYearRibbon, Filmstrip, EventBlock, AllDayBand, Header,
+  CalendarPopover, EventPopover, EventForm, DeleteConfirm,
 };
 const target = document.getElementById('app')!;
 
@@ -77,7 +78,9 @@ const target = document.getElementById('app')!;
  * Height only. Nothing sets a width, a padding or an offset, so the views keep
  * the full-bleed 1280px they have always been measured and screenshotted at.
  */
-const FILL_HEIGHT_VIEWS = new Set(['WeekGrid', 'MonthGrid', 'YearGrid', 'BigYearRibbon']);
+const FILL_HEIGHT_VIEWS = new Set([
+  'WeekGrid', 'MonthGrid', 'YearGrid', 'BigYearRibbon', 'Filmstrip',
+]);
 if (FILL_HEIGHT_VIEWS.has(name)) {
   target.style.display = 'flex';
   target.style.flexDirection = 'column';
@@ -240,6 +243,20 @@ if (name === 'App') {
           },
           oncreate: (dayStartMs: unknown, rect: unknown) => {
             (window as any).__lastCreate = { startMs: dayStartMs, rect };
+          },
+        },
+      });
+    } else if (name === 'Filmstrip') {
+      // `onopen` is a callback prop, not a Tauri command — a row hands the
+      // clicked occurrence up rather than opening anything itself, which is
+      // spec §6's "no second way to reach an event's detail". Captured on the
+      // window exactly as `MonthGrid`'s and `BigYearRibbon`'s are.
+      mount(Filmstrip, {
+        target,
+        props: {
+          ...props,
+          onopen: (event: unknown, rect: unknown) => {
+            (window as any).__lastOpen = { event, rect };
           },
         },
       });

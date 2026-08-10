@@ -18,6 +18,11 @@ export type AppSettings = {
   syncIntervalMs: number;
   notificationsEnabled: boolean;
   minSyncIntervalMs: number;
+  /** Whether Day, Week and Month draw as a list rather than a grid (filmstrip
+   *  spec §4). No settings tab shows it — the control is the `▦`/`☰` beside the
+   *  view switcher — but it is a preference and is stored beside the others,
+   *  which is what makes it survive a restart. */
+  listMode: boolean;
 };
 
 export const getSettings = () => invoke<AppSettings>('get_settings');
@@ -35,6 +40,11 @@ export const setSyncInterval = (ms: number) =>
 
 export const setNotificationsEnabled = (on: boolean) =>
   invoke<AppSettings>('set_notifications_enabled', { on });
+
+/** Stores the filmstrip toggle. Nothing is refused: unlike the sync interval
+ *  there is no value of a boolean the app has to protect anything from. */
+export const setListMode = (on: boolean) =>
+  invoke<AppSettings>('set_list_mode', { on });
 
 /** Minutes, as the General tab shows them. Stored in milliseconds because
  *  that is what `sync_loop` compares against a clock. */

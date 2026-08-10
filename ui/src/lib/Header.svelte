@@ -3,12 +3,14 @@
   import { syncLight, type AppStatus } from './status';
   import type { Calendar } from './calendars';
   import { escapeCloses } from './dismiss.svelte';
+  import { listable } from './filmstrip';
   import CalendarPopover from './CalendarPopover.svelte';
   import SettingsModal from './SettingsModal.svelte';
   import ViewSwitcher, { type View } from './ViewSwitcher.svelte';
 
   let {
     status, anchorMs, weekStartMs, busy, error, calendars, view, onpick,
+    listMode, onToggleList,
     onPrev, onNext, onToday, onSearch, onSignIn, onSync, oncalendarchange,
     open = $bindable(false),
   }: {
@@ -26,6 +28,12 @@
     view: View;
     /** Forwarded straight to `ViewSwitcher`'s `onpick`. */
     onpick: (v: View) => void;
+    /** Whether Day, Week and Month are drawn as a list — `App`'s own state,
+     *  which is the stored preference (filmstrip spec §4). */
+    listMode: boolean;
+    /** Asked to flip it. Not flipped here: the value is stored in the settings
+     *  table, and `App` owns every write in this app. */
+    onToggleList: () => void;
     onPrev: () => void; onNext: () => void; onToday: () => void;
     /** Opens the search overlay. A small control rather than a field: the
      *  header was emptied on purpose (settings spec §1) and putting a
@@ -159,6 +167,25 @@
     </div>
     <button class="today" onclick={onToday}>Today</button>
     <ViewSwitcher {view} {onpick} />
+    <!-- **Absent in Year and Big Year, not present and inert** (filmstrip spec
+         §2): a control that does nothing is worse than one that is not there.
+         `listable` is the same predicate `App`'s `F` key reads, so the key
+         cannot set a preference in a view that offers no way to see or undo it.
+
+         One button rather than two, `aria-pressed` rather than a pair of
+         `aria-label`s that change under the pointer: the accessible name stays
+         "List view" whichever mode it is in, and the state is the state. The
+         glyph shows the mode currently on screen — `☰` while it is a list, `▦`
+         while it is a grid — which is the pairing the design names it by. -->
+    {#if listable(view)}
+      <button
+        class="filmstrip"
+        aria-label="List view"
+        aria-pressed={listMode}
+        title="List view (F)"
+        onclick={onToggleList}
+      >{listMode ? '☰' : '▦'}</button>
+    {/if}
   </div>
 
   <div class="right">
@@ -318,6 +345,14 @@
   /* A glyph, not a field. The magnifier is the one control search gets in the
      header; the overlay is where the typing happens. */
   .search { font-size: 15px; line-height: 1; padding: 2px 8px; }
+
+  /* Beside the switcher rather than inside it, and styled to sit *next to* it
+     rather than as a sixth slot: the toggle is orthogonal to the view (spec
+     §1), and a button sharing the switcher's joined-segment shape would read as
+     a view you can be in. Pressed takes the same accent fill the active view
+     slot does, because that is what "on" already looks like in this header. */
+  .filmstrip { font-size: 12px; line-height: 1; padding: 4px 8px; }
+  .filmstrip[aria-pressed='true'] { background: var(--accent); color: var(--bg); }
 
   .menuwrap { position: relative; }
   .burger { font-size: 13px; line-height: 1; padding: 3px 8px; }

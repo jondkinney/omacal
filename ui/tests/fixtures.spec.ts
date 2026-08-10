@@ -50,12 +50,12 @@ test.describe('the hand-written month fixtures describe payloads assemble_month 
   // The sweep has to sweep something. A `months` that came back empty — a
   // renamed `FIXTURES` key, a refactor that moved the month fixtures elsewhere
   // — would satisfy every loop below by iterating zero times, and this file
-  // would go green while checking nothing at all. Three today: `august`,
-  // `busy-day`, `two-bars`.
+  // would go green while checking nothing at all. Four today: `august`,
+  // `busy-day`, `two-bars`, `filmstrip`.
   test('the sweep finds the month fixtures at all', () => {
-    expect(months.length).toBeGreaterThanOrEqual(3);
+    expect(months.length).toBeGreaterThanOrEqual(4);
     expect(months.map(([name]) => name)).toEqual(
-      expect.arrayContaining(['august', 'busy-day', 'two-bars']),
+      expect.arrayContaining(['august', 'busy-day', 'two-bars', 'filmstrip']),
     );
   });
 
@@ -105,7 +105,7 @@ test.describe('the hand-written month fixtures describe payloads assemble_month 
   });
 
   test('every fixture dims exactly the days of the year and month it claims', () => {
-    expect(months.length).toBeGreaterThanOrEqual(3); // see above
+    expect(months.length).toBeGreaterThanOrEqual(4); // see above
     for (const [name, m] of months) {
       // The month it claims to be is one a grid can be built for.
       expect(m.month, name).toBeGreaterThanOrEqual(1);
@@ -151,7 +151,7 @@ test.describe('the hand-written month fixtures describe payloads assemble_month 
   });
 
   test('every timed event sits in the cell carrying it, in start order', () => {
-    expect(months.length).toBeGreaterThanOrEqual(3); // see above
+    expect(months.length).toBeGreaterThanOrEqual(4); // see above
     let checked = 0;
     for (const [name, m] of months) {
       for (const [r, row] of m.rows.entries()) {
@@ -185,12 +185,13 @@ test.describe('the hand-written month fixtures describe payloads assemble_month 
       }
     }
     // Otherwise a fixture set with no timed events anywhere passes this by
-    // iterating nothing. Five today: one in `august`, four in `busy-day`.
+    // iterating nothing. Seven today: one in `august`, four in `busy-day`, two
+    // in `filmstrip`.
     expect(checked).toBeGreaterThan(0);
   });
 
   test('every bar indexes an event that exists and stays inside its row', () => {
-    expect(months.length).toBeGreaterThanOrEqual(3); // see above
+    expect(months.length).toBeGreaterThanOrEqual(4); // see above
     let checked = 0;
     for (const [name, m] of months) {
       for (const [r, row] of m.rows.entries()) {
@@ -215,7 +216,7 @@ test.describe('the hand-written month fixtures describe payloads assemble_month 
         }
       }
     }
-    // Three today: one in `august`, two in `two-bars`.
+    // Four today: one in `august`, two in `two-bars`, one in `filmstrip`.
     expect(checked).toBeGreaterThan(0);
   });
 
@@ -357,11 +358,11 @@ test.describe('the hand-written week fixtures describe payloads assemble_days co
   // a moved export would leave `weeks` short or empty, and every loop below
   // would pass by iterating nothing.
   test('the sweep finds the week fixtures at all', () => {
-    expect(weeks.length).toBeGreaterThanOrEqual(14);
+    expect(weeks.length).toBeGreaterThanOrEqual(15);
     expect(weeks.map(([name]) => name)).toEqual(
       expect.arrayContaining([
         'empty', 'populated', 'popover', 'popover-two-occurrences', 'popover-all-day',
-        'single-day', 'single-day-overlap',
+        'single-day', 'single-day-overlap', 'filmstrip',
         'app:labelled', 'app:labelled-next', 'app:writable', 'app:cross-zone',
       ]),
     );
@@ -371,7 +372,7 @@ test.describe('the hand-written week fixtures describe payloads assemble_days co
     // Carried per test rather than left to the one above, for both holes the
     // month sweep names: an *empty* `weeks` satisfies the count at the bottom
     // (`0 === 0`), and a *partial* one satisfies it too.
-    expect(weeks.length).toBeGreaterThanOrEqual(14);
+    expect(weeks.length).toBeGreaterThanOrEqual(15);
     let checked = 0;
     for (const [name, w] of weeks) {
       // `assemble_days(events, start_ms, n, tz)` has exactly two callers in the
@@ -407,7 +408,7 @@ test.describe('the hand-written week fixtures describe payloads assemble_days co
   });
 
   test('every day column carries timed events only, and the band all-day ones only', () => {
-    expect(weeks.length).toBeGreaterThanOrEqual(14); // see above
+    expect(weeks.length).toBeGreaterThanOrEqual(15); // see above
     let checked = 0;
     for (const [name, w] of weeks) {
       // `if src.is_all_day { .. all_day_events.push(..) } else if let Some(col)
@@ -431,12 +432,12 @@ test.describe('the hand-written week fixtures describe payloads assemble_days co
       }
     }
     // Otherwise a fixture set with no events at all passes by iterating
-    // nothing. Twenty-seven today: fifteen in day columns, twelve in the bands.
+    // nothing. Thirty-three today: twenty in day columns, thirteen in the bands.
     expect(checked).toBeGreaterThan(0);
   });
 
   test('every timed event sits in the column carrying it, except where a fixture says otherwise', () => {
-    expect(weeks.length).toBeGreaterThanOrEqual(14); // see above
+    expect(weeks.length).toBeGreaterThanOrEqual(15); // see above
     let checked = 0;
     let asserted = 0;
     const offenders = new Set<string>();
@@ -484,19 +485,19 @@ test.describe('the hand-written week fixtures describe payloads assemble_days co
     // fails on an empty sweep, since an empty `weeks` finds no offenders while
     // `DECOUPLED` still names three.
     expect([...offenders].sort()).toEqual([...DECOUPLED].sort());
-    // Fifteen today: three in `populated`, four in `popover`, two in
-    // `popover-two-occurrences`, two in `single-day-overlap`, two in
-    // `app:writable`, one in each `labelled` week.
+    // Twenty today: three in `populated`, four in `popover`, two in
+    // `popover-two-occurrences`, two in `single-day-overlap`, three in
+    // `filmstrip`, four in `app:writable`, one in each `labelled` week.
     expect(checked).toBeGreaterThan(0);
-    // …of which seven reached a real assertion. `checked` alone does not say
+    // …of which ten reached a real assertion. `checked` alone does not say
     // that: a world where every fixture had drifted into `DECOUPLED` would
-    // still count fifteen events while asserting nothing about any of them.
+    // still count twenty events while asserting nothing about any of them.
     // This is the empty-sweep trap one level down, inside the skip branch.
     expect(asserted).toBeGreaterThan(0);
   });
 
   test('every placed box is geometry lay_out_day could have produced', () => {
-    expect(weeks.length).toBeGreaterThanOrEqual(14); // see above
+    expect(weeks.length).toBeGreaterThanOrEqual(15); // see above
     let checked = 0;
     for (const [name, w] of weeks) {
       for (const [d, col] of w.days.entries()) {
@@ -567,14 +568,14 @@ test.describe('the hand-written week fixtures describe payloads assemble_days co
         }
       }
     }
-    // Fifteen today, one per timed event — without this a fixture set with no
+    // Twenty today, one per timed event — without this a fixture set with no
     // timed events anywhere passes every assertion above by iterating nothing,
     // and the `placed.length` check above is satisfied by `0 === 0`.
     expect(checked).toBeGreaterThan(0);
   });
 
   test('every placed box says the same thing as the event it belongs to', () => {
-    expect(weeks.length).toBeGreaterThanOrEqual(14); // see above
+    expect(weeks.length).toBeGreaterThanOrEqual(15); // see above
     let checked = 0;
     let asserted = 0;
     const offenders = new Set<string>();
@@ -618,15 +619,15 @@ test.describe('the hand-written week fixtures describe payloads assemble_days co
     // Exhaustive, not permissive — and an empty sweep fails here too. See the
     // containment test above and `DECOUPLED` itself.
     expect([...offenders].sort()).toEqual([...DECOUPLED].sort());
-    // Fifteen today, the same boxes the test above measures…
+    // Twenty today, the same boxes the test above measures…
     expect(checked).toBeGreaterThan(0);
-    // …of which seven were really recomputed and eight skipped as decoupled.
+    // …of which ten were really recomputed and ten skipped as decoupled.
     // See the containment test for why the second floor is not redundant.
     expect(asserted).toBeGreaterThan(0);
   });
 
   test('every all-day chip is a lane pack_lanes could have packed', () => {
-    expect(weeks.length).toBeGreaterThanOrEqual(14); // see above
+    expect(weeks.length).toBeGreaterThanOrEqual(15); // see above
     let checked = 0;
     for (const [name, w] of weeks) {
       const n = w.days.length;
@@ -702,9 +703,9 @@ test.describe('the hand-written week fixtures describe payloads assemble_days co
         expect(seen.has(i), `${name} overflow ${i} is also packed`).toBe(false);
       }
     }
-    // Ten today: two in `populated`, two in `popover-all-day`, one in
-    // `app:writable`, one in `app:cross-zone`, and two each in `band:populated`
-    // and `band:overflow`.
+    // Eleven today: two in `populated`, two in `popover-all-day`, one in
+    // `filmstrip`, one in `app:writable`, one in `app:cross-zone`, and two each
+    // in `band:populated` and `band:overflow`.
     expect(checked).toBeGreaterThan(0);
   });
 });

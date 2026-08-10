@@ -7,6 +7,7 @@ import type { Calendar } from '../src/lib/calendars';
 import type { Attendee, EventDetail } from '../src/lib/eventdetail';
 import type { Rect } from '../src/lib/position';
 import { blankValue, valueFromDetail, type EventFormValue } from '../src/lib/eventform';
+import { daysFromMonth, daysFromWeek } from '../src/lib/filmstrip';
 // A *generated* fixture — see `crossZoneWeek` at the bottom of this file, and
 // `src-tauri/src/golden.rs` for why one payload in here is not written by hand.
 // Never edit the JSON; `OMACAL_REGENERATE_GOLDEN=1 cargo test --workspace`
@@ -185,6 +186,55 @@ const singleDayOverlapWeek = (): WeekPayload => {
   return w;
 };
 
+/**
+ * The week the filmstrip is read off, built to be able to witness all four of
+ * the claims the list makes (filmstrip spec §7). Each day is here for a reason:
+ *
+ * - **Mon** carries two timed events **in the wrong order** — 14:00 stored
+ *   ahead of 09:00, which `assemble_days` really can produce, since it pushes
+ *   occurrences in whatever order the store rows and the expansion give and
+ *   never sorts (unlike `assemble_month`, which does). A list that renders the
+ *   payload as given shows the afternoon first.
+ * - **Tue** is empty, and it is an *interior* gap rather than a trailing one:
+ *   an implementation that merely stopped at the last populated day would still
+ *   pass a fixture whose only empty days are at the end.
+ * - **Wed** holds an all-day span *and* a timed event, which is the only shape
+ *   that can tell "all-day first" from whatever order the payload arrived in.
+ * - **Thu and Fri** hold nothing but the middle and last day of that span, so
+ *   a list that placed a multi-day event on its first day alone would skip
+ *   them as empty.
+ * - **Sat and Sun** are empty, the trailing case.
+ *
+ * `placed` is `lay_out_day`'s own arithmetic for two non-overlapping events, so
+ * the fixture sweep can recompute it: each takes the full width, and `idx` is
+ * the position in `events` rather than the chronological order.
+ */
+export const filmstripWeek = (): WeekPayload => {
+  const w = emptyWeek();
+  const wed = MON + 2 * 24 * H;
+
+  w.days[0] = day(0, [
+    ev({ title: 'Ops review', location: 'Room 4A', start_ms: MON + 14 * H, end_ms: MON + 15 * H }),
+    ev({ title: 'Standup', start_ms: MON + 9 * H, end_ms: MON + 9 * H + 30 * 60_000 }),
+  ], [placed(14 / 24, 1 / 24, 0, 1, 0), placed(9 / 24, 0.5 / 24, 0, 1, 1)]);
+
+  w.days[2] = day(2, [
+    ev({ title: 'Board prep', location: 'https://us02web.zoom.us/j/1',
+         start_ms: wed + 11 * H, end_ms: wed + 12 * H }),
+  ], [placed(11 / 24, 1 / 24)]);
+
+  // Wed–Fri, entirely inside the week, so no continuation flag is claimed that
+  // the columns do not support.
+  w.all_day_events = [
+    ev({ title: 'Rahul on leave', is_all_day: true, color: '#e2a03f',
+         start_ms: wed, end_ms: MON + 5 * 24 * H }),
+  ];
+  w.all_day = [
+    { idx: 0, lane: 0, start_col: 2, end_col: 4, cont_left: false, cont_right: false },
+  ];
+  return w;
+};
+
 /** The week a payload belongs to, as an ISO date — `2024-01-29`. */
 export const weekLabel = (weekStartMs: number) =>
   new Date(weekStartMs).toISOString().slice(0, 10);
@@ -237,9 +287,16 @@ const noop = () => {};
 // two agree here and every existing Header assertion — including the two
 // screenshots — sees exactly the DOM it saw before the title learned to
 // follow the view.
+//
+// `listMode: false` for the same reason `view: 'week'` is what it is: it
+// matches `App`'s own starting state, and it is the value under which every
+// screenshot in this block was framed. Week *is* a listable view, so the
+// filmstrip toggle renders in all of these — deliberately, since a header
+// fixture that hid a control the real header shows would be describing a header
+// nobody has.
 const header = (status: AppStatus, busy = false) => ({
   status, anchorMs: MON, weekStartMs: MON, busy, error: null as string | null, calendars: [] as Calendar[],
-  view: 'week' as View, onpick: noop,
+  view: 'week' as View, onpick: noop, listMode: false, onToggleList: noop,
   onPrev: noop, onNext: noop, onToday: noop, onSearch: noop, onSignIn: noop, onSync: noop,
   oncalendarchange: noop,
 });
@@ -685,6 +742,38 @@ export const busyDayMonth = (): MonthPayload => {
     ev({ title: 'Lunch', start_ms: BUSY_DAY_START_MS + 12 * H, end_ms: BUSY_DAY_START_MS + 13 * H }),
     ev({ title: 'Retro', start_ms: BUSY_DAY_START_MS + 16 * H, end_ms: BUSY_DAY_START_MS + 17 * H }),
   ];
+  return m;
+};
+
+/**
+ * August 2026, read as a list.
+ *
+ * The same grid `augustMonth` uses and for the same reason, plus the one shape
+ * that fixture has no room for: **a day carrying both a bar and a timed event**
+ * (Wed 5 Aug). The bar runs Mon 3 – Wed 5 Aug inside row 1, so 3 and 4 August
+ * are days whose only content is the span; 6–9 August are the interior gap; Mon
+ * 10 August is the far side of it.
+ *
+ * `timed` is sorted, because `assemble_month` sorts it — the *unsorted* case is
+ * a week-payload shape and is `filmstripWeek`'s to witness.
+ */
+export const filmstripMonth = (): MonthPayload => {
+  const m = emptyMonth(2026, 8, AUG_GRID_START, AUG_MONTH_START, SEP_MONTH_START);
+
+  const berlinTrip = ev({
+    title: 'Berlin trip', is_all_day: true,
+    start_ms: Date.UTC(2026, 7, 3), end_ms: Date.UTC(2026, 7, 6),
+  });
+  m.rows[1].bars = [{ idx: 0, lane: 0, start_col: 0, end_col: 2, cont_left: false, cont_right: false }];
+  m.rows[1].bar_events = [berlinTrip];
+
+  m.rows[1].cells[2].timed = [
+    ev({ title: 'Handover', start_ms: Date.UTC(2026, 7, 5, 15), end_ms: Date.UTC(2026, 7, 5, 16) }),
+  ];
+  m.rows[2].cells[0].timed = [
+    ev({ title: 'Standup', start_ms: Date.UTC(2026, 7, 10, 9), end_ms: Date.UTC(2026, 7, 10, 9, 30) }),
+  ];
+
   return m;
 };
 
@@ -1535,11 +1624,31 @@ export const FIXTURES: Record<string, Record<string, any>> = {
     'popover-all-day': { week: popoverAllDayWeek() },
     'single-day': { week: singleDayWeek() },
     'single-day-overlap': { week: singleDayOverlapWeek() },
+    // Read as a list rather than a grid, but registered **here** so
+    // `fixtures.spec.ts`'s sweep holds it to every invariant `assemble_days`
+    // guarantees. A list fixture that no assembler could have produced would
+    // prove the list renders something, not that it renders the payload.
+    filmstrip: { week: filmstripWeek() },
   },
   MonthGrid: {
     august: { month: augustMonth() },
     'busy-day': { month: busyDayMonth() },
     'two-bars': { month: twoBarsMonth() },
+    // Same reasoning as `WeekGrid.filmstrip` above.
+    filmstrip: { month: filmstripMonth() },
+  },
+  // The list itself takes `days`, not a payload — the grouping is
+  // `filmstrip.ts`'s and is tested against the payloads directly in
+  // `filmstrip.spec.ts`. These exist so the *component* can be mounted:
+  // derived from the two fixtures above rather than written out again, so a
+  // change to either reaches the rendering specs as well.
+  Filmstrip: {
+    week: { days: daysFromWeek(filmstripWeek()) },
+    month: { days: daysFromMonth(filmstripMonth()) },
+    /** A period with nothing in it, which has to say so rather than render as
+     *  blank (spec §3). `emptyWeek()` rather than a bare `[]`, so the empty
+     *  case really is what the grouping returns for an empty payload. */
+    empty: { days: daysFromWeek(emptyWeek()) },
   },
   YearGrid: {
     y2026: { year: y2026() },
@@ -1714,6 +1823,31 @@ export const FIXTURES: Record<string, Record<string, any>> = {
         accounts: ['me@x.com'], last_sync_ms: FIVE_MIN_AGO, demo: false, overlay_titlebar: false,
       }),
       error: 'network unreachable' as string | null,
+    },
+    /** The filmstrip toggle already on. Its own fixture rather than a prop
+     *  flipped in a spec, because `listMode` is not `$bindable` — it is `App`'s
+     *  state, and this header only reports it. */
+    'list-on': {
+      ...header({
+        accounts: ['me@x.com'], last_sync_ms: FIVE_MIN_AGO, demo: false, overlay_titlebar: false,
+      }),
+      listMode: true,
+    },
+    /** Big Year, where the toggle is **absent** rather than present and inert
+     *  (filmstrip spec §2). Paired with `year` below so neither view's absence
+     *  rests on the other's — §8 of the testing standard: a whole-feature rule
+     *  has as many places to be false as it has code paths. */
+    bigyear: {
+      ...header({
+        accounts: ['me@x.com'], last_sync_ms: FIVE_MIN_AGO, demo: false, overlay_titlebar: false,
+      }),
+      view: 'bigyear' as View,
+    },
+    year: {
+      ...header({
+        accounts: ['me@x.com'], last_sync_ms: FIVE_MIN_AGO, demo: false, overlay_titlebar: false,
+      }),
+      view: 'year' as View,
     },
   },
   CalendarPopover: {

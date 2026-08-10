@@ -1018,6 +1018,70 @@ test.describe('Header', () => {
     await setVar('--demo', 'rgb(0, 0, 255)');
     expect(await colour(demo, 'color'), 'the badge does not read --demo').toBe('rgb(0, 0, 255)');
   });
+
+  // --- The filmstrip toggle ---------------------------------------------
+  //
+  // Filmstrip spec §1: it sits *beside* the view switcher and is orthogonal to
+  // it — a rendering of the period, not a sixth period to be in.
+
+  test('the toggle sits beside the switcher and reports which mode is on', async ({ page }) => {
+    await page.clock.setFixedTime(FIXED_NOW);
+    await page.goto(show('Header', 'connected'));
+
+    const toggle = page.getByRole('button', { name: 'List view' });
+    await expect(toggle).toBeVisible();
+    // A toggle, not a link to a sixth view: the name stays put and the state is
+    // the state, so a screen reader is never told the control has become a
+    // different control.
+    await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    await expect(toggle).toHaveText('▦');
+    await expect(toggle).toHaveAttribute('title', 'List view (F)');
+    // Beside the switcher, not inside it — five slots, still five.
+    await expect(page.locator('.vswitch button')).toHaveCount(5);
+    await expect(page.locator('.vswitch .filmstrip')).toHaveCount(0);
+  });
+
+  test('with list mode on it says so, and shows the other glyph', async ({ page }) => {
+    await page.clock.setFixedTime(FIXED_NOW);
+    await page.goto(show('Header', 'list-on'));
+    const toggle = page.getByRole('button', { name: 'List view' });
+    await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+    await expect(toggle).toHaveText('☰');
+  });
+
+  test('clicking it asks the parent rather than flipping anything itself', async ({ page }) => {
+    // The value is a stored preference; `App` owns every write in this app, and
+    // this header only reports what it was given. So the glyph must **not**
+    // change on its own — a header that flipped its own copy would show a list
+    // that was never turned on if the write failed.
+    await page.clock.setFixedTime(FIXED_NOW);
+    await page.goto(show('Header', 'connected'));
+    const toggle = page.getByRole('button', { name: 'List view' });
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    await expect(toggle).toHaveText('▦');
+  });
+
+  // Filmstrip spec §2: **absent**, not present and inert. Both views, because a
+  // whole-feature rule has as many places to be false as it has code paths —
+  // §8 of the testing standard — and one `{#if}` covering both is not a reason
+  // to test one and assume the other.
+  //
+  // The honest probe here **adds** rather than deletes (testing standard §3):
+  // the rule is enforced by markup that is not there, so the mutation is
+  // `'year'` and `'bigyear'` appended to `LISTABLE_VIEWS` in `filmstrip.ts`,
+  // which makes the button appear and reddens both of these.
+  for (const view of ['year', 'bigyear'] as const) {
+    test(`the toggle is absent in ${view} view, not disabled`, async ({ page }) => {
+      await page.clock.setFixedTime(FIXED_NOW);
+      await page.goto(show('Header', view));
+      // The switcher is still there, so this is a header that rendered — an
+      // empty page would satisfy the absence on its own.
+      await expect(page.locator('.vswitch button')).toHaveCount(5);
+      await expect(page.getByRole('button', { name: 'List view' })).toHaveCount(0);
+      await expect(page.locator('.filmstrip')).toHaveCount(0);
+    });
+  }
 });
 
 test.describe('CalendarPopover', () => {
@@ -2477,6 +2541,114 @@ test.describe('BigYearRibbon', () => {
     await expect(pills).toHaveCount(2);
     await expect(pills.nth(0)).toContainText('Berlin trip');
     await expect(pills.nth(1)).toContainText('Team offsite');
+  });
+});
+
+test.describe('Filmstrip', () => {
+  const show = (f: string) => `/tests/harness/index.html?c=Filmstrip&f=${f}`;
+
+  // No frozen clock in this block, and deliberately, unlike the four grids
+  // above: `Filmstrip` reads no clock at all. It has no today-highlight and no
+  // current-time line — the design gives it neither — so there is nothing here
+  // for a run date to change. Give it one and this needs the same `beforeEach`
+  // its neighbours have.
+
+  // Which days are listed and in what order is `filmstrip.ts`'s, and
+  // `filmstrip.spec.ts` holds it to that against the payloads directly. This
+  // block is about what a day and a row actually *say*.
+
+  test('one section per day, each named by the day it is about', async ({ page }) => {
+    await page.goto(show('week'));
+    const days = page.locator('.sday');
+    await expect(days).toHaveCount(4);
+    // The dates, not merely the count: a list that rendered four sections all
+    // titled Monday satisfies a count.
+    await expect(days.nth(0).locator('.sdate')).toHaveText('Mon, Jan 1');
+    await expect(days.nth(1).locator('.sdate')).toHaveText('Wed, Jan 3');
+    await expect(days.nth(2).locator('.sdate')).toHaveText('Thu, Jan 4');
+    await expect(days.nth(3).locator('.sdate')).toHaveText('Fri, Jan 5');
+  });
+
+  test('a row shows the time, the title and the place', async ({ page }) => {
+    // Spec §5. The location goes through `locationLabel`, which is why the
+    // fixture's Wednesday event carries a bare Zoom URL: a row printing
+    // `https://us02we…` would pass a test that only asked whether *something*
+    // was there.
+    await page.goto(show('week'));
+    const row = page.locator('.sday').nth(0).locator('.srow');
+    await expect(row.nth(0).locator('.when')).toHaveText('09:00–09:30');
+    await expect(row.nth(0).locator('b')).toHaveText('Standup');
+    // Standup has no location at all, so nothing is invented for it.
+    await expect(row.nth(0).locator('.where')).toHaveCount(0);
+
+    await expect(row.nth(1).locator('.when')).toHaveText('14:00–15:00');
+    await expect(row.nth(1).locator('.where')).toHaveText('Room 4A');
+
+    const zoom = page.locator('.sday').nth(1).locator('.srow').nth(1);
+    await expect(zoom.locator('b')).toHaveText('Board prep');
+    await expect(zoom.locator('.where')).toHaveText('Zoom');
+  });
+
+  test('an all-day event says so rather than showing a time it does not have', async ({ page }) => {
+    // Spec §5, and the ordering rule beside it — Wednesday is the fixture's one
+    // day holding both kinds.
+    await page.goto(show('week'));
+    const rows = page.locator('.sday').nth(1).locator('.srow');
+    await expect(rows).toHaveCount(2);
+    await expect(rows.nth(0).locator('.when')).toHaveText('All day');
+    await expect(rows.nth(0).locator('b')).toHaveText('Rahul on leave');
+    // Not "00:00" and not blank: the two failure shapes an "All day" label
+    // exists to prevent.
+    await expect(rows.nth(0).locator('.when')).not.toContainText(':');
+  });
+
+  test('the calendar\'s colour reaches the row, and is drawn with', async ({ page }) => {
+    // Spec §5: the same `--cal` the grid's own chips use, so a recoloured
+    // calendar is recoloured here for free. Asserted on the *computed* border
+    // rather than on the inline custom property, because a `--cal` that is set
+    // and never read renders a colourless list while passing the weaker check.
+    await page.goto(show('week'));
+    const allDay = page.locator('.sday').nth(1).locator('.srow').nth(0);
+    // `#e2a03f`, the fixture's own colour for that event.
+    await expect(allDay).toHaveCSS('border-left-color', 'rgb(226, 160, 63)');
+    // …and a different event on a different calendar is a different colour, so
+    // this is reading the event rather than one hardcoded value.
+    const timed = page.locator('.sday').nth(0).locator('.srow').nth(0);
+    await expect(timed).toHaveCSS('border-left-color', 'rgb(91, 141, 239)');
+  });
+
+  test('clicking a row hands the occurrence up rather than opening anything itself', async ({ page }) => {
+    // Spec §6: no second way to reach an event's detail. This component owns no
+    // popover — `App` opens the one it already had, through `openOccurrence`.
+    await page.goto(show('week'));
+    await page.locator('.sday').nth(0).locator('.srow').nth(1).click();
+    const opened = await page.evaluate(() => (window as any).__lastOpen);
+    expect(opened.event).toMatchObject({ title: 'Ops review', start_ms: MON + 14 * 3_600_000 });
+    // The anchor is the row's own box on screen, which is what puts the popover
+    // beside what was clicked.
+    expect(opened.rect.width).toBeGreaterThan(0);
+    await expect(page.locator('.pop')).toHaveCount(0);
+  });
+
+  test('a month is grouped the same way, across its rows', async ({ page }) => {
+    // The month payload reaches the same component through a different
+    // grouping — bars and cells rather than a band and day columns — so the
+    // rendering is checked through both. §8 of the testing standard.
+    await page.goto(show('month'));
+    const days = page.locator('.sday');
+    await expect(days).toHaveCount(4);
+    await expect(days.nth(2).locator('.sdate')).toHaveText('Wed, Aug 5');
+    const rows = days.nth(2).locator('.srow');
+    await expect(rows.nth(0).locator('.when')).toHaveText('All day');
+    await expect(rows.nth(1).locator('.when')).toHaveText('15:00–16:00');
+  });
+
+  test('a period with nothing in it says so rather than rendering blank', async ({ page }) => {
+    // Spec §3. Skipping empty days is exactly what makes an empty period
+    // indistinguishable from a broken view without this line.
+    await page.goto(show('empty'));
+    await expect(page.locator('.sday')).toHaveCount(0);
+    await expect(page.locator('.none')).toHaveText('Nothing scheduled.');
   });
 });
 
