@@ -1469,6 +1469,25 @@ test.describe('App', () => {
     expect(await page.locator('h1').textContent()).toBe(title);
   });
 
+  test('the slash that opens search is consumed, not typed into it', async ({ page }) => {
+    // Seen on WebKitGTK proper (Omarchy, 2026-08-10): the keydown's default
+    // action — inserting the character — runs after the overlay has mounted
+    // and focused its field, so an unconsumed `/` becomes the first character
+    // of every query and "sync" is searched as "/sync". Playwright's own
+    // `press` cannot reach that ordering (its insertion lands before the field
+    // exists), so the field staying empty here proves nothing — the witness is
+    // the contract itself: the handler must cancel the event.
+    await writable(page);
+    const prevented = await page.evaluate(() => {
+      const e = new KeyboardEvent('keydown', { key: '/', cancelable: true, bubbles: true });
+      window.dispatchEvent(e);
+      return e.defaultPrevented;
+    });
+    expect(prevented, 'an unconsumed / is typed into the field it just focused').toBe(true);
+    await expect(search(page)).toBeVisible();
+    await expect(field(page)).toHaveValue('');
+  });
+
   test('the header offers a control, not a field', async ({ page }) => {
     // The header was emptied on purpose; putting a permanent input back into
     // it would undo that.
