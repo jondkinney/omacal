@@ -69,6 +69,40 @@
    *  invite whoever is half-typed there. */
   let draft = $state('');
 
+  /** Minutes per unit the reminder rows speak in. */
+  const REMINDER_UNITS: Record<string, number> = {
+    minutes: 1, hours: 60, days: 1440, weeks: 10_080,
+  };
+
+  /** The largest unit that divides `minutes` exactly (reminders spec §3), so
+   *  a stored 120 reads "2 hours" and a stored 90 stays "90 minutes". Zero
+   *  reads as minutes — "0 minutes before" is Google's own at-start-time. */
+  function reminderUnitOf(minutes: number): string {
+    for (const unit of ['weeks', 'days', 'hours'])
+      if (minutes > 0 && minutes % REMINDER_UNITS[unit] === 0) return unit;
+    return 'minutes';
+  }
+
+  function reminderAmountOf(minutes: number): number {
+    return minutes / REMINDER_UNITS[reminderUnitOf(minutes)];
+  }
+
+  /** Google's cap — 40320 minutes — in `unit`, for the input's own `max`. The
+   *  write path *refuses* rather than clamps (spec §4); this only keeps the
+   *  spinner from offering what Save would refuse. */
+  function reminderMax(unit: string): number {
+    return 40_320 / REMINDER_UNITS[unit];
+  }
+
+  /** One row rewritten from its two controls. A number the input cannot parse
+   *  (`valueAsNumber` is `NaN` for an emptied field) leaves the row alone
+   *  rather than writing garbage into a value a save would send. */
+  function setReminder(i: number, amount: number, unit: string) {
+    if (!Number.isFinite(amount) || amount < 0) return;
+    const minutes = Math.round(amount) * REMINDER_UNITS[unit];
+    value.popupReminders = value.popupReminders.map((m, j) => (j === i ? minutes : m));
+  }
+
   /** The notify choice, open. `null` while the form is being filled in.
    *
    *  Held here rather than handed up because everything the choice needs is
@@ -297,6 +331,65 @@
       <input bind:value={value.location} placeholder="Add a location" />
     </label>
 
+    <!-- The event's popup reminders, as rows (reminders spec §3). Whether a
+         save carries them at all is `toEventInput`'s unchanged-means-absent
+         rule; nothing here decides that. The `email` rows are deliberately
+         not rendered — Google sends those — but they count toward Google's
+         cap of 5, which is why the add control reads the sum. -->
+    <div class="field" role="group" aria-label="Reminders">
+      <span class="lab">Notify</span>
+      <div class="reminders">
+        {#each value.popupReminders as _, i}
+          <div class="reminder">
+            <span>Notify me</span>
+            <input
+              type="number"
+              min="0"
+              max={reminderMax(reminderUnitOf(value.popupReminders[i]))}
+              aria-label="Reminder amount"
+              value={reminderAmountOf(value.popupReminders[i])}
+              onchange={(e) => setReminder(i, (e.currentTarget as HTMLInputElement).valueAsNumber,
+                                           reminderUnitOf(value.popupReminders[i]))}
+            />
+            <select
+              aria-label="Reminder unit"
+              value={reminderUnitOf(value.popupReminders[i])}
+              onchange={(e) => setReminder(i, reminderAmountOf(value.popupReminders[i]),
+                                           (e.currentTarget as HTMLSelectElement).value)}
+            >
+              <option value="minutes">minutes</option>
+              <option value="hours">hours</option>
+              <option value="days">days</option>
+              <option value="weeks">weeks</option>
+            </select>
+            <span>before</span>
+            <button
+              type="button"
+              class="unremind"
+              aria-label="Remove reminder"
+              onclick={() => {
+                value.popupReminders = value.popupReminders.filter((_, j) => j !== i);
+              }}
+            >⊗</button>
+          </div>
+        {/each}
+        {#if value.popupReminders.length + value.emailReminders.length < 5}
+          <button
+            type="button"
+            class="remind"
+            onclick={() => {
+              value.popupReminders = [...value.popupReminders, 15];
+            }}
+          >+ Add notification</button>
+        {/if}
+        {#if !initial.isEdit && value.popupReminders.length === 0}
+          <!-- Untouched means absent means the calendar's defaults (spec §3)
+               — said, rather than left to be guessed. -->
+          <span class="remhint">Your calendar’s default reminders apply</span>
+        {/if}
+      </div>
+    </div>
+
     <label class="field">
       <span class="lab">Description</span>
       <!-- A textarea, and never anything rendered. Descriptions arrive from
@@ -488,6 +581,18 @@
 
   .field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
   .lab { font-size: 9.5px; color: var(--muted); letter-spacing: .05em; }
+
+  .reminders { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+  .reminder { display: flex; align-items: center; gap: 5px; width: 100%; font-size: 12px; }
+  .reminder input[type='number'] { width: 56px; flex: none; }
+  .reminder select { width: auto; flex: none; }
+  .unremind { font: inherit; font-size: 13px; color: var(--muted); cursor: pointer;
+              background: none; border: 0; padding: 0 2px; margin-left: auto; }
+  .unremind:hover { color: var(--text); }
+  .remind { font: inherit; font-size: 11px; color: var(--muted); cursor: pointer;
+            background: none; border: 1px solid var(--hairline); border-radius: 5px;
+            padding: 2px 7px; }
+  .remhint { font-size: 10px; color: var(--muted); opacity: .8; }
 
   input, select, textarea {
     font: inherit; font-size: 12px; color: var(--text);

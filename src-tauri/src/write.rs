@@ -37,6 +37,9 @@ pub(crate) struct EventFields {
     /// `Some(vec![])` is not the same as `None`: it means *remove everyone*,
     /// which is a thing a user can ask for. There is no "remove" call.
     ///
+    /// (`reminders` below runs on the same distinction, for the same reason:
+    /// Google's `reminders` is a whole-object replace.)
+    ///
     /// Deliberately not a diff. The form knows the list it is showing, not the
     /// operations that produced it, and turning a target list back into a delta
     /// would be guesswork — see [`crate::events::attendees_for_edit`], which is
@@ -46,6 +49,17 @@ pub(crate) struct EventFields {
     /// fields directly and ignores this one; inviting guests on a brand-new
     /// event is not in this pass, and nothing sets it on that path.
     pub guests: Option<Vec<Guest>>,
+    /// **The reminder settings the event should end up with**, or `None` for
+    /// "reminders were not touched" — `guests`' own three-state, minus the
+    /// empty-list subtlety: `overrides: []` with `use_default: false` is a
+    /// meaningful value (no reminders at all), and absent is the only way to
+    /// say leave-it-alone, because Google's `reminders` is a whole-object
+    /// replace (reminders spec §2).
+    ///
+    /// Unlike `guests`, the create path reads this too: a reminder invites
+    /// nobody and mails nobody, so there is no notify question for a create to
+    /// defer.
+    pub reminders: Option<RemindersInput>,
 }
 
 /// One guest, as the form names them.
@@ -65,6 +79,59 @@ pub(crate) struct Guest {
     /// invitation is.
     #[serde(default)]
     pub optional: bool,
+}
+
+/// An event's reminder settings, as the form sends them (reminders spec §2).
+///
+/// The wire twin of `omacal_store::Reminders` rather than the type itself, for
+/// the layering rule `Guest` states: the store's types do not enter this
+/// file's pure builders. The two fields are alternatives — `use_default` and
+/// the calendar's list applies, or `overrides` replaces it entirely.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RemindersInput {
+    pub use_default: bool,
+    #[serde(default)]
+    pub overrides: Vec<ReminderInput>,
+}
+
+/// One reminder: fire `minutes` before the start, by `method` — Google's own
+/// vocabulary, `popup` or `email`. The form authors `popup` rows only and
+/// echoes stored `email` ones back verbatim (spec §1); [`validate_reminders`]
+/// is what refuses anything else the wire could carry.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+pub(crate) struct ReminderInput {
+    pub method: String,
+    pub minutes: i64,
+}
+
+/// Google's `reminders` object, whole — the only shape it accepts (spec §2).
+pub(crate) fn reminders_json(r: &RemindersInput) -> Value {
+    json!({
+        "useDefault": r.use_default,
+        "overrides": r.overrides.iter()
+            .map(|o| json!({ "method": o.method, "minutes": o.minutes }))
+            .collect::<Vec<_>>(),
+    })
+}
+
+/// Google's own limits, refused with the limit in the message rather than
+/// clamped (spec §4). Checked before anything is sent — and before any row is
+/// read, per `create_impl`'s ordering rule, which is why this is a pure
+/// function and not a step inside a command.
+pub(crate) fn validate_reminders(r: &RemindersInput) -> Result<(), String> {
+    if r.overrides.len() > 5 {
+        return Err("an event can carry at most 5 reminders".into());
+    }
+    for o in &r.overrides {
+        if o.method != "popup" && o.method != "email" {
+            return Err(format!("'{}' is not a reminder method Google knows", o.method));
+        }
+        if !(0..=40_320).contains(&o.minutes) {
+            return Err("a reminder must be 0 to 40320 minutes (four weeks) ahead".into());
+        }
+    }
+    Ok(())
 }
 
 /// When an event happens.
@@ -344,6 +411,12 @@ pub(crate) struct EventInput {
     /// and so a caller that has no guest editing (a drag) simply omits it.
     #[serde(default)]
     pub guests: Option<Vec<Guest>>,
+    /// Absent when the user did not touch reminders — see
+    /// [`EventFields::reminders`]. `#[serde(default)]` for the same two
+    /// reasons as `guests`: older payloads, and callers with no reminder
+    /// editing (a drag).
+    #[serde(default)]
+    pub reminders: Option<RemindersInput>,
 }
 
 /// [`When`] as the UI sends it. A separate type for the same reason
@@ -389,6 +462,7 @@ pub(crate) fn fields_from_input(input: EventInput) -> EventFields {
         tz: input.tz,
         recurrence: input.repeat.map(|r| rrule_for(&r)),
         guests: input.guests,
+        reminders: input.reminders,
     }
 }
 
@@ -572,6 +646,7 @@ mod tests {
             tz: "Europe/Sofia".into(),
             recurrence: None,
             guests: None,
+            reminders: None,
         }
     }
 
@@ -898,6 +973,7 @@ mod tests {
             tz: "Europe/Sofia".into(),
             repeat: None,
             guests: None,
+            reminders: None,
         }
     }
 
@@ -1130,6 +1206,63 @@ mod tests {
             fields_from_input(all_day).when,
             When::AllDay { start_date: "2026-08-10".into(), end_date: "2026-08-11".into() }
         );
+    }
+
+    #[test]
+    fn the_reminders_payload_the_ui_sends_deserializes_as_written() {
+        let input: EventInput = serde_json::from_str(
+            r#"{"summary":"Standup","location":null,"description":null,
+                "when":{"kind":"timed","startMs":1785398400000,"endMs":1785400200000},
+                "tz":"Europe/Sofia",
+                "reminders":{"useDefault":false,
+                             "overrides":[{"method":"popup","minutes":15}]}}"#,
+        )
+        .expect("the reminders payload the UI sends must deserialize");
+        assert_eq!(
+            fields_from_input(input).reminders,
+            Some(RemindersInput {
+                use_default: false,
+                overrides: vec![ReminderInput { method: "popup".into(), minutes: 15 }],
+            })
+        );
+    }
+
+    #[test]
+    fn reminders_render_as_the_whole_object_google_replaces() {
+        let r = RemindersInput {
+            use_default: false,
+            overrides: vec![
+                ReminderInput { method: "popup".into(), minutes: 15 },
+                ReminderInput { method: "email".into(), minutes: 1440 },
+            ],
+        };
+        assert_eq!(
+            reminders_json(&r),
+            json!({ "useDefault": false,
+                    "overrides": [ { "method": "popup", "minutes": 15 },
+                                   { "method": "email", "minutes": 1440 } ] })
+        );
+    }
+
+    /// Spec §4: refused with the limit in the message, never clamped. The
+    /// boundary values pass; one past each fails.
+    #[test]
+    fn reminder_bounds_are_googles_own() {
+        let ok = |overrides: Vec<ReminderInput>| RemindersInput { use_default: false, overrides };
+        let one = |minutes| vec![ReminderInput { method: "popup".into(), minutes }];
+
+        assert!(validate_reminders(&ok(one(0))).is_ok());
+        assert!(validate_reminders(&ok(one(40_320))).is_ok());
+        assert!(validate_reminders(&ok(one(40_321))).is_err());
+        assert!(validate_reminders(&ok(one(-1))).is_err());
+
+        let five = (0..5).map(|i| ReminderInput { method: "popup".into(), minutes: i }).collect();
+        assert!(validate_reminders(&ok(five)).is_ok());
+        let six = (0..6).map(|i| ReminderInput { method: "popup".into(), minutes: i }).collect();
+        assert!(validate_reminders(&ok(six)).is_err());
+
+        let sms = vec![ReminderInput { method: "sms".into(), minutes: 5 }];
+        assert!(validate_reminders(&ok(sms)).is_err(), "an unknown method is refused");
     }
 
     /// The reason `when` is tagged and carries no `default` anywhere: a payload
