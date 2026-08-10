@@ -275,7 +275,13 @@
   {#if shownAttendees.length}
     <div class="guests">
       {#each shownAttendees as a}
-        <div class="guest {a.response_status}">
+        <!-- `title` says the word on hover: a tilde in a 13px ring was read as
+             "no idea what that is" (Omarchy, 2026-08-10), and the sighted had
+             no equivalent of `.sr` to fall back on. -->
+        <div
+          class="guest {a.response_status}"
+          title={STATUS_WORD[a.response_status] ?? STATUS_WORD.needsAction}
+        >
           <!-- The glyph carries the status, not the colour. This app takes its
                palette from the Omarchy theme, which offers no semantic green or
                red — and at 11px a tick reads faster than a hue anyway. Colour
@@ -400,6 +406,9 @@
     display: grid; place-items: center;
     font-size: 8px; font-style: normal; line-height: 1;
   }
+  /* At 8px a tilde collapses into a dash nobody can name. Larger and bold it
+     reads as the wave it is; the other three glyphs are fine at 8. */
+  .guest.tentative .mark { font-size: 11px; font-weight: 700; }
 
   /* Answered-yes is the only row at full strength; everything else recedes.
      That inverts the old styling, where four states shared two greys and the
