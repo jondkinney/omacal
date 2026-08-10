@@ -22,8 +22,18 @@ Setup: [`docs/running-on-macos.md`](docs/running-on-macos.md) ·
 
 **Five views** — Day, Week, Month, Year (12-up) and Big Year (a 14-row ribbon of
 the whole year). Keys `1`–`5` switch between them; `h`/`l` step back and forward,
-`t` returns to today, `n` starts a new event, `/` opens search, and `Escape`
-closes whatever is open.
+`t` returns to today, `n` starts a new event, `/` opens search, `f` switches
+between grid and list, and `Escape` closes whatever is open.
+
+**List mode** — the `▦`/`☰` control beside the view switcher, or `f`. It draws
+Day, Week and Month as a list of days rather than a grid, showing the time,
+title, calendar colour and location of each event, with all-day events first on
+their day. **Days with nothing on them are left out**, which is the point: a
+quiet month is four rows, not thirty-one headers. The choice sticks across views
+and restarts. Year and Big Year keep their shape — they exist to be scanned
+across a whole year, and the control is simply not there rather than there and
+doing nothing. Dragging is a grid gesture, so it is absent in a list; `n` and the
+event form still create.
 
 **Multiple Google accounts**, with per-calendar control over what is *displayed*
 and what is *fetched* — two separate switches, deliberately.

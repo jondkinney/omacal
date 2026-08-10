@@ -17,6 +17,9 @@
     type EventFormResult, type EventFormValue, type Scope,
   } from './lib/eventform';
   import type { Rect } from './lib/position';
+  import { daysFromMonth, daysFromWeek, listable } from './lib/filmstrip';
+  import { getSettings, setListMode } from './lib/settings';
+  import Filmstrip from './lib/Filmstrip.svelte';
   import WeekGrid from './lib/WeekGrid.svelte';
   import MonthGrid from './lib/MonthGrid.svelte';
   import YearGrid from './lib/YearGrid.svelte';
@@ -110,6 +113,64 @@
   // Calendars ride along with status on startup: both describe what's
   // connected, and neither is meaningful before an account exists.
   $effect(() => { refreshStatus(); refreshCalendars(); });
+
+  /**
+   * Whether Day, Week and Month draw as a list rather than a grid.
+   *
+   * **The stored preference, not a session variable** (filmstrip spec §4). It
+   * is seeded from the settings table on startup, which is the whole of what
+   * makes it survive a restart — and the only thing a test that flips it in one
+   * session cannot tell apart from a variable.
+   *
+   * Seeded rather than `$derived` from a settings object: this is written from
+   * two places (the header's control and `F`) and read on every render, and a
+   * round trip to SQLite between the keystroke and the repaint would be visible.
+   *
+   * A failure to *read* it leaves the grid, silently: an app that will not draw
+   * a calendar because it could not recall a display preference is worse than
+   * one that draws the default. A failure to *write* it is reported, because
+   * the user asked for something and it will not survive the restart.
+   */
+  let listMode = $state(false);
+
+  /**
+   * How many times the user has decided this, so a slow read cannot undo a fast
+   * hand.
+   *
+   * The same stamp `loadWeek` and its three neighbours use, for the same shape
+   * of race one layer over: `get_settings` is a round trip, and `F` is a bare
+   * key that works the instant the window is listening. Press it while the read
+   * is still in flight and the answer — which describes the world *before* the
+   * keystroke — lands afterwards and puts the calendar back, having also
+   * silently disagreed with the row `set_list_mode` has by then written. Small
+   * window, wrong outcome, and no way for the user to tell it from the key not
+   * working.
+   */
+  let listModeChoices = 0;
+
+  $effect(() => {
+    const before = listModeChoices;
+    getSettings()
+      .then((s) => {
+        if (listModeChoices !== before) return; // superseded by the user's own choice
+        listMode = s.listMode;
+      })
+      .catch(() => {});
+  });
+
+  async function toggleList() {
+    // Same guard the header's control is rendered behind (spec §2). Without it
+    // `F` in Big Year would store a preference in the one place that offers no
+    // way to see or undo it.
+    if (!listable(view)) return;
+    listModeChoices += 1;
+    listMode = !listMode;
+    try {
+      await setListMode(listMode);
+    } catch (e) {
+      error = `The list setting could not be saved: ${e}`;
+    }
+  }
 
   // The popover's own reload trigger — a show/hide takes effect the moment
   // the grid re-fetches, since `get_week` filters on `selected` server-side.
@@ -849,6 +910,10 @@
       case 'l': step(1); break;
       case 't': goToday(); break;
       case 'n': newEventOnAnchor(); break;
+      // `F`, joining the same bare-key family as the rest (spec §1). It is a
+      // no-op in Year and Big Year, where the control it duplicates is absent
+      // — see `toggleList`.
+      case 'f': toggleList(); break;
     }
   }
 </script>
@@ -857,7 +922,8 @@
 
 <main>
   <Header
-    {status} {anchorMs} {weekStartMs} {busy} {error} {calendars} {view}
+    {status} {anchorMs} {weekStartMs} {busy} {error} {calendars} {view} {listMode}
+    onToggleList={toggleList}
     onPrev={() => step(-1)}
     onNext={() => step(1)}
     onToday={goToday}
@@ -868,9 +934,21 @@
     onpick={pick}
     bind:open={pickerOpen}
   />
+  <!-- **One preference, branched per view.** `listMode` is a single stored
+       value (spec §4) and Year and Big Year simply have no branch for it (§2);
+       the two that do reach the same `Filmstrip`, differing only in which
+       payload it was built from.
+
+       `WeekGrid` and `MonthGrid` are not mounted at all while it is on, which
+       is what makes "drag is absent, not disabled" (spec §6) a property of the
+       markup rather than a flag somebody has to keep passing down. -->
   {#if view === 'month'}
     {#if month}
-      <MonthGrid {month} onopen={openGridEvent} ondaypick={handleDayPick} oncreate={newEventOnDay} />
+      {#if listMode}
+        <Filmstrip days={daysFromMonth(month)} onopen={openGridEvent} />
+      {:else}
+        <MonthGrid {month} onopen={openGridEvent} ondaypick={handleDayPick} oncreate={newEventOnDay} />
+      {/if}
     {/if}
   {:else if view === 'year'}
     <!-- No `oncreate` here, and deliberately: every day in Year view is
@@ -896,7 +974,11 @@
       />
     {/if}
   {:else if week}
-    <WeekGrid {week} oncreate={newEventAt} onedit={openEdit} ondelete={askDelete} onmove={moveOccurrence} />
+    {#if listMode}
+      <Filmstrip days={daysFromWeek(week)} onopen={openGridEvent} />
+    {:else}
+      <WeekGrid {week} oncreate={newEventAt} onedit={openEdit} ondelete={askDelete} onmove={moveOccurrence} />
+    {/if}
   {/if}
 </main>
 

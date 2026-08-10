@@ -13,6 +13,7 @@ use crate::AppState;
 
 const SYNC_INTERVAL_KEY: &str = "sync_interval_ms";
 const NOTIFICATIONS_KEY: &str = "notifications_enabled";
+const LIST_MODE_KEY: &str = "list_mode";
 
 /// What the General and Notifications tabs show.
 ///
@@ -30,6 +31,16 @@ pub struct AppSettings {
     /// say what the minimum is in order to refuse a smaller one with a reason,
     /// and a second copy of the number in TypeScript is one that drifts.
     pub min_sync_interval_ms: i64,
+    /// Whether Day, Week and Month draw as a list rather than a grid — the
+    /// filmstrip toggle (filmstrip spec §4).
+    ///
+    /// Here rather than in a table of its own because it is a preference and
+    /// belongs beside the others, and because the alternative — remembering it
+    /// only for the session — cannot survive the restart the spec asks it to.
+    /// No tab in the settings modal shows it: the control that sets it is the
+    /// `▦`/`☰` beside the view switcher, and a second control for the same
+    /// value in a modal would be a second place for it to disagree.
+    pub list_mode: bool,
 }
 
 async fn read(pool: &SqlitePool, key: &str) -> Option<String> {
@@ -72,6 +83,16 @@ pub async fn read_settings(pool: &SqlitePool) -> AppSettings {
             .map(|v| v != "0")
             .unwrap_or(true),
         min_sync_interval_ms: crate::sync_loop::MIN_INTERVAL_MS,
+        // **The grid is what a calendar looks like until somebody says
+        // otherwise**, so the absent row reads as off — the opposite polarity
+        // to `notifications_enabled` above, and for the opposite reason. A
+        // reminder nobody sees is indistinguishable from a broken transport; a
+        // grid nobody asked for is just the app as it has always looked.
+        //
+        // `== "1"` rather than `!= "0"`, so a value from a future version or a
+        // hand-edited row lands on that same default rather than silently
+        // turning the calendar into a list.
+        list_mode: read(pool, LIST_MODE_KEY).await.map(|v| v == "1").unwrap_or(false),
     }
 }
 
@@ -126,6 +147,20 @@ pub async fn set_notifications_enabled(
     Ok(read_settings(&state.pool).await)
 }
 
+/// Stores the filmstrip toggle. Nothing is refused and nothing is clamped —
+/// unlike the sync interval, there is no value of a boolean the app has to
+/// protect Google's quota from.
+#[tauri::command]
+pub async fn set_list_mode(
+    state: tauri::State<'_, AppState>,
+    on: bool,
+) -> Result<AppSettings, String> {
+    write(&state.pool, LIST_MODE_KEY, if on { "1" } else { "0" })
+        .await
+        .map_err(|e| crate::errors::user_facing(&e))?;
+    Ok(read_settings(&state.pool).await)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -142,6 +177,7 @@ mod tests {
         assert_eq!(s.sync_interval_ms, crate::sync_loop::DEFAULT_INTERVAL_MS);
         assert!(s.notifications_enabled, "reminders must be on until turned off");
         assert_eq!(s.min_sync_interval_ms, crate::sync_loop::MIN_INTERVAL_MS);
+        assert!(!s.list_mode, "a fresh install draws the grid, not a list");
     }
 
     #[tokio::test]
@@ -206,5 +242,45 @@ mod tests {
         let p = pool().await;
         write(&p, NOTIFICATIONS_KEY, "yes").await.unwrap();
         assert!(read_settings(&p).await.notifications_enabled);
+    }
+
+    /// **The half a UI spec cannot witness.** Flipping the toggle in one
+    /// session proves a variable changed; only reading the row back out of a
+    /// pool that was never told anything proves it was *stored*.
+    #[tokio::test]
+    async fn list_mode_is_stored_and_read_back() {
+        let p = pool().await;
+        write(&p, LIST_MODE_KEY, "1").await.unwrap();
+        assert!(read_settings(&p).await.list_mode);
+        write(&p, LIST_MODE_KEY, "0").await.unwrap();
+        assert!(!read_settings(&p).await.list_mode);
+    }
+
+    /// Turning it on must not disturb the preferences stored beside it — one
+    /// `settings` table, and a write that replaced the row rather than
+    /// upserting its own key would take the sync interval with it.
+    #[tokio::test]
+    async fn storing_list_mode_leaves_its_neighbours_alone() {
+        let p = pool().await;
+        set_sync_interval_impl(&p, 120_000).await.unwrap();
+        write(&p, NOTIFICATIONS_KEY, "0").await.unwrap();
+
+        write(&p, LIST_MODE_KEY, "1").await.unwrap();
+
+        let s = read_settings(&p).await;
+        assert!(s.list_mode);
+        assert_eq!(s.sync_interval_ms, 120_000);
+        assert!(!s.notifications_enabled);
+    }
+
+    /// A value nobody here wrote reads as **off** — the grid, which is what a
+    /// calendar looks like until somebody says otherwise. The opposite
+    /// polarity to reminders above, and deliberately: a hand-edited row must
+    /// not be able to turn the whole calendar into a list.
+    #[tokio::test]
+    async fn an_unrecognised_list_mode_value_leaves_the_grid() {
+        let p = pool().await;
+        write(&p, LIST_MODE_KEY, "yes").await.unwrap();
+        assert!(!read_settings(&p).await.list_mode);
     }
 }

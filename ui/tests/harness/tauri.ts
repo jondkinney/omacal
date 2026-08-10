@@ -79,6 +79,15 @@ export type Harness = {
   holdNextSearch(): void;
   /** Releases the oldest parked search call. */
   releaseSearch(): Promise<void>;
+  /** Parks the next `get_settings` call. What it is for is the race the
+   *  filmstrip toggle has at startup: `F` works the instant the window is
+   *  listening, and the startup read of the stored preference describes the
+   *  world *before* that keystroke. Holding the read and pressing the key while
+   *  it is parked is the only way to produce that ordering deliberately. */
+  holdNextSettings(): void;
+  /** Releases the parked `get_settings` call, answering with the settings as
+   *  the stub now holds them. */
+  releaseSettings(): Promise<void>;
   holdNextEventCall(cmd: 'event_detail' | 'refresh_event' | 'respond_to_event', id: number): void;
   /** Answer the parked call for this command and id, then let its `.then`
    *  chain — including `WeekGrid`'s own `detail = fresh` — actually run. */
@@ -131,6 +140,10 @@ let failCalendarOnce: { cmd: string; message: string } | null = null;
  *  them is module level too. */
 const parkedSearch: Array<{ query: string; resolve: () => void }> = [];
 let holdSearchOnce = false;
+/** A held `get_settings`, and the flag that arms one. Module level, like the
+ *  parks beside it, because the harness object that releases them is. */
+let holdSettingsOnce = false;
+let parkedSettings: (() => void) | null = null;
 let holdCalendarOnce: string | null = null;
 const parkedCalendar = new Map<string, CalendarDeferred>();
 
@@ -207,6 +220,16 @@ const harness: Harness = {
     parkedSearch.shift()?.resolve();
     // Let the resolution's own `.then` run before a spec asserts on it, the
     // same reason `release` above waits.
+    await new Promise((r) => setTimeout(r, 50));
+  },
+  holdNextSettings() {
+    holdSettingsOnce = true;
+  },
+  async releaseSettings() {
+    parkedSettings?.();
+    parkedSettings = null;
+    // Same reason `release` above waits: let the `.then` that assigns
+    // `listMode` actually run before the spec asserts about it.
     await new Promise((r) => setTimeout(r, 50));
   },
   holdNextEventCall(cmd, id) {
@@ -437,6 +460,61 @@ function getBigYearStub(y: number): BigYearPayload {
   };
 }
 
+/**
+ * The stub's stand-in for the `settings` table, **and it outlives a reload**.
+ *
+ * That is the whole reason it is not a plain object. The filmstrip toggle is a
+ * stored preference (filmstrip spec §4), and the only way to tell a stored
+ * preference from a session variable is to end the session: press the key,
+ * reload, and see whether it is still on. A stub rebuilt from literals on every
+ * page load answers "no" to that question regardless of what the app did, so
+ * the spec would fail against a correct implementation — and a stub that
+ * *seeded* the value instead would pass against one that never wrote anything.
+ *
+ * `sessionStorage`, not `localStorage`: Playwright gives each test its own
+ * browser context, so both are already isolated per test, but sessionStorage is
+ * scoped to the tab and cannot outlive one even by accident. Every value below
+ * is the same default `read_settings` reports for an absent row — five minutes
+ * and a one-minute floor are `sync_loop`'s own `DEFAULT_INTERVAL_MS` and
+ * `MIN_INTERVAL_MS`; reminders are on; the calendar is a grid.
+ */
+type StubSettings = {
+  syncIntervalMs: number;
+  notificationsEnabled: boolean;
+  minSyncIntervalMs: number;
+  listMode: boolean;
+};
+
+const SETTINGS_KEY = 'omacal-stub-settings';
+
+const DEFAULT_SETTINGS: StubSettings = {
+  syncIntervalMs: 5 * 60_000,
+  notificationsEnabled: true,
+  minSyncIntervalMs: 60_000,
+  listMode: false,
+};
+
+function loadSettings(): StubSettings {
+  try {
+    const raw = sessionStorage.getItem(SETTINGS_KEY);
+    return raw ? { ...DEFAULT_SETTINGS, ...JSON.parse(raw) } : { ...DEFAULT_SETTINGS };
+  } catch {
+    // A storage that refuses to answer leaves the defaults, exactly as an
+    // absent row does. Never a throw: this runs during the stub's own install.
+    return { ...DEFAULT_SETTINGS };
+  }
+}
+
+function saveSettings(s: StubSettings): StubSettings {
+  try {
+    sessionStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
+  } catch {
+    // Nothing to do about it here; the in-memory copy still answers this
+    // session, which is what every non-reloading spec reads.
+  }
+  return s;
+}
+
 /** Installs the stub. Call before mounting anything that talks to Tauri. */
 /**
  * What `search_events` answers from, filtered by the query.
@@ -479,11 +557,7 @@ export function installTauriStub(scenario: string): Harness {
    *  `get_settings` case gives: a stub answering the same thing forever cannot
    *  tell a saved setting from an ignored one. Five minutes and a one-minute
    *  floor are `sync_loop`'s own `DEFAULT_INTERVAL_MS`/`MIN_INTERVAL_MS`. */
-  let settings = {
-    syncIntervalMs: 5 * 60_000,
-    notificationsEnabled: true,
-    minSyncIntervalMs: 60_000,
-  };
+  let settings = loadSettings();
 
   const invoke = async (cmd: string, args: Record<string, any> = {}): Promise<unknown> => {
     harness.calls.push({ cmd, args });
@@ -550,8 +624,29 @@ export function installTauriStub(scenario: string): Harness {
         }
         return hits;
       }
-      case 'get_settings':
+      case 'get_settings': {
+        // `__holdSettings` as well as the harness flag, because the one read
+        // worth holding is the one `App` issues **on mount** — before
+        // `window.__harness` exists for a spec to call `holdNextSettings` on.
+        // A spec arms it through `page.addInitScript`, which runs before the
+        // harness module does.
+        const held = holdSettingsOnce || (window as any).__holdSettings === true;
+        if (held) {
+          holdSettingsOnce = false;
+          (window as any).__holdSettings = false;
+          // **Snapshotted at the park, not read again at the release**, and
+          // that is what makes the race reproducible: a slow read answers the
+          // question it was asked, which describes the world before whatever
+          // the user has done since. Resolving with the current object instead
+          // would answer with the value the keystroke had already written, and
+          // a missing supersession guard would look correct.
+          const asOfTheQuestion = { ...settings };
+          return new Promise((resolve) => {
+            parkedSettings = () => resolve(asOfTheQuestion);
+          });
+        }
         return { ...settings };
+      }
       case 'set_sync_interval': {
         // The backend refuses below the floor rather than clamping, and so
         // does this: a stub that accepted anything would let a form which
@@ -562,11 +657,14 @@ export function installTauriStub(scenario: string): Harness {
             'and a desktop app has no business polling faster than that',
           );
         }
-        settings = { ...settings, syncIntervalMs: args.ms as number };
+        settings = saveSettings({ ...settings, syncIntervalMs: args.ms as number });
         return { ...settings };
       }
       case 'set_notifications_enabled':
-        settings = { ...settings, notificationsEnabled: args.on as boolean };
+        settings = saveSettings({ ...settings, notificationsEnabled: args.on as boolean });
+        return { ...settings };
+      case 'set_list_mode':
+        settings = saveSettings({ ...settings, listMode: args.on as boolean });
         return { ...settings };
       case 'set_calendar_color':
         return calendarResult(cmd, undefined);

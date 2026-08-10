@@ -1615,6 +1615,213 @@ test.describe('App', () => {
     await expect(search(page)).toBeVisible();
   });
 
+  // --- The filmstrip toggle (spec §1-§6) -----------------------------------
+
+  const toggle = (page: Page) => page.getByRole('button', { name: 'List view' });
+  const rows = (page: Page) => page.locator('.srow');
+
+  /** The app, opened and settled far enough that a bare keypress can land —
+   *  same mount race every spec in this file guards against, and the same
+   *  witness (`.vswitch`, which the same mount attaches the key handler with).
+   *  Waiting for the toggle as well, because it is only rendered once the
+   *  stored preference has been read. */
+  const opened = async (page: Page, fixture = 'default') => {
+    await page.goto(app(fixture));
+    await expect(page.locator('.vswitch button')).toHaveCount(5);
+    await expect(toggle(page)).toBeVisible();
+  };
+
+  test('F draws the period as a list, and F again puts the grid back', async ({ page }) => {
+    await opened(page);
+    await expect(page.locator('.ev')).toHaveCount(1);
+
+    await page.keyboard.press('f');
+    await expect(rows(page)).toHaveCount(1);
+    await expect(rows(page)).toHaveText(/2024-01-29/);
+    // The grid is *gone*, not merely covered: `WeekGrid`'s own scrolling body.
+    await expect(page.getByTestId('week-body')).toHaveCount(0);
+    await expect(page.locator('.ev')).toHaveCount(0);
+
+    await page.keyboard.press('f');
+    await expect(page.locator('.ev')).toHaveCount(1);
+    await expect(rows(page)).toHaveCount(0);
+  });
+
+  test('the control and the key are the same switch', async ({ page }) => {
+    await opened(page);
+    await toggle(page).click();
+    await expect(toggle(page)).toHaveAttribute('aria-pressed', 'true');
+    await expect(rows(page)).toHaveCount(1);
+
+    // …and the key turns off what the click turned on, so the two really are
+    // one piece of state rather than two that agree by coincidence.
+    await page.keyboard.press('f');
+    await expect(toggle(page)).toHaveAttribute('aria-pressed', 'false');
+    await expect(rows(page)).toHaveCount(0);
+  });
+
+  test('turning it on stores it', async ({ page }) => {
+    await opened(page);
+    expect(await callsTo(page, 'set_list_mode')).toHaveLength(0);
+    await page.keyboard.press('f');
+    await expect(rows(page)).toHaveCount(1);
+    expect(await callsTo(page, 'set_list_mode')).toEqual([{ on: true }]);
+  });
+
+  /**
+   * **The one assertion a single session cannot make** (spec §7).
+   *
+   * A test that flips the toggle and looks at the screen proves a variable
+   * changed. Only ending the session and starting another can tell that from a
+   * stored preference — so this reloads the page, which throws away every
+   * `$state` in the app and re-runs the harness from scratch, and then asserts
+   * the list is *already* there before anything has been clicked.
+   *
+   * The stub's settings outlive the reload for exactly this reason; see
+   * `loadSettings` in `harness/tauri.ts`. A stub that seeded the value instead
+   * would pass this against an app that never wrote anything.
+   */
+  test('the choice survives a restart', async ({ page }) => {
+    await opened(page);
+    await page.keyboard.press('f');
+    await expect(rows(page)).toHaveCount(1);
+
+    await page.reload();
+    await expect(page.locator('.vswitch button')).toHaveCount(5);
+    await expect(rows(page), 'the list did not survive the reload').toHaveCount(1);
+    await expect(toggle(page)).toHaveAttribute('aria-pressed', 'true');
+    await expect(page.locator('.ev')).toHaveCount(0);
+
+    // And off again, which is the half that says the *value* was stored rather
+    // than the app having learned to always open as a list.
+    await page.keyboard.press('f');
+    await expect(page.locator('.ev')).toHaveCount(1);
+    await page.reload();
+    await expect(page.locator('.vswitch button')).toHaveCount(5);
+    await expect(page.locator('.ev')).toHaveCount(1);
+    await expect(rows(page)).toHaveCount(0);
+  });
+
+  /**
+   * A choice made while the stored one is still loading is the one that stands.
+   *
+   * `F` works the instant `<svelte:window>` is listening, and `get_settings` is
+   * a round trip. Without a supersession stamp the read — which describes the
+   * world *before* the keystroke — lands afterwards and puts the calendar back,
+   * having also silently disagreed with the row `set_list_mode` wrote in the
+   * meantime. The user sees the key not working.
+   *
+   * The read is armed through `addInitScript` rather than through the harness,
+   * because the one worth holding is issued on mount, before `window.__harness`
+   * exists for a spec to call.
+   */
+  test('a choice made while the stored one is still loading is not undone by it', async ({ page }) => {
+    await page.addInitScript(() => { (window as any).__holdSettings = true; });
+    await page.goto(app());
+    await expect(page.locator('.vswitch button')).toHaveCount(5);
+
+    await page.keyboard.press('f');
+    await expect(rows(page)).toHaveCount(1);
+
+    // Now the parked answer lands, saying "grid" — the truth as of the question
+    // it was asked, and stale by one keystroke.
+    await page.evaluate(() => window.__harness.releaseSettings());
+    await expect(rows(page), 'the stale read undid the keystroke').toHaveCount(1);
+    await expect(toggle(page)).toHaveAttribute('aria-pressed', 'true');
+    // …and the write that keystroke made is what survives to the next launch.
+    expect(await callsTo(page, 'set_list_mode')).toEqual([{ on: true }]);
+  });
+
+  test('the choice follows the user across views', async ({ page }) => {
+    // Spec §4: it is how you read the calendar, not a per-visit decision.
+    await opened(page);
+    await page.keyboard.press('f');
+    await expect(rows(page)).toHaveCount(1);
+
+    await page.keyboard.press('3'); // Month
+    await expect(page.locator('.mrow'), 'Month must not draw its grid').toHaveCount(0);
+    // `busyDayMonth`'s one populated cell, four timed events on Mon 10 Aug.
+    await expect(page.locator('.sday')).toHaveCount(1);
+    await expect(rows(page)).toHaveCount(4);
+
+    await page.keyboard.press('1'); // Day
+    await expect(page.getByTestId('week-body')).toHaveCount(0);
+    await expect(page.locator('.strip')).toHaveCount(1);
+  });
+
+  /**
+   * Spec §2: the toggle is **absent** in Year and Big Year rather than present
+   * and inert — and `F` is absent with it, since a key that stored a preference
+   * in the one view offering no way to see or undo it would be worse than the
+   * control it duplicates.
+   *
+   * The honest probe **adds** rather than deletes (testing standard §3): the
+   * rule is enforced by markup that is not there, so the mutation is `'year'`
+   * and `'bigyear'` appended to `LISTABLE_VIEWS` in `filmstrip.ts`.
+   */
+  for (const [key, view, grid] of [['4', 'year', '.ygrid'], ['5', 'bigyear', '.ribbon']] as const) {
+    test(`the toggle is absent in ${view} view, and F does nothing there`, async ({ page }) => {
+      await opened(page);
+      await page.keyboard.press(key);
+      await expect(page.locator(grid)).toHaveCount(1);
+      await expect(toggle(page)).toHaveCount(0);
+
+      await page.keyboard.press('f');
+      // Nothing on screen changed…
+      await expect(page.locator(grid)).toHaveCount(1);
+      await expect(page.locator('.strip')).toHaveCount(0);
+      // …**and nothing was stored**, which is the half a look at the screen
+      // cannot make: a view that simply has no list to draw would satisfy the
+      // assertions above while the preference had already been flipped
+      // underneath it. Proved by an absence, per testing standard §7.
+      expect(await callsTo(page, 'set_list_mode')).toHaveLength(0);
+
+      // Back to a view that has one, and it is still a grid.
+      await page.keyboard.press('2');
+      await expect(page.locator('.ev')).toHaveCount(1);
+      await expect(page.locator('.strip')).toHaveCount(0);
+    });
+  }
+
+  test('a row opens the same popover the grid does', async ({ page }) => {
+    // Spec §6: no second way to reach an event's detail. Same `openOccurrence`,
+    // so the same `event_detail` round trip and the same panel.
+    await opened(page);
+    await page.keyboard.press('f');
+    await rows(page).first().click();
+    await expect(page.getByRole('dialog', { name: weekLabel(W1) })).toBeVisible();
+    expect(await callsTo(page, 'event_detail')).toHaveLength(1);
+  });
+
+  test('a drag in list mode writes nothing, because there is no drag', async ({ page }) => {
+    // Spec §6: a list has no geometry to drop onto, so the handlers do not
+    // exist — not disabled, absent. Witnessed by an absence (testing standard
+    // §7): the same press-move-release that moves a block in the grid, and no
+    // request at all.
+    await opened(page);
+    await page.keyboard.press('f');
+    const row = rows(page).first();
+    const box = (await row.boundingBox())!;
+
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2 + 160, { steps: 12 });
+    await page.mouse.up();
+
+    expect(await callsTo(page, 'update_event')).toHaveLength(0);
+    // The row is still where it was — nothing moved it, and nothing offered to.
+    await expect(rows(page)).toHaveCount(1);
+  });
+
+  test('n still opens the form while the calendar is a list', async ({ page }) => {
+    // Spec §6: creating still works through `n` and through the form.
+    await opened(page, 'writable');
+    await page.keyboard.press('f');
+    await expect(page.locator('.strip')).toHaveCount(1);
+    await page.keyboard.press('n');
+    await expect(newForm(page)).toBeVisible();
+  });
+
   test('edit and delete are hidden when can_edit is false', async ({ page }) => {
     // The default scenario's one event takes `detail()`'s own `can_edit: false`
     // — which is why that default is `false` (see fixtures.ts): a fixture list
@@ -1923,6 +2130,31 @@ test.describe('App: a view claims the height the window leaves it', () => {
       expect(Math.abs(slack)).toBeLessThanOrEqual(1);
     });
   }
+
+  // The list is the fifth thing `main` can hold, and it hangs off the same
+  // `flex: 1`. Not in the loop above because reaching it takes a second step —
+  // the toggle — rather than a view key.
+  //
+  // Its own failure shape is the one Plan 11 fixed for the other four, one
+  // direction over: a `.strip` that does not stretch is content-sized, so a
+  // list longer than the window overflows `main` and the **window** scrolls by
+  // however much it overran. `main` is `height: 100%` with `box-sizing:
+  // border-box`, so that is a scrollbar on the whole app rather than on the
+  // list.
+  test('the list reaches the bottom of a tall window too', async ({ page }) => {
+    await open(page, TALL, '2');
+    await expect(page.locator('.col')).toHaveCount(7);
+    await page.getByRole('button', { name: 'List view' }).click();
+    await expect(page.locator('.strip')).toHaveCount(1);
+
+    const slack = (await mainContentBottom(page)) - (await bottomOf(page, '.strip'));
+    expect(Math.abs(slack)).toBeLessThanOrEqual(1);
+    // And the app itself does not scroll — the list scrolls inside its own box.
+    const overflowed = await page.evaluate(
+      () => document.documentElement.scrollHeight > window.innerHeight + 1,
+    );
+    expect(overflowed, 'the window scrolls rather than the list').toBe(false);
+  });
 
   // Big Year gets its own rather than joining the loop above, because reaching
   // the bottom is only half of it: `.ribbon` could fill the window while
