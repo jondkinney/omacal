@@ -873,6 +873,22 @@ test.describe('Header', () => {
   });
 
   /**
+   * **The colour swatches form a column.** With `space-between` laying the row
+   * out, each swatch's x trailed its calendar's name and four rows gave four
+   * columns (seen on Omarchy, 2026-08-10). 'Personal' and 'Team' differ in
+   * width, which is what makes two rows enough to catch it.
+   */
+  test('the colour swatches sit at one x, whatever the names', async ({ page }) => {
+    await page.goto(show('Header', 'connected'));
+    const modal = await openSettings(page, 'Calendars');
+    await expect(modal.locator('.swatch')).toHaveCount(2);
+    const xs = await modal
+      .locator('.swatch')
+      .evaluateAll((els) => els.map((el) => el.getBoundingClientRect().left));
+    expect(new Set(xs).size, 'every swatch shares the same left edge').toBe(1);
+  });
+
+  /**
    * §4's first invariant, asserted in the new host: **`selected` and
    * `sync_enabled` are separate switches.** Unticking hides a calendar and
    * keeps its events; Remove stops syncing it and deletes them. A tab that
