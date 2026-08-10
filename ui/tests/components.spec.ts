@@ -1467,6 +1467,15 @@ test.describe('EventPopover', () => {
     await expect(page.locator('.guest.needsAction .mark')).toHaveText('?');
   });
 
+  test('the status is said on hover, not only drawn', async ({ page }) => {
+    // The glyphs are one keystroke tall and the tilde in particular was read
+    // as "no idea what that is" (Omarchy, 2026-08-10). `.sr` serves screen
+    // readers; `title` is the sighted reader's version of the same word.
+    await page.goto(show('standup'));
+    await expect(page.locator('.guest.accepted')).toHaveAttribute('title', 'accepted');
+    await expect(page.locator('.guest.needsAction')).toHaveAttribute('title', 'no reply yet');
+  });
+
   test('the status is announced, not only drawn', async ({ page }) => {
     // The ring is aria-hidden, so without the visually-hidden word a screen
     // reader would hear a name and nothing about whether they are coming.
