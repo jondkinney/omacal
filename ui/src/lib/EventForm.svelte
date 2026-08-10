@@ -3,6 +3,7 @@
   import { onMount } from 'svelte';
   import { escapeCloses } from './dismiss.svelte';
   import { placePopover, type Rect } from './position';
+  import { REMINDER_UNITS, reminderAmountOf, reminderMax, reminderUnitOf } from './reminders';
   import { offerableCalendarId, writableCalendars, type Calendar } from './calendars';
   import SaveConfirm from './SaveConfirm.svelte';
   import type { SendUpdates } from './eventdetail';
@@ -68,31 +69,6 @@
    *  pressed Add on is not on the guest list, and a save must not quietly
    *  invite whoever is half-typed there. */
   let draft = $state('');
-
-  /** Minutes per unit the reminder rows speak in. */
-  const REMINDER_UNITS: Record<string, number> = {
-    minutes: 1, hours: 60, days: 1440, weeks: 10_080,
-  };
-
-  /** The largest unit that divides `minutes` exactly (reminders spec §3), so
-   *  a stored 120 reads "2 hours" and a stored 90 stays "90 minutes". Zero
-   *  reads as minutes — "0 minutes before" is Google's own at-start-time. */
-  function reminderUnitOf(minutes: number): string {
-    for (const unit of ['weeks', 'days', 'hours'])
-      if (minutes > 0 && minutes % REMINDER_UNITS[unit] === 0) return unit;
-    return 'minutes';
-  }
-
-  function reminderAmountOf(minutes: number): number {
-    return minutes / REMINDER_UNITS[reminderUnitOf(minutes)];
-  }
-
-  /** Google's cap — 40320 minutes — in `unit`, for the input's own `max`. The
-   *  write path *refuses* rather than clamps (spec §4); this only keeps the
-   *  spinner from offering what Save would refuse. */
-  function reminderMax(unit: string): number {
-    return 40_320 / REMINDER_UNITS[unit];
-  }
 
   /** One row rewritten from its two controls. A number the input cannot parse
    *  (`valueAsNumber` is `NaN` for an emptied field) leaves the row alone

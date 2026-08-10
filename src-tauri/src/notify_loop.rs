@@ -171,9 +171,18 @@ pub(crate) async fn run_once(
     // test that matters is the one running through this function exactly as a
     // real pass does. A pointless loop in demo mode costs a comparison every
     // few minutes and returns here before touching the database.
-    if !may_notify(demo, crate::settings::read_settings(pool).await.notifications_enabled) {
+    let settings = crate::settings::read_settings(pool).await;
+    if !may_notify(demo, settings.notifications_enabled) {
         return Ok(Pass::default());
     }
+
+    // Popup by construction (fallback spec §3): the setting stores minutes
+    // alone, and this is the one place they become reminders.
+    let fallback: Vec<Reminder> = settings
+        .fallback_reminder_minutes
+        .iter()
+        .map(|&minutes| Reminder { method: "popup".into(), minutes })
+        .collect();
 
     let events = scheduled_events(pool, now_ms, horizon_ms).await?;
 
@@ -183,7 +192,7 @@ pub(crate) async fn run_once(
         .map(|(event_id, occurrence_ms, minutes)| FiredKey { event_id, occurrence_ms, minutes })
         .collect();
 
-    let due = due_reminders(&events, &fired, now_ms, horizon_ms);
+    let due = due_reminders(&events, &fired, now_ms, horizon_ms, &fallback);
 
     let mut pass = Pass::default();
     for d in due {
@@ -784,5 +793,34 @@ mod tests {
     fn a_fire_time_already_past_wakes_immediately_rather_than_sleeping_backwards() {
         assert_eq!(next_wake_ms(Some(T0900Z - HOUR), T0900Z, 5 * MINUTE), 0);
         assert_eq!(next_wake_ms(Some(T0900Z), T0900Z, 5 * MINUTE), 0);
+    }
+
+    /// The fallback (fallback spec §1), driven through a full pass: a timed
+    /// event that follows its calendar's defaults, on a calendar that has
+    /// none, fires the *shipped* fallback — 60 and 10 — with no settings row
+    /// written at all. This is exactly the meeting that was silent before.
+    #[tokio::test]
+    async fn a_defaults_following_event_on_a_bare_calendar_fires_the_fallback() {
+        let pool = seeded("UTC", "[]").await;
+        let follows = Reminders { use_default: true, overrides: Vec::new() };
+        omacal_store::upsert_event(&pool, &event("e1", T0900Z, T0900Z + HOUR, follows))
+            .await.unwrap();
+
+        let (_, posted) = pass_at(&pool, T0900Z - 10 * MINUTE).await;
+        assert_eq!(
+            posted,
+            vec![(1, 60), (1, 10)],
+            "both shipped rows are due at T-10: the 60 was missed, the 10 is now"
+        );
+
+        // And the setting turned off is the end of it — `[]` stored must not
+        // read back as the shipped default.
+        let pool = seeded("UTC", "[]").await;
+        crate::settings::set_fallback_reminders_impl(&pool, vec![]).await.unwrap();
+        let follows = Reminders { use_default: true, overrides: Vec::new() };
+        omacal_store::upsert_event(&pool, &event("e2", T0900Z, T0900Z + HOUR, follows))
+            .await.unwrap();
+        let (_, posted) = pass_at(&pool, T0900Z - 10 * MINUTE).await;
+        assert!(posted.is_empty(), "an emptied fallback list is the feature off");
     }
 }

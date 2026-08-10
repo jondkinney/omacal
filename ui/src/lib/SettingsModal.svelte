@@ -3,10 +3,12 @@
   import { onMount } from 'svelte';
 
   import { escapeCloses } from './dismiss.svelte';
+  import { REMINDER_UNITS, reminderAmountOf, reminderMax, reminderUnitOf } from './reminders';
   import CalendarList from './CalendarList.svelte';
   import type { Calendar } from './calendars';
   import {
-    getSettings, minutesOf, msOfMinutes, setNotificationsEnabled, setSyncInterval,
+    getSettings, minutesOf, msOfMinutes, setFallbackReminders, setNotificationsEnabled,
+    setSyncInterval,
     type AppSettings,
   } from './settings';
 
@@ -82,6 +84,18 @@
       note = { text: 'Saved.', kind: 'info' };
     } catch (e) {
       note = { text: String(e), kind: 'error' };
+    }
+  }
+
+  /** Saves a new fallback list, keeping what the backend still holds when it
+   *  refuses — the same repair `toggleNotifications` makes. */
+  async function saveFallback(minutes: number[]) {
+    note = null;
+    try {
+      settings = await setFallbackReminders(minutes);
+    } catch (e) {
+      note = { text: String(e), kind: 'error' };
+      settings = settings ? { ...settings } : null;
     }
   }
 
@@ -250,14 +264,75 @@
         />
         Show reminders
       </label>
-      <!-- This tab turns the machinery on and off; it does not invent a
-           reminder policy. What fires is still each event's own Google
-           reminders, which is what makes what omacal shows match what the
-           phone shows. -->
-      <p class="hint">
-        What fires is each event's own reminders from Google — omacal does not
-        invent its own schedule.
-      </p>
+      <!-- What fires is still each event's own Google reminders — with one
+           addition this tab owns (fallback spec §1): when a timed event
+           follows its calendar's defaults and the calendar has none, the rows
+           below apply. That is exactly the shape of a shared calendar
+           received from someone else, where this account sees no reminders
+           at all and every meeting was silent. -->
+      <div class="fallback" role="group" aria-label="Fallback reminders">
+        <p class="hint">
+          When an event has no reminders of its own and its calendar offers no
+          defaults, notify:
+        </p>
+        {#each settings?.fallbackReminderMinutes ?? [] as m, i}
+          <div class="frow">
+            <span>Notify me</span>
+            <input
+              type="number"
+              min="0"
+              max={reminderMax(reminderUnitOf(m))}
+              aria-label="Fallback amount"
+              value={reminderAmountOf(m)}
+              disabled={!settings}
+              onchange={(e) => {
+                const n = (e.currentTarget as HTMLInputElement).valueAsNumber;
+                if (!Number.isFinite(n) || n < 0 || !settings) return;
+                const next = [...settings.fallbackReminderMinutes];
+                next[i] = Math.round(n) * REMINDER_UNITS[reminderUnitOf(m)];
+                saveFallback(next);
+              }}
+            />
+            <select
+              aria-label="Fallback unit"
+              value={reminderUnitOf(m)}
+              disabled={!settings}
+              onchange={(e) => {
+                if (!settings) return;
+                const unit = (e.currentTarget as HTMLSelectElement).value;
+                const next = [...settings.fallbackReminderMinutes];
+                next[i] = reminderAmountOf(m) * REMINDER_UNITS[unit];
+                saveFallback(next);
+              }}
+            >
+              <option value="minutes">minutes</option>
+              <option value="hours">hours</option>
+              <option value="days">days</option>
+              <option value="weeks">weeks</option>
+            </select>
+            <span>before</span>
+            <button
+              type="button"
+              class="unremind"
+              aria-label="Remove fallback reminder"
+              disabled={!settings}
+              onclick={() => settings && saveFallback(settings.fallbackReminderMinutes.filter((_, j) => j !== i))}
+            >⊗</button>
+          </div>
+        {/each}
+        {#if (settings?.fallbackReminderMinutes.length ?? 5) < 5}
+          <button
+            type="button"
+            class="remind"
+            disabled={!settings}
+            onclick={() => settings && saveFallback([...settings.fallbackReminderMinutes, 15])}
+          >+ Add notification</button>
+        {/if}
+        <p class="hint">
+          Timed events only, and never over an event's or calendar's own
+          reminders — clear the list to turn this off.
+        </p>
+      </div>
       <p class="hint">The tray and start-on-login switches are not built yet.</p>
     {/if}
 
@@ -268,7 +343,17 @@
 </div>
 
 <style>
-  .scrim { position: fixed; inset: 0; background: rgba(0, 0, 0, .35);
+  .fallback { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+  .frow { display: flex; align-items: center; gap: 5px; font-size: 12px; }
+  .frow input[type='number'] { width: 56px; }
+  .unremind { font: inherit; font-size: 13px; color: var(--muted); cursor: pointer;
+              background: none; border: 0; padding: 0 2px; }
+  .unremind:hover { color: var(--text); }
+  .remind { font: inherit; font-size: 11px; color: var(--muted); cursor: pointer;
+            background: none; border: 1px solid var(--hairline); border-radius: 5px;
+            padding: 2px 7px; }
+
+  .scrim { position: fixed; inset: 0;  background: rgba(0, 0, 0, .35);
            border: 0; cursor: default; z-index: 60; }
 
   /* Centred rather than anchored — see the comment above the markup. `fixed`

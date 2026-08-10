@@ -90,7 +90,14 @@ follows the same switch, for the same reason.
 
 Reminders can be turned off entirely in **Settings → Notifications**. That
 switch controls whether omacal fires anything at all; *what* fires is still each
-event's own Google reminders, which is what keeps this in step with your phone.
+event's own Google reminders — with one addition omacal owns. Google reminders
+are **per user**: on a shared calendar you only receive, this account often has
+no reminders at all, and every meeting on it is silent. For exactly that case —
+a timed event following its calendar's defaults, on a calendar that has none —
+omacal's own **fallback reminders** apply: 60 and 10 minutes out of the box,
+editable as rows in the same tab, and clearing the list turns them off. They
+never override an event's or a calendar's real reminders, and they never touch
+all-day events.
 
 A reminder that came due while omacal was not running fires at the next launch,
 provided the event has not already ended. Closing the window **hides** it rather

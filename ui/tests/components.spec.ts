@@ -813,6 +813,50 @@ test.describe('Header', () => {
     return modal;
   };
 
+  /**
+   * The fallback rows (fallback spec §3): shown in the units a person would
+   * say — the shipped 60 reads "1 hours", not "60 minutes" — and every edit
+   * saves through the command, because a settings row nobody wrote survives
+   * nothing.
+   */
+  test('Notifications shows the fallback rows in speakable units', async ({ page }) => {
+    await page.goto(show('Header', 'connected'));
+    const modal = await openSettings(page, 'Notifications');
+
+    const amounts = modal.getByLabel('Fallback amount');
+    const units = modal.getByLabel('Fallback unit');
+    await expect(amounts).toHaveCount(2);
+    await expect(amounts.nth(0)).toHaveValue('1');
+    await expect(units.nth(0)).toHaveValue('hours');
+    await expect(amounts.nth(1)).toHaveValue('10');
+    await expect(units.nth(1)).toHaveValue('minutes');
+  });
+
+  test('removing a fallback row is a write, not a redraw', async ({ page }) => {
+    await page.goto(show('Header', 'connected'));
+    const modal = await openSettings(page, 'Notifications');
+
+    await modal.getByLabel('Remove fallback reminder').first().click();
+    await expect(modal.getByLabel('Fallback amount')).toHaveCount(1);
+    const calls = await page.evaluate(
+      () => (window as any).__harness.calls.filter((c: any) => c.cmd === 'set_fallback_reminders'),
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0].args.minutes).toEqual([10]);
+  });
+
+  test('adding a fallback row appends and saves it', async ({ page }) => {
+    await page.goto(show('Header', 'connected'));
+    const modal = await openSettings(page, 'Notifications');
+
+    await modal.getByRole('button', { name: '+ Add notification' }).click();
+    await expect(modal.getByLabel('Fallback amount')).toHaveCount(3);
+    const calls = await page.evaluate(
+      () => (window as any).__harness.calls.filter((c: any) => c.cmd === 'set_fallback_reminders'),
+    );
+    expect(calls[calls.length - 1].args.minutes).toEqual([60, 10, 15]);
+  });
+
   test('General shows the stored sync interval, in minutes', async ({ page }) => {
     // Until now this was settable only by running `sqlite3` against the
     // database by hand, and both platform guides documented it that way.
@@ -963,10 +1007,15 @@ test.describe('Header', () => {
     await expect(again.getByLabel('Show reminders')).not.toBeChecked();
   });
 
-  test('Notifications says what fires, rather than inventing a policy', async ({ page }) => {
+  test('Notifications says when the fallback speaks, and when it never does', async ({ page }) => {
+    // The tab used to promise "no policy of omacal's own"; the fallback is
+    // exactly such a policy, adopted deliberately (fallback spec §1), so the
+    // promise changed to naming its bounds instead: only where Google is
+    // silent, and clearable.
     await page.goto(show('Header', 'connected'));
     const modal = await openSettings(page, 'Notifications');
-    await expect(modal).toContainText("each event's own reminders from Google");
+    await expect(modal).toContainText('no reminders of its own and its calendar offers no');
+    await expect(modal).toContainText('clear the list to turn this off');
   });
 
   test('Accounts lists the connected account and offers to add another', async ({ page }) => {
