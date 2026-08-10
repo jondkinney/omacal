@@ -1,3 +1,4 @@
+import '../../src/app.css';
 import { mount, unmount } from 'svelte';
 import WeekGrid from '../../src/lib/WeekGrid.svelte';
 import MonthGrid from '../../src/lib/MonthGrid.svelte';

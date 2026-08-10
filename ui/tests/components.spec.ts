@@ -830,6 +830,15 @@ test.describe('Header', () => {
     await expect(units.nth(0)).toHaveValue('hours');
     await expect(amounts.nth(1)).toHaveValue('10');
     await expect(units.nth(1)).toHaveValue('minutes');
+
+    // The platform-widget rule is global now (fix/56): the event form was
+    // fixed and this tab shipped the same light-on-light select the same
+    // day. Asserted here on the second surface, so a rule quietly moved back
+    // into one component's scope reddens.
+    const appearance = await units
+      .first()
+      .evaluate((el) => getComputedStyle(el).appearance);
+    expect(appearance, 'a select must never wear the platform widget style').toBe('none');
   });
 
   test('removing a fallback row is a write, not a redraw', async ({ page }) => {

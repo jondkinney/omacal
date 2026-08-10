@@ -389,10 +389,13 @@
   .hint { font-size: 10px; color: var(--muted); opacity: .85; line-height: 1.45; margin: 0;
           max-width: 40ch; }
 
-  input[type='number'] { font: inherit; font-size: 12px; color: var(--text); width: 72px;
-                         background: color-mix(in srgb, var(--text) 5%, transparent);
-                         border: 1px solid var(--hairline); border-radius: 5px; padding: 4px 6px; }
-  input:focus { outline: 1px solid var(--accent); outline-offset: -1px; }
+  input[type='number'], select {
+    font: inherit; font-size: 12px; color: var(--text);
+    background-color: color-mix(in srgb, var(--text) 5%, transparent);
+    border: 1px solid var(--hairline); border-radius: 5px; padding: 4px 6px;
+  }
+  input[type='number'] { width: 72px; }
+  input:focus, select:focus { outline: 1px solid var(--accent); outline-offset: -1px; }
 
   .check { display: flex; align-items: center; gap: 7px; font-size: 11.5px; cursor: pointer; }
 

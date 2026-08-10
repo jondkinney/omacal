@@ -1074,6 +1074,7 @@
   :global(html), :global(body), :global(#app) { height: 100%; }
   :global(body) { background: var(--bg); color: var(--text); margin: 0;
                   font-family: -apple-system, 'SF Pro Text', Inter, system-ui, sans-serif; }
+
   /* `border-box` is load-bearing: without it the 28px of vertical padding
      lands *outside* the 100%, and the window scrolls by exactly that much.
      28px is still what this costs vertically — `Header` carries the top 14 as
