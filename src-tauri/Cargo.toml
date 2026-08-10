@@ -20,6 +20,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-opener = "2"
+tauri-plugin-single-instance = "2"
 # Start on login (spec §2.6). Never enabled in demo mode — a synthetic-data
 # build launching itself on someone's machine is a nasty surprise.
 tauri-plugin-autostart = "2"

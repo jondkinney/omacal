@@ -669,6 +669,16 @@ pub fn run() {
 
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default()
+        // First, before every other plugin, per its own docs — a second
+        // process must be turned away before anything else initialises.
+        // Closing the window only hides omacal (see `tray`), so "start it
+        // again" used to mean a second full instance: two schedulers, two
+        // tray icons, and every reminder twice. Now it means the running
+        // instance shows its window again, which is what launching an
+        // already-running app asks for.
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            tray::show_main_window(app);
+        }))
         .plugin(tauri_plugin_opener::init())
         // Registered unconditionally; *enabling* it is what the demo guard
         // gates, in `setup` below. Registration alone adds no login item.
