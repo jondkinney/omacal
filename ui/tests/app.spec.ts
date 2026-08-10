@@ -1158,6 +1158,23 @@ test.describe('App', () => {
   });
 
   /**
+   * The picker wears the chosen calendar's colour (2026-08-10, by request):
+   * names identify calendars to a reader who knows them, colour to everyone.
+   * Both halves asserted — the resting colour and it *following* a change —
+   * because a dot painted once at mount passes the first alone.
+   */
+  test('the calendar picker wears the chosen calendar’s colour', async ({ page }) => {
+    await writable(page);
+    await page.keyboard.press('n');
+    await expect(newForm(page)).toBeVisible();
+
+    const dot = newForm(page).locator('.caldot');
+    await expect(dot).toHaveCSS('background-color', 'rgb(91, 141, 239)'); // Personal #5b8def
+    await newForm(page).getByLabel('Calendar').selectOption('8');
+    await expect(dot).toHaveCSS('background-color', 'rgb(47, 191, 113)'); // Team #2fbf71
+  });
+
+  /**
    * The reminder rows through the rendered form, not only the pure layer —
    * a markup wired to nothing keeps every `eventform.spec.ts` test green.
    * The add control's default row is 15 minutes, and one added row must reach
