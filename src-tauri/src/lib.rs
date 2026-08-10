@@ -706,6 +706,20 @@ pub fn run() {
                 tracing::warn!(seeded, db = db_name, "DEMO MODE — synthetic data, not your calendar");
             }
 
+            // The GTK headerbar, off. `titleBarStyle: "Overlay"` in
+            // tauri.conf.json is the macOS half of the same intent — traffic
+            // lights over content, no bar — but Linux ignores that option and
+            // draws its full client-side titlebar, which on a tiled Hyprland
+            // desktop only duplicates the compositor (SUPER+W closes,
+            // SUPER+drag moves) and costs a bar's height of calendar. Runtime
+            // rather than a tauri.linux.conf.json, because the platform-merge
+            // replaces the whole `windows` array and a second copy of the
+            // window object is one that drifts.
+            #[cfg(target_os = "linux")]
+            if let Some(w) = tauri::Manager::get_webview_window(app, "main") {
+                let _ = w.set_decorations(false);
+            }
+
             app.manage(AppState { pool, demo, tokens: Default::default() });
             sync_loop::spawn(app.handle().clone());
             theme_watch::spawn(app.handle().clone());
