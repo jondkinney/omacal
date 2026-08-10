@@ -902,6 +902,11 @@
     // layouts this ships to. `isTypingTarget` above already keeps it out of
     // every field, which is what makes a punctuation key safe to claim.
     if (e.key === '/') {
+      // Consumed, or it becomes the first character of every query: WebKitGTK
+      // runs the keydown's default action — inserting the character — after
+      // the overlay has mounted and focused its field, so an unconsumed `/`
+      // lands in the input it just opened and "sync" is searched as "/sync".
+      e.preventDefault();
       searchOpen = true;
       return;
     }
