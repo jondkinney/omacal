@@ -873,6 +873,17 @@ test.describe('Header', () => {
   });
 
   /**
+   * **The header names the zone the grid is drawn in.** Every time on screen
+   * is rendered in the browser's zone, and nothing else said which one that
+   * was. The config pins `timezoneId: 'UTC'` for every test, so the label's
+   * text is known exactly rather than sniffed off the host.
+   */
+  test('the header names the zone the grid is drawn in', async ({ page }) => {
+    await page.goto(show('Header', 'connected'));
+    await expect(page.locator('.tz')).toHaveText('UTC');
+  });
+
+  /**
    * **The colour swatches form a column.** With `space-between` laying the row
    * out, each swatch's x trailed its calendar's name and four rows gave four
    * columns (seen on Omarchy, 2026-08-10). 'Personal' and 'Team' differ in
