@@ -601,6 +601,22 @@
     padding: 4px 6px; min-width: 0; width: 100%; box-sizing: border-box;
   }
   input:focus, select:focus, textarea:focus { outline: 1px solid var(--accent); outline-offset: -1px; }
+  /* WebKitGTK paints a select with the platform's own light widget background
+     unless appearance is off, and the form's light text vanishes on it —
+     Chromium and WKWebView honour the background above, which is why only the
+     Linux build showed it. Off, plus a chevron the shorthand above would
+     otherwise reset (this rule is later on purpose), drawn from two gradients
+     so it follows the theme rather than a baked-in colour. */
+  select {
+    appearance: none; -webkit-appearance: none;
+    padding-right: 22px;
+    background-image:
+      linear-gradient(45deg, transparent 50%, var(--muted) 50%),
+      linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+    background-position: calc(100% - 13px) 55%, calc(100% - 8px) 55%;
+    background-size: 5px 5px, 5px 5px;
+    background-repeat: no-repeat;
+  }
   select:disabled { opacity: .6; }
   textarea { resize: vertical; line-height: 1.45; }
   .title { font-size: 13px; }

@@ -1180,6 +1180,23 @@ test.describe('App', () => {
     });
   });
 
+  /**
+   * The form's selects opt out of the platform widget style. WebKitGTK paints
+   * a native select with a light background the form's light text vanishes on
+   * (seen on Omarchy, 2026-08-10); Chromium and WKWebView honour the custom
+   * background, so only computed style — not a pixel on these engines — can
+   * witness the rule that protects the third.
+   */
+  test('a select never wears the platform widget background', async ({ page }) => {
+    await writable(page);
+    await page.keyboard.press('n');
+    await expect(newForm(page)).toBeVisible();
+    const appearance = await newForm(page)
+      .getByLabel('Calendar')
+      .evaluate((el) => getComputedStyle(el).appearance);
+    expect(appearance).toBe('none');
+  });
+
   /// The occurrence-identity property, at the top of the stack: the clicked
   /// block's own start_ms must reach the command, not detail.start_ms.
   test('editing an occurrence sends the clicked block start, not the series start', async ({ page }) => {
