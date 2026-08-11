@@ -487,6 +487,30 @@ test.describe('App', () => {
     await expect(page.locator('.pop')).toBeVisible();
   });
 
+  /**
+   * An occurrence-scoped RSVP writes an *exception row*, and the block on
+   * screen keeps carrying the master's id until the payload reloads — so a
+   * reopened popover read the master's own answer, eternally the old one
+   * (seen live, 2026-08-11: decline, reopen, "Yes", decline again). The
+   * restyle override bridges the pixels; the reload is what fixes identity,
+   * and it is the reload this asserts.
+   */
+  test('an RSVP is followed by a payload reload, not only a restyle', async ({ page }) => {
+    await page.goto(app('connected'));
+    await page.locator('.ev').click();
+    await expect(page.locator('.pop')).toBeVisible();
+    // Counted with the popover already open, so the startup fetch is fully
+    // in the tally — sampled at goto, the startup fetch alone satisfied the
+    // poll and the test passed with the reload deleted (caught red-handed).
+    const before = (await callsTo(page, 'get_week')).length;
+    await page.getByRole('button', { name: 'No' }).click();
+    await expect
+      .poll(async () => (await callsTo(page, 'get_week')).length, {
+        message: 'the week payload must be re-fetched after a successful RSVP',
+      })
+      .toBeGreaterThan(before);
+  });
+
   // Task 10: creating, editing and deleting, wired into the views.
   //
   // Every one of these drives the real `App` against the stubbed IPC layer and
