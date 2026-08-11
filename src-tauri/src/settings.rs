@@ -15,6 +15,7 @@ const SYNC_INTERVAL_KEY: &str = "sync_interval_ms";
 const NOTIFICATIONS_KEY: &str = "notifications_enabled";
 const LIST_MODE_KEY: &str = "list_mode";
 const FALLBACK_KEY: &str = "fallback_reminder_minutes";
+const DEFAULT_CALENDAR_KEY: &str = "default_calendar_id";
 
 /// What the General and Notifications tabs show.
 ///
@@ -48,6 +49,14 @@ pub struct AppSettings {
     /// construction — omacal never sends email, so a method field here could
     /// only ever hold one value.
     pub fallback_reminder_minutes: Vec<i64>,
+    /// The calendar a new event lands on unless the user picks another, or
+    /// `None` for "the primary, else the first writable" — the rule that
+    /// existed before this setting did. **Stored unvalidated on purpose**: a
+    /// valid id goes stale the moment its calendar is removed or loses write
+    /// access, so the use-site guard (`offerableCalendarId`, which replaces
+    /// an id a create cannot land on) has to exist regardless — and a
+    /// write-time check would only duplicate it with a second rule to drift.
+    pub default_calendar_id: Option<i64>,
 }
 
 async fn read(pool: &SqlitePool, key: &str) -> Option<String> {
@@ -109,6 +118,11 @@ pub async fn read_settings(pool: &SqlitePool) -> AppSettings {
             .await
             .and_then(|v| serde_json::from_str(&v).ok())
             .unwrap_or_else(|| vec![60, 10]),
+        // Absent, cleared ("" — see `set_default_calendar`) and garbage all
+        // read as `None`: the old rule, never an error.
+        default_calendar_id: read(pool, DEFAULT_CALENDAR_KEY)
+            .await
+            .and_then(|v| v.parse().ok()),
     }
 }
 
@@ -193,6 +207,20 @@ pub(crate) async fn set_fallback_reminders_impl(
     Ok(read_settings(pool).await)
 }
 
+/// Stores the default calendar for new events. `None` clears the choice —
+/// written as an empty value rather than a deleted row, so `write`'s upsert
+/// is the only statement this module ever makes about the table.
+#[tauri::command]
+pub async fn set_default_calendar(
+    state: tauri::State<'_, AppState>,
+    id: Option<i64>,
+) -> Result<AppSettings, String> {
+    write(&state.pool, DEFAULT_CALENDAR_KEY, &id.map(|v| v.to_string()).unwrap_or_default())
+        .await
+        .map_err(|e| crate::errors::user_facing(&e))?;
+    Ok(read_settings(&state.pool).await)
+}
+
 /// Stores the filmstrip toggle. Nothing is refused and nothing is clamped —
 /// unlike the sync interval, there is no value of a boolean the app has to
 /// protect Google's quota from.
@@ -229,6 +257,21 @@ mod tests {
             vec![60, 10],
             "shipped as 60 and 10, not empty — an empty default is today's silence again"
         );
+        assert_eq!(s.default_calendar_id, None, "no choice made is the old rule, not an id");
+    }
+
+    /// `None` must clear a previously stored id back to the old rule — a
+    /// choice that could only ever be changed, never unmade, is a trap.
+    #[tokio::test]
+    async fn the_default_calendar_round_trips_and_clears() {
+        let p = pool().await;
+
+        // Through the command's own body: the Tauri wrapper only adds State.
+        write(&p, DEFAULT_CALENDAR_KEY, "8").await.unwrap();
+        assert_eq!(read_settings(&p).await.default_calendar_id, Some(8));
+
+        write(&p, DEFAULT_CALENDAR_KEY, "").await.unwrap();
+        assert_eq!(read_settings(&p).await.default_calendar_id, None);
     }
 
     /// `[]` stored is a real choice — the feature off — and must read back as

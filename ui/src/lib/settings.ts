@@ -27,6 +27,10 @@ export type AppSettings = {
    *  for a timed event that follows its calendar's defaults when the calendar
    *  has none. Popup by construction — omacal never sends email. */
   fallbackReminderMinutes: number[];
+  /** The calendar a new event lands on unless the user picks another, or
+   *  `null` for the old rule — primary, else first writable. Stored
+   *  unvalidated; `offerableCalendarId` guards staleness at every use. */
+  defaultCalendarId: number | null;
 };
 
 export const getSettings = () => invoke<AppSettings>('get_settings');
@@ -55,6 +59,10 @@ export const setListMode = (on: boolean) =>
  *  the feature turned off. */
 export const setFallbackReminders = (minutes: number[]) =>
   invoke<AppSettings>('set_fallback_reminders', { minutes });
+
+/** Stores the default calendar for new events; `null` clears the choice. */
+export const setDefaultCalendar = (id: number | null) =>
+  invoke<AppSettings>('set_default_calendar', { id });
 
 /** Minutes, as the General tab shows them. Stored in milliseconds because
  *  that is what `sync_loop` compares against a clock. */

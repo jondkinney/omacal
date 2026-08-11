@@ -10,6 +10,7 @@
 
   let {
     status, anchorMs, weekStartMs, busy, error, calendars, view, onpick,
+    onsettingschange,
     listMode, onToggleList,
     onPrev, onNext, onToday, onSearch, onSignIn, onSync, oncalendarchange,
     open = $bindable(false),
@@ -39,6 +40,8 @@
      *  header was emptied on purpose (settings spec §1) and putting a
      *  permanent input back into it would undo that. */
     onSearch: () => void;
+    /** Passed straight through to `SettingsModal` — see its own comment. */
+    onsettingschange?: (s: import('./settings').AppSettings) => void;
     onSignIn: () => void; onSync: () => void; oncalendarchange: () => void;
     /** Bound through to `CalendarPopover` — lets `App` open the picker
      *  straight after a sign-in, from outside the popover's own trigger. */
@@ -291,6 +294,7 @@
     onclose={() => (settingsOpen = false)}
     {calendars}
     {oncalendarchange}
+    {onsettingschange}
     onSignIn={() => {
       settingsOpen = false;
       onSignIn();

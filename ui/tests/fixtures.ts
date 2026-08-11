@@ -1792,6 +1792,12 @@ export const FIXTURES: Record<string, Record<string, any>> = {
       calendars: [
         cal({ id: 1, account_id: 1, account_email: 'me@x.com', summary: 'Personal', is_primary: true }),
         cal({ id: 2, account_id: 1, account_email: 'me@x.com', summary: 'Team' }),
+        // A reader, so "writable ones only" claims about pickers over this
+        // fixture discriminate rather than pass vacuously. The rows list in
+        // Settings → Calendars legitimately shows it — hide/show is not a
+        // write — which is why the counts there read 3.
+        cal({ id: 3, account_id: 1, account_email: 'me@x.com',
+              summary: 'Holidays in Bulgaria', access_role: 'reader' }),
       ],
     },
     demo: header({ accounts: [], last_sync_ms: null, demo: true, overlay_titlebar: false }),
