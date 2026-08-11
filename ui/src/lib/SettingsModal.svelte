@@ -115,6 +115,14 @@
     }
   }
 
+  /** What the unmade choice means, by name. The primary when there is one;
+   *  the first writable otherwise — `offerableCalendarId`'s own order. */
+  const primaryLabel = $derived.by(() => {
+    const primary = calendars.find((c) => c.is_primary);
+    const effective = primary ?? writableCalendars(calendars)[0];
+    return effective ? `Your primary — ${effective.summary}` : 'Your primary calendar';
+  });
+
   /** The colour the picker's dot wears: the calendar a create would actually
    *  land on — the stored choice through the same staleness guard the form
    *  uses, so the dot cannot promise a calendar a create cannot reach. */
@@ -259,7 +267,9 @@
               saveDefaultCalendar(v === '' ? null : Number(v));
             }}
           >
-            <option value="">Your primary calendar</option>
+            <!-- Named, not alluded to: "your primary" is a fact the user
+                 has to go look up, and the answer is one find() away. -->
+            <option value="">{primaryLabel}</option>
             {#each writableCalendars(calendars) as c (c.id)}
               <option value={c.id} style="color: {c.color_hex ?? 'inherit'}">{c.summary}</option>
             {/each}
@@ -443,6 +453,10 @@
     background-color: color-mix(in srgb, var(--text) 5%, transparent);
     border: 1px solid var(--hairline); border-radius: 5px; padding: 4px 6px;
   }
+  /* Scoped selectors outweigh app.css, so the shorthand above just undid the
+     global chevron clearance — the text ran under the arrow. Restated here;
+     any component that restyles a select's padding owes the right side 22px. */
+  select { padding-right: 22px; }
   input[type='number'] { width: 72px; }
   input:focus, select:focus { outline: 1px solid var(--accent); outline-offset: -1px; }
 

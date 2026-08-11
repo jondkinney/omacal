@@ -872,7 +872,9 @@ test.describe('Header', () => {
     await page.goto(show('Header', 'connected'));
     const modal = await openSettings(page);
     const pick = modal.locator('#default-cal');
-    await expect(pick.locator('option')).toHaveText(['Your primary calendar', 'Personal', 'Team']);
+    // The unmade choice is named — 'your primary' alone is a fact the user
+    // would have to go look up.
+    await expect(pick.locator('option')).toHaveText(['Your primary — Personal', 'Personal', 'Team']);
 
     await pick.selectOption({ label: 'Team' });
     const calls = await page.evaluate(
