@@ -866,6 +866,22 @@ test.describe('Header', () => {
     expect(calls[calls.length - 1].args.minutes).toEqual([60, 10, 15]);
   });
 
+  test('General offers the default calendar, writable ones only', async ({ page }) => {
+    // The reader calendar must not be offered: choosing it would promise a
+    // default that every create silently repairs away.
+    await page.goto(show('Header', 'connected'));
+    const modal = await openSettings(page);
+    const pick = modal.locator('#default-cal');
+    await expect(pick.locator('option')).toHaveText(['Your primary calendar', 'Personal', 'Team']);
+
+    await pick.selectOption({ label: 'Team' });
+    const calls = await page.evaluate(
+      () => (window as any).__harness.calls.filter((c: any) => c.cmd === 'set_default_calendar'),
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0].args.id).toBe(2);
+  });
+
   test('General shows the stored sync interval, in minutes', async ({ page }) => {
     // Until now this was settable only by running `sqlite3` against the
     // database by hand, and both platform guides documented it that way.
@@ -929,8 +945,8 @@ test.describe('Header', () => {
     const modal = await openSettings(page, 'Calendars');
 
     await expect(modal.locator('.acct')).toHaveText(['me@x.com']);
-    await expect(modal.locator('.row')).toHaveCount(2);
-    await expect(modal.locator('.name')).toHaveText(['Personal', 'Team']);
+    await expect(modal.locator('.row')).toHaveCount(3);
+    await expect(modal.locator('.name')).toHaveText(['Personal', 'Team', 'Holidays in Bulgaria']);
   });
 
   /**
@@ -953,7 +969,7 @@ test.describe('Header', () => {
   test('the colour swatches sit at one x, whatever the names', async ({ page }) => {
     await page.goto(show('Header', 'connected'));
     const modal = await openSettings(page, 'Calendars');
-    await expect(modal.locator('.swatch')).toHaveCount(2);
+    await expect(modal.locator('.swatch')).toHaveCount(3);
     const xs = await modal
       .locator('.swatch')
       .evaluateAll((els) => els.map((el) => el.getBoundingClientRect().left));

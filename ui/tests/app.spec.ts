@@ -1158,6 +1158,28 @@ test.describe('App', () => {
   });
 
   /**
+   * The whole chain of the default-calendar setting, in one pass: chosen in
+   * Settings, told to `App` through `onsettingschange`, honoured by the next
+   * `n` — **without a restart**. The propagation is the part worth the test:
+   * `App` reads settings once at startup, and with the callback dropped this
+   * still saves correctly and lands every create on the old default until
+   * the app is relaunched.
+   */
+  test('a default chosen in Settings is where n lands next', async ({ page }) => {
+    await writable(page);
+    await page.getByRole('button', { name: 'Menu' }).click();
+    await page.getByRole('button', { name: 'Settings…' }).click();
+    const modal = page.getByRole('dialog', { name: 'Settings' });
+    await modal.locator('#default-cal').selectOption({ label: 'Team' });
+    await page.keyboard.press('Escape');
+    await expect(modal).toHaveCount(0);
+
+    await page.keyboard.press('n');
+    await expect(newForm(page)).toBeVisible();
+    await expect(newForm(page).getByLabel('Calendar')).toHaveValue('8');
+  });
+
+  /**
    * The picker wears the chosen calendar's colour (2026-08-10, by request):
    * names identify calendars to a reader who knows them, colour to everyone.
    * Both halves asserted — the resting colour and it *following* a change —

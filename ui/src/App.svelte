@@ -148,10 +148,17 @@
    */
   let listModeChoices = 0;
 
+  /** The stored default for new events, or `null` for the old rule. Seeded
+   *  below and kept fresh by `SettingsModal`'s `onsettingschange` — without
+   *  that call this copy is stale until a restart, and the form would keep
+   *  landing creates on a calendar the user has stopped choosing. */
+  let defaultCalendarId = $state<number | null>(null);
+
   $effect(() => {
     const before = listModeChoices;
     getSettings()
       .then((s) => {
+        defaultCalendarId = s.defaultCalendarId;
         if (listModeChoices !== before) return; // superseded by the user's own choice
         listMode = s.listMode;
       })
@@ -537,7 +544,14 @@
    * `offerableCalendarId`'s own comment for the whole shape of it.
    */
   const createCalendarId = $derived(
-    offerableCalendarId(calendars.find((c) => c.is_primary)?.id ?? null, calendars),
+    offerableCalendarId(
+      // The stored choice first (settings spec: "New events land on"), the
+      // primary as the rule when none is stored — and `offerableCalendarId`
+      // repairs either one the moment it stops being a calendar a create can
+      // land on.
+      defaultCalendarId ?? calendars.find((c) => c.is_primary)?.id ?? null,
+      calendars,
+    ),
   );
 
   /** What the open form is for. `id` and `occurrenceStartMs` are captured when
@@ -933,6 +947,7 @@
     onNext={() => step(1)}
     onToday={goToday}
     onSearch={() => (searchOpen = true)}
+    onsettingschange={(s) => (defaultCalendarId = s.defaultCalendarId)}
     onSignIn={handleSignIn}
     onSync={handleSync}
     oncalendarchange={handleCalendarChange}

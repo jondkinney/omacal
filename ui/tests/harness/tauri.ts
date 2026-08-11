@@ -484,6 +484,7 @@ type StubSettings = {
   minSyncIntervalMs: number;
   listMode: boolean;
   fallbackReminderMinutes: number[];
+  defaultCalendarId: number | null;
 };
 
 const SETTINGS_KEY = 'omacal-stub-settings';
@@ -494,6 +495,7 @@ const DEFAULT_SETTINGS: StubSettings = {
   minSyncIntervalMs: 60_000,
   // The backend's own shipped default (fallback spec §3).
   fallbackReminderMinutes: [60, 10],
+  defaultCalendarId: null,
   listMode: false,
 };
 
@@ -668,6 +670,9 @@ export function installTauriStub(scenario: string): Harness {
         return { ...settings };
       case 'set_list_mode':
         settings = saveSettings({ ...settings, listMode: args.on as boolean });
+        return { ...settings };
+      case 'set_default_calendar':
+        settings = saveSettings({ ...settings, defaultCalendarId: (args.id as number | null) ?? null });
         return { ...settings };
       case 'set_fallback_reminders': {
         const minutes = args.minutes as number[];

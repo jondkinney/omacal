@@ -5,11 +5,10 @@
   import { escapeCloses } from './dismiss.svelte';
   import { REMINDER_UNITS, reminderAmountOf, reminderMax, reminderUnitOf } from './reminders';
   import CalendarList from './CalendarList.svelte';
-  import type { Calendar } from './calendars';
+  import { offerableCalendarId, writableCalendars, type Calendar } from './calendars';
   import {
-    getSettings, minutesOf, msOfMinutes, setFallbackReminders, setNotificationsEnabled,
-    setSyncInterval,
-    type AppSettings,
+    getSettings, minutesOf, msOfMinutes, setDefaultCalendar, setFallbackReminders,
+    setNotificationsEnabled, setSyncInterval, type AppSettings,
   } from './settings';
 
   let {
@@ -19,6 +18,7 @@
     onclose,
     onSignIn,
     oncalendarchange,
+    onsettingschange,
   }: {
     /** The connected accounts, from `AppStatus`. Read only — this modal adds
      *  one through `onSignIn` and cannot remove one, because nothing can yet. */
@@ -27,6 +27,10 @@
     /** Every calendar the app knows about, handed straight to `CalendarList` —
      *  the same rows the header's popover shows, from the same component. */
     calendars: Calendar[];
+    /** Told after every saved settings change, with the settings as the
+     *  backend now holds them. `App` derives the create-default from these,
+     *  and without this call its copy is stale until a restart. */
+    onsettingschange?: (s: AppSettings) => void;
     onclose: () => void;
     onSignIn: () => void;
     /** A calendar was shown, hidden, added or removed: reload. Passed through
@@ -93,11 +97,31 @@
     note = null;
     try {
       settings = await setFallbackReminders(minutes);
+      if (settings) onsettingschange?.(settings);
     } catch (e) {
       note = { text: String(e), kind: 'error' };
       settings = settings ? { ...settings } : null;
     }
   }
+
+  async function saveDefaultCalendar(id: number | null) {
+    note = null;
+    try {
+      settings = await setDefaultCalendar(id);
+      if (settings) onsettingschange?.(settings);
+    } catch (e) {
+      note = { text: String(e), kind: 'error' };
+      settings = settings ? { ...settings } : null;
+    }
+  }
+
+  /** The colour the picker's dot wears: the calendar a create would actually
+   *  land on — the stored choice through the same staleness guard the form
+   *  uses, so the dot cannot promise a calendar a create cannot reach. */
+  const defaultCalColor = $derived.by(() => {
+    const id = offerableCalendarId(settings?.defaultCalendarId ?? null, calendars);
+    return calendars.find((c) => c.id === id)?.color_hex ?? 'var(--accent)';
+  });
 
   async function toggleNotifications(on: boolean) {
     note = null;
@@ -220,6 +244,31 @@
       <p class="hint">
         Not less than {floorMinutes} minute{floorMinutes === 1 ? '' : 's'} — Google's quota is
         finite, and a desktop app has no business polling faster.
+      </p>
+
+      <div class="row">
+        <label class="lab" for="default-cal">New events land on</label>
+        <div class="inline">
+          <span class="caldot" aria-hidden="true" style="background:{defaultCalColor}"></span>
+          <select
+            id="default-cal"
+            disabled={!settings}
+            value={settings?.defaultCalendarId ?? ''}
+            onchange={(e) => {
+              const v = (e.currentTarget as HTMLSelectElement).value;
+              saveDefaultCalendar(v === '' ? null : Number(v));
+            }}
+          >
+            <option value="">Your primary calendar</option>
+            {#each writableCalendars(calendars) as c (c.id)}
+              <option value={c.id} style="color: {c.color_hex ?? 'inherit'}">{c.summary}</option>
+            {/each}
+          </select>
+        </div>
+      </div>
+      <p class="hint">
+        Only calendars omacal can write to are offered; if the choice ever
+        stops being writable, creates fall back to your primary.
       </p>
 
     {:else if tab === 'Calendars'}
@@ -396,6 +445,8 @@
   }
   input[type='number'] { width: 72px; }
   input:focus, select:focus { outline: 1px solid var(--accent); outline-offset: -1px; }
+
+  .caldot { width: 10px; height: 10px; border-radius: 3px; flex: none; }
 
   .check { display: flex; align-items: center; gap: 7px; font-size: 11.5px; cursor: pointer; }
 
