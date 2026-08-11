@@ -1959,6 +1959,37 @@ export const FIXTURES: Record<string, Record<string, any>> = {
       anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, occurrenceEndMs: MON + 9 * H + 30 * 60_000,
       onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
     },
+    // The echo (2026-08-11): Google mints events whose location IS the
+    // meeting URL while the description spells the same URL out. Three
+    // fixtures, because the rule has three faces: the echo drops, a URL the
+    // description lacks stays, and a room always stays.
+    'location-echoes-description': {
+      detail: detail({
+        id: 61,
+        description: 'Zoom Link: HQ https://zoom.example/j/123?pwd=abc',
+        location: 'https://zoom.example/j/123?pwd=abc',
+      }),
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, occurrenceEndMs: MON + 9 * H + 30 * 60_000,
+      onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
+    },
+    'location-url-not-in-description': {
+      detail: detail({
+        id: 62,
+        description: 'Agenda in the wiki',
+        location: 'https://zoom.example/j/123?pwd=abc',
+      }),
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, occurrenceEndMs: MON + 9 * H + 30 * 60_000,
+      onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
+    },
+    'location-room-in-description': {
+      detail: detail({
+        id: 63,
+        description: 'We meet in Room 4A as usual',
+        location: 'Room 4A',
+      }),
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, occurrenceEndMs: MON + 9 * H + 30 * 60_000,
+      onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
+    },
     recurring: {
       detail: detail({
         id: 3,

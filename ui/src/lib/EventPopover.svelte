@@ -169,6 +169,22 @@
     return 'Part of a repeating series';
   });
 
+  /**
+   * The location line, or `null` when it would only repeat itself: Google
+   * routinely mints events whose location *is* the meeting URL while the
+   * description spells the same URL out, and rendered verbatim the popover
+   * said it twice (seen live, 2026-08-11). Only a URL echo is dropped — a
+   * room stays, and so does a URL the description does not carry; deciding
+   * anything cleverer about locations is `location.ts`'s documented
+   * non-goal, not something to smuggle in here.
+   */
+  const locationShown = $derived.by(() => {
+    const loc = detail.location?.trim();
+    if (!loc) return null;
+    if (/^https?:\/\//i.test(loc) && (detail.description ?? '').includes(loc)) return null;
+    return loc;
+  });
+
   function ask(response: 'accepted' | 'tentative' | 'declined', e: MouseEvent) {
     if (!detail.is_recurring) {
       respond(response, 'this', e);
@@ -303,7 +319,7 @@
     </p>
   {/if}
 
-  {#if detail.location}<p class="loc">{detail.location}</p>{/if}
+  {#if locationShown}<p class="loc">{locationShown}</p>{/if}
   {#if detail.conference_uri}
     <a class="conf" href={detail.conference_uri} target="_blank" rel="noopener noreferrer">Join video call</a>
   {/if}
