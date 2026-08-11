@@ -1606,6 +1606,22 @@ test.describe('EventPopover', () => {
     await expect(page.locator('.scope')).toHaveCount(0);
   });
 
+  test('a location that only repeats the description’s URL is said once', async ({ page }) => {
+    await page.goto(show('location-echoes-description'));
+    await expect(page.locator('.desc a')).toHaveText('https://zoom.example/j/123?pwd=abc');
+    await expect(page.locator('.loc')).toHaveCount(0);
+  });
+
+  test('a URL the description lacks still shows, and so does a room', async ({ page }) => {
+    // The two controls, or the suppression above is satisfiable by never
+    // rendering a location at all.
+    await page.goto(show('location-url-not-in-description'));
+    await expect(page.locator('.loc')).toHaveText('https://zoom.example/j/123?pwd=abc');
+
+    await page.goto(show('location-room-in-description'));
+    await expect(page.locator('.loc')).toHaveText('Room 4A');
+  });
+
   test('a recurring event says its cadence, and asks nothing at rest', async ({ page }) => {
     // The scope question is only relevant once the user touches something
     // (2026-08-11, by request); a reader gets the fact that matters instead.
