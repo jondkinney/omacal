@@ -4,7 +4,7 @@
   import { escapeCloses } from './dismiss.svelte';
   import { placePopover, type Rect } from './position';
   import { descriptionSegments } from './sanitize';
-  import { occurrenceDate } from './eventform';
+  import { occurrenceDate, ruleInWords } from './eventform';
   import { isMachineAddress } from './organizer';
   import { respondToEvent, type Attendee, type EventDetail } from './eventdetail';
 
@@ -147,7 +147,35 @@
   // the three buttons render against; see `onresponded` above for why
   // `detail` cannot be trusted to catch up on its own.
   let chosen = $state<'accepted' | 'tentative' | 'declined' | null>(null);
-  let scope = $state<'this' | 'all'>('this');
+  /** A response clicked on a recurring event, waiting for its scope. The
+   *  question is only relevant once the user touches something (2026-08-11,
+   *  by request) — at rest the popover says the cadence instead, and a
+   *  one-off answers in one click with no question at all. */
+  let pending = $state<'accepted' | 'tentative' | 'declined' | null>(null);
+
+  /** What a reader learns at a glance instead of the old always-on radio:
+   *  that this is one occurrence of a series, and on what cadence. */
+  const REPEAT_WORDS: Record<string, string> = {
+    daily: 'daily', weekdays: 'every weekday (Mon–Fri)', weekly: 'weekly',
+    monthly: 'monthly', yearly: 'yearly',
+  };
+  const cadence = $derived.by(() => {
+    if (!detail.is_recurring) return null;
+    const word = REPEAT_WORDS[detail.repeat];
+    if (word) return `Repeats ${word}`;
+    // A custom rule in its own words; an exception row (recurring by
+    // parentage, carrying no rule of its own) still says what it is.
+    if (detail.recurrence) return ruleInWords(detail.recurrence) ?? 'Repeats on a custom schedule';
+    return 'Part of a repeating series';
+  });
+
+  function ask(response: 'accepted' | 'tentative' | 'declined', e: MouseEvent) {
+    if (!detail.is_recurring) {
+      respond(response, 'this', e);
+      return;
+    }
+    pending = response;
+  }
   /** A `Set`, mirroring `CalendarPopover`: today there is only ever one RSVP
    *  target, so it never holds more than one entry, but a plain boolean
    *  would re-invent the same "which action is this even about" ambiguity
@@ -189,8 +217,13 @@
     needsAction: 'no reply yet',
   };
 
-  async function respond(response: 'accepted' | 'tentative' | 'declined', e: MouseEvent) {
+  async function respond(
+    response: 'accepted' | 'tentative' | 'declined',
+    scope: 'this' | 'all',
+    e: MouseEvent,
+  ) {
     const btn = e.currentTarget as HTMLButtonElement;
+    pending = null;
     const previous = chosen;
     // `detail` is a live prop, not a snapshot: WeekGrid sets its own
     // `detail` to `null` the moment this popover closes (a scrim click,
@@ -222,7 +255,11 @@
       // `toggleShown`/`toggleSync` guard against, with the same fix: reclaim
       // it once `disabled` is actually gone from the DOM.
       await tick();
-      btn.focus();
+      // An ask-row button (see `pending`) unmounts the moment the answer is
+      // sent; focus then falls back to the panel so a keyboard user is not
+      // stranded on <body>.
+      if (btn.isConnected) btn.focus();
+      else panelEl?.focus();
     }
   }
 
@@ -255,6 +292,7 @@
     {day}{#if !detail.is_all_day}
       &nbsp;· {hhmm(occurrenceStartMs)}–{hhmm(occurrenceEndMs)}{/if}
   </p>
+  {#if cadence}<p class="cadence">{cadence}</p>{/if}
 
   {#if segments.length}
     <p class="desc">
@@ -301,26 +339,25 @@
   {/if}
 
   {#if detail.can_respond}
-    {#if detail.is_recurring}
-      <div class="scope" role="radiogroup" aria-label="Apply to">
-        <label>
-          <input type="radio" name="scope" checked={scope === 'this'} onchange={() => (scope = 'this')} />
-          This one
-        </label>
-        <label>
-          <input type="radio" name="scope" checked={scope === 'all'} onchange={() => (scope = 'all')} />
-          All of them
-        </label>
+    {#if pending}
+      <!-- The scope, asked exactly when it means something: a response has
+           been chosen and this event repeats. `.scope` keeps its class so the
+           one-off specs ("no scope controls at all") keep their meaning. -->
+      <div class="scope ask" role="group" aria-label="Apply to">
+        <span>{STATUS_WORD[pending]} —</span>
+        <button type="button" onclick={(e) => respond(pending!, 'this', e)}>This one</button>
+        <button type="button" onclick={(e) => respond(pending!, 'all', e)}>All of them</button>
+        <button type="button" class="back" aria-label="Cancel" onclick={() => (pending = null)}>✕</button>
       </div>
     {/if}
     <div class="rsvp">
-      <button class:chosen={shown === 'accepted'} disabled={busy.size > 0} onclick={(e) => respond('accepted', e)}
+      <button class:chosen={shown === 'accepted'} disabled={busy.size > 0 || pending !== null} onclick={(e) => ask('accepted', e)}
         >Yes</button
       >
-      <button class:chosen={shown === 'tentative'} disabled={busy.size > 0} onclick={(e) => respond('tentative', e)}
+      <button class:chosen={shown === 'tentative'} disabled={busy.size > 0 || pending !== null} onclick={(e) => ask('tentative', e)}
         >Maybe</button
       >
-      <button class:chosen={shown === 'declined'} disabled={busy.size > 0} onclick={(e) => respond('declined', e)}
+      <button class:chosen={shown === 'declined'} disabled={busy.size > 0 || pending !== null} onclick={(e) => ask('declined', e)}
         >No</button
       >
     </div>
@@ -429,8 +466,14 @@
     overflow: hidden; clip-path: inset(50%); white-space: nowrap;
   }
 
-  .scope { display: flex; gap: 12px; font-size: 11px; margin: 8px 0 6px; color: var(--muted); }
-  .scope label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+  .cadence { color: var(--muted); font-size: 11px; margin: -4px 0 8px; }
+  .scope { display: flex; gap: 8px; align-items: center; font-size: 11px;
+           margin: 8px 0 6px; color: var(--muted); }
+  .scope button { font: inherit; font-size: 11px; color: var(--text); cursor: pointer;
+                  background: color-mix(in srgb, var(--text) 6%, transparent);
+                  border: 1px solid var(--hairline); border-radius: 5px; padding: 3px 8px; }
+  .scope .back { background: none; border: 0; color: var(--muted); padding: 0 2px; }
+  .scope .back:hover { color: var(--text); }
 
   .rsvp { display: flex; gap: 6px; margin-top: 6px; }
   .rsvp button { flex: 1; font: inherit; font-size: 11.5px; cursor: pointer;
