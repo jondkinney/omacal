@@ -439,12 +439,13 @@
   // for Day/Week, but `MonthGrid` and `BigYearRibbon` only ever hand an
   // `{ event, rect }` pair up through `onopen` (see each one's own doc
   // comment) — the same contract `EventBlock`/`AllDayBand` chips use with
-  // WeekGrid, one layer further out. No restyle-on-RSVP is needed here the
-  // way `WeekGrid`'s `responseOverrides` provides: neither grid colours its
-  // chip by response status, only by calendar colour, so `onresponded` below
-  // is a deliberate no-op — the write still reaches Google (`EventPopover`
-  // calls `respond_to_event` itself), there is just nothing on screen that
-  // needs to catch up.
+  // WeekGrid, one layer further out. `onresponded` below refreshes, and used
+  // to be a no-op on the claim that nothing on screen needs catching up —
+  // true of the pixels (neither grid colours its chip by response status) and
+  // wrong about identity: an occurrence-scoped RSVP writes an *exception
+  // row*, the chip keeps carrying the master's id until the payload reloads,
+  // and reopening it read the master's own answer — eternally the old one
+  // (seen live, 2026-08-11: decline, reopen, "Yes", decline again).
   //
   // Primitives, not the `UiEvent` object, mirroring `WeekGrid`'s own
   // `selectedId`/`selectedStartMs` — see that component's comment for why
@@ -997,7 +998,8 @@
     {#if listMode}
       <Filmstrip days={daysFromWeek(week)} onopen={openGridEvent} />
     {:else}
-      <WeekGrid {week} oncreate={newEventAt} onedit={openEdit} ondelete={askDelete} onmove={moveOccurrence} />
+      <WeekGrid {week} oncreate={newEventAt} onedit={openEdit} ondelete={askDelete}
+        onmove={moveOccurrence} onresponded={refreshAfterWrite} />
     {/if}
   {/if}
 </main>
@@ -1044,7 +1046,7 @@
     occurrenceStartMs={startMs}
     occurrenceEndMs={occurrence.endMs}
     onclose={closeGridEvent}
-    onresponded={() => {}}
+    onresponded={refreshAfterWrite}
     onedit={() => openEdit(occurrence, rect)}
     ondelete={() => askDelete(occurrence, rect)}
   />

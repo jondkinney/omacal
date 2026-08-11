@@ -11,7 +11,7 @@
     SNAP_MS, beganDrag, colsMoved, edgeAt, spanForMove, spanForResize, spanForSweep,
   } from './drag';
 
-  let { week, oncreate, onedit, ondelete, onmove }: {
+  let { week, oncreate, onedit, ondelete, onmove, onresponded }: {
     week: WeekPayload;
     /** A click on empty space in a day column, at the half hour it landed in,
      *  or a **sweep** across it, which names an `endMs` as well.
@@ -36,6 +36,12 @@
      *  the same split `oncreate`/`onedit`/`ondelete` already use. `WeekGrid`
      *  contains no `invoke`, and that is a property worth keeping. */
     onmove: (event: UiEvent, span: { startMs: number; endMs: number }) => void;
+    /** Told after a successful RSVP, so `App` reloads the payload. The
+     *  `responseOverrides` restyle below is display only: the struck block
+     *  still carries the master's row id, and reopening it fetched the
+     *  master's own answer — eternally the old one — until a reload swapped
+     *  the exception row in (seen live, 2026-08-11: decline, reopen, "Yes"). */
+    onresponded?: () => void;
   } = $props();
 
   // Every hour, not every second one: a rule at 10:00 with nothing at 11:00
@@ -714,6 +720,8 @@
     const next = new Map(responseOverrides);
     next.set(overrideKey(id, startMs), { response, baseline });
     responseOverrides = next;
+    // The override bridges the visible gap; this is what closes it for real.
+    onresponded?.();
   }
 </script>
 
