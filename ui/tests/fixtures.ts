@@ -448,6 +448,10 @@ export const POPOVER_DETAILS: Record<number, EventDetail> = {
   // occurrence-trap spec exists to prove `respondToEvent` never sees it.
   42: detail({
     id: 42, title: 'Standup', is_recurring: true,
+    // A real cadence, because the popover now says it in words — a fixture
+    // recurring with `repeat: 'never'` is a shape the backend cannot produce
+    // for a master.
+    repeat: 'daily', recurrence: 'RRULE:FREQ=DAILY',
     start_ms: SERIES_DTSTART, end_ms: SERIES_DTSTART + 30 * 60_000,
     self_response: 'needsAction',
     // `can_edit: true`, explicitly and for the same reason the RSVP trap above
@@ -1959,6 +1963,9 @@ export const FIXTURES: Record<string, Record<string, any>> = {
       detail: detail({
         id: 3,
         is_recurring: true,
+        // A real cadence, in the pair the backend keeps in step — the
+        // popover now says it in words.
+        repeat: 'daily', recurrence: 'RRULE:FREQ=DAILY',
         attendees: [attendee({ email: 'me@x.com', is_self: true })],
       }),
       anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, occurrenceEndMs: MON + 9 * H + 30 * 60_000,

@@ -222,6 +222,7 @@ test.describe('WeekGrid popover flow', () => {
     await page.getByRole('button', { name: 'Standup' }).click();
     await expect(page.locator('.pop')).toBeVisible();
     await page.getByRole('button', { name: 'No' }).click();
+    await page.getByRole('button', { name: 'This one' }).click();
     const call = await page.evaluate(() => (window as any).__lastRespondCall);
     // POPOVER_DETAILS[42].start_ms (the series DTSTART) vs the block's own
     // start_ms (POPOVER_RECURRING's, the fourth occurrence) — see fixtures.ts.
@@ -264,6 +265,7 @@ test.describe('WeekGrid popover flow', () => {
     await expect(block).toHaveClass(/needsAction/);
     await block.click();
     await page.getByRole('button', { name: 'No' }).click();
+    await page.getByRole('button', { name: 'This one' }).click();
     await expect(block).toHaveClass(/declined/);
   });
 
@@ -278,7 +280,8 @@ test.describe('WeekGrid popover flow', () => {
     const block = page.getByRole('button', { name: 'Standup' });
     await block.click();
     await expect(page.locator('.pop')).toBeVisible();
-    await page.getByRole('button', { name: 'No' }).click(); // parked mid-flight
+    await page.getByRole('button', { name: 'No' }).click();
+    await page.getByRole('button', { name: 'This one' }).click(); // parked mid-flight
     await page.locator('.scrim').click(); // close before the response lands
     await expect(page.locator('.pop')).toHaveCount(0);
     await page.evaluate(
@@ -342,6 +345,7 @@ test.describe('WeekGrid popover flow', () => {
     const block = page.getByRole('button', { name: 'Standup' });
     await block.click();
     await page.getByRole('button', { name: 'No' }).click();
+    await page.getByRole('button', { name: 'This one' }).click();
     await expect(block).toHaveClass(/declined/);
 
     // A fresh sync lands (what App.svelte's loadWeek does after a real
@@ -358,6 +362,7 @@ test.describe('WeekGrid popover flow', () => {
     const block = page.getByRole('button', { name: 'Standup' });
     await block.click();
     await page.getByRole('button', { name: 'No' }).click();
+    await page.getByRole('button', { name: 'This one' }).click();
     await expect(block).toHaveClass(/declined/);
 
     // A fresh sync lands with a response that differs from the baseline —
@@ -425,6 +430,7 @@ test.describe('WeekGrid popover flow', () => {
     await page.getByRole('button', { name: 'Diwali' }).click();
     await expect(page.locator('.pop')).toBeVisible();
     await page.getByRole('button', { name: 'No' }).click();
+    await page.getByRole('button', { name: 'This one' }).click();
     const call = await page.evaluate(() => (window as any).__lastRespondCall);
     // POPOVER_DETAILS[81].start_ms is the series DTSTART; the clicked chip is
     // the third day of the series — see fixtures.ts.
@@ -1600,10 +1606,23 @@ test.describe('EventPopover', () => {
     await expect(page.locator('.scope')).toHaveCount(0);
   });
 
-  test('a recurring event asks which occurrences', async ({ page }) => {
+  test('a recurring event says its cadence, and asks nothing at rest', async ({ page }) => {
+    // The scope question is only relevant once the user touches something
+    // (2026-08-11, by request); a reader gets the fact that matters instead.
     await page.goto(show('recurring'));
+    await expect(page.locator('.cadence')).toHaveText('Repeats daily');
+    await expect(page.locator('.scope')).toHaveCount(0);
+  });
+
+  test('the scope is asked when a response is chosen, and Cancel withdraws it', async ({ page }) => {
+    await page.goto(show('recurring'));
+    await page.getByRole('button', { name: 'No' }).click();
     await expect(page.locator('.scope')).toBeVisible();
-    await expect(page.getByRole('radio', { name: /This one/ })).toBeChecked();
+    // Nothing sent yet: the question is open, not answered by default.
+    expect(await page.evaluate(() => (window as any).__lastRespondCall ?? null)).toBeNull();
+    await page.getByRole('button', { name: 'Cancel' }).click();
+    await expect(page.locator('.scope')).toHaveCount(0);
+    expect(await page.evaluate(() => (window as any).__lastRespondCall ?? null)).toBeNull();
   });
 
   test('a read-only calendar offers no rsvp at all', async ({ page }) => {
@@ -1625,18 +1644,17 @@ test.describe('EventPopover', () => {
     // for everyone. Assert the fourth argument is the clicked block's own start.
     await page.goto(show('recurring-fourth-occurrence'));
     await page.getByRole('button', { name: 'No' }).click();
+    await page.getByRole('button', { name: 'This one' }).click();
     const call = await page.evaluate(() => (window as any).__lastRespondCall);
     expect(call.occurrenceStartMs).toBe(1786600800000); // Thu 13 Aug, the clicked block
     expect(call.occurrenceStartMs).not.toBe(1786341600000); // Mon 10 Aug, the series start
-    // The scope radio defaults to "this" (asserted by the recurring-event
-    // spec above), and nothing here touched it — the call must say so too.
     expect(call.scope).toBe('this');
   });
 
   test('choosing "All of them" sends that scope, not the default', async ({ page }) => {
     await page.goto(show('recurring-fourth-occurrence'));
-    await page.getByRole('radio', { name: 'All of them' }).check();
     await page.getByRole('button', { name: 'No' }).click();
+    await page.getByRole('button', { name: 'All of them' }).click();
     const call = await page.evaluate(() => (window as any).__lastRespondCall);
     expect(call.scope).toBe('all');
   });
@@ -1647,6 +1665,7 @@ test.describe('EventPopover', () => {
     // choice itself. Five minutes of a dead button reads as a failure.
     await page.goto(show('recurring-fourth-occurrence'));
     await page.getByRole('button', { name: 'No' }).click();
+    await page.getByRole('button', { name: 'This one' }).click();
     await expect(page.getByRole('button', { name: 'No' })).toHaveClass(/chosen/);
   });
 
