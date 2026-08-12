@@ -27,9 +27,8 @@
   let scope = $state<Scope>('this');
 
   /** Everyone the delete emails, which is everyone but the person doing it —
-   *  the same exclusion `valueFromDetail`'s `guestCount` makes, and for the
-   *  same reason: telling somebody they are about to notify themselves is
-   *  just wrong. */
+   *  the same exclusion `mailableGuests` makes, and for the same reason:
+   *  telling somebody they are about to notify themselves is just wrong. */
   const guests = $derived(detail.attendees.filter((a) => !a.is_self).length);
   const title = $derived(detail.title ?? '(no title)');
 </script>

@@ -31,9 +31,9 @@
   let scope = $state<Scope>('this');
 
   /** Everyone the move would email, which is everyone but the person doing it
-   *  — the same exclusion `DeleteConfirm` and `valueFromDetail`'s `guestCount`
-   *  make, and for the same reason: telling somebody they are about to notify
-   *  themselves is just wrong. */
+   *  — the same exclusion `DeleteConfirm` and `mailableGuests` make, and for
+   *  the same reason: telling somebody they are about to notify themselves is
+   *  just wrong. */
   const guests = $derived(detail.attendees.filter((a) => !a.is_self).length);
   const title = $derived(detail.title ?? '(no title)');
 </script>

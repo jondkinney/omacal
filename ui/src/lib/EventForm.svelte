@@ -8,9 +8,9 @@
   import SaveConfirm from './SaveConfirm.svelte';
   import type { SendUpdates } from './eventdetail';
   import {
-    CUSTOM_REPEAT, REPEAT_OPTIONS, addGuest, endAfterStart, isAddress, removableGuest,
-    removeGuest, ruleInWords, shiftedEndDate, toEventInput, toggledGuestOptional,
-    timeProblem, toggledAllDay,
+    CUSTOM_REPEAT, REPEAT_OPTIONS, addGuest, endAfterStart, isAddress, mailableGuests,
+    removableGuest, removeGuest, ruleInWords, shiftedEndDate, toEventInput,
+    toggledGuestOptional, timeProblem, toggledAllDay,
     type EventFormResult, type EventFormValue, type Scope,
   } from './eventform';
 
@@ -35,9 +35,9 @@
   } = $props();
 
   // A working copy. Every field the user can change lives here; the facts they
-  // cannot change (`isEdit`, `guestCount`, `isRecurring`, `recurrence`) are
-  // read off `initial` below, so it is obvious at each use that they are not
-  // editable state that happens to be unchanged.
+  // cannot change (`isEdit`, `isRecurring`, `recurrence`) are read off
+  // `initial` below, so it is obvious at each use that they are not editable
+  // state that happens to be unchanged.
   //
   // `initial` is also kept whole for `toEventInput`, which needs the original
   // `repeat` to tell "the user did not touch Repeat" from "the user chose the
@@ -92,7 +92,11 @@
    *  back is impossible — which is the point. */
   const isCustom = $derived(initial.repeat === CUSTOM_REPEAT);
   const customWords = $derived(ruleInWords(initial.recurrence));
-  const guests = $derived(initial.isEdit ? initial.guestCount : 0);
+  /** How many people Save could mail — see `mailableGuests`. Derived from the
+   *  working copy as well as `initial`, unlike everything else in this block:
+   *  the answer changes as the user edits the list, which is the whole point.
+   *  It is what decides whether Save asks at all. */
+  const guests = $derived(mailableGuests(value, initial));
   /** Whether the signed-in user is on the event, which is what makes "removing
    *  yourself" a thing that can be explained rather than a hypothetical. */
   const selfOnEvent = $derived(

@@ -12,7 +12,7 @@
     oncancel,
   }: {
     /** How many people a save would email — **everyone but the person doing
-     *  it**, which is the count `EventFormValue.guestCount` already carries and
+     *  it**, which is the count `mailableGuests` already answers and
      *  the same exclusion `MoveConfirm` and `DeleteConfirm` make. */
     guests: number;
     /** The event's title, so the heading names what is being saved. Whatever
