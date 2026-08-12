@@ -178,7 +178,7 @@ impl CalendarClient {
     /// **The reasoning that made it `"all"` still holds, for the caller it was
     /// written about.** It read: *without it Google silently applies the change
     /// and nobody is told.* That is right for the **form** — a new time was
-    /// typed on purpose and Save was pressed — but since the guest-list work
+    /// typed on purpose and Save was pressed — but since the guest-list work,
     /// that rightness is honoured differently there: the form now asks and
     /// carries whatever answer it gets, the same choice guest-list spec §3
     /// gives a create. An RSVP has no dialog behind it and still passes
