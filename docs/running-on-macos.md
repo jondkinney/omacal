@@ -182,10 +182,6 @@ is offered and is not the same as declining — it takes you off the event, wher
 declining keeps you on it and tells the organizer. Use the RSVP buttons on the
 event for that.
 
-Inviting guests to a **brand-new** event is not built: create it first, then add
-them by editing it. omacal says so rather than creating the event and quietly
-dropping the list.
-
 ## Troubleshooting
 
 **Sign-in fails immediately with an error containing `no config at
@@ -203,10 +199,10 @@ the loopback listener. Close it and retry.
 
 ## What is not built yet
 
-Guests on a create, as above. Offline writes: a save needs the network and says
-so rather than queueing. Signing an account out — that means revoking a token,
-clearing the Keychain entry and deleting that account's calendars and their
-events, and a button that did half of it would leave rows nothing can reach.
+Offline writes: a save needs the network and says so rather than queueing.
+Signing an account out — that means revoking a token, clearing the Keychain
+entry and deleting that account's calendars and their events, and a button
+that did half of it would leave rows nothing can reach.
 
 **Reliable notifications on macOS.** `UNUserNotificationCenter` wants a correctly
 signed bundle and this one is unsigned, so a reminder may simply never appear.

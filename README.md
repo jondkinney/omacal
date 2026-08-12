@@ -92,10 +92,6 @@ work, over D-Bus.
 
 ## What is not built
 
-**Guests on a brand-new event.** Create it first, then add them by editing it.
-omacal refuses a create that carries guests rather than making the event and
-quietly dropping the list.
-
 **Offline writes** — a save needs the network, and says so rather than queueing.
 
 **Signing an account out**, which means revoking a token, clearing the Keychain

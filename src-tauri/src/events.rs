@@ -3493,8 +3493,8 @@ mod tests {
         );
 
         // The nested attendee, which crosses the same wire inside this one.
-        // `is_self` decides the form's `guestCount` — how many people a save
-        // emails — and is read by property name exactly like the rest.
+        // `is_self` decides the form's `selfEmail`, which `mailableGuests`
+        // excludes by, and is read by property name exactly like the rest.
         //
         // A *subset* check, not equality: `comment` and `additional_guests` are
         // carried through purely so an RSVP patch does not erase them, and the

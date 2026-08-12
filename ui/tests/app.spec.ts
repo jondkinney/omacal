@@ -1182,6 +1182,40 @@ test.describe('App', () => {
   });
 
   /**
+   * **A create can invite people, and only a deliberate answer mails them.**
+   *
+   * Asserted here rather than in the component specs because this is the
+   * boundary that matters: what the form hands up is one thing, what reaches
+   * `create_event` is another, and only the second can email anybody. (The
+   * other boundary — what reaches Google — is
+   * `events::tests::a_create_sends_the_send_updates_it_was_given`, on the wire
+   * with wiremock.)
+   *
+   * Both answers, because `sendUpdates` wired to a constant passes either half
+   * on its own — and `'none'` is the constant it was until this task.
+   */
+  for (const [button, expected] of [
+    ['Create without notifying', 'none'],
+    ['Create and notify guests', 'all'],
+  ] as const) {
+    test(`${button} reaches create_event as ${expected}`, async ({ page }) => {
+      await writable(page);
+      await page.keyboard.press('n');
+      await expect(newForm(page)).toBeVisible();
+      await newForm(page).getByLabel('Title', { exact: true }).fill('Design review');
+      await newForm(page).getByLabel('Add guest').fill('ana@x.com');
+      await newForm(page).getByRole('button', { name: 'Add', exact: true }).click();
+      await newForm(page).getByRole('button', { name: 'Create', exact: true }).click();
+      await page.getByRole('button', { name: button, exact: true }).click();
+      await expect(newForm(page)).toHaveCount(0);
+
+      const [args] = await callsTo(page, 'create_event');
+      expect(args.sendUpdates).toBe(expected);
+      expect(args.fields.guests).toEqual([{ email: 'ana@x.com', optional: false }]);
+    });
+  }
+
+  /**
    * The whole chain of the default-calendar setting, in one pass: chosen in
    * Settings, told to `App` through `onsettingschange`, honoured by the next
    * `n` — **without a restart**. The propagation is the part worth the test:
