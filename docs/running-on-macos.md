@@ -17,6 +17,7 @@ control in Settings now.
 
 ## Look at it first, without any credentials
 
+    npm --prefix ui install
     OMACAL_SEED_DEMO=1 cargo tauri dev
 
 Demo mode writes to a **separate database** (`omacal-demo.db`) and never calls

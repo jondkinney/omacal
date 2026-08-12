@@ -10,6 +10,7 @@ no restart.
 
 ## Quick start
 
+    npm --prefix ui install               # once, after cloning
     OMACAL_SEED_DEMO=1 cargo tauri dev   # look at it now, with synthetic data
     cargo tauri dev                       # your real calendar (needs setup — see the guides)
     cargo test --workspace                # Rust suite
@@ -62,19 +63,26 @@ It searches only calendars you display: a result on a hidden calendar is one you
 could not land on.
 
 **Settings** — behind the hamburger, in four tabs. **General** carries the sync
-interval, which used to require editing the database by hand. **Calendars**
-holds the same rows as the header's picker, each with a **colour** you choose
-from a curated set — *local to omacal*, never written to Google, so your phone,
-the web UI and anyone sharing the calendar are untouched. **Accounts** lists
-what is connected. **Notifications** turns reminders on and off.
+interval — which used to require editing the database by hand — and the
+calendar new events land on. **Calendars** holds the same rows as the header's
+picker, each with a **colour** you choose from a curated set — *local to
+omacal*, never written to Google, so your phone, the web UI and anyone sharing
+the calendar are untouched. **Accounts** lists what is connected.
+**Notifications** turns reminders on and off, and holds the fallback reminders
+described below.
 
 **Sync** runs every five minutes, on window focus, and after every write. Its
 state is a small dot in the header rather than a sentence: quiet when everything
 is current, and hovering says exactly when.
 
 **Notifications** come from each event's own Google reminders, falling back to
-the calendar's defaults, so what fires here matches what your phone does. Only
-`popup` reminders fire — Google sends the email ones itself. One missed while
+the calendar's defaults, so what fires here matches what your phone does — and
+the event form shows those reminders and lets you edit them, on create and on
+edit. On a shared calendar where your account has no reminders at all, omacal's
+own **fallback reminders** step in — 60 and 10 minutes out of the box, editable
+in Settings → Notifications — never overriding an event's or a calendar's real
+reminders, and never touching all-day events. Only `popup` reminders fire —
+Google sends the email ones itself. One missed while
 the app was shut fires at the next launch if the meeting has not ended yet.
 There is a tray and start-on-login, and closing the window hides it rather than
 quitting, because a closed window that stopped firing reminders would be a bug.
