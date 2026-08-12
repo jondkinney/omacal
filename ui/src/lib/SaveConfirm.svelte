@@ -6,6 +6,7 @@
 
   let {
     guests,
+    verb,
     title,
     anchor,
     onconfirm,
@@ -15,6 +16,11 @@
      *  it**, which is the count `mailableGuests` already answers and
      *  the same exclusion `MoveConfirm` and `DeleteConfirm` make. */
     guests: number;
+    /** What the button under this panel says — `'Save'` on an edit, `'Create'`
+     *  on a create. The panel has to name the action it is confirming: "Save"
+     *  over a form whose own action reads "Create" is a small lie in the one
+     *  dialog whose whole job is to be unambiguous about mailing other people. */
+    verb: string;
     /** The event's title, so the heading names what is being saved. Whatever
      *  opened this panel is behind it and cannot be read. */
     title: string;
@@ -41,7 +47,7 @@
   itself: correcting a typo in an address, or marking somebody optional, would
   mail the whole room about a change that concerns one person.
 -->
-<ConfirmPanel {anchor} label="Save event" title={`Save “${title}”?`} {oncancel}>
+<ConfirmPanel {anchor} label="{verb} event" title={`${verb} “${title}”?`} {oncancel}>
   {#snippet body()}
     <p class="notice" data-testid="save-guest-notice">
       {guests}
@@ -57,10 +63,10 @@
          people is the deliberate choice, never the default. This is also the
          only path from this form to `sendUpdates=all`. -->
     <button type="button" class="ghost" onclick={() => onconfirm('all')}>
-      Save and notify guests
+      {verb} and notify guests
     </button>
     <button type="button" class="primary" onclick={() => onconfirm('none')}>
-      Save without notifying
+      {verb} without notifying
     </button>
   {/snippet}
 </ConfirmPanel>

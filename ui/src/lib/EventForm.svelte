@@ -183,6 +183,10 @@
     // correcting a typo in an address would mail the whole room about a change
     // that concerns one person.
     //
+    // The same reasoning reaches a create now that one can invite people. On
+    // that path `guests` counts whoever was typed in, so a create with nobody
+    // on it still goes straight out and a create with somebody on it asks.
+    //
     // Nobody to tell means nothing to choose between, so a save with no guests
     // goes straight out — with `'none'`, so that `all` appears only where
     // somebody chose it. Same rule as the drag path's.
@@ -460,75 +464,79 @@
       {/if}
     {/if}
 
-    <!-- **Edit only.** A create cannot invite anybody: `create_impl` refuses a
-         create that carries guests rather than dropping them, because the
-         notify choice for one does not exist yet, and a form that offered what
-         the write path refuses is a form that can only disappoint. -->
-    {#if initial.isEdit}
-      <div class="guests" data-testid="guests">
-        <span class="lab">Guests</span>
-        <ul>
-          {#each value.guests as g (g.email)}
-            {@const isSelf = g.email.toLowerCase() === (value.selfEmail ?? '').toLowerCase()}
-            <li class="guest" data-guest={g.email}>
-              <span class="addr" title={g.email}>{g.email}{isSelf ? ' (you)' : ''}</span>
-              <label class="opt">
-                <!-- §4. The one field of somebody else's row this form may
-                     author — everything else about them is echoed back from
-                     what is stored. -->
-                <input
-                  type="checkbox"
-                  aria-label="Optional: {g.email}"
-                  checked={g.optional}
-                  onchange={() => (value.guests = toggledGuestOptional(value.guests, g.email))}
-                />
-                Optional
-              </label>
-              <!-- §5: the organizer is absent from this control rather than
-                   disabled in it. Google refuses the removal, so offering it
-                   produces a save that fails for a reason nothing explains. -->
-              {#if removableGuest(g.email, value.organizerEmail)}
-                <button
-                  type="button"
-                  class="x"
-                  aria-label={isSelf ? 'Remove yourself from this event' : `Remove ${g.email}`}
-                  onclick={() => (value.guests = removeGuest(value.guests, g.email))}
-                >×</button>
-              {/if}
-            </li>
-          {/each}
-        </ul>
-        <div class="addguest">
-          <input
-            aria-label="Add guest"
-            placeholder="name@example.com"
-            bind:value={draft}
-            aria-invalid={invalidField === 'guest' ? 'true' : undefined}
-            onkeydown={(e) => {
-              // This field is inside the `<form>`, so an unhandled Return
-              // submits it — saving an event with a half-typed guest list, and
-              // on an event with guests opening the notify choice for a change
-              // nobody had finished making.
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                addTyped();
-              }
-            }}
-          />
-          <button type="button" onclick={addTyped}>Add</button>
-        </div>
-        {#if selfOnEvent}
-          <!-- §5. Removing yourself takes you off the event; declining keeps
-               you on it and tells the organizer. The control above names what
-               it does, and this says what it is not — between them, nothing on
-               this form reads as an RSVP. -->
-          <p class="hint" data-testid="self-guest-hint">
-            Removing yourself takes you off the event. That is not the same as
-            declining — to say you cannot come, use the event's RSVP buttons.
-          </p>
-        {/if}
+    <!-- **Both paths.** This was edit-only for as long as `create_impl`
+         refused a create carrying guests — a form offering what the write path
+         refuses can only disappoint. Both are gone: the create path builds its
+         attendee array through the same `attendees_for_edit` the edit path
+         uses, and Save asks the same notify question.
+
+         On a create `organizerEmail` and `selfEmail` are null, so every row is
+         removable and neither the "(you)" marker nor the self-removal hint
+         appears. All three are right — there is no organizer row and no self
+         row on an event that does not exist yet. -->
+    <div class="guests" data-testid="guests">
+      <span class="lab">Guests</span>
+      <ul>
+        {#each value.guests as g (g.email)}
+          {@const isSelf = g.email.toLowerCase() === (value.selfEmail ?? '').toLowerCase()}
+          <li class="guest" data-guest={g.email}>
+            <span class="addr" title={g.email}>{g.email}{isSelf ? ' (you)' : ''}</span>
+            <label class="opt">
+              <!-- §4. The one field of somebody else's row this form may
+                   author — everything else about them is echoed back from
+                   what is stored. -->
+              <input
+                type="checkbox"
+                aria-label="Optional: {g.email}"
+                checked={g.optional}
+                onchange={() => (value.guests = toggledGuestOptional(value.guests, g.email))}
+              />
+              Optional
+            </label>
+            <!-- §5: the organizer is absent from this control rather than
+                 disabled in it. Google refuses the removal, so offering it
+                 produces a save that fails for a reason nothing explains. -->
+            {#if removableGuest(g.email, value.organizerEmail)}
+              <button
+                type="button"
+                class="x"
+                aria-label={isSelf ? 'Remove yourself from this event' : `Remove ${g.email}`}
+                onclick={() => (value.guests = removeGuest(value.guests, g.email))}
+              >×</button>
+            {/if}
+          </li>
+        {/each}
+      </ul>
+      <div class="addguest">
+        <input
+          aria-label="Add guest"
+          placeholder="name@example.com"
+          bind:value={draft}
+          aria-invalid={invalidField === 'guest' ? 'true' : undefined}
+          onkeydown={(e) => {
+            // This field is inside the `<form>`, so an unhandled Return
+            // submits it — saving an event with a half-typed guest list, and
+            // on an event with guests opening the notify choice for a change
+            // nobody had finished making.
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              addTyped();
+            }
+          }}
+        />
+        <button type="button" onclick={addTyped}>Add</button>
       </div>
-    {/if}
+      {#if selfOnEvent}
+        <!-- §5. Removing yourself takes you off the event; declining keeps
+             you on it and tells the organizer. The control above names what
+             it does, and this says what it is not — between them, nothing on
+             this form reads as an RSVP. -->
+        <p class="hint" data-testid="self-guest-hint">
+          Removing yourself takes you off the event. That is not the same as
+          declining — to say you cannot come, use the event's RSVP buttons.
+        </p>
+      {/if}
+    </div>
 
     {#if guests > 0}
       <!-- What used to say "Saving will notify N guests." It cannot say that
@@ -556,6 +564,7 @@
 {#if asking}
   <SaveConfirm
     guests={guests}
+    verb={initial.isEdit ? 'Save' : 'Create'}
     title={value.title.trim() === '' ? '(no title)' : value.title}
     {anchor}
     onconfirm={confirmSave}

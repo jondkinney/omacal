@@ -2209,6 +2209,14 @@ export const FIXTURES: Record<string, Record<string, any>> = {
     'create-seeded-unwritable': {
       anchor: ANCHOR, initial: blankValue(FORM_NOW, FORM_UNWRITABLE_ID), calendars: FORM_CALENDARS,
     },
+    // A create, for the guest editor on the path that used to refuse one.
+    // Deliberately identical to `create` above except for the fixed clock: the
+    // guests are typed *by the spec*, because a fixture that seeded them would
+    // skip the only way a real create ever gets a guest list and would pass
+    // against a form whose Add button did nothing.
+    'create-guests': {
+      anchor: ANCHOR, initial: blankValue(FORM_NOW, null), calendars: FORM_CALENDARS,
+    },
     // 14:00 to 13:00 on the same day — backwards by an hour, not by a minute,
     // so no rounding anywhere could make the two ends agree.
     'end-before-start': {
