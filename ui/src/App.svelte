@@ -710,7 +710,12 @@
     error = null;
     try {
       if (request.mode === 'create') {
-        await createEvent(result.calendarId, result.fields);
+        // **`result.notify`, never a constant** — the same rule the edit arm
+        // below states at length. A create used to be structurally unable to
+        // mail anybody, so `create_event` sent `sendUpdates=none` on the Rust
+        // side and there was nothing here to carry. Now a create can invite
+        // people, the form asks, and this carries the answer.
+        await createEvent(result.calendarId, result.fields, result.notify);
       } else {
         // `request.occurrenceStartMs`, never `detail.start_ms`: for a series
         // the second is the master's DTSTART, and an edit aimed at it patches

@@ -166,14 +166,18 @@ that lives.
 ## Guests, and who gets an email
 
 You can add somebody by address, remove them, and mark them optional, in the
-event form beside everything else about an event.
+event form beside everything else about an event — on a brand-new event
+exactly as on one you already have. omacal used to refuse a create carrying
+guests; it no longer does.
 
 **Save asks whether to tell them.** It used to always mail the guest list, on
 the reasoning that a time you typed on purpose is exactly what people need to
 hear about. That stopped being right once the same Save could fix a typo in an
 address: *Save without notifying* is the default action, and *Save and notify
-guests* is the only thing on that panel that sends mail. A drag never mails
-anybody without asking either.
+guests* is the only thing on that panel that sends mail. On a create the same
+panel reads *Create without notifying* and *Create and notify guests* instead,
+naming the action the button actually takes. A drag never mails anybody
+without asking either.
 
 Two rules the form enforces rather than letting Google refuse them: the
 organizer cannot be removed, and an address that is not an address is refused
@@ -181,10 +185,6 @@ before Save rather than coming back as an error afterwards. Removing **yourself*
 is offered and is not the same as declining — it takes you off the event, where
 declining keeps you on it and tells the organizer. Use the RSVP buttons on the
 event for that.
-
-Inviting guests to a **brand-new** event is not built: create it first, then add
-them by editing it. omacal says so rather than creating the event and quietly
-dropping the list.
 
 ## Troubleshooting
 
@@ -203,10 +203,10 @@ the loopback listener. Close it and retry.
 
 ## What is not built yet
 
-Guests on a create, as above. Offline writes: a save needs the network and says
-so rather than queueing. Signing an account out — that means revoking a token,
-clearing the Keychain entry and deleting that account's calendars and their
-events, and a button that did half of it would leave rows nothing can reach.
+Offline writes: a save needs the network and says so rather than queueing.
+Signing an account out — that means revoking a token, clearing the Keychain
+entry and deleting that account's calendars and their events, and a button
+that did half of it would leave rows nothing can reach.
 
 **Reliable notifications on macOS.** `UNUserNotificationCenter` wants a correctly
 signed bundle and this one is unsigned, so a reminder may simply never appear.

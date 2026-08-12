@@ -141,19 +141,17 @@ export type EventFormValue = {
   /** The raw RRULE behind a `custom` repeat, for showing it in words. Display
    *  only — never parsed to decide what the app can express. */
   recurrence: string | null;
-  /** How many people a save would email. Always 0 on a create: a new event has
-   *  no attendees, and this form cannot add any. */
-  guestCount: number;
   /**
    * **The guest list the event would end up with — everyone, including the
    * signed-in user.**
    *
-   * Not to be confused with `guestCount` above, which is deliberately one
-   * smaller: that counts who a save would *mail*, and telling somebody they are
-   * about to notify themselves is wrong. This is what the attendee array
-   * becomes, and a version that dropped the self row to match the count would
-   * take the user off every event they saved — and, since a drag builds its
-   * input from this same value, off every event they dragged.
+   * Not to be confused with `mailableGuests`, which is deliberately one
+   * smaller on an event you are on: that counts who a save would *mail*, and
+   * telling somebody they are about to notify themselves is wrong. This is what
+   * the attendee array becomes, and a version that dropped the self row to
+   * match the count would take the user off every event they saved — and,
+   * since a drag builds its input from this same value, off every event they
+   * dragged.
    *
    * Two fields per guest, because two are all a user can author. Everything
    * else an attendee carries — their answer, their display name, their comment
@@ -329,6 +327,44 @@ export const sameGuests = (a: Guest[], b: Guest[]): boolean => {
     b.some((h) => sameAddress(g.email, h.email) && g.optional === h.optional));
 };
 
+/**
+ * **How many people this save could mail.**
+ *
+ * Everyone on the resulting list, plus everyone removed from it, minus the
+ * signed-in user. One rule, and deliberately with no `isEdit` branch in it: a
+ * create is the case where `initial.guests` is empty and `selfEmail` is null,
+ * which this arithmetic already handles.
+ *
+ * The **union** matters, not just the resulting list. A removal saved with
+ * notify on sends that person a cancellation (guest-list spec §3), so they are
+ * somebody this save could mail; counting only who is left would let a save
+ * whose entire purpose was to un-invite somebody skip the question.
+ *
+ * **Yourself is excluded from both sides.** `sendUpdates=all` mails the other
+ * guests, and telling somebody they are about to notify themselves is wrong —
+ * the same exclusion `MoveConfirm` and `DeleteConfirm` make.
+ *
+ * This replaces `EventFormValue.guestCount`, which answered a narrower
+ * question: who was on the event when the form *opened*. That was right while
+ * a save could only change the event around a fixed guest list, and wrong in
+ * two ways once the list itself became editable — hard-coded `0` on a create,
+ * so the notify choice never appeared; and `0` for the first guest added to a
+ * guestless event, which took the form's straight-to-save shortcut and mailed
+ * a brand-new invitee nothing at all.
+ */
+export function mailableGuests(value: EventFormValue, initial: EventFormValue): number {
+  const self = value.selfEmail;
+  const mailable = new Set<string>();
+  for (const g of [...value.guests, ...initial.guests]) {
+    if (self !== null && sameAddress(g.email, self)) continue;
+    // Keyed by the *compared* form, so one person spelled two ways is one
+    // entry — the same normalisation `sameAddress` applies, which is what
+    // every other rule in this block compares by.
+    mailable.add(g.email.trim().toLowerCase());
+  }
+  return mailable.size;
+}
+
 const pad = (n: number) => String(n).padStart(2, '0');
 
 /** `yyyy-mm-dd` for an instant, read in the browser's zone. */
@@ -455,10 +491,9 @@ export function blankValueAt(
     calendarId,
     repeat: 'never',
     recurrence: null,
-    guestCount: 0,
-    // A create invites nobody: this form offers no guest editing on that path,
-    // and `create_impl` refuses a create that carries guests rather than
-    // dropping them, because the notify choice for one does not exist yet.
+    // Nobody, until the user types somebody in. The guest editor is on this
+    // path now; `toEventInput` sends the list only when it differs from this
+    // empty one, which for a create means "only when somebody was invited".
     guests: [],
     organizerEmail: null,
     selfEmail: null,
@@ -647,10 +682,6 @@ export function occurrenceDate(date: string | null, rowMs: number, occurrenceMs:
  * `ALL_DAY_START` on exactly that date. Keeping the instants would make the
  * toggle's answer depend on the calendar's offset in a way no test would think
  * to look for. There is nothing to pass through on this arm, so it says so.
- *
- * `guestCount` excludes the signed-in user's own attendee row: `sendUpdates=all`
- * mails the other guests, and telling somebody they are about to notify
- * themselves is just wrong.
  */
 export function valueFromDetail(
   detail: EventDetail,
@@ -682,10 +713,8 @@ export function valueFromDetail(
     calendarId: detail.calendar_id,
     repeat: detail.repeat,
     recurrence: detail.recurrence,
-    guestCount: detail.attendees.filter((a) => !a.is_self).length,
-    // **Everyone**, unlike the count above — see `EventFormValue.guests`. The
-    // two are one line apart on purpose: the difference between them is the
-    // difference between who gets an email and who is on the event.
+    // **Everyone** — see `EventFormValue.guests` for how this differs from
+    // `mailableGuests`.
     guests: detail.attendees.map((a) => ({ email: a.email, optional: a.optional })),
     organizerEmail: detail.organizer_email,
     selfEmail: detail.attendees.find((a) => a.is_self)?.email ?? null,

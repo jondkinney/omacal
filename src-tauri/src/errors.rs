@@ -130,17 +130,6 @@ const SAFE_EXACT: &[&str] = &[
     // §2 is about. `a_guest_list_conflict_reaches_the_user_verbatim` pins the
     // pair, so a reworded constant fails a test rather than going opaque.
     crate::events::CONFLICT_GUESTS,
-    // src-tauri/src/events.rs — `create_impl`'s refusal of a create that
-    // carries guests, which nothing on that path can honour until the notify
-    // choice for it exists. Fixed literal, held in
-    // `events::NO_GUESTS_ON_CREATE` and raised with `bail!`, reached only
-    // through `create_event`'s `.map_err(|e| crate::errors::user_facing(&e))`
-    // with no `.context(..)` on the way, so `err.to_string()` is
-    // byte-identical to the constant. Allowlisted because the whole point of
-    // the refusal is that the user learns their guests were not invited —
-    // `OPAQUE` here would be a slightly louder version of the silent drop it
-    // replaces. Pinned by `a_create_carrying_guests_says_so_verbatim`.
-    crate::events::NO_GUESTS_ON_CREATE,
     // src-tauri/src/settings.rs — `set_sync_interval`'s floor. Fixed literal,
     // held in `settings::INTERVAL_TOO_SHORT` and raised with `bail!`, reached
     // only through `set_sync_interval`'s own `.map_err(user_facing)` with no
@@ -324,7 +313,6 @@ mod tests {
             "the new series was created but the original could not be shortened — \
              you now have two overlapping series and should delete one",
             crate::events::CONFLICT_GUESTS,
-            crate::events::NO_GUESTS_ON_CREATE,
             crate::settings::INTERVAL_TOO_SHORT,
         ];
         for expected in EXPECTED {
@@ -356,16 +344,6 @@ mod tests {
     fn a_guest_list_conflict_reaches_the_user_verbatim() {
         let raised = anyhow::anyhow!(crate::events::CONFLICT_GUESTS);
         assert_eq!(user_facing(&raised), crate::events::CONFLICT_GUESTS);
-        assert_ne!(user_facing(&raised), OPAQUE);
-    }
-
-    /// The refusal exists so the user *learns* their guests were not invited.
-    /// Withheld behind `OPAQUE` it would be a slightly louder version of the
-    /// silent drop it replaces, which is the whole thing it is there to stop.
-    #[test]
-    fn a_create_carrying_guests_says_so_verbatim() {
-        let raised = anyhow::anyhow!(crate::events::NO_GUESTS_ON_CREATE);
-        assert_eq!(user_facing(&raised), crate::events::NO_GUESTS_ON_CREATE);
         assert_ne!(user_facing(&raised), OPAQUE);
     }
 

@@ -340,15 +340,6 @@ pub(crate) fn attendees_for_edit(
     out
 }
 
-/// What the user is told when a create arrives carrying guests, which nothing
-/// on the create path can honour yet — see [`create_impl`]'s own guard for why
-/// it refuses rather than implementing.
-///
-/// A named constant for the same reason [`CONFLICT_GUESTS`] is.
-pub(crate) const NO_GUESTS_ON_CREATE: &str =
-    "omacal cannot invite guests to a brand-new event yet — create it first, then add them by \
-     editing it";
-
 /// What the user is told when a guest-list change loses a race.
 ///
 /// A named constant because it is asserted in two places that must not drift:
@@ -734,8 +725,9 @@ pub async fn create_event(
     state: tauri::State<'_, AppState>,
     calendar_id: i64,
     fields: crate::write::EventInput,
+    send_updates: String,
 ) -> Result<EventDetail, String> {
-    create_impl(&state, calendar_id, crate::write::fields_from_input(fields))
+    create_impl(&state, calendar_id, crate::write::fields_from_input(fields), &send_updates)
         .await
         .map_err(|e| crate::errors::user_facing(&e))
 }
@@ -760,40 +752,10 @@ async fn create_impl(
     state: &AppState,
     calendar_id: i64,
     fields: crate::write::EventFields,
+    send_updates: &str,
 ) -> anyhow::Result<EventDetail> {
     if state.demo {
         anyhow::bail!("demo mode — there is nothing to create");
-    }
-
-    // **A create cannot invite anybody yet, and says so rather than dropping
-    // them.**
-    //
-    // `EventFields::guests` can reach here because it is one struct for both
-    // writes, and [`create_via_client`] builds its body from the fields it
-    // understands — so a list arriving on this path would be discarded in
-    // silence. Accepting a guest list and creating the event without it is the
-    // worst of the three outcomes: the user watches the event appear and has no
-    // way to learn that nobody was invited.
-    //
-    // A refusal rather than an implementation, and the reason is not effort —
-    // the array itself would be `attendees_for_edit(&[], wanted)`, the same
-    // rule, three lines. It is that **the notify question has no answer yet.**
-    // `create_via_client` sends `sendUpdates=none`, correctly, because a create
-    // today has no attendees; hanging a guest list on that body would invite
-    // real people and tell none of them. Guest-list spec §3 puts that choice on
-    // Save, beside the one a drag makes, and it is a UI decision this task is
-    // deliberately not making. Whoever builds it deletes this guard, and the
-    // guard is what makes sure they notice it needs deleting.
-    //
-    // `Some(vec![])` passes: a form that always sends its guest list sends an
-    // empty one for an event with no guests, and there is nothing to drop.
-    //
-    // Second, straight after demo mode and **before any database access**,
-    // which is [`update_impl`]'s stated ordering rule applied here: a pure
-    // function of an argument is decided before a row is read, let alone before
-    // `load_config` or the Keychain.
-    if fields.guests.as_ref().is_some_and(|g| !g.is_empty()) {
-        anyhow::bail!(NO_GUESTS_ON_CREATE);
     }
 
     // Same ordering rule: a pure check of the argument, decided before any
@@ -821,9 +783,10 @@ async fn create_impl(
     let token = crate::access_token_for(state, &cfg, &account_email).await?;
     let client = omacal_google::CalendarClient::new(crate::GOOGLE_CALENDAR_API, &token);
 
-    let id =
-        create_via_client(&state.pool, calendar_id, &cal_google_id, &cal_tz, fields, &client)
-            .await?;
+    let id = create_via_client(
+        &state.pool, calendar_id, &cal_google_id, &cal_tz, fields, send_updates, &client,
+    )
+    .await?;
 
     event_detail_impl(state, id).await
 }
@@ -866,6 +829,7 @@ async fn create_via_client(
     cal_google_id: &str,
     cal_tz: &str,
     fields: crate::write::EventFields,
+    send_updates: &str,
     client: &omacal_google::CalendarClient,
 ) -> anyhow::Result<i64> {
     let f = &fields;
@@ -885,11 +849,32 @@ async fn create_via_client(
         body["reminders"] = crate::write::reminders_json(r);
     }
 
-    // `"none"`: this create is the new-event form, which cannot add guests, so
-    // there is nobody to notify. The other caller of `insert_event` — the
-    // series split in [`split_series`] — carries a real guest list and passes
-    // `"all"`. See `insert_event`'s own doc comment.
-    let created = client.insert_event(cal_google_id, &body, "none").await?;
+    // **The guest list, through the edit path's own builder.**
+    //
+    // `attendees_for_edit(&[], wanted)` — an empty "already on the event" list,
+    // because a brand-new event has nobody on it — so a guest invited here has
+    // exactly the shape a guest invited by an edit has: `needsAction`, with an
+    // explicit `optional` and `additionalGuests`. A second array written out
+    // here would be a second authority on that shape, and the one it would
+    // drift towards is the flat `{email}` that resets an RSVP (guest-list spec
+    // §2).
+    //
+    // Absent for an empty list rather than `attendees: []`. On a create there
+    // is nobody to remove, so the two produce the same event and absent is the
+    // smaller claim. (On an *edit* they differ absolutely — see
+    // `EventFields::guests` — which is why this reads `is_some_and(!is_empty)`
+    // and not a bare `if let`.)
+    if let Some(wanted) = f.guests.as_ref().filter(|g| !g.is_empty()) {
+        body["attendees"] = serde_json::Value::Array(attendees_for_edit(&[], wanted));
+    }
+
+    // **The caller's answer, never a constant.** This was `"none"` while a
+    // create could not invite anybody, which was correct for an event with no
+    // attendees and is exactly what stops being true above. Guest-list spec §3
+    // makes it a choice; the form asks and this carries the answer. The other
+    // caller of `insert_event` — the series split in [`split_series`] — passes
+    // `"all"` for its own reasons. See `insert_event`'s own doc comment.
+    let created = client.insert_event(cal_google_id, &body, send_updates).await?;
 
     // The same Google -> StoredEvent mapping `omacal-sync` uses for every
     // event it writes locally. Reusing it is what keeps a row created here
@@ -3508,8 +3493,8 @@ mod tests {
         );
 
         // The nested attendee, which crosses the same wire inside this one.
-        // `is_self` decides the form's `guestCount` — how many people a save
-        // emails — and is read by property name exactly like the rest.
+        // `is_self` decides the form's `selfEmail`, which `mailableGuests`
+        // excludes by, and is read by property name exactly like the rest.
         //
         // A *subset* check, not equality: `comment` and `additional_guests` are
         // carried through purely so an RSVP patch does not erase them, and the
@@ -3718,7 +3703,8 @@ mod tests {
     #[tokio::test]
     async fn creating_refuses_in_demo_mode_without_touching_config_keyring_or_google() {
         let pool = omacal_store::connect_memory().await.unwrap();
-        let err = create_impl(&state_with(pool, true), 1, sample_fields()).await.unwrap_err();
+        let err =
+            create_impl(&state_with(pool, true), 1, sample_fields(), "none").await.unwrap_err();
         assert!(err.to_string().contains("demo"), "got: {err}");
         // Binds the emitter to `errors.rs`'s allowlist: checking only
         // `.contains` above would leave this green even if the two literals
@@ -3736,66 +3722,163 @@ mod tests {
     async fn creating_into_a_read_only_calendar_is_refused() {
         let pool = omacal_store::connect_memory().await.unwrap();
         let cal = seed_calendar(&pool, "reader").await;
-        let err = create_impl(&state_with(pool, false), cal, sample_fields()).await.unwrap_err();
+        let err =
+            create_impl(&state_with(pool, false), cal, sample_fields(), "none").await.unwrap_err();
         assert!(err.to_string().contains("not writable"), "got: {err}");
         assert_eq!(crate::errors::user_facing(&err), "this calendar is not writable from omacal");
     }
 
-    /// **A create carrying guests refuses rather than dropping them.**
+    /// **A create carrying guests invites them.**
     ///
-    /// `EventFields` is one struct for both writes, so a guest list can reach
-    /// the create path — where `create_via_client` builds its body from the
-    /// fields it understands and would discard this one in silence. The user
-    /// would watch the event appear and never learn that nobody was invited.
+    /// The array is `attendees_for_edit(&[], wanted)` — the same builder the
+    /// edit path uses, against an empty "already on the event" list, because a
+    /// brand-new event has nobody on it. Reusing it rather than writing a
+    /// second array here is what keeps one authority for an attendee's shape:
+    /// a new guest is `needsAction` with an explicit `optional` and
+    /// `additionalGuests`, whichever path invited them.
     ///
-    /// A refusal rather than an implementation because the *notify* question
-    /// has no answer yet: the create sends `sendUpdates=none`, correctly for an
-    /// event with no attendees, and hanging a guest list on that body invites
-    /// real people and tells none of them. See the guard's own comment.
-    ///
-    /// On a **reader** calendar, which is the fixture rule
-    /// `seeded_pool_on_read_only_cal` documents: the guard under test sits
-    /// above the writability check, so a second gate underneath it means a
-    /// future task that implements guests-on-create fails here loudly instead
-    /// of falling through to a credential no test may touch. The assertion
-    /// stays just as discriminating — delete the guard and the message is
-    /// "not writable" either way.
+    /// Asserted on the **whole body** with `body_json`, which is what makes
+    /// "the guests were dropped" and "the guests were sent flat as `{email}`"
+    /// both failures rather than one. The second matters: `{email}` alone is
+    /// the shape that resets an RSVP (guest-list spec §2), and on a create it
+    /// would look harmless right up until the same habit reached an edit.
     #[tokio::test]
-    async fn creating_an_event_with_guests_refuses_rather_than_dropping_them() {
-        let pool = omacal_store::connect_memory().await.unwrap();
-        let cal = seed_calendar(&pool, "reader").await;
+    async fn creating_an_event_with_guests_invites_them() {
         let fields = crate::write::EventFields {
-            guests: Some(vec![crate::write::Guest {
-                email: "dan@x.com".into(),
-                optional: false,
-            }]),
+            guests: Some(vec![
+                crate::write::Guest { email: "dan@x.com".into(), optional: false },
+                crate::write::Guest { email: "eve@x.com".into(), optional: true },
+            ]),
             ..sample_fields()
         };
+        let (start, end) = crate::write::when_json(&fields.when, &fields.tz);
+        let expected_body = serde_json::json!({
+            "start": start,
+            "end":   end,
+            "summary": "Lunch",
+            "recurrence": ["RRULE:FREQ=WEEKLY"],
+            "reminders": { "useDefault": false,
+                           "overrides": [{ "method": "popup", "minutes": 10 }] },
+            "attendees": [
+                { "email": "dan@x.com", "responseStatus": "needsAction",
+                  "optional": false, "additionalGuests": 0 },
+                { "email": "eve@x.com", "responseStatus": "needsAction",
+                  "optional": true,  "additionalGuests": 0 },
+            ],
+        });
 
-        let err = create_impl(&state_with(pool, false), cal, fields).await.unwrap_err();
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events"))
+            .and(wiremock::matchers::body_json(expected_body))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "g-new", "status": "confirmed", "etag": "\"e1\"",
+                "summary": "Lunch",
+                "start": {"dateTime": "2026-08-10T12:00:00+03:00"},
+                "end":   {"dateTime": "2026-08-10T13:00:00+03:00"}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
 
-        assert_eq!(err.to_string(), NO_GUESTS_ON_CREATE);
-        assert_eq!(crate::errors::user_facing(&err), NO_GUESTS_ON_CREATE);
+        let pool = omacal_store::connect_memory().await.unwrap();
+        let cal = seed_calendar(&pool, "owner").await;
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+
+        create_via_client(&pool, cal, "cal@x.com", "UTC", fields, "none", &client)
+            .await
+            .unwrap();
     }
 
-    /// …and an **empty** list is not a drop, so it is not refused: a form that
-    /// always sends its guest list sends an empty one for an event with no
-    /// guests, and refusing there would make every ordinary create fail.
+    /// An **empty** list sends no `attendees` key at all.
     ///
-    /// Run on a **reader** calendar so that getting past the guard lands on the
-    /// writability check rather than on `load_config` and the real Keychain —
-    /// the fixture rule `seeded_pool_on_read_only_cal` documents, applied to a
-    /// test whose subject is a gate *above* that one.
+    /// A form that always submits its guest list submits an empty one for an
+    /// event with nobody on it, and on a create the two possible readings —
+    /// no key, or `attendees: []` — produce the same event. Absent is the
+    /// smaller claim, and pinning it here is what stops a later `if let Some`
+    /// quietly starting to send `"attendees": []` on every ordinary create.
+    ///
+    /// `body_json` matches the whole document, so the *absence* is asserted
+    /// rather than merely not-checked: an extra key fails the match and the
+    /// mock's `expect(1)` goes unmet.
     #[tokio::test]
-    async fn creating_an_event_with_an_empty_guest_list_is_not_refused() {
-        let pool = omacal_store::connect_memory().await.unwrap();
-        let cal = seed_calendar(&pool, "reader").await;
+    async fn creating_an_event_with_an_empty_guest_list_sends_no_attendees() {
         let fields = crate::write::EventFields { guests: Some(vec![]), ..sample_fields() };
+        let (start, end) = crate::write::when_json(&fields.when, &fields.tz);
+        let expected_body = serde_json::json!({
+            "start": start,
+            "end":   end,
+            "summary": "Lunch",
+            "recurrence": ["RRULE:FREQ=WEEKLY"],
+            "reminders": { "useDefault": false,
+                           "overrides": [{ "method": "popup", "minutes": 10 }] },
+        });
 
-        let err = create_impl(&state_with(pool, false), cal, fields).await.unwrap_err();
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events"))
+            .and(wiremock::matchers::body_json(expected_body))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "g-new", "status": "confirmed", "etag": "\"e1\"",
+                "summary": "Lunch",
+                "start": {"dateTime": "2026-08-10T12:00:00+03:00"},
+                "end":   {"dateTime": "2026-08-10T13:00:00+03:00"}
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
 
-        assert_ne!(err.to_string(), NO_GUESTS_ON_CREATE, "an empty list was read as a drop");
-        assert!(err.to_string().contains("not writable"), "got: {err}");
+        let pool = omacal_store::connect_memory().await.unwrap();
+        let cal = seed_calendar(&pool, "owner").await;
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+
+        create_via_client(&pool, cal, "cal@x.com", "UTC", fields, "none", &client)
+            .await
+            .unwrap();
+    }
+
+    /// **What `sendUpdates` actually reaches Google on a create**, asserted on
+    /// the wire for both values.
+    ///
+    /// Both, deliberately. A create that ignored its argument and always sent
+    /// `"none"` — which is exactly what this path did until guests could be
+    /// invited — passes the `"none"` half on its own, and the `"all"` half is
+    /// the only one that can mail anybody. Guest-list spec §7: the
+    /// don't-notify path must be witnessed, not assumed, and so must the other.
+    #[tokio::test]
+    async fn a_create_sends_the_send_updates_it_was_given() {
+        for send_updates in ["all", "none"] {
+            let server = wiremock::MockServer::start().await;
+            wiremock::Mock::given(wiremock::matchers::method("POST"))
+                .and(wiremock::matchers::path("/calendars/cal%40x.com/events"))
+                .and(wiremock::matchers::query_param("sendUpdates", send_updates))
+                .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(
+                    serde_json::json!({
+                        "id": "g-new", "status": "confirmed", "etag": "\"e1\"",
+                        "summary": "Lunch",
+                        "start": {"dateTime": "2026-08-10T12:00:00+03:00"},
+                        "end":   {"dateTime": "2026-08-10T13:00:00+03:00"}
+                    }),
+                ))
+                .expect(1)
+                .mount(&server)
+                .await;
+
+            let pool = omacal_store::connect_memory().await.unwrap();
+            let cal = seed_calendar(&pool, "owner").await;
+            let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+            let fields = crate::write::EventFields {
+                guests: Some(vec![crate::write::Guest {
+                    email: "dan@x.com".into(),
+                    optional: false,
+                }]),
+                ..sample_fields()
+            };
+
+            create_via_client(&pool, cal, "cal@x.com", "UTC", fields, send_updates, &client)
+                .await
+                .unwrap_or_else(|e| panic!("{send_updates}: {e}"));
+        }
     }
 
     /// The end-to-end write-back: `create_via_client` posts to Google, then
@@ -3842,7 +3925,7 @@ mod tests {
         let cal = seed_calendar(&pool, "owner").await;
         let client = omacal_google::CalendarClient::new(server.uri(), "tok");
 
-        let id = create_via_client(&pool, cal, "cal@x.com", "UTC", fields, &client)
+        let id = create_via_client(&pool, cal, "cal@x.com", "UTC", fields, "none", &client)
             .await
             .unwrap();
 
@@ -3895,9 +3978,10 @@ mod tests {
         };
         fields.tz = "America/New_York".into(); // the authoring zone — must be ignored
 
-        let id = create_via_client(&pool, cal, "cal@x.com", "Pacific/Auckland", fields, &client)
-            .await
-            .unwrap();
+        let id =
+            create_via_client(&pool, cal, "cal@x.com", "Pacific/Auckland", fields, "none", &client)
+                .await
+                .unwrap();
 
         let (row, _, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
         let expected_start_utc = "2026-08-10"

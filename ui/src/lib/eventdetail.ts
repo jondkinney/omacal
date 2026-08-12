@@ -190,9 +190,16 @@ export const respondToEvent = (
   occurrenceStartMs: number,
 ) => invoke<EventDetail>('respond_to_event', { id, response, scope, occurrenceStartMs });
 
-/** Creates a new event on `calendarId` and returns its freshly-written detail. */
-export const createEvent = (calendarId: number, fields: EventInput) =>
-  invoke<EventDetail>('create_event', { calendarId, fields });
+/**
+ * `sendUpdates` is Google's own vocabulary — `'all'` or `'none'` — and is
+ * required rather than defaulted, for the reason `SendUpdates`' own doc comment
+ * gives: this is the one value where nobody choosing is how somebody gets an
+ * email they should not have. The form asks whenever there is anybody to ask
+ * about and answers `'none'` when there is not, so `'all'` reaches here only
+ * where a person chose it.
+ */
+export const createEvent = (calendarId: number, fields: EventInput, sendUpdates: SendUpdates) =>
+  invoke<EventDetail>('create_event', { calendarId, fields, sendUpdates });
 
 /**
  * Saves an edit and returns the freshly-written detail.

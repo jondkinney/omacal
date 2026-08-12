@@ -3126,9 +3126,15 @@ test.describe('EventForm', () => {
     await page.getByRole('button', { name: 'Add', exact: true }).click();
   };
 
-  /** Answers the notify choice, which every save on this fixture now reaches. */
-  const answerNotify = async (page: import('@playwright/test').Page, button: string) => {
-    await page.getByRole('button', { name: 'Save' }).click();
+  /** Answers the notify choice: presses the form's own action, then the
+   *  panel's. Both names, because the two differ on a create — the form says
+   *  `Create` and so does the panel under it (see `SaveConfirm`'s `verb`). */
+  const answerNotify = async (
+    page: import('@playwright/test').Page,
+    button: string,
+    action = 'Save',
+  ) => {
+    await page.getByRole('button', { name: action, exact: true }).click();
     await page.getByRole('button', { name: button, exact: true }).click();
   };
 
@@ -3142,12 +3148,72 @@ test.describe('EventForm', () => {
     await expect(page.locator('[data-guest="me@x.com"]')).toBeVisible();
   });
 
-  test('a create offers no guest editing at all', async ({ page }) => {
-    // A create cannot invite anybody — `create_impl` refuses one that carries
-    // guests, because the notify choice for a create does not exist yet — so
-    // the form must not offer what the write path will refuse.
-    await open(page, 'create');
-    await expect(page.getByTestId('guests')).toHaveCount(0);
+  /**
+   * **The guest editor is on the create path.**
+   *
+   * It was gated behind `initial.isEdit` for as long as `create_impl` refused
+   * a create carrying guests — a form offering what the write path refuses is
+   * a form that can only disappoint. Both are gone; this is the witness that
+   * the *form* half actually went.
+   */
+  test('a create can invite somebody', async ({ page }) => {
+    await open(page, 'create-guests');
+    await expect(page.getByTestId('guests')).toBeVisible();
+
+    await addGuest(page, 'ana@x.com');
+    await expect(guestRows(page)).toHaveCount(1);
+
+    await answerNotify(page, 'Create without notifying', 'Create');
+
+    const [saved] = await saves(page);
+    expect(saved.fields.guests).toEqual([{ email: 'ana@x.com', optional: false }]);
+  });
+
+  /** A create with nobody on it must not grow a dialog. Nobody to tell means
+   *  nothing to choose between, and the save goes straight out — the same
+   *  shortcut an edit takes, now reached through `mailableGuests`. */
+  test('a create with no guests still saves without asking', async ({ page }) => {
+    await open(page, 'create-guests');
+    await page.getByLabel('Title', { exact: true }).fill('Lunch');
+    await page.getByRole('button', { name: 'Create', exact: true }).click();
+
+    const [saved] = await saves(page);
+    expect(saved.notify).toBe('none');
+    expect(saved.fields.guests).toBeUndefined();
+  });
+
+  /** Both answers, because a panel wired to one constant passes either half
+   *  alone — and `all` is the only one that mails anybody. */
+  test('a create asks before it notifies, and carries the answer', async ({ page }) => {
+    for (const [button, expected] of [
+      ['Create without notifying', 'none'],
+      ['Create and notify guests', 'all'],
+    ] as const) {
+      await open(page, 'create-guests');
+      await addGuest(page, 'ana@x.com');
+      await answerNotify(page, button, 'Create');
+
+      const [saved] = await saves(page);
+      expect(saved.notify, button).toBe(expected);
+    }
+  });
+
+  /** The panel says what the button under it will do. "Save" on a form whose
+   *  own action reads "Create" is a small lie in the one dialog whose entire
+   *  job is to be unambiguous about mailing other people. Both arms, because
+   *  a `verb` hardcoded either way passes one of them. */
+  test('the notify panel says Create on a create and Save on an edit', async ({ page }) => {
+    await open(page, 'create-guests');
+    await addGuest(page, 'ana@x.com');
+    await page.getByRole('button', { name: 'Create', exact: true }).click();
+    await expect(page.getByRole('dialog', { name: 'Create event' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Create without notifying' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Create and notify guests' })).toBeVisible();
+
+    await open(page, 'with-guests');
+    await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(page.getByRole('dialog', { name: 'Save event' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Save without notifying' })).toBeVisible();
   });
 
   test('an address typed in is added, and reaches the save', async ({ page }) => {

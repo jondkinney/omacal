@@ -2,7 +2,7 @@ import { test, expect } from '@playwright/test';
 import { offerableCalendarId, type Calendar } from '../src/lib/calendars';
 import type { EventDetail } from '../src/lib/eventdetail';
 import {
-  addGuest, blankValue, blankValueAt, endAfterStart, isAddress, removableGuest,
+  addGuest, blankValue, blankValueAt, endAfterStart, isAddress, mailableGuests, removableGuest,
   removeGuest, ruleInWords, sameGuests, shiftedEndDate, toEventInput,
   toggledGuestOptional, valueFromDetail, whenOf, type EventFormValue,
 } from '../src/lib/eventform';
@@ -1683,11 +1683,11 @@ test.describe('the guest list a form edits', () => {
   /**
    * **Everyone, the signed-in user included.**
    *
-   * `guestCount` excludes the self row because it counts who would be *mailed*,
-   * and this list is a different thing entirely: it is what the event's
-   * attendees would become. Excluding yourself here would take you off every
-   * event you ever saved — and, because the drag path shares this value, off
-   * every event you ever dragged.
+   * `mailableGuests` excludes the self row because it counts who would be
+   * *mailed*, and this list is a different thing entirely: it is what the
+   * event's attendees would become. Excluding yourself here would take you off
+   * every event you ever saved — and, because the drag path shares this value,
+   * off every event you ever dragged.
    */
   test('carries every attendee, the signed-in user included', () => {
     const value = valueFromDetail(
@@ -1704,7 +1704,7 @@ test.describe('the guest list a form edits', () => {
     expect(value.guests[2].optional, 'the stored optional flag comes through').toBe(true);
     // …and the count beside it still excludes the self row, because the two
     // answer different questions.
-    expect(value.guestCount).toBe(2);
+    expect(mailableGuests(value, value)).toBe(2);
   });
 
   test('a create starts with nobody on it', () => {
@@ -1729,6 +1729,95 @@ test.describe('the guest list a form edits', () => {
 
     const theirs = valueFromDetail(withGuests([attendee('ana@x.com')]), 0, 30 * 60_000);
     expect(theirs.selfEmail).toBeNull();
+  });
+
+  /**
+   * **Who this save could mail** — the one rule, replacing `guestCount`.
+   *
+   * Everyone on the resulting list, plus everyone removed from it (a removal
+   * with notify on sends a cancellation, guest-list spec §3), minus yourself.
+   * `guestCount` answered only the first clause and only for an edit, and was
+   * hard-coded 0 on a create — correct exactly while a create could not invite
+   * anybody.
+   */
+  test.describe('mailableGuests', () => {
+    /** A create's starting value, plus whatever guests were typed into it. */
+    const created = (...emails: string[]): EventFormValue => ({
+      ...blankValueAt(0, 1),
+      guests: emails.map((email) => ({ email, optional: false })),
+    });
+
+    test('a create counts everyone typed into it', () => {
+      const initial = blankValueAt(0, 1);
+      expect(mailableGuests(created('ana@x.com', 'bo@x.com'), initial)).toBe(2);
+    });
+
+    test('a create with nobody on it counts nobody', () => {
+      const initial = blankValueAt(0, 1);
+      expect(mailableGuests(initial, initial)).toBe(0);
+    });
+
+    /**
+     * The defect this rule fixes. `guestCount` counted who was on the event
+     * when the form *opened*, so the first guest added to a guestless event
+     * came out 0 — and 0 takes the form's straight-to-save shortcut, which
+     * sends `notify: 'none'`. The invitee was added and never mailed, with
+     * nothing asked and nothing said.
+     */
+    test('an edit counts a guest added to an event that had none', () => {
+      const initial = valueFromDetail(withGuests([]), 0, 30 * 60_000);
+      const value = { ...initial, guests: [{ email: 'ana@x.com', optional: false }] };
+      expect(mailableGuests(value, initial)).toBe(1);
+    });
+
+    test('an untouched edit counts the other attendees, never yourself', () => {
+      const initial = valueFromDetail(
+        withGuests([
+          attendee('ana@x.com'),
+          attendee('bo@x.com'),
+          attendee('me@x.com', { is_self: true }),
+        ]),
+        0,
+        30 * 60_000,
+      );
+      expect(mailableGuests(initial, initial)).toBe(2);
+    });
+
+    /** A removal with notify on sends a cancellation, so the person removed is
+     *  still somebody this save could mail. Counting only the resulting list
+     *  would answer 1 and skip the question entirely on a save whose whole
+     *  purpose was to un-invite someone. */
+    test('a removed guest is still somebody the save could mail', () => {
+      const initial = valueFromDetail(
+        withGuests([attendee('ana@x.com'), attendee('bo@x.com')]),
+        0,
+        30 * 60_000,
+      );
+      const value = { ...initial, guests: [{ email: 'ana@x.com', optional: false }] };
+      expect(mailableGuests(value, initial)).toBe(2);
+    });
+
+    /** Compared the way every other guest rule compares — Google treats a
+     *  mailbox case-insensitively, and a rule that did not would count one
+     *  person twice and ask about a guest nobody added. */
+    test('the same person spelled two ways is one person', () => {
+      const initial = valueFromDetail(withGuests([attendee('ana@x.com')]), 0, 30 * 60_000);
+      const value = { ...initial, guests: [{ email: 'Ana@X.com', optional: false }] };
+      expect(mailableGuests(value, initial)).toBe(1);
+    });
+
+    /** Yourself excluded from both sides, not just the resulting list:
+     *  removing your own row is a thing §5 explicitly allows, and telling
+     *  somebody they are about to mail themselves about it is wrong. */
+    test('yourself is excluded even when you are the one being removed', () => {
+      const initial = valueFromDetail(
+        withGuests([attendee('ana@x.com'), attendee('me@x.com', { is_self: true })]),
+        0,
+        30 * 60_000,
+      );
+      const value = { ...initial, guests: [{ email: 'ana@x.com', optional: false }] };
+      expect(mailableGuests(value, initial)).toBe(1);
+    });
   });
 });
 

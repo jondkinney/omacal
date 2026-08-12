@@ -8,9 +8,9 @@
   import SaveConfirm from './SaveConfirm.svelte';
   import type { SendUpdates } from './eventdetail';
   import {
-    CUSTOM_REPEAT, REPEAT_OPTIONS, addGuest, endAfterStart, isAddress, removableGuest,
-    removeGuest, ruleInWords, shiftedEndDate, toEventInput, toggledGuestOptional,
-    timeProblem, toggledAllDay,
+    CUSTOM_REPEAT, REPEAT_OPTIONS, addGuest, endAfterStart, isAddress, mailableGuests,
+    removableGuest, removeGuest, ruleInWords, shiftedEndDate, toEventInput,
+    toggledGuestOptional, timeProblem, toggledAllDay,
     type EventFormResult, type EventFormValue, type Scope,
   } from './eventform';
 
@@ -35,9 +35,9 @@
   } = $props();
 
   // A working copy. Every field the user can change lives here; the facts they
-  // cannot change (`isEdit`, `guestCount`, `isRecurring`, `recurrence`) are
-  // read off `initial` below, so it is obvious at each use that they are not
-  // editable state that happens to be unchanged.
+  // cannot change (`isEdit`, `isRecurring`, `recurrence`) are read off
+  // `initial` below, so it is obvious at each use that they are not editable
+  // state that happens to be unchanged.
   //
   // `initial` is also kept whole for `toEventInput`, which needs the original
   // `repeat` to tell "the user did not touch Repeat" from "the user chose the
@@ -55,6 +55,13 @@
     // calendar this app cannot write to must never survive into the value —
     // see `offerableCalendarId` for what a blank-but-saving select looked like.
     calendarId: offerableCalendarId(initial.calendarId, calendars),
+    // A copy, not the same array. `{ ...initial }` above is shallow, so
+    // without this `value.guests` would be a proxy over `initial.guests`
+    // itself — nothing writes through it today (every guest-list change
+    // reassigns `value.guests` wholesale) but `mailableGuests` below unions
+    // `value.guests` with `initial.guests`, and that union is only honest
+    // while `initial.guests` stays exactly what the form opened with.
+    guests: [...initial.guests],
   });
   let scope = $state<Scope>('this');
   /** Set by a refused save, cleared by the next edit. Deliberately not derived
@@ -92,12 +99,23 @@
    *  back is impossible — which is the point. */
   const isCustom = $derived(initial.repeat === CUSTOM_REPEAT);
   const customWords = $derived(ruleInWords(initial.recurrence));
-  const guests = $derived(initial.isEdit ? initial.guestCount : 0);
+  /** How many people Save could mail — see `mailableGuests`. Derived from the
+   *  working copy as well as `initial`, unlike everything else in this block:
+   *  the answer changes as the user edits the list, which is the whole point.
+   *  It is what decides whether Save asks at all. */
+  const guests = $derived(mailableGuests(value, initial));
   /** Whether the signed-in user is on the event, which is what makes "removing
    *  yourself" a thing that can be explained rather than a hypothetical. */
   const selfOnEvent = $derived(
     value.guests.some((g) => g.email.toLowerCase() === (value.selfEmail ?? '').toLowerCase()),
   );
+  /** "Save" on an edit, "Create" on a create — computed once so the submit
+   *  button, the `SaveConfirm` mount's own `verb` prop and the guest notice
+   *  above it cannot say three different things about the same save. A
+   *  hardcoded "Save" is the exact defect this branch fixed elsewhere: see
+   *  `SaveConfirm`'s doc comment on why a wrong word here is a lie about
+   *  whether other people are about to be mailed. */
+  const verb = $derived<'Save' | 'Create'>(initial.isEdit ? 'Save' : 'Create');
   const showScope = $derived(initial.isEdit && initial.isRecurring);
   const accounts = $derived(new Set(offerable.map((c) => c.account_email)).size);
 
@@ -178,6 +196,10 @@
     // It stopped being sound the moment the form could edit the guest list:
     // correcting a typo in an address would mail the whole room about a change
     // that concerns one person.
+    //
+    // The same reasoning reaches a create now that one can invite people. On
+    // that path `guests` counts whoever was typed in, so a create with nobody
+    // on it still goes straight out and a create with somebody on it asks.
     //
     // Nobody to tell means nothing to choose between, so a save with no guests
     // goes straight out — with `'none'`, so that `all` appears only where
@@ -456,82 +478,86 @@
       {/if}
     {/if}
 
-    <!-- **Edit only.** A create cannot invite anybody: `create_impl` refuses a
-         create that carries guests rather than dropping them, because the
-         notify choice for one does not exist yet, and a form that offered what
-         the write path refuses is a form that can only disappoint. -->
-    {#if initial.isEdit}
-      <div class="guests" data-testid="guests">
-        <span class="lab">Guests</span>
-        <ul>
-          {#each value.guests as g (g.email)}
-            {@const isSelf = g.email.toLowerCase() === (value.selfEmail ?? '').toLowerCase()}
-            <li class="guest" data-guest={g.email}>
-              <span class="addr" title={g.email}>{g.email}{isSelf ? ' (you)' : ''}</span>
-              <label class="opt">
-                <!-- §4. The one field of somebody else's row this form may
-                     author — everything else about them is echoed back from
-                     what is stored. -->
-                <input
-                  type="checkbox"
-                  aria-label="Optional: {g.email}"
-                  checked={g.optional}
-                  onchange={() => (value.guests = toggledGuestOptional(value.guests, g.email))}
-                />
-                Optional
-              </label>
-              <!-- §5: the organizer is absent from this control rather than
-                   disabled in it. Google refuses the removal, so offering it
-                   produces a save that fails for a reason nothing explains. -->
-              {#if removableGuest(g.email, value.organizerEmail)}
-                <button
-                  type="button"
-                  class="x"
-                  aria-label={isSelf ? 'Remove yourself from this event' : `Remove ${g.email}`}
-                  onclick={() => (value.guests = removeGuest(value.guests, g.email))}
-                >×</button>
-              {/if}
-            </li>
-          {/each}
-        </ul>
-        <div class="addguest">
-          <input
-            aria-label="Add guest"
-            placeholder="name@example.com"
-            bind:value={draft}
-            aria-invalid={invalidField === 'guest' ? 'true' : undefined}
-            onkeydown={(e) => {
-              // This field is inside the `<form>`, so an unhandled Return
-              // submits it — saving an event with a half-typed guest list, and
-              // on an event with guests opening the notify choice for a change
-              // nobody had finished making.
-              if (e.key === 'Enter') {
-                e.preventDefault();
-                addTyped();
-              }
-            }}
-          />
-          <button type="button" onclick={addTyped}>Add</button>
-        </div>
-        {#if selfOnEvent}
-          <!-- §5. Removing yourself takes you off the event; declining keeps
-               you on it and tells the organizer. The control above names what
-               it does, and this says what it is not — between them, nothing on
-               this form reads as an RSVP. -->
-          <p class="hint" data-testid="self-guest-hint">
-            Removing yourself takes you off the event. That is not the same as
-            declining — to say you cannot come, use the event's RSVP buttons.
-          </p>
-        {/if}
+    <!-- **Both paths.** This was edit-only for as long as `create_impl`
+         refused a create carrying guests — a form offering what the write path
+         refuses can only disappoint. Both are gone: the create path builds its
+         attendee array through the same `attendees_for_edit` the edit path
+         uses, and Save asks the same notify question.
+
+         On a create `organizerEmail` and `selfEmail` are null, so every row is
+         removable and neither the "(you)" marker nor the self-removal hint
+         appears. All three are right — there is no organizer row and no self
+         row on an event that does not exist yet. -->
+    <div class="guests" data-testid="guests">
+      <span class="lab">Guests</span>
+      <ul>
+        {#each value.guests as g (g.email)}
+          {@const isSelf = g.email.toLowerCase() === (value.selfEmail ?? '').toLowerCase()}
+          <li class="guest" data-guest={g.email}>
+            <span class="addr" title={g.email}>{g.email}{isSelf ? ' (you)' : ''}</span>
+            <label class="opt">
+              <!-- §4. The one field of somebody else's row this form may
+                   author — everything else about them is echoed back from
+                   what is stored. -->
+              <input
+                type="checkbox"
+                aria-label="Optional: {g.email}"
+                checked={g.optional}
+                onchange={() => (value.guests = toggledGuestOptional(value.guests, g.email))}
+              />
+              Optional
+            </label>
+            <!-- §5: the organizer is absent from this control rather than
+                 disabled in it. Google refuses the removal, so offering it
+                 produces a save that fails for a reason nothing explains. -->
+            {#if removableGuest(g.email, value.organizerEmail)}
+              <button
+                type="button"
+                class="x"
+                aria-label={isSelf ? 'Remove yourself from this event' : `Remove ${g.email}`}
+                onclick={() => (value.guests = removeGuest(value.guests, g.email))}
+              >×</button>
+            {/if}
+          </li>
+        {/each}
+      </ul>
+      <div class="addguest">
+        <input
+          aria-label="Add guest"
+          placeholder="name@example.com"
+          bind:value={draft}
+          aria-invalid={invalidField === 'guest' ? 'true' : undefined}
+          onkeydown={(e) => {
+            // This field is inside the `<form>`, so an unhandled Return
+            // submits it — saving an event with a half-typed guest list, and
+            // on an event with guests opening the notify choice for a change
+            // nobody had finished making.
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              addTyped();
+            }
+          }}
+        />
+        <button type="button" onclick={addTyped}>Add</button>
       </div>
-    {/if}
+      {#if selfOnEvent}
+        <!-- §5. Removing yourself takes you off the event; declining keeps
+             you on it and tells the organizer. The control above names what
+             it does, and this says what it is not — between them, nothing on
+             this form reads as an RSVP. -->
+        <p class="hint" data-testid="self-guest-hint">
+          Removing yourself takes you off the event. That is not the same as
+          declining — to say you cannot come, use the event's RSVP buttons.
+        </p>
+      {/if}
+    </div>
 
     {#if guests > 0}
       <!-- What used to say "Saving will notify N guests." It cannot say that
            any more: §3 makes it a choice, and the buttons on the panel Save
            opens are where the choice is made. -->
       <p class="notice" data-testid="guest-notice">
-        {guests} guest{guests === 1 ? '' : 's'} can be told by email, or not. Save asks.
+        {guests} guest{guests === 1 ? '' : 's'} can be told by email, or not. {verb} asks.
       </p>
     {/if}
 
@@ -542,7 +568,7 @@
       <!-- Deliberately never disabled by validity. A Save that does nothing
            when clicked leaves the user guessing which field is wrong; a Save
            that answers is the whole point of refusing inline. -->
-      <button type="submit" class="primary">{initial.isEdit ? 'Save' : 'Create'}</button>
+      <button type="submit" class="primary">{verb}</button>
     </div>
   </form>
 </div>
@@ -552,6 +578,7 @@
 {#if asking}
   <SaveConfirm
     guests={guests}
+    {verb}
     title={value.title.trim() === '' ? '(no title)' : value.title}
     {anchor}
     onconfirm={confirmSave}
