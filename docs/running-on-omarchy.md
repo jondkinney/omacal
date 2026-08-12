@@ -41,6 +41,11 @@ Identical to the macOS guide's steps 1–4 — see
 consent screen (**publish to Production**, or refresh tokens expire after seven
 days), and the Desktop client ID.
 
+If a colleague already gave you a `client_id` and `client_secret`, all of that
+is done — write the config file below, sign in as yourself, and click through
+the **"Google hasn't verified this app"** screen on first sign-in (**Advanced →
+Go to … (unsafe) → Continue**). Your token is your own, stored on your machine.
+
 The config file is at the same path:
 
     mkdir -p ~/.config/omacal

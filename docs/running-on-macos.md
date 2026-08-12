@@ -26,6 +26,14 @@ Google, so it cannot touch or invent real calendar data. The header shows a
 
 ## Connecting your real calendar
 
+> **Given a client ID and secret by a colleague?** Then steps 1–3 are already
+> done — skip straight to [step 4](#4-write-the-config-file) and paste what you
+> were given. Their client identifies the *app*, not their account: you sign in
+> as yourself, and your token lands in your own Keychain. On first sign-in
+> Google shows a **"Google hasn't verified this app"** screen — expected for an
+> unverified single-team app; click **Advanced → Go to … (unsafe) →
+> Continue**.
+
 ### 1. Create a Google Cloud project
 
 1. <https://console.cloud.google.com/projectcreate> — create a project.
