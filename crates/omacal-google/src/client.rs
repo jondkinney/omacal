@@ -178,9 +178,11 @@ impl CalendarClient {
     /// **The reasoning that made it `"all"` still holds, for the caller it was
     /// written about.** It read: *without it Google silently applies the change
     /// and nobody is told.* That is right for the **form** — a new time was
-    /// typed on purpose and Save was pressed — so every edit and every RSVP
-    /// still passes `"all"`, and none of that behaviour changed when this
-    /// became a parameter.
+    /// typed on purpose and Save was pressed — but since the guest-list work
+    /// that rightness is honoured differently there: the form now asks and
+    /// carries whatever answer it gets, the same choice guest-list spec §3
+    /// gives a create. An RSVP has no dialog behind it and still passes
+    /// `"all"` unconditionally, exactly as it always has.
     ///
     /// It is wrong for a **gesture**. A drag can happen by accident, and
     /// mailing a meeting's whole guest list is not something a slip of the
@@ -268,15 +270,16 @@ impl CalendarClient {
 
     /// Create an event. `send_updates` is Google's own vocabulary — `"all"`,
     /// `"externalOnly"` or `"none"` — and is a parameter rather than a
-    /// constant because the two creates in this app want opposite answers.
+    /// constant.
     ///
-    /// A create typed into the new-event form has no attendees to notify:
-    /// omacal cannot add guests, so there is nobody on a fresh event to tell,
-    /// and `"none"` keeps a new entry in your own calendar from mailing
-    /// anyone. Splitting a recurring series with "this and following" is the
-    /// other case, and it is not the same one — the event it creates carries
-    /// the whole guest list of the series it continues. See
-    /// `events::split_series` for why that one passes `"all"`.
+    /// The new-event form's create carries whatever guest list the user typed
+    /// and whatever `sendUpdates` answer they gave — the parameter exists
+    /// because this app's two creates want different answers. The form's
+    /// create asks the user; splitting a recurring series with "this and
+    /// following" is the other case, and it is not the same one — it passes
+    /// `"all"` because the event it creates carries the whole guest list of
+    /// the series it continues. See `events::split_series` for why that one
+    /// passes `"all"`.
     ///
     /// Hardcoding `"none"` here, as this method did when a create could only
     /// ever be guestless, is what makes that distinction invisible: a split

@@ -3206,11 +3206,13 @@ test.describe('EventForm', () => {
     await open(page, 'create-guests');
     await addGuest(page, 'ana@x.com');
     await page.getByRole('button', { name: 'Create', exact: true }).click();
+    await expect(page.getByRole('dialog', { name: 'Create event' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Create without notifying' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Create and notify guests' })).toBeVisible();
 
     await open(page, 'with-guests');
     await page.getByRole('button', { name: 'Save', exact: true }).click();
+    await expect(page.getByRole('dialog', { name: 'Save event' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Save without notifying' })).toBeVisible();
   });
 

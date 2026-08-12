@@ -49,12 +49,13 @@ new one. A drag never emails anybody by itself: moving an event with guests asks
 first, and *Move without notifying* is the default answer. Sweeping opens the
 event form pre-filled with the span rather than creating something untitled.
 
-**Guests** — add somebody by address, remove them, mark them optional. **Save
-asks who to tell** rather than always mailing the room, which is the change
-worth knowing about if you used an earlier build: correcting a typo in an
-address no longer notifies everyone. The organizer cannot be removed, and
-removing *yourself* is offered but is not the same as declining — that is what
-the RSVP buttons are for.
+**Guests** — add somebody by address, remove them, mark them optional. A
+brand-new event can carry guests from the start now, the same as one already on
+your calendar — omacal used to refuse that. **Save asks who to tell** rather
+than always mailing the room, which is the change worth knowing about if you
+used an earlier build: correcting a typo in an address no longer notifies
+everyone. The organizer cannot be removed, and removing *yourself* is offered
+but is not the same as declining — that is what the RSVP buttons are for.
 
 **Search** — `/`, or the magnifier in the header. Titles only, results as you
 type, nearest to today first in either direction. A recurring event is one

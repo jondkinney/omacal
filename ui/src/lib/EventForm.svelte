@@ -55,6 +55,13 @@
     // calendar this app cannot write to must never survive into the value —
     // see `offerableCalendarId` for what a blank-but-saving select looked like.
     calendarId: offerableCalendarId(initial.calendarId, calendars),
+    // A copy, not the same array. `{ ...initial }` above is shallow, so
+    // without this `value.guests` would be a proxy over `initial.guests`
+    // itself — nothing writes through it today (every guest-list change
+    // reassigns `value.guests` wholesale) but `mailableGuests` below unions
+    // `value.guests` with `initial.guests`, and that union is only honest
+    // while `initial.guests` stays exactly what the form opened with.
+    guests: [...initial.guests],
   });
   let scope = $state<Scope>('this');
   /** Set by a refused save, cleared by the next edit. Deliberately not derived
@@ -102,6 +109,13 @@
   const selfOnEvent = $derived(
     value.guests.some((g) => g.email.toLowerCase() === (value.selfEmail ?? '').toLowerCase()),
   );
+  /** "Save" on an edit, "Create" on a create — computed once so the submit
+   *  button, the `SaveConfirm` mount's own `verb` prop and the guest notice
+   *  above it cannot say three different things about the same save. A
+   *  hardcoded "Save" is the exact defect this branch fixed elsewhere: see
+   *  `SaveConfirm`'s doc comment on why a wrong word here is a lie about
+   *  whether other people are about to be mailed. */
+  const verb = $derived<'Save' | 'Create'>(initial.isEdit ? 'Save' : 'Create');
   const showScope = $derived(initial.isEdit && initial.isRecurring);
   const accounts = $derived(new Set(offerable.map((c) => c.account_email)).size);
 
@@ -543,7 +557,7 @@
            any more: §3 makes it a choice, and the buttons on the panel Save
            opens are where the choice is made. -->
       <p class="notice" data-testid="guest-notice">
-        {guests} guest{guests === 1 ? '' : 's'} can be told by email, or not. Save asks.
+        {guests} guest{guests === 1 ? '' : 's'} can be told by email, or not. {verb} asks.
       </p>
     {/if}
 
@@ -554,7 +568,7 @@
       <!-- Deliberately never disabled by validity. A Save that does nothing
            when clicked leaves the user guessing which field is wrong; a Save
            that answers is the whole point of refusing inline. -->
-      <button type="submit" class="primary">{initial.isEdit ? 'Save' : 'Create'}</button>
+      <button type="submit" class="primary">{verb}</button>
     </div>
   </form>
 </div>
@@ -564,7 +578,7 @@
 {#if asking}
   <SaveConfirm
     guests={guests}
-    verb={initial.isEdit ? 'Save' : 'Create'}
+    {verb}
     title={value.title.trim() === '' ? '(no title)' : value.title}
     {anchor}
     onconfirm={confirmSave}

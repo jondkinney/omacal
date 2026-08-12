@@ -20,7 +20,7 @@
      *  on a create. The panel has to name the action it is confirming: "Save"
      *  over a form whose own action reads "Create" is a small lie in the one
      *  dialog whose whole job is to be unambiguous about mailing other people. */
-    verb: string;
+    verb: 'Save' | 'Create';
     /** The event's title, so the heading names what is being saved. Whatever
      *  opened this panel is behind it and cannot be read. */
     title: string;
