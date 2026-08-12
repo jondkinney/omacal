@@ -45,9 +45,13 @@ pub(crate) struct EventFields {
     /// would be guesswork — see [`crate::events::attendees_for_edit`], which is
     /// where the target is reconciled against what is actually stored.
     ///
-    /// **Read by the edit path only.** A create builds its body from these
-    /// fields directly and ignores this one; inviting guests on a brand-new
-    /// event is not in this pass, and nothing sets it on that path.
+    /// **Read by both write paths.** The edit path reconciles this target list
+    /// against what is stored ([`crate::events::attendees_for_edit`]); the
+    /// create path runs the same builder against an empty list, since a
+    /// brand-new event has nobody on it. The absent/present distinction above
+    /// still does different work on each: on an edit, absent is the only way to
+    /// say "leave the list alone", while on a create there is no list to leave
+    /// alone and absent simply means nobody was invited.
     pub guests: Option<Vec<Guest>>,
     /// **The reminder settings the event should end up with**, or `None` for
     /// "reminders were not touched" — `guests`' own three-state, minus the
