@@ -118,3 +118,7 @@ Specs and implementation plans live under
 are the way they are — particularly the recurring-event write path, where the
 difference between "this occurrence" and "the whole series" is the difference
 between one edit and an email to everybody on the invitation.
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).
