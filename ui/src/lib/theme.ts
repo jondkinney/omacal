@@ -10,6 +10,13 @@ export type Palette = {
  *  (`applyPalette`) and the live `theme-changed` listener go through this. */
 export function setPalette(p: Palette): void {
   const r = document.documentElement.style;
+  // Not a variable: the one property here the engine reads itself. Scrollbars
+  // are the piece of the window omacal never paints — WKWebView and WebKitGTK
+  // draw them from `color-scheme`, and with it unset the page counts as light,
+  // which put a white scrollbar on every dark theme. Branching on `is_dark`
+  // like `--hairline` below keeps a light Omarchy theme's chrome light, and
+  // routing it through here is what makes `theme-changed` restyle it live.
+  r.setProperty('color-scheme', p.is_dark ? 'dark' : 'light');
   r.setProperty('--bg', p.bg);
   r.setProperty('--surface', p.surface);
   r.setProperty('--text', p.text);

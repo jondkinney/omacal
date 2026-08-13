@@ -2013,6 +2013,31 @@ test.describe('App', () => {
       )
       .toBe('#c04a2b');
   });
+
+  test('color-scheme follows the palette, so engine chrome matches the theme', async ({ page }) => {
+    // The scrollbar is the one piece of the window omacal does not paint: the
+    // engine draws it from `color-scheme`, which no published variable
+    // reaches. Left unset it defaults to light — which is how a dark calendar
+    // shipped with a white scrollbar on macOS. Inline style rather than
+    // computed, like the `--accent` assertion above: `setPalette` writing it
+    // onto :root is the contract under test.
+    await page.goto(app());
+    await expect
+      .poll(() => page.evaluate(() => document.documentElement.style.colorScheme))
+      .toBe('dark');
+
+    // Both directions, because `is_dark: false` must mean light chrome — dark
+    // scrollbars on a light Omarchy theme would be this bug mirrored.
+    await page.evaluate(() =>
+      window.__harness.emit('theme-changed', {
+        bg: '#fdfdfb', surface: '#ffffff', text: '#1a1a1a',
+        muted: '#6b6b70', accent: '#c04a2b', is_dark: false,
+      }),
+    );
+    await expect
+      .poll(() => page.evaluate(() => document.documentElement.style.colorScheme))
+      .toBe('light');
+  });
 });
 
 // The grid, the popover and the form must name the SAME day for an all-day
