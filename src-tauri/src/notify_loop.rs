@@ -64,6 +64,14 @@ fn to_core(r: &omacal_store::Reminder) -> Reminder {
 /// Cancelled rows and suppressed slots are skipped exactly as the four grid
 /// assemblers skip them — a deleted occurrence of a series must not notify any
 /// more than it should draw.
+///
+/// **A declined invitation notifies nothing.** Both Google Calendar and Apple
+/// Calendar treat declining as "off my schedule" and go quiet; a reminder for
+/// a meeting the user said no to is noise wearing punctuality's clothes. The
+/// row-level skip handles both shapes: a declined event is one row, and a
+/// declined occurrence of a series is an exception row that has already
+/// suppressed its parent's slot. `tentative` and `needsAction` still fire —
+/// a maybe and an unanswered invitation are both still claims on the hour.
 async fn scheduled_events(
     pool: &SqlitePool,
     now_ms: i64,
@@ -82,6 +90,11 @@ async fn scheduled_events(
         // A cancelled exception exists only to record that an occurrence was
         // deleted. It has been counted into `suppressed`; it notifies nothing.
         if src.status == "cancelled" {
+            continue;
+        }
+        // Declined means off the schedule (§ doc comment above): skip the row,
+        // whether it is a whole event or one occurrence's exception.
+        if src.self_response.as_deref() == Some("declined") {
             continue;
         }
         for iv in crate::commands::occurrences(src, now_ms, to_ms) {
@@ -494,6 +507,54 @@ mod tests {
 
         let (_, hidden) = pass_at(&pool, T0900Z - 10 * MINUTE).await;
         assert!(hidden.is_empty(), "deselecting a calendar cancels its pending reminders");
+    }
+
+    /// Declining an invitation is saying "off my schedule", and both Google
+    /// and Apple go quiet from that moment. A `tentative` reply, by contrast,
+    /// is still a claim on the hour and still fires — the pair below is one
+    /// test so the contrast is witnessed by the same clock.
+    #[tokio::test]
+    async fn a_declined_events_reminder_notifies_nothing_and_a_tentative_ones_still_fires() {
+        let pool = seeded("UTC", "[]").await;
+
+        let mut declined = event("e1", T0900Z, T0900Z + HOUR, own(10));
+        declined.self_response = Some("declined".into());
+        omacal_store::upsert_event(&pool, &declined).await.unwrap();
+
+        let mut tentative = event("e2", T0900Z, T0900Z + HOUR, own(10));
+        tentative.self_response = Some("tentative".into());
+        omacal_store::upsert_event(&pool, &tentative).await.unwrap();
+
+        let (_, posted) = pass_at(&pool, T0900Z - 10 * MINUTE).await;
+        assert_eq!(posted, vec![(2, 10)], "declined stays silent; a maybe still rings");
+    }
+
+    /// Declining one occurrence of a series silences that occurrence alone.
+    /// Google records the decline on an exception row; the exception suppresses
+    /// its parent's slot and is itself skipped, while the rest of the series
+    /// keeps its reminders.
+    #[tokio::test]
+    async fn a_declined_occurrence_of_a_series_notifies_nothing_while_the_series_still_fires() {
+        let pool = seeded("UTC", "[]").await;
+
+        let mut master = event("m1", T0900Z, T0900Z + HOUR, own(10));
+        master.recurrence = Some("RRULE:FREQ=DAILY".into());
+        omacal_store::upsert_event(&pool, &master).await.unwrap();
+
+        // Tomorrow's occurrence is declined — an exception row, still confirmed.
+        let mut declined = event("m1_20260811", T0900Z + DAY, T0900Z + DAY + HOUR, own(10));
+        declined.self_response = Some("declined".into());
+        declined.recurring_event_id = Some("m1".into());
+        declined.original_start_utc = Some(T0900Z + DAY);
+        omacal_store::upsert_event(&pool, &declined).await.unwrap();
+
+        // Ten minutes before the declined occurrence: silence.
+        let (_, posted) = pass_at(&pool, T0900Z + DAY - 10 * MINUTE).await;
+        assert!(posted.is_empty(), "a declined occurrence must not notify");
+
+        // Ten minutes before the day after's occurrence: the series is intact.
+        let (_, posted) = pass_at(&pool, T0900Z + 2 * DAY - 10 * MINUTE).await;
+        assert_eq!(posted, vec![(1, 10)], "declining one occurrence must not silence the series");
     }
 
     /// A deleted occurrence of a series must not notify, any more than it
