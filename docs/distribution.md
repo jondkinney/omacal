@@ -2,13 +2,18 @@
 
 What it takes to put omacal in other people's hands — a handful of testers
 first, the public eventually — recorded while the reasoning is fresh
-(2026-08-11). Nothing here is built yet unless it says so; this is the map,
-not the territory.
+(2026-08-11, publisher plan added 2026-08-13). Nothing here is built yet
+unless it says so; this is the map, not the territory.
 
 The one fact everything below hangs off: **the OAuth client credentials are
 the real barrier, not packaging.** Today every user hand-creates a Google
 Cloud project and writes `~/.config/omacal/config.toml`. No normal person
 will do that, and no step below makes sense until that stops being required.
+
+The second fact, decided 2026-08-13: **Extreme Labs publishes this, not a
+person.** That is mostly a question of which accounts own which assets, and
+those assets are the ones painful to migrate later — so they are born under
+the company (§6).
 
 ## 1. Embed the OAuth client in the build
 
@@ -57,12 +62,17 @@ the product's state:
 
 **Verification** is the long pole — start it early. Calendar scopes are
 *sensitive* but not *restricted*, so it is the free review (homepage, privacy
-policy, demonstrating scope use — GitHub Pages satisfies the first two), not
-the paid security assessment Gmail/Drive apps need. Days to weeks, once.
-Before submitting, **minimize scopes**: request `calendar.events` plus a
-read-only calendar list rather than the full `calendar` scope if that covers
-what sync and the write paths actually do — narrower requests review faster
-and read less scary on the consent screen.
+policy, demonstrating scope use), not the paid security assessment
+Gmail/Drive apps need. Days to weeks, once. Before submitting, **minimize
+scopes**: request `calendar.events` plus a read-only calendar list rather
+than the full `calendar` scope if that covers what sync and the write paths
+actually do — narrower requests review faster and read less scary on the
+consent screen.
+
+Verification checks **domain ownership, not domain exclusivity**: the
+homepage and privacy policy must live on a domain the Cloud project owner
+has verified in Search Console. The company's existing domain qualifies —
+see §7; no separate domain is required.
 
 **Quota** is shared across all users of the embedded client. Calendar's
 default (~1M queries/day) supports thousands of installs syncing every 5
@@ -79,8 +89,12 @@ minutes; the `config.toml` escape hatch is also the documented courtesy exit
   Fedora alike. `--no-bundle` (what this machine uses day-to-day) skips all
   of this and emits only the bare binary.
 - **AUR package** for Arch/Omarchy users — the native path on this app's home
-  platform. Eventually **Flathub** for the widest reach; package managers
-  also solve updates.
+  platform: `omacal-bin` repackaging the GitHub release, optionally `omacal`
+  building from source. AUR maintainership is a personal account, not an
+  org's — Plamen maintains, the org owns the upstream; that split is normal.
+  Eventually **Flathub** for the widest reach (with its own debugging pass —
+  tray + keyring under Flatpak's sandbox is not free); package managers also
+  solve updates.
 - The one honest caveat for the README: sign-in stores the refresh token in
   the Secret Service, so a keyring daemon (gnome-keyring / KeePassXC) must be
   running. Desktop GNOME/KDE users have one by default; minimal-WM setups are
@@ -88,14 +102,16 @@ minutes; the `config.toml` escape hatch is also the documented courtesy exit
 
 ### macOS
 
-- Must be **built on a Mac** — no realistic cross-compile for Tauri. One
-  command produces the `.dmg`; that session is also the moment to regenerate
-  the stale darwin snapshot baselines (`npx playwright test
-  components.spec.ts --update-snapshots`).
+- Local builds need a Mac — no realistic cross-compile for Tauri — but
+  **GitHub Actions macOS runners lift that constraint for releases**: the
+  release workflow builds, signs and notarizes the `.dmg` in CI with
+  secrets. A local Mac session is still the moment to regenerate the stale
+  darwin snapshot baselines (`npx playwright test components.spec.ts
+  --update-snapshots`).
 - **Unsigned**: Gatekeeper blocks on first open; right-click → Open works and
   is acceptable for a handful of testers, and nobody else.
-- **Real distribution needs an Apple Developer ID** ($99/yr): Developer ID
-  signing plus notarization removes the friction entirely. Distribute via
+- **Real distribution needs an Apple Developer account** ($99/yr): Developer
+  ID signing plus notarization removes the friction entirely. Distribute via
   GitHub Releases and a **Homebrew cask**.
 
 ## 4. Handover to a few testers (the short version)
@@ -110,21 +126,91 @@ minutes; the `config.toml` escape hatch is also the documented courtesy exit
 
 ## 5. Open source, the additional furniture
 
-- **LICENSE** — MIT, or the Rust-conventional MIT/Apache-2.0 dual.
+- **LICENSE** — MIT/Apache-2.0 dual, the Rust convention: matches every
+  dependency's expectations, imposes nothing on packagers, and the Apache
+  half carries a patent grant. Copyright line: **© 2026 Extreme Labs**. All
+  commits so far are personal — a one-line internal note assigning the work
+  to the company closes that loop, and it must happen *before* outside
+  contributions arrive, because theirs cannot be claimed retroactively.
+- **DCO, not a CLA** — sign-off on commits, the kernel/GitLab standard. A
+  CLA is friction this audience will resent; for MIT/Apache code the DCO is
+  enough.
 - **README** with a normal-person quickstart (install → launch → connect);
   the existing `docs/` already carry the deep guides.
-- **CI**: build + both suites on a Linux/macOS matrix; a tag-triggered
-  release workflow that builds all artifacts with the credentials injected
-  from repository secrets.
-- Issue templates, and the scope-minimization audit from §2 done before the
-  verification submission rather than after.
+- **CI on every PR**: `cargo test --workspace` + the Playwright suite on a
+  Linux/macOS matrix — both suites already exist, this is transcription. A
+  tag-triggered release workflow (`tauri-action` does most of it) builds all
+  artifacts with the credentials injected from repository secrets.
+- **SECURITY.md** with a company contact (`security@` the company domain),
+  CONTRIBUTING.md stating the DCO and how to run both suites, issue
+  templates, `cargo audit`/Dependabot.
+- **Semver tags + hand-curated release notes.** The commit style here is
+  expressive rather than conventional-commits — keep it; changelogs are
+  written, not generated.
+- **Before flipping public: scan the full history for secrets** (gitleaks or
+  trufflehog). Real client ids have been in `config.toml` on dev machines
+  throughout — verify none ever landed in a commit. Also decide consciously
+  that `docs/superpowers/` (internal plans and specs) ships — the current
+  answer is yes, it is good archaeology, but it should be a decision, not an
+  accident.
 
-## 6. Order of work
+## 6. Extreme Labs as publisher: which accounts own what
 
-1. Credentials embedding (§1) — unblocks everything else.
-2. LICENSE + README + CI.
-3. Verification submission (§2) — the long pole, so early.
-4. Packaging polish: AUR first, then Homebrew + notarization, Flathub last.
+Everything user-facing chains back to one of these, and each is painful to
+migrate later — so each is born under the company, not a person:
 
-Only two pieces cannot be built from this chair: the Google verification
-submission and the Apple Developer ID both belong to the project owner.
+1. **GitHub org** — the repo goes public at
+   `github.com/<extreme-labs-org>/omacal`, its final home. Transfers
+   redirect clones but not reputation. Plamen stays maintainer; the org
+   owns.
+2. **Google Cloud project** — the OAuth client embedded in release builds
+   lives in a project owned by an Extreme Labs Google account (Workspace,
+   not a personal Gmail). The consent screen shows the app name and the
+   verified homepage domain — that pair *is* the publisher identity users
+   see. Search Console verification of the homepage domain must be done from
+   this same account, so §7's domain answer precedes the verification
+   submission.
+3. **Apple Developer** — enroll as an **organization** (needs a D-U-N-S
+   number; slower than individual enrollment, so start early). The signing
+   certificate then reads "Extreme Labs", which is what belongs on a
+   company-published `.dmg`.
+4. **The domain** (§7) — company-owned, in the company's Search Console.
+
+## 7. The web page
+
+One page does triple duty: landing page, install instructions, and the
+homepage + privacy policy that Google verification requires.
+
+- **Domain: a subdomain of the existing company domain** —
+  `omacal.extremelabs.<tld>` — not a separate purchase. Verification needs
+  ownership, not exclusivity (§2), and a domain-level Search Console
+  verification covers subdomains. The subdomain points at GitHub Pages with
+  one CNAME record, touching nothing on the main site. A dedicated domain
+  (`omacal.app`) buys branding only, at the cost of another verification and
+  renewal; if ever wanted, it is a redirect later, not a migration.
+- **Landing page**: screenshots — the app is visual, and omarchy
+  theme-following is the demo — then install per platform in audience order
+  (AUR one-liner, AppImage, Homebrew), then the repo link.
+- **Privacy policy**, honest and short because the truth is short: no
+  telemetry, no server, tokens live in the OS keychain, event data flows
+  only between the user's machine and Google. For this audience that page
+  is also the marketing.
+
+## 8. Order of work
+
+1. **Company accounts first** — GitHub org, Google Cloud project under the
+   company account, subdomain + Search Console, Apple org enrollment
+   started (the longest bureaucratic lead time).
+2. Credentials embedding (§1) — unblocks everything else.
+3. LICENSE + DCO + README + CI (§5), secret-scan the history, flip public.
+4. Web page with privacy policy (§7), then the verification submission (§2)
+   — the long pole, so early; the 100-user cap is what actually gates
+   "anyone can install this".
+5. Packaging: AUR first, GitHub Release with AppImage. Then an omarchy
+   community mention (Discord, ecosystem lists) — the highest-leverage
+   marketing available once install is one line.
+6. macOS signing + notarization + Homebrew cask; Flathub last.
+
+Only three pieces cannot be built from this chair: the Google verification
+submission, the Apple enrollment, and the Search Console verification — all
+belong to the account owner, which now means Extreme Labs.
