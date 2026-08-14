@@ -307,6 +307,21 @@
   // The other half of that story: a sync that *fails* has to say so. Nothing
   // else on screen can — the "Synced N ago" label is computed from the last
   // successful sync, so it cannot report its own staleness.
+  // The webview is a browser and zooms like one: Ctrl+scroll — and a
+  // touchpad pinch, which the engine reports as the same gesture — scales
+  // the whole page. Brushing Ctrl while scrolling the grid did exactly
+  // that, and "why is everything suddenly huge" is not a question a
+  // calendar should pose. The wheel default is cancelable, so cancelling
+  // it when Ctrl is down keeps scroll as scroll; `passive: false` is what
+  // makes the preventDefault count.
+  $effect(() => {
+    const blockZoomWheel = (e: WheelEvent) => {
+      if (e.ctrlKey) e.preventDefault();
+    };
+    window.addEventListener('wheel', blockZoomWheel, { passive: false, capture: true });
+    return () => window.removeEventListener('wheel', blockZoomWheel, { capture: true });
+  });
+
   $effect(() => {
     const un = listen<{ message?: string }>('sync-failed', (e) => {
       error = e.payload?.message ?? 'Sync failed.';
