@@ -51,6 +51,24 @@ struct AlacrittyNormal {
     white: Option<String>,
 }
 
+/// The palette file Omarchy themes declare their colours in: flat keys,
+/// `accent = "#7aa2f7"` first among them. Alacritty's `normal.blue` was only
+/// ever a guess at this value — right for Tokyo Night, wrong for any theme
+/// whose accent is not its terminal blue — so when the theme author wrote
+/// the accent down, believe them.
+#[derive(Deserialize)]
+struct ColorsFile {
+    accent: Option<String>,
+}
+
+/// The explicit accent from a theme's `colors.toml`, normalised, or `None`
+/// when the file is not TOML, has no accent, or the accent is not a colour —
+/// each of which means "keep guessing", never "break the theme".
+pub fn parse_colors_accent(toml_src: &str) -> Option<String> {
+    let file: ColorsFile = toml::from_str(toml_src).ok()?;
+    parse_hex(&file.accent?).map(format_hex)
+}
+
 /// Parses `#rrggbb`, `0xrrggbb`, `0Xrrggbb`, or bare `rrggbb` into RGB bytes.
 /// Returns None for anything else — no slicing panics, no partial parses.
 fn parse_hex(s: &str) -> Option<[u8; 3]> {
@@ -143,13 +161,14 @@ pub fn parse_alacritty(toml_src: &str) -> Option<Palette> {
 }
 
 /// Resolves the active palette, following the spec §10 fallback chain:
-/// `alacritty.toml` in the theme directory, then the built-in dark palette.
-/// Never fails.
+/// `alacritty.toml` in the theme directory, then the built-in dark palette —
+/// and in either case, `colors.toml`'s explicit `accent` outranks whatever
+/// the base produced. Never fails.
 pub fn resolve(theme_dir: Option<&Path>) -> Palette {
     let Some(dir) = theme_dir else {
         return Palette::fallback_dark();
     };
-    match std::fs::read_to_string(dir.join("alacritty.toml")) {
+    let mut palette = match std::fs::read_to_string(dir.join("alacritty.toml")) {
         Ok(src) => parse_alacritty(&src).unwrap_or_else(|| {
             tracing::warn!(?dir, "theme found but could not be parsed; using fallback");
             Palette::fallback_dark()
@@ -158,7 +177,18 @@ pub fn resolve(theme_dir: Option<&Path>) -> Palette {
             tracing::warn!(?dir, %e, "no readable theme; using fallback");
             Palette::fallback_dark()
         }
+    };
+
+    // Applied to the fallback too, deliberately: a theme whose alacritty.toml
+    // is broken but whose colors.toml names an accent gets the fallback's
+    // legible base wearing the theme's own accent — closer to intent than
+    // either file alone.
+    if let Ok(src) = std::fs::read_to_string(dir.join("colors.toml")) {
+        if let Some(accent) = parse_colors_accent(&src) {
+            palette.accent = accent;
+        }
     }
+    palette
 }
 
 /// The conventional Omarchy location. Returns `None` off Linux or when absent.
@@ -250,6 +280,52 @@ white = "#a9b1d6"
         assert_ne!(p.surface, p.bg, "surface should differ from bg");
         let _ = std::fs::remove_file(&theme_file);
         let _ = std::fs::remove_dir(&temp_dir);
+    }
+
+    /// The whole feature: the author's accent beats the blue we guessed.
+    /// Distinct values on purpose — an orange accent over a blue guess is
+    /// exactly the theme (e.g. anything warm) the guess got wrong.
+    #[test]
+    fn the_explicit_accent_outranks_alacrittys_blue() {
+        let temp_dir = std::env::temp_dir().join(format!("omacal_accent_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        std::fs::write(
+            temp_dir.join("alacritty.toml"),
+            "[colors.primary]\nbackground = \"#1a1b26\"\nforeground = \"#c0caf5\"\n[colors.normal]\nblue = \"#7aa2f7\"",
+        )
+        .unwrap();
+        std::fs::write(temp_dir.join("colors.toml"), "accent = \"#e0af68\"").unwrap();
+
+        let p = resolve(Some(&temp_dir));
+        assert_eq!(p.accent, "#e0af68", "the theme said orange; blue was a guess");
+        assert_eq!(p.bg, "#1a1b26", "everything else still comes from alacritty");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    /// The other half, without which the override could be `accent = file
+    /// contents`: garbage in colors.toml keeps the guess rather than
+    /// breaking the palette.
+    #[test]
+    fn a_bad_or_absent_colors_accent_keeps_the_guess() {
+        assert_eq!(parse_colors_accent("accent = \"#e0af68\""), Some("#e0af68".into()));
+        assert_eq!(parse_colors_accent("accent = \"0xE0AF68\""), Some("#e0af68".into()));
+        assert_eq!(parse_colors_accent("accent = \"not-a-colour\""), None);
+        assert_eq!(parse_colors_accent("cursor = \"#ffffff\""), None, "no accent key");
+        assert_eq!(parse_colors_accent("this is not toml {{{"), None);
+
+        // And through `resolve`: a colors.toml with a broken accent leaves
+        // alacritty's answer standing.
+        let temp_dir = std::env::temp_dir().join(format!("omacal_badacc_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        std::fs::write(
+            temp_dir.join("alacritty.toml"),
+            "[colors.primary]\nbackground = \"#1a1b26\"\nforeground = \"#c0caf5\"\n[colors.normal]\nblue = \"#7aa2f7\"",
+        )
+        .unwrap();
+        std::fs::write(temp_dir.join("colors.toml"), "accent = \"nope\"").unwrap();
+        assert_eq!(resolve(Some(&temp_dir)).accent, "#7aa2f7");
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     #[test]
