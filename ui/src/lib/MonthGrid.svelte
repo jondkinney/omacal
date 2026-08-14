@@ -134,7 +134,7 @@
 
 <style>
   .head { display: grid; grid-template-columns: repeat(7, 1fr); padding-bottom: 6px; }
-  .head span { text-align: center; font-size: 10px; color: var(--muted);
+  .head span { text-align: center; font-size: 11px; color: var(--muted);
                letter-spacing: .05em; }
 
   /* `flex: 1` against App's `main`, not a guess at what surrounds it — the
@@ -152,7 +152,7 @@
 
   .bar { appearance: none; -webkit-appearance: none; font: inherit;
          text-align: left; cursor: pointer; border: 0; border-left: 2px solid var(--cal);
-         font-size: 9.5px; border-radius: 4px; padding: 1px 6px; white-space: nowrap;
+         font-size: 10.5px; border-radius: 4px; padding: 1px 6px; white-space: nowrap;
          overflow: hidden; text-overflow: ellipsis; margin: 0 2px;
          background: color-mix(in srgb, var(--cal) 16%, transparent);
          color: color-mix(in srgb, var(--cal) 60%, var(--text)); }
@@ -187,18 +187,18 @@
      controls, so each stays above `.newhere` — see its comment. */
   .num { appearance: none; -webkit-appearance: none; font: inherit; cursor: pointer;
          border: 0; background: transparent; padding: 0; margin: 0; align-self: flex-start;
-         font-size: 11px; color: var(--text); font-variant-numeric: tabular-nums;
+         font-size: 12px; color: var(--text); font-variant-numeric: tabular-nums;
          position: relative; z-index: 1; }
   .mcell.today .num { color: var(--accent); font-weight: 600; }
 
   .timed { appearance: none; -webkit-appearance: none; font: inherit;
            display: flex; align-items: center; gap: 4px; text-align: left; cursor: pointer;
            border: 0; background: transparent; padding: 0; margin: 0;
-           font-size: 9.5px; color: var(--text); white-space: nowrap; overflow: hidden;
+           font-size: 10.5px; color: var(--text); white-space: nowrap; overflow: hidden;
            text-overflow: ellipsis; position: relative; z-index: 1; }
   .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
 
-  .more { font-size: 9px; color: var(--muted); opacity: .8; padding: 0; background: transparent;
+  .more { font-size: 10px; color: var(--muted); opacity: .8; padding: 0; background: transparent;
           border: 0; text-align: left; font: inherit; position: relative; z-index: 1; }
   /* Only the cell-level `+N more` is a button. The row-level one is a `div`
      covering several days at once, with no single day to hand the parent, so

@@ -243,8 +243,8 @@ test.describe('a completed drag writes', () => {
     const step = col.height / 96; // 15 minutes of a 24-hour day
 
     const before = await page.evaluate(() => {
-      const e = document.querySelector('.ev') as HTMLElement;
-      return { title: e.getAttribute('title') };
+      const e = document.querySelector('.ev b') as HTMLElement;
+      return { title: e.textContent };
     });
 
     await grabAndMove(page, step * 4); // an hour down

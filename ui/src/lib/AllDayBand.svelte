@@ -62,7 +62,7 @@
 <style>
   .band { display: grid; grid-template-columns: 44px 1fr;
           border-bottom: 1px solid var(--hairline); padding: 3px 0 6px; margin-bottom: 2px; }
-  .label { font-size: 8.5px; color: var(--muted); opacity: .8; text-align: right;
+  .label { font-size: 9.5px; color: var(--muted); opacity: .8; text-align: right;
            padding-right: 7px; letter-spacing: .05em; align-self: center; }
   /* No gap: a gap here is subtracted from every column, so the band's columns
      drift out of step with the grid below it — by Sunday the chips sit a chip's
@@ -89,7 +89,7 @@
   .chip { appearance: none; -webkit-appearance: none;
           font: inherit; text-align: left; cursor: pointer;
           border: 0; border-left: 2px solid var(--cal);
-          font-size: 9.5px; border-radius: 4px; padding: 2px 7px; white-space: nowrap;
+          font-size: 10.5px; border-radius: 4px; padding: 2px 7px; white-space: nowrap;
           overflow: hidden; text-overflow: ellipsis;
           margin: 0 2px 2px 0;
           background: color-mix(in srgb, var(--cal) 16%, transparent);
@@ -98,5 +98,5 @@
   .chip.cl { border-top-left-radius: 0; border-bottom-left-radius: 0; border-left-style: dashed; }
   .chip.cr { border-top-right-radius: 0; border-bottom-right-radius: 0; }
 
-  .more { font-size: 9px; color: var(--muted); opacity: .7; padding: 2px 4px; }
+  .more { font-size: 10px; color: var(--muted); opacity: .7; padding: 2px 4px; }
 </style>

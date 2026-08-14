@@ -497,6 +497,37 @@ test.describe('EventBlock RSVP states at 15 minutes', () => {
   });
 });
 
+// The hover tooltip. Ours, not the webview's: `title=` renders as the
+// engine's native tooltip, which no stylesheet can reach — engine-grey on
+// engine-black, invisible on a dark theme — and it named the event without
+// answering *when*, the one thing a block too short for its time line
+// cannot say (fixture: 60 minutes, below the 90-minute time-line rung).
+test.describe('EventBlock tooltip', () => {
+  test('hovering says the whole story: title, times, place', async ({ page }) => {
+    await page.goto(show('EventBlock', 'ladder-60'));
+    const ev = page.locator('.ev');
+
+    // The native tooltip is gone — leaving it would show two.
+    expect(await ev.getAttribute('title')).toBeNull();
+    // A screen reader hears what the card shows, from the button itself.
+    await expect(ev).toHaveAttribute(
+      'aria-label', 'Excitel weekly, 09:00 to 10:00, Room 4A');
+
+    await ev.hover();
+    const tip = page.locator('.tip');
+    await expect(tip).toContainText('Excitel weekly');
+    await expect(tip).toContainText('09:00 – 10:00');
+    await expect(tip).toContainText('Room 4A');
+    // It genuinely appears: the 300ms mount delay is opacity, which Playwright
+    // counts as visible, so visibility is asserted on the computed style.
+    await expect.poll(() => tip.evaluate((el) => getComputedStyle(el).opacity)).toBe('1');
+
+    // And leaves with the pointer.
+    await page.mouse.move(0, 0);
+    await expect(tip).toHaveCount(0);
+  });
+});
+
 // A hovered block widens over its neighbours. The resting fills are near-
 // transparent by design, so if hover does not also make the block opaque, the
 // covered block's title reads straight through it — two labels on top of each

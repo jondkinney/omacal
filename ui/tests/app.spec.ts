@@ -802,7 +802,7 @@ test.describe('App', () => {
       const topOf = () =>
         page.evaluate(() => {
           const e = [...document.querySelectorAll('.ev')]
-            .find((n) => n.getAttribute('title') === 'Client call') as HTMLElement;
+            .find((n) => n.getAttribute('aria-label')?.startsWith('Client call,')) as HTMLElement;
           return e.offsetTop;
         });
 
@@ -996,7 +996,7 @@ test.describe('App', () => {
       const topOf = () =>
         page.evaluate(() => {
           const e = [...document.querySelectorAll('.ev')]
-            .find((n) => n.getAttribute('title') === 'Board prep') as HTMLElement;
+            .find((n) => n.getAttribute('aria-label')?.startsWith('Board prep,')) as HTMLElement;
           return e.offsetTop;
         });
 

@@ -852,7 +852,7 @@
      beside it. Measured — adding one moves nothing, at 400px or at 720p. */
   .body { flex: 1; overflow-y: auto; position: relative; }
 
-  .head { text-align: center; font-size: 10px; color: var(--muted);
+  .head { text-align: center; font-size: 11px; color: var(--muted);
           letter-spacing: .05em; padding-bottom: 8px; }
   .head b { display: block; font-size: 15px; color: var(--text);
             font-weight: 500; letter-spacing: -.02em; margin-top: 2px; }
@@ -864,7 +864,7 @@
   .col.today { background: var(--today-tint); border-radius: 6px; }
 
   .gutter { position: relative; }
-  .gutter span { position: absolute; right: 8px; font-size: 9.5px; color: var(--muted);
+  .gutter span { position: absolute; right: 8px; font-size: 10.5px; color: var(--muted);
                  opacity: .7; transform: translateY(-50%); font-variant-numeric: tabular-nums; }
 
   /* Fills the column, paints nothing, and sits under everything else in it —
