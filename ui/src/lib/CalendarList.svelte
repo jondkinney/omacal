@@ -221,7 +221,7 @@
      draw a panel inside a panel in the second. */
   .list { display: flex; flex-direction: column; min-width: 0; }
 
-  .acct { font-size: 9.5px; color: var(--muted); letter-spacing: .05em;
+  .acct { font-size: 10.5px; color: var(--muted); letter-spacing: .05em;
           padding: 6px 6px 3px; }
   /* The label absorbs the slack, so the swatch and the sync button pack into a
      fixed right-hand column instead of trailing each row's name — with
@@ -232,7 +232,7 @@
   .row:hover { background: color-mix(in srgb, var(--text) 5%, transparent); }
   .row.off .name { opacity: .45; }
 
-  label { display: flex; align-items: center; gap: 7px; font-size: 11.5px;
+  label { display: flex; align-items: center; gap: 7px; font-size: 12.5px;
           cursor: pointer; min-width: 0; flex: 1; }
   .dot { width: 8px; height: 8px; border-radius: 2.5px; flex: none; display: block; }
   .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -248,22 +248,22 @@
   /* The chosen one, marked by a ring rather than by a tick: a glyph on a
      16px swatch is unreadable against half the palette. */
   .pick.on { outline: 2px solid var(--text); outline-offset: 1px; }
-  .clear { font: inherit; font-size: 9.5px; color: var(--muted); cursor: pointer;
+  .clear { font: inherit; font-size: 10.5px; color: var(--muted); cursor: pointer;
            background: none; border: 1px solid var(--hairline); border-radius: 5px;
            padding: 2px 6px; margin-left: 2px; }
   .clear:disabled { opacity: .45; cursor: default; }
 
   /* Wide enough for either word, so a mixed list of Remove and Add rows does
      not push the swatch column about. */
-  .sync { font: inherit; font-size: 10px; color: var(--muted); cursor: pointer;
+  .sync { font: inherit; font-size: 11px; color: var(--muted); cursor: pointer;
           background: none; border: 1px solid var(--hairline); border-radius: 5px;
           padding: 2px 7px; flex: none; min-width: 52px; text-align: center; }
 
-  .note { font-size: 10.5px; color: var(--muted); line-height: 1.4;
+  .note { font-size: 11.5px; color: var(--muted); line-height: 1.4;
           margin: 8px 6px 0; padding: 6px 8px; border-radius: 5px;
           background: color-mix(in srgb, var(--text) 6%, transparent); }
   .note.err { color: var(--error); background: color-mix(in srgb, var(--error) 9%, transparent); }
 
-  .hint { font-size: 9.5px; color: var(--muted); opacity: .8; line-height: 1.45;
+  .hint { font-size: 10.5px; color: var(--muted); opacity: .8; line-height: 1.45;
           margin: 8px 6px 2px; }
 </style>
