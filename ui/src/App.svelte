@@ -741,7 +741,17 @@
       }
     } catch (e) {
       error = String(e);
-      return;
+      // One failure is not a failure: a create that reached Google but not
+      // the local store answers with the backend's fixed created-not-stored
+      // sentence (events.rs, safelisted verbatim). The event exists — guests
+      // are already mailed — so this must NOT stop like the errors above,
+      // where stopping invites the user to create the event again. Falling
+      // through to refreshAfterWrite runs the ordinary post-write sync,
+      // which fetches the event like any other; the banner keeps the
+      // sentence so the user knows what happened.
+      if (!(request.mode === 'create' && String(e).startsWith('The event was created on Google'))) {
+        return;
+      }
     } finally {
       busy = false;
     }

@@ -56,6 +56,9 @@ export type Harness = {
   /** Make the next `update_event` reject — what a drag spec uses to prove a
    *  failed write is reported rather than silently swallowed. */
   failNextUpdate(message: string): void;
+  /** Make the next `create_event` reject — what the duplicate-create guard
+   *  spec uses to stand in for "Google succeeded, the local half did not". */
+  failNextCreate(message: string): void;
   /** Make the next call to `set_calendar_selected` or `set_calendar_sync` reject —
    *  what a CalendarPopover spec uses to drive the failed-toggle path. */
   failNextCalendarCall(cmd: 'set_calendar_selected' | 'set_calendar_sync', message: string): void;
@@ -134,6 +137,7 @@ type CalendarDeferred = { resolve: (v: unknown) => void; reject: (e: unknown) =>
 let nextId = 1;
 let failWeekOnce: string | null = null;
 let failUpdateOnce: string | null = null;
+let failCreateOnce: string | null = null;
 let failCalendarOnce: { cmd: string; message: string } | null = null;
 /** Held search calls, oldest first — see `holdNextSearch`. Module level, like
  *  the calendar and event parks beside it: the harness object that releases
@@ -195,6 +199,9 @@ const harness: Harness = {
   },
   failNextWeek(message) {
     failWeekOnce = message;
+  },
+  failNextCreate(message) {
+    failCreateOnce = message;
   },
   failNextUpdate(message) {
     failUpdateOnce = message;
@@ -759,6 +766,14 @@ export function installTauriStub(scenario: string): Harness {
       // order. A second capture on `window` would be a second thing to keep in
       // step with it.
       case 'create_event':
+        if (failCreateOnce !== null) {
+          const m = failCreateOnce;
+          failCreateOnce = null;
+          // A bare string, exactly as Tauri rejects a `Result<_, String>` —
+          // an `Error` wrapper would prefix "Error: " and defeat the exact
+          // sentence-matching the duplicate-create guard rides on.
+          return Promise.reject(m);
+        }
         return CREATED_DETAIL;
       case 'update_event':
         if (failUpdateOnce !== null) {

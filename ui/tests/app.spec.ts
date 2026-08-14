@@ -1255,6 +1255,57 @@ test.describe('App', () => {
   }
 
   /**
+   * The duplicate-create guard, from the UI side. The backend's fixed
+   * sentence (events.rs `CREATED_NOT_STORED`) means "Google succeeded, only
+   * the local half failed" — the event exists and the guests are mailed —
+   * so `App` must run its ordinary post-write sync (which fetches the event
+   * like any other) rather than stopping the way it does for a real
+   * failure. Stopping is what invites the user to create the event again.
+   * Both halves asserted: the banner still says what happened, and
+   * `sync_now` proves the heal ran.
+   */
+  test('a create that reached Google heals by syncing, not by retrying', async ({ page }) => {
+    await writable(page);
+    await page.evaluate(() => window.__harness.failNextCreate(
+      'The event was created on Google, but omacal could not record it locally. ' +
+      'The next sync will bring it in — do not create it again.'));
+
+    await page.keyboard.press('n');
+    await newForm(page).getByLabel('Title', { exact: true }).fill('Lunch');
+    await newForm(page).getByRole('button', { name: 'Create', exact: true }).click();
+    await expect(newForm(page)).toHaveCount(0);
+
+    // The heal ran: one sync, and the reload it feeds ends with the banner
+    // clear — the event on the grid IS the report, and a standing "do not
+    // create it again" beside a visible event would only confuse. (A heal
+    // that cannot reach Google is refreshAfterWrite's own catch, whose
+    // message correctly says the change was made.)
+    await expect.poll(() => page.evaluate(() =>
+      window.__harness.calls.filter((c) => c.cmd === 'sync_now').length)).toBe(1);
+    await expect(page.locator('.err')).toHaveCount(0);
+    const creates = await page.evaluate(() =>
+      window.__harness.calls.filter((c) => c.cmd === 'create_event').length);
+    expect(creates, 'exactly one create — the guard exists so there is never a second').toBe(1);
+  });
+
+  /** And the boundary: an ordinary failed create still stops — no sync, no
+   *  refetch — because retrying a create that never happened is safe and
+   *  syncing would imply something was written. */
+  test('a create Google refused stops without the heal', async ({ page }) => {
+    await writable(page);
+    await page.evaluate(() => window.__harness.failNextCreate('this calendar is not writable from omacal'));
+
+    await page.keyboard.press('n');
+    await newForm(page).getByLabel('Title', { exact: true }).fill('Lunch');
+    await newForm(page).getByRole('button', { name: 'Create', exact: true }).click();
+
+    await expect(page.locator('.err')).toContainText('not writable');
+    const synced = await page.evaluate(() =>
+      window.__harness.calls.filter((c) => c.cmd === 'sync_now').length);
+    expect(synced, 'nothing was created, so nothing may sync as if it was').toBe(0);
+  });
+
+  /**
    * The whole chain of the default-calendar setting, in one pass: chosen in
    * Settings, told to `App` through `onsettingschange`, honoured by the next
    * `n` — **without a restart**. The propagation is the part worth the test:

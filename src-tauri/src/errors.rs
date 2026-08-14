@@ -56,6 +56,12 @@ const SAFE_PREFIXES: &[&str] = &[
 /// `format!("{lit}: {detail}")` that wraps one of these in more context from
 /// silently starting to pass.
 const SAFE_EXACT: &[&str] = &[
+    // src-tauri/src/events.rs — `CREATED_NOT_STORED`, raised only after
+    // Google's insert succeeded. Fixed literal, no interpolation. This one
+    // MUST reach the user verbatim: swallowed into the opaque fallback it
+    // reads as "the create failed", and the natural response to that mails
+    // every guest a second invitation.
+    crate::events::CREATED_NOT_STORED,
     // crates/omacal-google/src/auth.rs:171 (the `TIMED_OUT` constant), raised
     // at auth.rs:206 with no interpolation and propagated to `sign_in_impl`
     // via a bare `?` with no `.context(..)` added along the way.
@@ -220,6 +226,17 @@ mod tests {
         assert!(shown.contains("client_id"));
     }
 
+    /// The created-not-stored sentence must cross to the UI verbatim: eaten
+    /// by the opaque fallback it reads as "the create failed", and the
+    /// natural answer to that mails every guest a second invitation. Asserted
+    /// through `user_facing` itself, so removing the safelist entry — not
+    /// only the constant — goes red.
+    #[test]
+    fn the_created_not_stored_sentence_reaches_the_user_whole() {
+        let err = anyhow::anyhow!(crate::events::CREATED_NOT_STORED);
+        assert_eq!(user_facing(&err), crate::events::CREATED_NOT_STORED);
+    }
+
     #[test]
     fn an_unrecognised_error_falls_back_to_something_generic() {
         let err = anyhow::anyhow!("Bearer ya29.a0AfB_pretend_access_token failed");
@@ -314,6 +331,10 @@ mod tests {
              you now have two overlapping series and should delete one",
             crate::events::CONFLICT_GUESTS,
             crate::settings::INTERVAL_TOO_SHORT,
+            // Checked against the doc-comment rule: a fixed literal raised
+            // only after Google's insert succeeded, no interpolation, and
+            // `create_event`'s `.map_err(user_facing)` adds no context.
+            crate::events::CREATED_NOT_STORED,
         ];
         for expected in EXPECTED {
             assert!(

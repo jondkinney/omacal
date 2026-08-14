@@ -788,7 +788,16 @@ async fn create_impl(
     )
     .await?;
 
-    event_detail_impl(state, id).await
+    // The same guard one level up: the row is created AND stored by now, so a
+    // failed read-back must not read as a failed create either. (The stored
+    // half makes the sentence's "next sync" a mild overstatement — a mere
+    // reload would show it — but "already saved, do not create it again" is
+    // the part that matters, and one sentence for one situation beats two the
+    // safelist has to carry.)
+    event_detail_impl(state, id).await.map_err(|e| {
+        tracing::error!(%e, id, "created and stored, but the read-back failed");
+        anyhow::anyhow!(CREATED_NOT_STORED)
+    })
 }
 
 /// The request-building and local write-back half of [`create_impl`], with
@@ -876,17 +885,45 @@ async fn create_via_client(
     // `"all"` for its own reasons. See `insert_event`'s own doc comment.
     let created = client.insert_event(cal_google_id, &body, send_updates).await?;
 
-    // The same Google -> StoredEvent mapping `omacal-sync` uses for every
-    // event it writes locally. Reusing it is what keeps a row created here
-    // shaped identically to one that arrived through an ordinary sync,
-    // rather than drifting from it through a second, hand-rolled conversion
-    // — the exact hazard `to_stored` exists to have only one of.
-    let row = omacal_sync::to_stored(&created, calendar_id, cal_tz).ok_or_else(|| {
-        anyhow::anyhow!("Google returned an event omacal could not store")
-    })?;
+    // **Past this line, no error may read as "the create failed."** The event
+    // exists on Google and any invited guest has already been mailed; a
+    // failure below reported like the ones above invites the user to create
+    // it again, and the second attempt mails the whole list twice. Both
+    // remaining steps therefore collapse into [`CREATED_NOT_STORED`] — a
+    // fixed, safelisted sentence that says what actually happened and what
+    // will heal it (the next sync fetches the event like any other) — with
+    // the underlying cause kept for the log.
+    //
+    // The mapping is the same Google -> StoredEvent conversion `omacal-sync`
+    // uses for every event it writes locally, so a row created here is shaped
+    // identically to one that arrived through an ordinary sync.
+    let Some(row) = omacal_sync::to_stored(&created, calendar_id, cal_tz) else {
+        tracing::error!(google_id = %created.id,
+            "created on Google, but the response could not be mapped for storage");
+        anyhow::bail!(CREATED_NOT_STORED);
+    };
 
-    omacal_store::upsert_event(pool, &row).await
+    match omacal_store::upsert_event(pool, &row).await {
+        Ok(id) => Ok(id),
+        Err(e) => {
+            tracing::error!(%e, google_id = %created.id,
+                "created on Google, but the local write failed");
+            anyhow::bail!(CREATED_NOT_STORED)
+        }
+    }
 }
+
+/// What a create reports when Google succeeded and the local half did not.
+///
+/// A fixed literal, safelisted verbatim in `errors.rs`: the one thing this
+/// message must never do is look like a failed create, because the natural
+/// answer to a failed create is to try again — and trying again mails every
+/// guest a second invitation. `App.svelte` recognises the sentence and runs
+/// its ordinary post-write sync instead of stopping, which is the heal the
+/// sentence promises.
+pub(crate) const CREATED_NOT_STORED: &str =
+    "The event was created on Google, but omacal could not record it locally. \
+     The next sync will bring it in — do not create it again.";
 
 /// Which timezone an edit puts on both sides of its diff.
 ///
@@ -3932,6 +3969,57 @@ mod tests {
         let (row, _, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();
         assert_eq!(row.google_id, "g-new");
         assert_eq!(row.calendar_id, cal, "the row must land on the calendar that was asked for");
+    }
+
+    /// The duplicate-create guard. Google answers 200 — the event exists,
+    /// the guests are mailed — but the response cannot be mapped for storage
+    /// (no start/end). The error must be `CREATED_NOT_STORED`, the one
+    /// sentence that does not read as "try again": any other message here is
+    /// an invitation to mail the whole list a second time.
+    #[tokio::test]
+    async fn a_create_that_reached_google_never_reads_as_a_failed_create() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "g-half", "status": "confirmed", "etag": "\"e1\"",
+                "summary": "Lunch"
+                // no start/end: `to_stored` cannot map this
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let pool = omacal_store::connect_memory().await.unwrap();
+        let cal = seed_calendar(&pool, "owner").await;
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+
+        let err = create_via_client(&pool, cal, "cal@x.com", "UTC", sample_fields(), "all", &client)
+            .await
+            .unwrap_err();
+        assert_eq!(err.to_string(), CREATED_NOT_STORED,
+            "past the insert, every failure must wear the created-not-stored sentence");
+    }
+
+    /// The boundary from the other side: a failure *before* the insert — here
+    /// Google refusing it outright — is a genuinely failed create, retrying
+    /// is safe, and the guard's sentence must not appear.
+    #[tokio::test]
+    async fn a_create_google_refused_is_still_a_plain_failure() {
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .respond_with(wiremock::ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+
+        let pool = omacal_store::connect_memory().await.unwrap();
+        let cal = seed_calendar(&pool, "owner").await;
+        let client = omacal_google::CalendarClient::new(server.uri(), "tok");
+
+        let err = create_via_client(&pool, cal, "cal@x.com", "UTC", sample_fields(), "all", &client)
+            .await
+            .unwrap_err();
+        assert_ne!(err.to_string(), CREATED_NOT_STORED,
+            "nothing was created, so nothing may claim it was");
     }
 
     /// All-day dates carry no timezone of their own on Google's wire format
