@@ -117,6 +117,62 @@ fn specs() -> Vec<Spec> {
     ]
 }
 
+/// The year around the seeded week, because the week specs alone leave every
+/// other zoom level lying about the app: Month draws near-empty cells and Big
+/// Year draws a blank ribbon, when Big Year's whole argument is that
+/// multi-week spans become visible shapes. Two kinds of entry, deliberately:
+/// long all-day spans (2–3 weeks, the bars Big Year exists for) spread across
+/// the year on both sides of today, and ordinary timed events scattered over
+/// the surrounding weeks so Month reads as a lived-in calendar rather than a
+/// demo of one good week. Offsets are days from the seeded week's Monday,
+/// exactly as in `specs()` — nothing here introduces a second clock.
+fn year_specs() -> Vec<Spec> {
+    let s = |cal, title, location, day, start_min, dur_min, response| Spec {
+        cal, title, location, day, start_min, dur_min,
+        all_day: false, extra_days: 0, response, recurrence: None,
+    };
+    let span = |cal, title, day, extra_days| Spec {
+        cal, title, location: None, day, start_min: 0, dur_min: 0,
+        all_day: true, extra_days, response: "accepted", recurrence: None,
+    };
+    vec![
+        // ---- the long spans Big Year is for: 2–3 weeks each, spread so the
+        // ribbon carries bars in every quarter of the year ----
+        span(1, "Ski week, then some", -140, 9),
+        span(1, "India trip", -70, 20),
+        span(1, "Berlin → Lisbon", -35, 13),
+        span(0, "Launch runway", 21, 18),
+        span(1, "Niki visiting", 42, 12),
+        span(0, "Conference circuit", 100, 15),
+        span(1, "Kitchen renovation", 70, 20),
+        // Single all-days between the bars, so the quieter weeks still dot.
+        span(1, "Marathon", 56, 0),
+        span(0, "Server migration", 35, 0),
+        span(1, "Annual review", -49, 0),
+        span(0, "Public holiday", -10, 0),
+        span(0, "Payroll", 8, 0),
+        // ---- the surrounding weeks, so Month has more than one good row ----
+        // Two weeks back
+        s(0, "Security audit kickoff", Some("Meet"), -11, 10 * 60, 60, "accepted"),
+        s(1, "Car service", None, -9, 8 * 60 + 30, 90, "accepted"),
+        // One week back
+        s(0, "Roadmap review", Some("Room 4A"), -6, 11 * 60, 90, "accepted"),
+        s(1, "Dentist", None, -5, 9 * 60, 45, "accepted"),
+        s(0, "Sprint review", Some("Meet"), -4, 14 * 60, 60, "accepted"),
+        s(1, "Dinner w/ Maya", None, -2, 19 * 60, 120, "accepted"),
+        // One week ahead
+        s(0, "Quarterly close", None, 8, 10 * 60, 120, "accepted"),
+        s(0, "NetSense onboarding", Some("Zoom"), 9, 13 * 60, 60, "needsAction"),
+        s(1, "Flat viewing", None, 10, 17 * 60 + 30, 45, "tentative"),
+        s(0, "Offsite planning", Some("Meet"), 11, 15 * 60, 60, "accepted"),
+        s(1, "Padel", None, 12, 18 * 60, 90, "accepted"),
+        // Two weeks ahead
+        s(0, "Board meeting", Some("Room 4A"), 16, 10 * 60, 180, "accepted"),
+        s(0, "Excitel QBR", Some("Zoom"), 17, 12 * 60, 120, "accepted"),
+        s(1, "Theatre", None, 19, 19 * 60, 150, "accepted"),
+    ]
+}
+
 /// Seeds a realistic week around `now_ms`. Idempotent: the demo account and
 /// everything cascading from it is removed first.
 pub async fn seed_demo(pool: &SqlitePool, now_ms: i64) -> anyhow::Result<usize> {
@@ -155,16 +211,30 @@ pub async fn seed_demo(pool: &SqlitePool, now_ms: i64) -> anyhow::Result<usize> 
         cal_ids.push(id);
     }
 
-    // Monday 00:00 UTC of the week containing `now_ms`.
+    // Monday 00:00 of the week containing `now_ms` — in the *system* zone,
+    // not UTC. The specs speak in minutes-from-midnight, and a 9:00 standup
+    // seeded against UTC midnight lands at 14:30 for a viewer in Calcutta:
+    // the demo's whole morning looked empty on any machine east of Greenwich.
+    // The zone's offset at `now` is enough — a demo does not need to survive
+    // a DST transition mid-week, and the shift keeps the arithmetic below
+    // exactly what it was.
+    let offset_ms = jiff::Timestamp::from_millisecond(now_ms)?
+        .to_zoned(jiff::tz::TimeZone::system())
+        .offset()
+        .seconds() as i64
+        * 1000;
     let week_start = {
-        let days = now_ms.div_euclid(DAY_MS);
+        let days = (now_ms + offset_ms).div_euclid(DAY_MS);
         // 1970-01-01 was a Thursday; shift so 0 == Monday.
         let dow = (days + 3).rem_euclid(7);
-        (days - dow) * DAY_MS
+        (days - dow) * DAY_MS - offset_ms
     };
 
+    let mut all = specs();
+    all.extend(year_specs());
+
     let mut written = 0usize;
-    for (i, sp) in specs().iter().enumerate() {
+    for (i, sp) in all.iter().enumerate() {
         let day_start = week_start + sp.day * DAY_MS;
         let (start, end) = if sp.all_day {
             (day_start, day_start + (sp.extra_days + 1) * DAY_MS)
