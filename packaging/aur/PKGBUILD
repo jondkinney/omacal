@@ -1,0 +1,28 @@
+# Maintainer: Plamen Petkov <info@x3me.net>
+#
+# Repackages the official release .deb rather than building from source,
+# because the release artifacts carry the app's OAuth client credentials
+# (embedded at release-build time; see docs/distribution.md §1). A source
+# build would produce a binary that cannot sign in without the user creating
+# their own Google Cloud project — the experience this package exists to
+# remove.
+pkgname=omacal
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Minimalist open-source Google Calendar client, built for Omarchy"
+arch=('x86_64')
+url="https://extremelabs.io/omacal"
+license=('MIT')
+depends=('webkit2gtk-4.1' 'gtk3' 'libayatana-appindicator')
+optdepends=('gnome-keyring: Secret Service provider, required for sign-in token storage')
+options=('!strip' '!debug')
+source=("${pkgname}-${pkgver}.deb::https://github.com/x3me/omacal/releases/download/v${pkgver}/omacal_${pkgver}_amd64.deb"
+        "LICENSE-${pkgver}::https://raw.githubusercontent.com/x3me/omacal/v${pkgver}/LICENSE")
+noextract=("${pkgname}-${pkgver}.deb")
+sha256sums=('1883aeff6939bf2aa466330140968bd76686cc05db9ece425eb67c07194d891a'
+            '6d6c6bf89ad055436e423034485b18882a00ce3a1aa0464a3377d2f0c6d9f622')
+
+package() {
+  bsdtar -xOf "${srcdir}/${pkgname}-${pkgver}.deb" data.tar.gz | bsdtar -xzf - -C "${pkgdir}"
+  install -Dm644 "${srcdir}/LICENSE-${pkgver}" "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}

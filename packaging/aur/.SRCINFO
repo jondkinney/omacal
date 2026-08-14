@@ -1,0 +1,20 @@
+pkgbase = omacal
+	pkgdesc = Minimalist open-source Google Calendar client, built for Omarchy
+	pkgver = 0.1.0
+	pkgrel = 1
+	url = https://extremelabs.io/omacal
+	arch = x86_64
+	license = MIT
+	depends = webkit2gtk-4.1
+	depends = gtk3
+	depends = libayatana-appindicator
+	optdepends = gnome-keyring: Secret Service provider, required for sign-in token storage
+	noextract = omacal-0.1.0.deb
+	options = !strip
+	options = !debug
+	source = omacal-0.1.0.deb::https://github.com/x3me/omacal/releases/download/v0.1.0/omacal_0.1.0_amd64.deb
+	source = LICENSE-0.1.0::https://raw.githubusercontent.com/x3me/omacal/v0.1.0/LICENSE
+	sha256sums = 1883aeff6939bf2aa466330140968bd76686cc05db9ece425eb67c07194d891a
+	sha256sums = 6d6c6bf89ad055436e423034485b18882a00ce3a1aa0464a3377d2f0c6d9f622
+
+pkgname = omacal
