@@ -19,6 +19,7 @@ mod sync_loop;
 mod theme;
 mod theme_watch;
 mod tray;
+mod upcoming;
 mod update;
 mod write;
 
@@ -878,6 +879,12 @@ pub fn run() {
             });
             sync_loop::spawn(app.handle().clone());
             theme_watch::spawn(app.handle().clone());
+            // Seed the upcoming feed from whatever is already in the store,
+            // so a bar widget has an answer before the first sync completes.
+            {
+                let state = app.state::<AppState>();
+                upcoming::refresh_soon(state.pool.clone(), state.demo);
+            }
             update::spawn(app.handle().clone());
             #[cfg(target_os = "linux")]
             resume::spawn(app.handle().clone());

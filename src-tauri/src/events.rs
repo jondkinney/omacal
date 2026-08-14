@@ -467,7 +467,9 @@ pub async fn respond_to_event(
     scope: String,
     occurrence_start_ms: i64,
 ) -> Result<EventDetail, String> {
-    respond_to_event_impl(&state, id, &response, &scope, occurrence_start_ms).await
+    respond_to_event_impl(&state, id, &response, &scope, occurrence_start_ms)
+        .await
+        .inspect(|_| crate::upcoming::refresh_soon(state.pool.clone(), state.demo))
 }
 
 /// The body of `respond_to_event`, minus the Tauri `State` wrapper so the
@@ -730,6 +732,7 @@ pub async fn create_event(
     create_impl(&state, calendar_id, crate::write::fields_from_input(fields), &send_updates)
         .await
         .map_err(|e| crate::errors::user_facing(&e))
+        .inspect(|_| crate::upcoming::refresh_soon(state.pool.clone(), state.demo))
 }
 
 /// The body of `create_event`, minus the Tauri `State` wrapper — the same
@@ -1242,6 +1245,7 @@ pub async fn update_event(
     )
     .await
     .map_err(|e| crate::errors::user_facing(&e))
+    .inspect(|_| crate::upcoming::refresh_soon(state.pool.clone(), state.demo))
 }
 
 /// The body of `update_event`, minus the Tauri `State` wrapper — the same
@@ -1976,6 +1980,7 @@ pub async fn delete_event_cmd(
     delete_impl(&state, id, &scope, occurrence_start_ms)
         .await
         .map_err(|e| crate::errors::user_facing(&e))
+        .inspect(|_| crate::upcoming::refresh_soon(state.pool.clone(), state.demo))
 }
 
 /// The body of `delete_event_cmd`, minus the Tauri `State` wrapper — the same

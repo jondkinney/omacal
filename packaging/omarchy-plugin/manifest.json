@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "id": "omacal.upcoming",
+  "name": "OmaCal upcoming events",
+  "version": "1.0.0",
+  "author": "OmaCal",
+  "description": "Current and upcoming Google Calendar events, fed by the OmaCal app",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "OmaCal",
+    "description": "Current and upcoming calendar events",
+    "category": "Productivity",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "maxEvents": 12
+    },
+    "schema": [
+      {
+        "key": "maxEvents",
+        "type": "number",
+        "label": "Events shown"
+      }
+    ]
+  }
+}

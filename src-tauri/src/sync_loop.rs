@@ -97,6 +97,7 @@ async fn sync_and_report(app: &AppHandle) {
                 tracing::warn!(%e, "sync succeeded but recording it failed");
             }
             let _ = app.emit("sync-finished", serde_json::json!({ "upserted": n }));
+            crate::upcoming::refresh(&state.pool, state.demo).await;
         }
         // No token yet, offline, revoked consent — all normal. Retry next tick.
         Err(e) => {

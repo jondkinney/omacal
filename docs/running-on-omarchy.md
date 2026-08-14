@@ -30,6 +30,24 @@ Google, so it cannot touch or invent real calendar data. The header shows a
 This is also the right way to check a build: it exercises WebKitGTK rendering and
 all five views without needing an account.
 
+## The bar widget (Omarchy 4)
+
+`packaging/omarchy-plugin/` is a shell plugin for Omarchy 4's bar: a
+calendar icon whose popup lists the event you are in right now and the rest
+of today's agenda — or, when today is done, the nearest day that has
+something — with times, locations, headcounts, and a join button for events
+with a conferencing link. Install and usage:
+[`packaging/omarchy-plugin/README.md`](../packaging/omarchy-plugin/README.md).
+
+It reads the feed omacal writes to `$XDG_STATE_HOME/omacal/upcoming.json`
+(default `~/.local/state/...`) — rewritten atomically on startup, after
+every successful sync, and after every local edit. The feed follows the
+same rules as the app's grid and the reminder scheduler: selected calendars
+only, cancelled occurrences suppressed, declined invitations skipped, and
+recurring series expanded by the app itself. The file is plain JSON, so
+anything else (a script, another bar) can read the same answer; the
+`version` field only bumps when a field changes meaning.
+
 ## Theming
 
 Colour is read from `~/.local/state/omarchy/current/theme` (Omarchy 4) or
