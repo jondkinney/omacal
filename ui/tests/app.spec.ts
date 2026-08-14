@@ -1069,7 +1069,7 @@ test.describe('App', () => {
     const col = page.locator('.col').first();
     await expect(col).toHaveAttribute('data-start-ms', String(APP_MON));
     // Scrolled so both ends of the sweep are on screen; the pane is ~590px of
-    // a 1200px column, and it opens part-way down.
+    // a 1680px column, and it opens part-way down.
     await page.locator('[data-testid="week-body"]').evaluate((el) => {
       el.scrollTop = Math.max(0, (10.5 / 24) * el.scrollHeight - el.clientHeight / 2);
     });

@@ -175,8 +175,8 @@
 
   /* 11.5/10.5, up from 10/9 (2026-08-14): at 10px the grid read as decoration
      on a 14" screen, and Google's own week view sits at ~12px. The density
-     ladder still holds — a 45-minute block is 37px at the grid's 50px/hour
-     and two lines at these sizes need 33. */
+     ladder holds with room to spare — a 45-minute block is 52px at the
+     grid's 70px/hour and two lines at these sizes need 33. */
   .ev b { display: block; font-size: 11.5px; font-weight: 600; line-height: 1.3;
           letter-spacing: -.01em; white-space: nowrap; overflow: hidden;
           text-overflow: ellipsis; }

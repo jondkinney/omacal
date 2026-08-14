@@ -493,7 +493,7 @@
     if (draggedNotClicked) return;
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
     // Anchored at the click's own height rather than the column's top: the
-    // column is 1200px tall inside a scrolling body, and a form placed against
+    // column is 1680px tall inside a scrolling body, and a form placed against
     // its top edge would open somewhere off-screen above the click.
     oncreate(slotAt(day, e), { top: e.clientY, left: r.left, width: r.width, height: 0 });
   }
@@ -886,7 +886,14 @@
                   line-height: 23px; border-radius: 50%; margin: 2px auto 0; font-weight: 600; }
 
   /* No column borders: the grid reads through alignment, not rules (spec §7.1). */
-  .col { position: relative; min-height: 1200px; }
+  /* 70px per hour (24 x 70 = 1680), up from 50 (2026-08-14): at 50 a
+     typical laptop pane put ~19 hours on screen at once and every slot was
+     a sliver — macOS shows about ten. This is a *floor on slot height*, not
+     a cap on hours: the pane divided by 70 is what fits, so a small window
+     shows ~12 hours and a tall monitor simply shows more. The initial
+     scroll, the sweep math and the hour rules are all fractions of the
+     column, so nothing else knows the number. */
+  .col { position: relative; min-height: 1680px; }
   .col.today { background: var(--today-tint); border-radius: 6px; }
 
   .gutter { position: relative; }
