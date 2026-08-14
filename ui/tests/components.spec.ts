@@ -1599,6 +1599,34 @@ test.describe('EventPopover', () => {
     expect(scroll.scrollWidth).toBeLessThanOrEqual(scroll.clientWidth);
   });
 
+  /**
+   * The Join control, from either of the two places a meeting can hide.
+   *
+   * Google's structured conference data has always driven this button, which
+   * meant an invitation minted by an Outlook or Zoom shop — where the link
+   * lives in `location` and nowhere else — showed the provider's name with
+   * nothing to click. These three cover the rule: the link is offered, an
+   * unrecognised link is not, and Google's own field still wins.
+   */
+  test('a meeting link in the location becomes a Join button', async ({ page }) => {
+    await page.goto(show('location-holds-a-real-zoom-link'));
+    const conf = page.locator('.pop .conf');
+    await expect(conf).toBeVisible();
+    await expect(conf).toHaveText('Join video call');
+    await expect(conf).toHaveAttribute('href', 'https://us02web.zoom.us/j/123456?pwd=x');
+    // And the raw link is not *also* printed underneath its own button.
+    await expect(page.locator('.pop .loc')).toHaveCount(0);
+  });
+
+  test('a map link in the location is not offered as a meeting', async ({ page }) => {
+    await page.goto(show('location-holds-a-map-link'));
+    // The popover rendered — otherwise the absence below proves nothing.
+    await expect(page.locator('.pop')).toBeVisible();
+    await expect(page.locator('.pop .conf')).toHaveCount(0);
+    // It is still shown as a place; it just is not a meeting.
+    await expect(page.locator('.pop .loc')).toBeVisible();
+  });
+
   test('a generated calendar address is not shown as the organizer', async ({ page }) => {
     // "Organized by" followed by forty hex characters names no one. `.pop` is
     // asserted visible first so this cannot pass by the popover having failed

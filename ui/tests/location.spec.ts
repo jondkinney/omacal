@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { locationLabel } from '../src/lib/location';
+import { locationLabel, meetingUrl } from '../src/lib/location';
 
 test.describe('locationLabel', () => {
   test('a plain place is left alone', () => {
@@ -59,5 +59,53 @@ test.describe('locationLabel', () => {
   test('only the first url is removed — a second one survives verbatim', () => {
     expect(locationLabel('https://meet.google.com/abc https://us02web.zoom.us/j/1'))
       .toBe('https://us02web.zoom.us/j/1');
+  });
+});
+
+// `locationLabel` decides what a location *reads* as; `meetingUrl` decides
+// whether it is something you can click. Deliberately separate functions:
+// naming a provider is safe on any link, and offering to join one is not.
+test.describe('meetingUrl', () => {
+  test('a recognised provider link is joinable', () => {
+    expect(meetingUrl('https://us02web.zoom.us/j/123456?pwd=x'))
+      .toBe('https://us02web.zoom.us/j/123456?pwd=x');
+    expect(meetingUrl('https://meet.google.com/abc-defg-hij'))
+      .toBe('https://meet.google.com/abc-defg-hij');
+    expect(meetingUrl('https://teams.microsoft.com/l/meetup-join/x'))
+      .toBe('https://teams.microsoft.com/l/meetup-join/x');
+    expect(meetingUrl('https://acme.webex.com/meet/jo'))
+      .toBe('https://acme.webex.com/meet/jo');
+    expect(meetingUrl('https://meet.jit.si/omacal')).toBe('https://meet.jit.si/omacal');
+  });
+
+  test('a link beside a place is still joinable', () => {
+    expect(meetingUrl('Board room, https://meet.google.com/abc-defg-hij, 3rd floor'))
+      .toBe('https://meet.google.com/abc-defg-hij');
+  });
+
+  // **The reason the trim exists.** A link written into a sentence carries the
+  // full stop into the URL, and the joined meeting 404s — a failure that looks
+  // like a broken app rather than a stray character.
+  test('sentence punctuation does not become part of the URL', () => {
+    expect(meetingUrl('dial in at https://meet.google.com/abc-defg-hij.'))
+      .toBe('https://meet.google.com/abc-defg-hij');
+    expect(meetingUrl('(https://us02web.zoom.us/j/123)'))
+      .toBe('https://us02web.zoom.us/j/123');
+  });
+
+  /** The restraint, and the half most worth pinning: a location field holds
+   *  map pins and venue homepages far more often than it holds meetings, and
+   *  "Join video call" opening a restaurant is worse than no button. */
+  test('an unrecognised link is not offered as a meeting', () => {
+    expect(meetingUrl('https://maps.google.com/?q=Board+room')).toBe(null);
+    expect(meetingUrl('https://example.com/tickets/9')).toBe(null);
+    expect(meetingUrl('https://zoom.us.evil.example.com/j/1')).toBe(null);
+  });
+
+  test('a place with no link, and nothing at all, are both not joinable', () => {
+    expect(meetingUrl('TAO Office, board room')).toBe(null);
+    expect(meetingUrl(null)).toBe(null);
+    expect(meetingUrl('   ')).toBe(null);
+    expect(meetingUrl('zoom')).toBe(null);
   });
 });

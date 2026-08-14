@@ -11,6 +11,42 @@ const PROVIDERS: Array<[RegExp, string]> = [
 const URL_RE = /https?:\/\/[^\s,;]+/i;
 
 /**
+ * The joinable meeting URL a location holds, or `null`.
+ *
+ * **Recognised providers only**, and that is the whole of the restraint here.
+ * Google puts a Meet link in structured conference data, which is where the
+ * popover's Join control has always come from — but an invitation minted by
+ * anybody else arrives with its Zoom or Teams link sitting in `location` and
+ * nowhere else, so the app could name the provider (see `locationLabel`) and
+ * still give you nothing to click. This closes that.
+ *
+ * An *unrecognised* link stays unclickable on purpose: a location field is as
+ * likely to hold a map pin, a venue's homepage or a ticket as a meeting, and a
+ * button labelled "Join video call" that opens a restaurant is worse than no
+ * button at all.
+ *
+ * The trailing-punctuation trim matters more than it looks: a link written
+ * into a sentence ("dial in at https://…/j/123.") otherwise carries the full
+ * stop into the URL and 404s.
+ */
+export function meetingUrl(raw: string | null): string | null {
+  const text = (raw ?? '').trim();
+  if (!text) return null;
+
+  const match = text.match(URL_RE);
+  if (!match) return null;
+  const url = match[0].replace(/[),.;:!?\]]+$/, '');
+
+  let host = '';
+  try {
+    host = new URL(url).hostname;
+  } catch {
+    return null;
+  }
+  return PROVIDERS.some(([re]) => re.test(host)) ? url : null;
+}
+
+/**
  * What to print in an event block's meta line.
  *
  * Google puts the joining link in `location` as well as in conference data, so

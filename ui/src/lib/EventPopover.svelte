@@ -1,5 +1,6 @@
 <!-- ui/src/lib/EventPopover.svelte -->
 <script lang="ts">
+  import { meetingUrl } from './location';
   import { clockFormat } from './clock.svelte';
   import { formatClock } from './timefmt';
   import { onMount, tick } from 'svelte';
@@ -183,8 +184,24 @@
     const loc = detail.location?.trim();
     if (!loc) return null;
     if (/^https?:\/\//i.test(loc) && (detail.description ?? '').includes(loc)) return null;
+    // The same echo rule, one source further along: when the location *is*
+    // the link the Join button now offers, printing it again underneath that
+    // button says the same thing twice — and the raw form is the one that
+    // reads as `https://us02we…`, which is what `location.ts` exists to stop.
+    if (joinUrl && loc === joinUrl) return null;
     return loc;
   });
+
+  /**
+   * The meeting to join, from Google's structured conference data if it is
+   * there and from the location field if it is not.
+   *
+   * One control, not two: an event carries at most one meeting, and a second
+   * Join button for the second place a link can hide would make the popover
+   * argue with itself about which is the real one. Google's own field wins
+   * because it is the only one that cannot be a coincidence.
+   */
+  const joinUrl = $derived(detail.conference_uri ?? meetingUrl(detail.location));
 
   function ask(response: 'accepted' | 'tentative' | 'declined', e: MouseEvent) {
     if (!detail.is_recurring) {
@@ -321,8 +338,8 @@
   {/if}
 
   {#if locationShown}<p class="loc">{locationShown}</p>{/if}
-  {#if detail.conference_uri}
-    <a class="conf" href={detail.conference_uri} target="_blank" rel="noopener noreferrer">Join video call</a>
+  {#if joinUrl}
+    <a class="conf" href={joinUrl} target="_blank" rel="noopener noreferrer">Join video call</a>
   {/if}
   <!-- Suppressed for the addresses Google mints for shared calendars and
        meeting rooms: "Organized by" followed by forty hex characters is worse

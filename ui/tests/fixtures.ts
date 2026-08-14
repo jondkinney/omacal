@@ -2008,6 +2008,31 @@ export const FIXTURES: Record<string, Record<string, any>> = {
       anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, occurrenceEndMs: MON + 9 * H + 30 * 60_000,
       onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
     },
+    // The gap this closes: an invitation from anyone who is not on Google
+    // arrives with its meeting link in `location` and no structured
+    // conference data at all, so the app named the provider and offered
+    // nothing to click. A real `zoom.us` host — the fixtures above use
+    // `zoom.example`, which is deliberately *not* a recognised provider and
+    // so goes on testing the echo rule without tripping this one.
+    'location-holds-a-real-zoom-link': {
+      detail: detail({
+        id: 64,
+        description: 'Agenda in the wiki',
+        location: 'https://us02web.zoom.us/j/123456?pwd=x',
+      }),
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, occurrenceEndMs: MON + 9 * H + 30 * 60_000,
+      onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
+    },
+    // A location field holds map pins far more often than meetings.
+    'location-holds-a-map-link': {
+      detail: detail({
+        id: 65,
+        description: 'Agenda in the wiki',
+        location: 'https://maps.google.com/?q=TAO+Office',
+      }),
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, occurrenceEndMs: MON + 9 * H + 30 * 60_000,
+      onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
+    },
     'location-room-in-description': {
       detail: detail({
         id: 63,
