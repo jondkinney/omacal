@@ -8,9 +8,11 @@
   import { offerableCalendarId, writableCalendars, type Calendar } from './calendars';
   import {
     getSettings, minutesOf, msOfMinutes, setDefaultCalendar, setFallbackReminders,
-    setNotificationsEnabled, setSyncInterval, setTimeFormat, type AppSettings,
+    setNotificationsEnabled, setSyncInterval, setTimeFormat, setWeekStart,
+    type AppSettings,
   } from './settings';
   import { formatClock, type TimeFormat } from './timefmt';
+  import type { WeekStartDay } from './weekstart';
 
   let {
     accounts,
@@ -78,6 +80,26 @@
    * repaints the calendar behind the modal — `App` owns the rune, and this
    * modal deliberately does not reach past its own props to set it.
    */
+  /** The three days, and what to call them. Google Calendar's own three —
+   *  see `settings::WeekStart` for why not seven. */
+  const WEEK_STARTS: { id: WeekStartDay; label: string }[] = [
+    { id: 'monday', label: 'Monday' },
+    { id: 'sunday', label: 'Sunday' },
+    { id: 'saturday', label: 'Saturday' },
+  ];
+
+  /** Stores the first day of the week. Same shape as `saveTimeFormat`: the
+   *  backend's answer replaces `settings`, and `onsettingschange` is what
+   *  repaints the calendar behind the modal. */
+  async function saveWeekStart(start: WeekStartDay) {
+    try {
+      settings = await setWeekStart(start);
+      onsettingschange?.(settings);
+    } catch (e) {
+      note = { text: String(e), kind: 'error' };
+    }
+  }
+
   async function saveTimeFormat(format: TimeFormat) {
     try {
       settings = await setTimeFormat(format);
@@ -336,6 +358,26 @@
       <p class="hint">
         Applies everywhere omacal prints a time, including the hour ruler down
         the side of Day and Week.
+      </p>
+
+      <div class="row">
+        <label class="lab" for="week-start">Weeks start on</label>
+        <div class="inline">
+          <select
+            id="week-start"
+            disabled={!settings}
+            value={settings?.weekStart ?? 'monday'}
+            onchange={(e) =>
+              saveWeekStart((e.currentTarget as HTMLSelectElement).value as WeekStartDay)}
+          >
+            {#each WEEK_STARTS as w (w.id)}
+              <option value={w.id}>{w.label}</option>
+            {/each}
+          </select>
+        </div>
+      </div>
+      <p class="hint">
+        Week, Month, Year and Big Year all start their rows on this day.
       </p>
 
     {:else if tab === 'Calendars'}

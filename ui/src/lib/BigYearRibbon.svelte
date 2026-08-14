@@ -1,5 +1,7 @@
 <!-- ui/src/lib/BigYearRibbon.svelte -->
 <script lang="ts">
+  import { isWeekendColumn } from './weekstart';
+  import { weekStartDay } from './weekstartstore.svelte';
   import type { BigYearPayload, UiEvent } from './api';
   import { foregroundFor } from './ink';
   import type { Rect } from './position';
@@ -74,14 +76,15 @@
     'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
   ];
 
-  // Every row is 28 days starting on a Monday (`assemble_big_year`'s own
-  // invariant), so which weekday a column holds is fixed by its index alone
+  // Every row is 28 days starting on the chosen first day of the week
+  // (`assemble_big_year`'s own invariant), so which weekday a column holds is
+  // fixed by its index alone
   // — never by the date it happens to carry. That constancy is the entire
   // point of the 28-day row (see `every_row_puts_its_weekends_in_the_same_columns`
   // in commands.rs): reading it off the column index rather than the date
   // keeps the stripes straight even if a caller ever fed in dates that
   // disagreed with the assumption.
-  const isWeekend = (col: number) => col % 7 === 5 || col % 7 === 6;
+  const isWeekend = (col: number) => isWeekendColumn(col, weekStartDay());
 
   function openPill(event: UiEvent, e: MouseEvent) {
     e.stopPropagation();

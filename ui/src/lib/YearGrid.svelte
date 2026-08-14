@@ -1,5 +1,7 @@
 <!-- ui/src/lib/YearGrid.svelte -->
 <script lang="ts">
+  import { rotate } from './weekstart';
+  import { weekStartDay } from './weekstartstore.svelte';
   import type { YearPayload } from './api';
 
   let { year, ondaypick }: {
@@ -9,7 +11,8 @@
     ondaypick: (startMs: number) => void;
   } = $props();
 
-  const DOW = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
+  const MONDAY_FIRST = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
+  const DOW = $derived(rotate(MONDAY_FIRST, weekStartDay()));
   const MONTH_NAMES = [
     'January', 'February', 'March', 'April', 'May', 'June',
     'July', 'August', 'September', 'October', 'November', 'December',

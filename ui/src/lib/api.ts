@@ -1,3 +1,5 @@
+import { startOfWeek } from './weekstart';
+import { weekStartDay } from './weekstartstore.svelte';
 import { invoke } from '@tauri-apps/api/core';
 
 export type UiEvent = {
@@ -35,12 +37,14 @@ export type MonthRow = {
  *  changes height as you page through the year. */
 export type MonthPayload = { rows: MonthRow[]; year: number; month: number };
 
-/** Midnight local on the Monday of the week containing `d`. */
+/** Midnight local on the first day of the week containing `d`.
+ *
+ *  The day itself comes from the stored preference rather than a parameter:
+ *  every caller wants the user's week, and an argument here would be one more
+ *  place to pass the wrong one. The arithmetic lives in `weekstart.ts`, where
+ *  a spec can reach it. */
 export function weekStart(d: Date): number {
-  const m = new Date(d);
-  m.setHours(0, 0, 0, 0);
-  m.setDate(m.getDate() - ((m.getDay() + 6) % 7));
-  return m.getTime();
+  return startOfWeek(d, weekStartDay());
 }
 
 export const getWeek = (weekStartMs: number) =>

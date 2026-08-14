@@ -17,6 +17,7 @@ const LIST_MODE_KEY: &str = "list_mode";
 const FALLBACK_KEY: &str = "fallback_reminder_minutes";
 const DEFAULT_CALENDAR_KEY: &str = "default_calendar_id";
 const TIME_FORMAT_KEY: &str = "time_format";
+const WEEK_START_KEY: &str = "week_start";
 
 /// Whether a clock is drawn as `13:30` or as `1:30 PM`.
 ///
@@ -42,6 +43,79 @@ impl TimeFormat {
             TimeFormat::H24 => "24h",
             TimeFormat::H12 => "12h",
         }
+    }
+}
+
+/// The day a week begins on.
+///
+/// Three, not seven, and they are Google Calendar's own three — this is a
+/// Google Calendar client, and a week starting on a Wednesday is a preference
+/// no calendar this one syncs with can express. An enum for the same reason
+/// [`TimeFormat`] is one: the set is closed, so [`set_week_start`] needs no
+/// refusal path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WeekStart {
+    #[serde(rename = "monday")]
+    Monday,
+    #[serde(rename = "sunday")]
+    Sunday,
+    #[serde(rename = "saturday")]
+    Saturday,
+}
+
+impl WeekStart {
+    /// The stored spelling, which is also the wire spelling.
+    fn as_str(self) -> &'static str {
+        match self {
+            WeekStart::Monday => "monday",
+            WeekStart::Sunday => "sunday",
+            WeekStart::Saturday => "saturday",
+        }
+    }
+
+    /// This day as jiff's own weekday, for the grid anchors that walk
+    /// backwards to it.
+    pub(crate) fn weekday(self) -> jiff::civil::Weekday {
+        use jiff::civil::Weekday;
+        match self {
+            WeekStart::Monday => Weekday::Monday,
+            WeekStart::Sunday => Weekday::Sunday,
+            WeekStart::Saturday => Weekday::Saturday,
+        }
+    }
+
+    /// How many blank cells precede a month whose 1st falls on `first` — the
+    /// month grid's `lead_blanks`.
+    ///
+    /// Monday-zero throughout rather than jiff's two offset helpers chosen per
+    /// variant: one origin, one subtraction, and the modulo does the wrapping.
+    /// Mixing the two origins is how this arithmetic goes wrong.
+    pub(crate) fn lead_blanks(self, first: jiff::civil::Weekday) -> usize {
+        let day = first.to_monday_zero_offset() as usize;
+        let start = self.weekday().to_monday_zero_offset() as usize;
+        (day + 7 - start) % 7
+    }
+
+    /// Whether the column at `index` in a week-aligned row is a weekend day.
+    ///
+    /// Read off the *index*, never off the date the column carries — the
+    /// property Big Year's 28-day rows exist to guarantee (see
+    /// `every_row_puts_its_weekends_in_the_same_columns`). Note that only a
+    /// Monday start puts Saturday and Sunday next to each other; the other two
+    /// split the pair to the ends of the row, exactly as they do in every
+    /// month grid those readers have ever used.
+    ///
+    /// Used by the Rust suite rather than by the app: the shading itself is
+    /// drawn in the browser, from `weekstart.ts`'s own copy of this rule. That
+    /// is exactly why this exists — `the_ribbons_weekend_stripes_stay_straight_under_every_start`
+    /// asserts the two agree against real dates, so the copy cannot drift.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn is_weekend_column(self, index: usize) -> bool {
+        use jiff::civil::Weekday;
+        let start = self.weekday().to_monday_zero_offset() as usize;
+        let weekday = (start + index) % 7;
+        weekday == Weekday::Saturday.to_monday_zero_offset() as usize
+            || weekday == Weekday::Sunday.to_monday_zero_offset() as usize
     }
 }
 
@@ -91,6 +165,10 @@ pub struct AppSettings {
     /// 24-hour ruler has to convert in their head at exactly the moment the
     /// ruler exists to save them from it.
     pub time_format: TimeFormat,
+    /// The day a week begins on, honoured by the Week grid's own anchor, the
+    /// month grid's leading blanks, the Year view's twelve small grids, and
+    /// Big Year's 392-day ribbon.
+    pub week_start: WeekStart,
 }
 
 async fn read(pool: &SqlitePool, key: &str) -> Option<String> {
@@ -165,6 +243,15 @@ pub async fn read_settings(pool: &SqlitePool) -> AppSettings {
             .await
             .map(|v| if v == "12h" { TimeFormat::H12 } else { TimeFormat::H24 })
             .unwrap_or(TimeFormat::H24),
+        // Same polarity rule as its two neighbours: only the two spellings
+        // this version writes move the setting, and everything else — absent,
+        // hand-edited, or written by a version that learned a fourth day —
+        // lands on the week omacal has always drawn.
+        week_start: match read(pool, WEEK_START_KEY).await.as_deref() {
+            Some("sunday") => WeekStart::Sunday,
+            Some("saturday") => WeekStart::Saturday,
+            _ => WeekStart::Monday,
+        },
     }
 }
 
@@ -291,6 +378,19 @@ pub async fn set_time_format(
     Ok(read_settings(&state.pool).await)
 }
 
+/// Stores the day a week begins on. Nothing to refuse: [`WeekStart`] has
+/// three variants and the select offers all three.
+#[tauri::command]
+pub async fn set_week_start(
+    state: tauri::State<'_, AppState>,
+    start: WeekStart,
+) -> Result<AppSettings, String> {
+    write(&state.pool, WEEK_START_KEY, start.as_str())
+        .await
+        .map_err(|e| crate::errors::user_facing(&e))?;
+    Ok(read_settings(&state.pool).await)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -318,6 +418,11 @@ mod tests {
             s.time_format,
             TimeFormat::H24,
             "the clock the app has always drawn, so no installed copy changes under its user"
+        );
+        assert_eq!(
+            s.week_start,
+            WeekStart::Monday,
+            "the week omacal has always drawn"
         );
     }
 
@@ -396,6 +501,71 @@ mod tests {
         assert_eq!(crate::errors::user_facing(&err), INTERVAL_TOO_SHORT);
     }
 
+    /// The three grids' shared arithmetic, as a table.
+    ///
+    /// August 2026 opens on a Saturday, which is the month that separates all
+    /// three starts: five blanks under Monday, six under Sunday, none at all
+    /// under Saturday. A month opening mid-week would agree under two of them
+    /// and hide a wrong subtraction.
+    #[test]
+    fn lead_blanks_are_counted_from_the_chosen_first_day() {
+        use jiff::civil::Weekday;
+        assert_eq!(WeekStart::Monday.lead_blanks(Weekday::Saturday), 5);
+        assert_eq!(WeekStart::Sunday.lead_blanks(Weekday::Saturday), 6);
+        assert_eq!(WeekStart::Saturday.lead_blanks(Weekday::Saturday), 0);
+
+        // The first day of the week is always zero blanks, and the day before
+        // it is always six. Anything else means the modulo wrapped wrong.
+        for (start, day_before) in [
+            (WeekStart::Monday, Weekday::Sunday),
+            (WeekStart::Sunday, Weekday::Saturday),
+            (WeekStart::Saturday, Weekday::Friday),
+        ] {
+            assert_eq!(start.lead_blanks(start.weekday()), 0, "{start:?}");
+            assert_eq!(start.lead_blanks(day_before), 6, "{start:?}");
+        }
+    }
+
+    /// Weekends land where the reader expects, and — the load-bearing half —
+    /// **exactly two columns of every seven** are weekend under all three.
+    /// A formula that drifted would still satisfy a single hand-written row.
+    #[test]
+    fn weekend_columns_follow_the_first_day() {
+        // Monday start: the pair sits together, columns 5 and 6.
+        assert_eq!(
+            (0..7).filter(|&c| WeekStart::Monday.is_weekend_column(c)).collect::<Vec<_>>(),
+            vec![5, 6],
+        );
+        // Sunday start splits the pair to the ends — as every Sunday-start
+        // month grid in the world does.
+        assert_eq!(
+            (0..7).filter(|&c| WeekStart::Sunday.is_weekend_column(c)).collect::<Vec<_>>(),
+            vec![0, 6],
+        );
+        // Saturday start puts it back together, at the front.
+        assert_eq!(
+            (0..7).filter(|&c| WeekStart::Saturday.is_weekend_column(c)).collect::<Vec<_>>(),
+            vec![0, 1],
+        );
+
+        // Across a full 28-day Big Year row, every start marks eight columns —
+        // and marks them in the same place in each of the four blocks, which
+        // is the property the 28-day row exists for.
+        for start in [WeekStart::Monday, WeekStart::Sunday, WeekStart::Saturday] {
+            let marked: Vec<usize> = (0..28).filter(|&c| start.is_weekend_column(c)).collect();
+            assert_eq!(marked.len(), 8, "{start:?} marked the wrong number of days");
+            for block in 1..4 {
+                for i in 0..2 {
+                    assert_eq!(
+                        marked[block * 2 + i],
+                        marked[i] + block * 7,
+                        "{start:?} drifted in block {block}",
+                    );
+                }
+            }
+        }
+    }
+
     /// Both directions, because a format that could be turned on and not off
     /// is half a setting.
     #[tokio::test]
@@ -407,6 +577,25 @@ mod tests {
 
         write(&p, TIME_FORMAT_KEY, TimeFormat::H24.as_str()).await.unwrap();
         assert_eq!(read_settings(&p).await.time_format, TimeFormat::H24);
+    }
+
+    /// All three round-trip, and an unrecognised row reads as Monday — the
+    /// same polarity rule the two settings beside this one take.
+    #[tokio::test]
+    async fn the_week_start_round_trips_and_falls_back_to_monday() {
+        let p = pool().await;
+        for start in [WeekStart::Sunday, WeekStart::Saturday, WeekStart::Monday] {
+            write(&p, WEEK_START_KEY, start.as_str()).await.unwrap();
+            assert_eq!(read_settings(&p).await.week_start, start);
+        }
+        for stored in ["", "Sunday", "sun", "wednesday", "🗓"] {
+            write(&p, WEEK_START_KEY, stored).await.unwrap();
+            assert_eq!(
+                read_settings(&p).await.week_start,
+                WeekStart::Monday,
+                "{stored:?} is not a day this version writes",
+            );
+        }
     }
 
     /// The polarity rule, witnessed by a value the app never writes. A row
@@ -430,6 +619,13 @@ mod tests {
     /// `sqlite3` as the modal says. Pinned because the two are written in
     /// different places — `as_str` and a serde rename — and nothing else
     /// would notice them drifting apart.
+    #[test]
+    fn the_week_starts_stored_spelling_is_its_wire_spelling() {
+        for w in [WeekStart::Monday, WeekStart::Sunday, WeekStart::Saturday] {
+            assert_eq!(serde_json::to_string(&w).unwrap(), format!("\"{}\"", w.as_str()));
+        }
+    }
+
     #[test]
     fn the_stored_spelling_is_the_wire_spelling() {
         for f in [TimeFormat::H24, TimeFormat::H12] {

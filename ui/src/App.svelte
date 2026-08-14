@@ -20,6 +20,7 @@
   import { daysFromMonth, daysFromWeek, listable } from './lib/filmstrip';
   import { getSettings, setListMode } from './lib/settings';
   import { setClockFormat } from './lib/clock.svelte';
+  import { setWeekStartDay } from './lib/weekstartstore.svelte';
   import ShortcutSheet from './lib/ShortcutSheet.svelte';
   import { SHORTCUT_LIST, type ShortcutId } from './lib/shortcuts';
   import Filmstrip from './lib/Filmstrip.svelte';
@@ -167,6 +168,7 @@
       .then((s) => {
         defaultCalendarId = s.defaultCalendarId;
         setClockFormat(s.timeFormat);
+        setWeekStartDay(s.weekStart);
         if (listModeChoices !== before) return; // superseded by the user's own choice
         listMode = s.listMode;
       })
@@ -1009,6 +1011,7 @@
     onsettingschange={(s) => {
       defaultCalendarId = s.defaultCalendarId;
       setClockFormat(s.timeFormat);
+      setWeekStartDay(s.weekStart);
     }}
     onSignIn={handleSignIn}
     onWhatsNew={() => { void openLatestRelease(); }}

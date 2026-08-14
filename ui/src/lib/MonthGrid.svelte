@@ -1,5 +1,7 @@
 <!-- ui/src/lib/MonthGrid.svelte -->
 <script lang="ts">
+  import { rotate } from './weekstart';
+  import { weekStartDay } from './weekstartstore.svelte';
   import type { MonthPayload, UiEvent } from './api';
   import type { Rect } from './position';
 
@@ -35,7 +37,10 @@
   // cell has room for before a title stops being legible.
   const MAX_LINES = 3;
 
-  const DOW = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
+  // Written Monday-first and rotated, never rewritten per setting: one
+  // spelling of the seven names, and `rotate` is tested on its own.
+  const MONDAY_FIRST = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
+  const DOW = $derived(rotate(MONDAY_FIRST, weekStartDay()));
 
   const todayStart = (() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); })();
 

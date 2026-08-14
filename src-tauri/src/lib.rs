@@ -164,7 +164,12 @@ async fn get_month(
     month: u32,
 ) -> Result<commands::MonthPayload, String> {
     let tz = display_tz(&state.pool);
-    let grid_start_ms = commands::month_grid_start_ms(year, month, &tz);
+    // Read once and passed to both, deliberately: `month_grid_start_ms` sizes
+    // the fetch window and `assemble_month` recomputes the same anchor, so two
+    // separate reads could straddle a settings change and leave the window
+    // short of the grid by up to six days.
+    let week_start = settings::read_settings(&state.pool).await.week_start;
+    let grid_start_ms = commands::month_grid_start_ms(year, month, &tz, week_start);
     // Same widening as `get_week`/`get_day`, for the same reason: an event
     // that begins just before the 42-day grid, or a DST-lengthened edge day,
     // must not be missed.
@@ -176,7 +181,7 @@ async fn get_month(
     )
     .await
     .map_err(|e| e.to_string())?;
-    Ok(commands::assemble_month(&events, year, month, &tz))
+    Ok(commands::assemble_month(&events, year, month, &tz, week_start))
 }
 
 #[tauri::command]
@@ -185,6 +190,7 @@ async fn get_year(
     year: i32,
 ) -> Result<commands::YearPayload, String> {
     let tz = display_tz(&state.pool);
+    let week_start = settings::read_settings(&state.pool).await.week_start;
     let year_start_ms = commands::year_start_ms(year, &tz);
     let next_year_start_ms = commands::year_start_ms(year + 1, &tz);
     // Same widening as `get_week`/`get_day`/`get_month`, for the same reason:
@@ -198,7 +204,7 @@ async fn get_year(
     )
     .await
     .map_err(|e| e.to_string())?;
-    Ok(commands::assemble_year(&events, year, now_ms(), &tz))
+    Ok(commands::assemble_year(&events, year, now_ms(), &tz, week_start))
 }
 
 #[tauri::command]
@@ -207,7 +213,8 @@ async fn get_big_year(
     year: i32,
 ) -> Result<commands::BigYearPayload, String> {
     let tz = display_tz(&state.pool);
-    get_big_year_impl(&state.pool, year, &tz, now_ms()).await
+    let week_start = settings::read_settings(&state.pool).await.week_start;
+    get_big_year_impl(&state.pool, year, &tz, now_ms(), week_start).await
 }
 
 /// The body of `get_big_year`, minus the Tauri `State` wrapper so it is
@@ -217,8 +224,9 @@ async fn get_big_year_impl(
     year: i32,
     tz: &str,
     now: i64,
+    week_start: settings::WeekStart,
 ) -> Result<commands::BigYearPayload, String> {
-    let ribbon_start_ms = commands::big_year_start_ms(year, tz);
+    let ribbon_start_ms = commands::big_year_start_ms(year, tz, week_start);
     // Same widening as `get_week`/`get_day`/`get_month`/`get_year`, for the
     // same reason: an event that begins just before the 392-day ribbon, or a
     // DST-lengthened edge day, must not be missed.
@@ -230,7 +238,7 @@ async fn get_big_year_impl(
     )
     .await
     .map_err(|e| e.to_string())?;
-    let mut payload = commands::assemble_big_year(&events, year, now, tz);
+    let mut payload = commands::assemble_big_year(&events, year, now, tz, week_start);
 
     // `assemble_big_year` takes only `&[StoredEvent]` — deliberately, so it
     // stays pure over the same shape every other assembler in `commands.rs`
@@ -940,6 +948,7 @@ pub fn run() {
             settings::set_fallback_reminders,
             settings::set_default_calendar,
             settings::set_time_format,
+            settings::set_week_start,
             events::event_detail,
             events::respond_to_event,
             events::refresh_event,
@@ -1180,7 +1189,10 @@ mod tests {
         };
         omacal_store::upsert_event(&pool, &leave).await.unwrap();
 
-        let payload = get_big_year_impl(&pool, 2026, "UTC", 1_786_341_600_000).await.unwrap();
+        let payload =
+            get_big_year_impl(&pool, 2026, "UTC", 1_786_341_600_000, settings::WeekStart::Monday)
+                .await
+                .unwrap();
         assert!(
             payload.legend.iter().any(|e| e.name == "Excitel Team"),
             "legend must carry the real calendar name, not a placeholder: {:?}",

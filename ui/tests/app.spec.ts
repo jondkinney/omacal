@@ -3006,3 +3006,97 @@ test.describe('App: the keyboard sheet', () => {
     await expect(page.getByRole('searchbox', { name: 'Search events' })).toHaveValue('');
   });
 });
+
+/**
+ * The first day of the week, from the select in Settings to the four views
+ * that draw a week-aligned row.
+ *
+ * The arithmetic is proved twice already — `weekstart.spec.ts` for the
+ * browser's half and the Rust suite for the grids' — so what is left here is
+ * the wiring: a rune seeded but not refreshed, a header still spelling its own
+ * days, a grid asking the backend for one week and drawing another.
+ */
+test.describe('App: the first day of the week', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.clock.setFixedTime(APP_NOW);
+  });
+
+  const openApp = async (page: Page) => {
+    await page.goto(app());
+    await expect(page.locator('.vswitch button.active')).toBeVisible();
+  };
+
+  const chooseStart = async (page: Page, label: string) => {
+    await page.getByRole('button', { name: 'Menu' }).click();
+    await page.getByRole('button', { name: 'Settings…' }).click();
+    const modal = page.getByRole('dialog', { name: 'Settings' });
+    await modal.locator('#week-start').selectOption({ label });
+    await page.keyboard.press('Escape');
+    await expect(modal).toHaveCount(0);
+  };
+
+  /** Month's own header row — the labels the user reads above the grid. */
+  const monthHeader = (page: Page) => page.locator('.head span');
+
+  test('Month opens on Monday, as it always has', async ({ page }) => {
+    await openApp(page);
+    await page.keyboard.press('3');
+    await expect(monthHeader(page).first()).toHaveText('MON');
+    await expect(monthHeader(page).last()).toHaveText('SUN');
+  });
+
+  /** **Without a restart**, the same claim the clock format earns: `App`
+   *  seeds the rune once, so a change that only reached the database would
+   *  still pass a test that reloaded. */
+  test('choosing Sunday rotates the Month header immediately', async ({ page }) => {
+    await openApp(page);
+    await page.keyboard.press('3');
+    await expect(monthHeader(page).first()).toHaveText('MON');
+
+    await chooseStart(page, 'Sunday');
+
+    await expect(monthHeader(page).first()).toHaveText('SUN');
+    await expect(monthHeader(page).last()).toHaveText('SAT');
+  });
+
+  test('choosing Saturday rotates it again, and Monday puts it back', async ({ page }) => {
+    await openApp(page);
+    await page.keyboard.press('3');
+
+    await chooseStart(page, 'Saturday');
+    await expect(monthHeader(page).first()).toHaveText('SAT');
+    await expect(monthHeader(page).last()).toHaveText('FRI');
+
+    await chooseStart(page, 'Monday');
+    await expect(monthHeader(page).first()).toHaveText('MON');
+  });
+
+  /** A stored preference, not a session variable. */
+  test('the chosen first day survives a reload', async ({ page }) => {
+    await openApp(page);
+    await chooseStart(page, 'Sunday');
+    await page.keyboard.press('3');
+    await expect(monthHeader(page).first()).toHaveText('SUN');
+
+    await page.reload();
+    await page.keyboard.press('3');
+    await expect(monthHeader(page).first()).toHaveText('SUN');
+  });
+
+  /**
+   * The half a header test cannot see: Week asks the backend for a *week*,
+   * and the day it names has to move with the setting too. If `weekStart` in
+   * `api.ts` kept its own idea of Monday, the header above would rotate and
+   * the seven columns below it would not.
+   */
+  test('Week asks for the week the setting names', async ({ page }) => {
+    await openApp(page);
+    const firstColumn = page.locator('[data-testid="week-body"] .col').first();
+    const mondayMs = await firstColumn.getAttribute('data-start-ms');
+
+    await chooseStart(page, 'Sunday');
+
+    const sundayMs = await firstColumn.getAttribute('data-start-ms');
+    expect(Number(sundayMs)).toBe(Number(mondayMs) - 24 * 3_600_000);
+  });
+});

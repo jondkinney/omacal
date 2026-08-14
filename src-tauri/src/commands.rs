@@ -214,16 +214,23 @@ fn local_midnight_ms(d: jiff::civil::Date, tz: &str) -> i64 {
     }
 }
 
-/// The Monday on or before `year`-`month`-01, at local midnight in `tz` — the
-/// anchor for the 42-cell month grid.
+/// The first day of the week on or before `year`-`month`-01, at local
+/// midnight in `tz` — the anchor for the 42-cell month grid.
 ///
 /// `pub(crate)`: `get_month` needs this same anchor to size its fetch window
-/// *before* calling `assemble_month`, which recomputes it internally.
-pub(crate) fn month_grid_start_ms(year: i32, month: u32, tz: &str) -> i64 {
-    use jiff::civil::{date, Weekday};
+/// *before* calling `assemble_month`, which recomputes it internally — so
+/// both must be handed the same `week_start`, or the window and the grid
+/// disagree by up to six days.
+pub(crate) fn month_grid_start_ms(
+    year: i32,
+    month: u32,
+    tz: &str,
+    week_start: crate::settings::WeekStart,
+) -> i64 {
+    use jiff::civil::date;
 
     let mut grid_start = date(year as i16, month as i8, 1);
-    while grid_start.weekday() != Weekday::Monday {
+    while grid_start.weekday() != week_start.weekday() {
         grid_start = grid_start.yesterday().expect("civil date underflow");
     }
     local_midnight_ms(grid_start, tz)
@@ -388,10 +395,16 @@ pub fn assemble_week(events: &[StoredEvent], week_start_ms: i64, tz: &str) -> We
 /// lane-packed independently at `row_len = 7` for its own spanning bars, and
 /// each cell gets a flat, sorted list of the day's timed events for the UI to
 /// lay out.
-pub fn assemble_month(events: &[StoredEvent], year: i32, month: u32, tz: &str) -> MonthPayload {
+pub fn assemble_month(
+    events: &[StoredEvent],
+    year: i32,
+    month: u32,
+    tz: &str,
+    week_start: crate::settings::WeekStart,
+) -> MonthPayload {
     use jiff::civil::date;
 
-    let grid_start_ms = month_grid_start_ms(year, month, tz);
+    let grid_start_ms = month_grid_start_ms(year, month, tz, week_start);
     let bounds = n_day_boundaries(grid_start_ms, 42, tz);
     // All 42 at once, then sliced per row — the same relationship `row_bounds`
     // has with `bounds`, and a row's seven column dates are its own seven.
@@ -516,7 +529,13 @@ pub(crate) fn year_start_ms(year: i32, tz: &str) -> i64 {
 /// is dotted too, and because a span lying entirely outside the month must dot
 /// nothing — which comparing dates gives for free and clamping two
 /// out-of-window sentinels does not.
-pub fn assemble_year(events: &[StoredEvent], year: i32, now_ms: i64, tz: &str) -> YearPayload {
+pub fn assemble_year(
+    events: &[StoredEvent],
+    year: i32,
+    now_ms: i64,
+    tz: &str,
+    week_start: crate::settings::WeekStart,
+) -> YearPayload {
     use jiff::civil::date;
 
     let suppressed = suppressed_slots(events);
@@ -530,7 +549,7 @@ pub fn assemble_year(events: &[StoredEvent], year: i32, now_ms: i64, tz: &str) -
             let bounds = n_day_boundaries(month_start_ms, days_in_month, tz);
             // One entry per day, so it lines up with `has_all_day` exactly.
             let day_dates = column_dates(&bounds, tz);
-            let lead_blanks = first.weekday().to_monday_zero_offset() as usize;
+            let lead_blanks = week_start.lead_blanks(first.weekday());
 
             let mut has_all_day = vec![false; days_in_month];
 
@@ -634,11 +653,15 @@ pub struct LegendEntry {
 /// window *before* calling `assemble_big_year`, which recomputes it
 /// internally — the same relationship `month_grid_start_ms` has with
 /// `get_month`/`assemble_month`.
-pub(crate) fn big_year_start_ms(year: i32, tz: &str) -> i64 {
-    use jiff::civil::{date, Weekday};
+pub(crate) fn big_year_start_ms(
+    year: i32,
+    tz: &str,
+    week_start: crate::settings::WeekStart,
+) -> i64 {
+    use jiff::civil::date;
 
     let mut d = date(year as i16, 1, 1);
-    while d.weekday() != Weekday::Monday {
+    while d.weekday() != week_start.weekday() {
         d = d.yesterday().expect("civil date underflow");
     }
     local_midnight_ms(d, tz)
@@ -661,10 +684,16 @@ pub(crate) fn big_year_start_ms(year: i32, tz: &str) -> i64 {
 /// month grids — see `date_column`. Bucketing the stored instant against the
 /// display zone's day boundaries, which this did, drew a foreign calendar's
 /// one-day event as two pills: the end of one row and the start of the next.
-pub fn assemble_big_year(events: &[StoredEvent], year: i32, now_ms: i64, tz: &str) -> BigYearPayload {
+pub fn assemble_big_year(
+    events: &[StoredEvent],
+    year: i32,
+    now_ms: i64,
+    tz: &str,
+    week_start: crate::settings::WeekStart,
+) -> BigYearPayload {
     use jiff::civil::date;
 
-    let ribbon_start_ms = big_year_start_ms(year, tz);
+    let ribbon_start_ms = big_year_start_ms(year, tz, week_start);
     let bounds = n_day_boundaries(ribbon_start_ms, 392, tz);
     // All 392 at once, then sliced per row — the same relationship `row_bounds`
     // has with `bounds`, and exactly how `assemble_month` feeds its rows.
@@ -1269,7 +1298,7 @@ mod tests {
 
         // The month grid's timed path is the same claim and takes the same
         // mutation, so it is asserted here rather than left to inference.
-        let m = assemble_month(&[e], 2026, 8, "UTC");
+        let m = assemble_month(&[e], 2026, 8, "UTC", crate::settings::WeekStart::Monday);
         // Row 1 of the August 2026 UTC grid is Mon 3 - Sun 9 Aug.
         assert_eq!(m.rows[1].cells[1].timed.len(), 1, "Tue 4 Aug is column 1");
         assert!(m.rows[1].cells[2].timed.is_empty());
@@ -1285,7 +1314,7 @@ mod tests {
         let evs = vec![all_day_event(AUCKLAND, start, end)];
 
         let w = assemble_week(&evs, MON, "UTC");
-        let m = assemble_month(&evs, 2026, 8, "UTC");
+        let m = assemble_month(&evs, 2026, 8, "UTC", crate::settings::WeekStart::Monday);
 
         // August 2026 opens on a Saturday, so the UTC grid runs Mon 27 Jul -
         // Sun 6 Sep and its row 1 is exactly the week under test.
@@ -1451,7 +1480,7 @@ mod tests {
 
         // The same claim in the month grid, where those two weeks are adjacent
         // rows and the stray is visible side by side.
-        let m = assemble_month(&evs, 2026, 8, "UTC");
+        let m = assemble_month(&evs, 2026, 8, "UTC", crate::settings::WeekStart::Monday);
         assert_eq!(m.rows[2].cells[0].start_ms, w.days[0].start_ms, "row 2 is the Mon 10 Aug week");
         assert_eq!(m.rows[2].bars.len(), 1);
         assert_eq!(m.rows[2].bars[0].start_col, 0, "Mon 10 Aug is column 0");
@@ -1473,7 +1502,7 @@ mod tests {
             midnight_ms(NEW_YORK, 2026, 8, 5),
             midnight_ms(NEW_YORK, 2026, 8, 8),
         )];
-        let m = assemble_month(&evs, 2026, 8, "UTC");
+        let m = assemble_month(&evs, 2026, 8, "UTC", crate::settings::WeekStart::Monday);
 
         assert_eq!(m.rows[1].bars.len(), 1);
         assert_eq!(m.rows[1].bars[0].start_col, 2, "Wed 5 Aug");
@@ -1485,7 +1514,7 @@ mod tests {
     fn august_2026_starts_on_a_saturday_and_needs_six_rows() {
         // August 2026 begins Sat 1 Aug, so the grid runs Mon 27 Jul - Sun 6 Sep.
         // It exercises leading out-of-month days, trailing ones, and six rows.
-        let m = assemble_month(&[], 2026, 8, "Europe/Sofia");
+        let m = assemble_month(&[], 2026, 8, "Europe/Sofia", crate::settings::WeekStart::Monday);
         assert_eq!(m.rows.len(), 6);
         assert_eq!(m.rows[0].cells.len(), 7);
         assert_eq!(m.rows[0].cells[0].start_ms, 1785099600000, "grid must start Mon 27 Jul");
@@ -1497,7 +1526,7 @@ mod tests {
     #[test]
     fn a_month_that_fits_in_five_rows_still_renders_six() {
         // Otherwise the grid changes height as you page through the year.
-        let m = assemble_month(&[], 2026, 2, "Europe/Sofia");
+        let m = assemble_month(&[], 2026, 2, "Europe/Sofia", crate::settings::WeekStart::Monday);
         assert_eq!(m.rows.len(), 6);
     }
 
@@ -1510,7 +1539,7 @@ mod tests {
     /// 1780261200000.
     #[test]
     fn a_month_that_starts_on_a_monday_has_no_leading_days() {
-        let m = assemble_month(&[], 2026, 6, "Europe/Sofia");
+        let m = assemble_month(&[], 2026, 6, "Europe/Sofia", crate::settings::WeekStart::Monday);
         assert_eq!(m.rows[0].cells[0].start_ms, 1780261200000, "grid must start Mon 1 Jun");
         assert!(m.rows[0].cells[0].in_month, "1 Jun is itself the Monday the grid starts on");
     }
@@ -1521,7 +1550,7 @@ mod tests {
     /// (Europe/Sofia local midnight): 2025-12-29 00:00 Sofia = 1766959200000.
     #[test]
     fn a_grid_start_can_fall_in_the_previous_year() {
-        let m = assemble_month(&[], 2026, 1, "Europe/Sofia");
+        let m = assemble_month(&[], 2026, 1, "Europe/Sofia", crate::settings::WeekStart::Monday);
         assert_eq!(m.rows[0].cells[0].start_ms, 1766959200000, "grid must start Mon 29 Dec 2025");
         assert!(!m.rows[0].cells[0].in_month, "29 Dec 2025 belongs to December, not January");
     }
@@ -1554,7 +1583,7 @@ mod tests {
     #[test]
     fn december_rolls_over_into_the_next_year() {
         // Tue 1 Dec 2026, so the grid runs Mon 30 Nov - Sun 10 Jan.
-        let m = assemble_month(&[], 2026, 12, "Europe/Sofia");
+        let m = assemble_month(&[], 2026, 12, "Europe/Sofia", crate::settings::WeekStart::Monday);
         let cells = month_cells(&m);
         assert_eq!(
             cells.iter().filter(|c| c.in_month).count(),
@@ -1582,6 +1611,7 @@ mod tests {
             2026,
             10,
             "Europe/Sofia",
+            crate::settings::WeekStart::Monday,
         );
         let cells = month_cells(&m);
 
@@ -1621,7 +1651,7 @@ mod tests {
         // exclusive per Google's all-day convention), covering Sun 2 - Tue
         // 4 Aug inclusive.
         let evs = vec![all_day_event("Europe/Sofia", 1785618000000, 1785877200000)];
-        let m = assemble_month(&evs, 2026, 8, "Europe/Sofia");
+        let m = assemble_month(&evs, 2026, 8, "Europe/Sofia", crate::settings::WeekStart::Monday);
         // `bars: Vec<Lane>` — each `Lane` is already one placed, row-clipped
         // segment (see `omacal_core::lanes::Lane`), not a container of
         // segments, so the count of bars *is* the count of segments placed
@@ -1639,7 +1669,7 @@ mod tests {
             timed_event(1786341600000 + 3 * 3_600_000, 1786341600000 + 4 * 3_600_000),
             timed_event(1786341600000, 1786341600000 + 30 * 60_000),
         ];
-        let m = assemble_month(&evs, 2026, 8, "Europe/Sofia");
+        let m = assemble_month(&evs, 2026, 8, "Europe/Sofia", crate::settings::WeekStart::Monday);
         // Mon 10 Aug is row 2, column 0.
         let cell = &m.rows[2].cells[0];
         assert_eq!(cell.timed.len(), 2);
@@ -1648,7 +1678,7 @@ mod tests {
 
     #[test]
     fn a_year_has_twelve_months_with_the_right_day_counts() {
-        let y = assemble_year(&[], 2026, 1_786_341_600_000, "Europe/Sofia");
+        let y = assemble_year(&[], 2026, 1_786_341_600_000, "Europe/Sofia", crate::settings::WeekStart::Monday);
         assert_eq!(y.months.len(), 12);
         assert_eq!(y.months[0].days.len(), 31, "January");
         assert_eq!(y.months[1].days.len(), 28, "February 2026 is not a leap year");
@@ -1657,14 +1687,14 @@ mod tests {
 
     #[test]
     fn a_leap_february_has_twenty_nine_days() {
-        let y = assemble_year(&[], 2028, 1_786_341_600_000, "Europe/Sofia");
+        let y = assemble_year(&[], 2028, 1_786_341_600_000, "Europe/Sofia", crate::settings::WeekStart::Monday);
         assert_eq!(y.months[1].days.len(), 29);
     }
 
     #[test]
     fn lead_blanks_line_the_first_up_under_its_weekday() {
         // 1 Jan 2026 is a Thursday, so Monday-first means three blanks.
-        let y = assemble_year(&[], 2026, 1_786_341_600_000, "Europe/Sofia");
+        let y = assemble_year(&[], 2026, 1_786_341_600_000, "Europe/Sofia", crate::settings::WeekStart::Monday);
         assert_eq!(y.months[0].lead_blanks, 3);
         // 1 Jun 2026 is a Monday — no blanks at all.
         assert_eq!(y.months[5].lead_blanks, 0);
@@ -1689,7 +1719,7 @@ mod tests {
                 midnight_ms("UTC", 2026, 8, 8) + 17 * 3_600_000,
             ),
         ];
-        let y = assemble_year(&timed, 2026, 1_786_341_600_000, "Europe/Sofia");
+        let y = assemble_year(&timed, 2026, 1_786_341_600_000, "Europe/Sofia", crate::settings::WeekStart::Monday);
         assert_eq!(dotted_days(&y), Vec::new(), "a timed event dotted the year grid");
     }
 
@@ -1708,7 +1738,7 @@ mod tests {
         let tz = "Europe/Sofia";
         let start = local_midnight_ms(jiff::civil::date(2026, 3, 15), tz);
         let end = local_midnight_ms(jiff::civil::date(2026, 3, 18), tz);
-        let y = assemble_year(&[all_day_event(tz, start, end)], 2026, 1_786_341_600_000, tz);
+        let y = assemble_year(&[all_day_event(tz, start, end)], 2026, 1_786_341_600_000, tz, crate::settings::WeekStart::Monday);
 
         let march = &y.months[2];
         assert_eq!(march.days[14].start_ms, start, "days[14] is the 15th");
@@ -1732,14 +1762,14 @@ mod tests {
     fn days_outside_the_synced_window_are_marked_unsynced() {
         // From Aug 2026 the window starts in Feb, so January of the *current*
         // year is already outside it — an empty January must not read as free.
-        let y = assemble_year(&[], 2026, 1_786_341_600_000, "Europe/Sofia");
+        let y = assemble_year(&[], 2026, 1_786_341_600_000, "Europe/Sofia", crate::settings::WeekStart::Monday);
         assert!(y.months[0].days[0].unsynced, "1 Jan 2026 is before now-180d");
         assert!(!y.months[7].days[0].unsynced, "1 Aug 2026 is inside the window");
     }
 
     #[test]
     fn the_ribbon_starts_on_the_monday_before_new_year_and_runs_fourteen_rows() {
-        let b = assemble_big_year(&[], 2026, 1_786_341_600_000, "Europe/Sofia");
+        let b = assemble_big_year(&[], 2026, 1_786_341_600_000, "Europe/Sofia", crate::settings::WeekStart::Monday);
         assert_eq!(b.rows.len(), 14);
         assert_eq!(b.rows[0].days.len(), 28);
         // 1 Jan 2026 is a Thursday, so the ribbon opens Mon 29 Dec 2025.
@@ -1759,7 +1789,7 @@ mod tests {
     /// 1 Jan 2024 00:00:00 UTC = 1704067200000.
     #[test]
     fn a_year_that_opens_on_a_monday_does_not_skip_back_a_further_week() {
-        let b = assemble_big_year(&[], 2024, 1_704_067_200_000, "UTC");
+        let b = assemble_big_year(&[], 2024, 1_704_067_200_000, "UTC", crate::settings::WeekStart::Monday);
         assert_eq!(b.rows[0].days[0].start_ms, 1_704_067_200_000, "the ribbon must open on 1 Jan itself");
         assert!(b.rows[0].days[0].in_year, "1 Jan 2024 belongs to the year it opens");
     }
@@ -1780,15 +1810,114 @@ mod tests {
 
         // Near edge. A 2026 ribbon anchors on Mon 29 Dec 2025, so it always
         // opens before a window that only reaches back to February.
-        let b = assemble_big_year(&[], 2026, NOW, "Europe/Sofia");
+        let b = assemble_big_year(&[], 2026, NOW, "Europe/Sofia", crate::settings::WeekStart::Monday);
         assert!(b.rows[0].days[0].unsynced, "Mon 29 Dec 2025 is before now-180d");
         assert!(!b.rows[13].days[27].unsynced, "Jan 2027 is still inside now+365d");
 
         // Far edge. The next year's ribbon runs into Jan 2028, past a window
         // that ends in Aug 2027.
-        let b = assemble_big_year(&[], 2027, NOW, "Europe/Sofia");
+        let b = assemble_big_year(&[], 2027, NOW, "Europe/Sofia", crate::settings::WeekStart::Monday);
         assert!(!b.rows[0].days[0].unsynced, "Mon 28 Dec 2026 is inside the window");
         assert!(b.rows[13].days[27].unsynced, "Jan 2028 is past now+365d");
+    }
+
+    /// The anchors move with the setting, on the month that separates all
+    /// three: **1 Aug 2026 is a Saturday**, so each start walks back a
+    /// different distance — six days, seven, or none at all. A month opening
+    /// mid-week would agree under two of the three and hide a wrong walk.
+    #[test]
+    fn the_month_grid_anchors_on_the_chosen_first_day() {
+        use crate::settings::WeekStart;
+        use jiff::{civil::Weekday, Timestamp};
+
+        let weekday_of = |ms: i64| {
+            Timestamp::from_millisecond(ms).unwrap().in_tz("UTC").unwrap().weekday()
+        };
+        const DAY: i64 = 24 * 3_600_000;
+
+        let monday = month_grid_start_ms(2026, 8, "UTC", WeekStart::Monday);
+        let sunday = month_grid_start_ms(2026, 8, "UTC", WeekStart::Sunday);
+        let saturday = month_grid_start_ms(2026, 8, "UTC", WeekStart::Saturday);
+
+        assert_eq!(weekday_of(monday), Weekday::Monday);
+        assert_eq!(weekday_of(sunday), Weekday::Sunday);
+        assert_eq!(weekday_of(saturday), Weekday::Saturday);
+
+        // Absolute distances, not just "the right weekday": walking back a
+        // whole extra week would still land on the right day name.
+        //
+        // Note the order, which is the counter-intuitive part and the reason
+        // this test is worth its length: from a Saturday the *Sunday* start
+        // walks back furthest (six days, to Sun 26 Jul) and Monday's is
+        // nearer (five, to Mon 27 Jul). "Sunday is earlier in the week" is
+        // the intuition that gets this backwards.
+        assert_eq!(saturday - sunday, 6 * DAY, "Sat 1 Aug is six days after Sun 26 Jul");
+        assert_eq!(saturday - monday, 5 * DAY, "and five after Mon 27 Jul");
+        assert!(sunday < monday, "the Sunday grid opens a day earlier than the Monday one here");
+    }
+
+    /// The same for the 392-day ribbon, whose anchor is the week containing
+    /// 1 Jan. 1 Jan 2026 is a Thursday.
+    #[test]
+    fn the_big_year_ribbon_anchors_on_the_chosen_first_day() {
+        use crate::settings::WeekStart;
+        use jiff::{civil::Weekday, Timestamp};
+
+        let weekday_of = |ms: i64| {
+            Timestamp::from_millisecond(ms).unwrap().in_tz("UTC").unwrap().weekday()
+        };
+        for (start, expected) in [
+            (WeekStart::Monday, Weekday::Monday),
+            (WeekStart::Sunday, Weekday::Sunday),
+            (WeekStart::Saturday, Weekday::Saturday),
+        ] {
+            assert_eq!(weekday_of(big_year_start_ms(2026, "UTC", start)), expected, "{start:?}");
+        }
+    }
+
+    /// **The 28-day row's invariant holds under all three starts.**
+    ///
+    /// The row length is 28 because that is a multiple of 7, so whichever day
+    /// a row opens on, each column holds the same weekday in every row and the
+    /// weekend reads as straight vertical stripes. Only *where* the stripes
+    /// fall changes: Monday keeps the pair together at 5 and 6, Sunday splits
+    /// it to the ends, Saturday puts it together at the front. This is the
+    /// generalisation of `every_row_puts_its_weekends_in_the_same_columns`,
+    /// which pins the Monday case exactly.
+    #[test]
+    fn the_ribbons_weekend_stripes_stay_straight_under_every_start() {
+        use crate::settings::WeekStart;
+        use jiff::{civil::Weekday, Timestamp};
+
+        for (start, expected) in [
+            (WeekStart::Monday, [5usize, 6, 12, 13, 19, 20, 26, 27]),
+            (WeekStart::Sunday, [0, 6, 7, 13, 14, 20, 21, 27]),
+            (WeekStart::Saturday, [0, 1, 7, 8, 14, 15, 21, 22]),
+        ] {
+            let b = assemble_big_year(&[], 2026, 1_786_341_600_000, "Europe/Sofia", start);
+            for (r, row) in b.rows.iter().enumerate() {
+                let weekend: Vec<usize> = row
+                    .days
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, d)| {
+                        let wd = Timestamp::from_millisecond(d.start_ms)
+                            .unwrap()
+                            .in_tz("Europe/Sofia")
+                            .unwrap()
+                            .weekday();
+                        wd == Weekday::Saturday || wd == Weekday::Sunday
+                    })
+                    .map(|(i, _)| i)
+                    .collect();
+                assert_eq!(weekend, expected, "{start:?} row {r} weekend columns drifted");
+            }
+            // And the UI reads the same columns off the index alone, without
+            // consulting a date — the two must agree or the shading paints
+            // the wrong cells.
+            let from_setting: Vec<usize> = (0..28).filter(|&c| start.is_weekend_column(c)).collect();
+            assert_eq!(from_setting, expected, "{start:?}: index rule disagrees with the dates");
+        }
     }
 
     #[test]
@@ -1798,7 +1927,7 @@ mod tests {
         // reads as straight vertical stripes instead of drifting diagonally.
         // A later "tidy-up" to 29 would break exactly this.
         use jiff::{civil::Weekday, Timestamp};
-        let b = assemble_big_year(&[], 2026, 1_786_341_600_000, "Europe/Sofia");
+        let b = assemble_big_year(&[], 2026, 1_786_341_600_000, "Europe/Sofia", crate::settings::WeekStart::Monday);
         let expected = [5usize, 6, 12, 13, 19, 20, 26, 27];
         for (r, row) in b.rows.iter().enumerate() {
             let weekend: Vec<usize> = row
@@ -1828,7 +1957,7 @@ mod tests {
         // 00:00 — Google's all-day end is exclusive. Row 0 ends on Sun 25
         // Jan, so this straddles the row 0/1 boundary by construction.
         let ev = vec![all_day_event("Europe/Sofia", 1769292000000, 1769551200000)];
-        let b = assemble_big_year(&ev, 2026, 1_786_341_600_000, "Europe/Sofia");
+        let b = assemble_big_year(&ev, 2026, 1_786_341_600_000, "Europe/Sofia", crate::settings::WeekStart::Monday);
         let r0: Vec<_> = b.rows[0].pills.iter().collect();
         let r1: Vec<_> = b.rows[1].pills.iter().collect();
         assert_eq!(r0.len(), 1, "row 0 carries the Sunday tail");
@@ -1851,7 +1980,7 @@ mod tests {
                 midnight_ms("UTC", 2026, 8, 8) + 17 * 3_600_000,
             ),
         ];
-        let b = assemble_big_year(&timed, 2026, 1_786_341_600_000, "Europe/Sofia");
+        let b = assemble_big_year(&timed, 2026, 1_786_341_600_000, "Europe/Sofia", crate::settings::WeekStart::Monday);
         assert!(b.rows.iter().all(|r| r.pills.is_empty()));
     }
 
@@ -1922,7 +2051,7 @@ mod tests {
             "and the span must reach into the next display day, which is the second dot"
         );
 
-        let y = assemble_year(&[all_day_event(AUCKLAND, start, end)], 2026, NOW_AUG_2026, "UTC");
+        let y = assemble_year(&[all_day_event(AUCKLAND, start, end)], 2026, NOW_AUG_2026, "UTC", crate::settings::WeekStart::Monday);
 
         assert_eq!(dotted_days(&y), vec![(8, 10)], "one day covered, one dot in the year");
         assert_eq!(
@@ -1956,7 +2085,7 @@ mod tests {
             "and Sofia's Monday midnight is still Sunday in UTC, so a day's date must be read in Sofia"
         );
 
-        let y = assemble_year(&[all_day_event(AUCKLAND, start, end)], 2026, NOW_AUG_2026, SOFIA);
+        let y = assemble_year(&[all_day_event(AUCKLAND, start, end)], 2026, NOW_AUG_2026, SOFIA, crate::settings::WeekStart::Monday);
 
         assert_eq!(dotted_days(&y), vec![(8, 10)]);
         assert_eq!(y.months[7].days[9].start_ms, midnight_ms(SOFIA, 2026, 8, 10));
@@ -1984,7 +2113,7 @@ mod tests {
             "while the calendar's exclusive end is the 8th, so its last covered day is the 7th"
         );
 
-        let y = assemble_year(&[all_day_event(NEW_YORK, start, end)], 2026, NOW_AUG_2026, "UTC");
+        let y = assemble_year(&[all_day_event(NEW_YORK, start, end)], 2026, NOW_AUG_2026, "UTC", crate::settings::WeekStart::Monday);
 
         assert_eq!(
             dotted_days(&y),
@@ -2024,6 +2153,7 @@ mod tests {
             2026,
             NOW_AUG_2026,
             SOFIA,
+            crate::settings::WeekStart::Monday,
         );
 
         // The ribbon opens Mon 29 Dec 2025, so Mon 10 Aug 2026 is day 224 —
@@ -2058,7 +2188,7 @@ mod tests {
         assert_eq!(crate::write::date_in_zone(end, NEW_YORK), "2026-08-08");
 
         let b =
-            assemble_big_year(&[all_day_event(NEW_YORK, start, end)], 2026, NOW_AUG_2026, "UTC");
+            assemble_big_year(&[all_day_event(NEW_YORK, start, end)], 2026, NOW_AUG_2026, "UTC", crate::settings::WeekStart::Monday);
 
         // Wed 5 Aug is day 219 of a ribbon opening Mon 29 Dec 2025 — row 7,
         // column 23 — and Fri 7 Aug is column 25 of that same row.

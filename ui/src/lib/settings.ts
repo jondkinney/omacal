@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 
 import type { TimeFormat } from './timefmt';
+import type { WeekStartDay } from './weekstart';
 
 /**
  * The preferences the settings modal edits.
@@ -37,6 +38,9 @@ export type AppSettings = {
    *  the `clock.svelte.ts` rune rather than as a prop — six components print a
    *  time and none of them owns the preference. */
   timeFormat: TimeFormat;
+  /** The day a week begins on. Read by the grids through the
+   *  `weekstartstore.svelte.ts` rune, for the same reason `timeFormat` is. */
+  weekStart: WeekStartDay;
 };
 
 export const getSettings = () => invoke<AppSettings>('get_settings');
@@ -60,6 +64,11 @@ export const setNotificationsEnabled = (on: boolean) =>
  *  down — see the note on `set_time_format`. */
 export const setTimeFormat = (format: TimeFormat) =>
   invoke<AppSettings>('set_time_format', { format });
+
+/** Stores the day a week begins on. Nothing is refused: the select offers
+ *  exactly the three variants `settings::WeekStart` has. */
+export const setWeekStart = (start: WeekStartDay) =>
+  invoke<AppSettings>('set_week_start', { start });
 
 /** Stores the filmstrip toggle. Nothing is refused: unlike the sync interval
  *  there is no value of a boolean the app has to protect anything from. */
