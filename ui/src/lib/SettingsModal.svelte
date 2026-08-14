@@ -414,15 +414,15 @@
 <style>
   /* A colophon, not a control: the quietest text in the modal, at the very
      bottom, on every tab — where "what version am I on?" goes looking. */
-  .version { margin: 14px 0 0; font-size: 10.5px; color: var(--muted);
+  .version { margin: 14px 0 0; font-size: 11.5px; color: var(--muted);
              text-align: right; }
   .fallback { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
-  .frow { display: flex; align-items: center; gap: 5px; font-size: 12px; }
+  .frow { display: flex; align-items: center; gap: 5px; font-size: 13px; }
   .frow input[type='number'] { width: 56px; }
-  .unremind { font: inherit; font-size: 13px; color: var(--muted); cursor: pointer;
+  .unremind { font: inherit; font-size: 14px; color: var(--muted); cursor: pointer;
               background: none; border: 0; padding: 0 2px; }
   .unremind:hover { color: var(--text); }
-  .remind { font: inherit; font-size: 11px; color: var(--muted); cursor: pointer;
+  .remind { font: inherit; font-size: 12px; color: var(--muted); cursor: pointer;
             background: none; border: 1px solid var(--hairline); border-radius: 5px;
             padding: 2px 7px; }
 
@@ -439,12 +439,12 @@
            display: flex; flex-direction: column;
            background: var(--surface); border: 1px solid var(--hairline);
            border-radius: 10px; box-shadow: 0 12px 40px rgba(0, 0, 0, .5);
-           font-size: 12px; color: var(--text); overflow: hidden; }
+           font-size: 13px; color: var(--text); overflow: hidden; }
   .modal:focus { outline: none; }
 
   .tabs { display: flex; gap: 2px; padding: 8px 8px 0;
           border-bottom: 1px solid var(--hairline); flex: none; }
-  .tabs button { font: inherit; font-size: 11.5px; color: var(--muted); cursor: pointer;
+  .tabs button { font: inherit; font-size: 12.5px; color: var(--muted); cursor: pointer;
                  background: none; border: 0; border-radius: 6px 6px 0 0;
                  padding: 6px 12px; }
   .tabs button.on { color: var(--text);
@@ -453,17 +453,17 @@
 
   .body { flex: 1; overflow-y: auto; padding: 14px;
           display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
-  .soon { font-size: 11px; color: var(--muted); margin: 0; }
+  .soon { font-size: 12px; color: var(--muted); margin: 0; }
 
   .row { display: flex; flex-direction: column; gap: 4px; }
-  .lab { font-size: 9.5px; color: var(--muted); letter-spacing: .05em; }
+  .lab { font-size: 10.5px; color: var(--muted); letter-spacing: .05em; }
   .inline { display: flex; align-items: center; gap: 6px; }
-  .unit { font-size: 11px; color: var(--muted); }
-  .hint { font-size: 10px; color: var(--muted); opacity: .85; line-height: 1.45; margin: 0;
+  .unit { font-size: 12px; color: var(--muted); }
+  .hint { font-size: 11px; color: var(--muted); opacity: .85; line-height: 1.45; margin: 0;
           max-width: 40ch; }
 
   input[type='number'], select {
-    font: inherit; font-size: 12px; color: var(--text);
+    font: inherit; font-size: 13px; color: var(--text);
     background-color: color-mix(in srgb, var(--text) 5%, transparent);
     border: 1px solid var(--hairline); border-radius: 5px; padding: 4px 6px;
   }
@@ -476,21 +476,21 @@
 
   .caldot { width: 10px; height: 10px; border-radius: 3px; flex: none; }
 
-  .check { display: flex; align-items: center; gap: 7px; font-size: 11.5px; cursor: pointer; }
+  .check { display: flex; align-items: center; gap: 7px; font-size: 12.5px; cursor: pointer; }
 
   .accounts { list-style: none; margin: 0; padding: 0; display: flex;
-              flex-direction: column; gap: 3px; font-size: 11.5px; }
+              flex-direction: column; gap: 3px; font-size: 12.5px; }
 
   /* Full width, unlike the other tabs' left-aligned controls: this is a list
      of rows whose right-hand Add/Remove buttons have to line up. */
   .cals { align-self: stretch; }
 
-  .body button { font: inherit; font-size: 11px; color: var(--muted); cursor: pointer;
+  .body button { font: inherit; font-size: 12px; color: var(--muted); cursor: pointer;
                  background: color-mix(in srgb, var(--text) 6%, transparent);
                  border: 0; border-radius: 6px; padding: 4px 10px; }
   .body button:disabled { opacity: .5; cursor: default; }
 
-  .note { font-size: 10.5px; color: var(--muted); line-height: 1.4; margin: 0;
+  .note { font-size: 11.5px; color: var(--muted); line-height: 1.4; margin: 0;
           padding: 6px 8px; border-radius: 5px;
           background: color-mix(in srgb, var(--text) 6%, transparent); }
   .note.err { color: var(--error); background: color-mix(in srgb, var(--error) 9%, transparent); }
