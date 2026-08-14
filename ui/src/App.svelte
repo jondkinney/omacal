@@ -20,6 +20,8 @@
   import { daysFromMonth, daysFromWeek, listable } from './lib/filmstrip';
   import { getSettings, setListMode } from './lib/settings';
   import { setClockFormat } from './lib/clock.svelte';
+  import ShortcutSheet from './lib/ShortcutSheet.svelte';
+  import { SHORTCUT_LIST, type ShortcutId } from './lib/shortcuts';
   import Filmstrip from './lib/Filmstrip.svelte';
   import WeekGrid from './lib/WeekGrid.svelte';
   import MonthGrid from './lib/MonthGrid.svelte';
@@ -154,6 +156,10 @@
    *  that call this copy is stale until a restart, and the form would keep
    *  landing creates on a calendar the user has stopped choosing. */
   let defaultCalendarId = $state<number | null>(null);
+
+  /** Whether the keyboard-shortcut sheet is up. A session flag and not a
+   *  setting: it is a thing you look at, not a thing you configure. */
+  let helpOpen = $state(false);
 
   $effect(() => {
     const before = listModeChoices;
@@ -908,10 +914,40 @@
     return !!t.closest?.('.pop');
   }
 
-  // Numbers, not initials, because `Y` is wanted for both "year" and "yes,
-  // accept" (spec §7.6). `4`/`5` reach `pick` exactly like any other view.
-  const KEY_VIEW: Record<string, View> = {
-    '1': 'day', '2': 'week', '3': 'month', '4': 'year', '5': 'bigyear',
+  /**
+   * What each shortcut does. Keyed by `ShortcutId`, so `Record` makes an entry
+   * added to `SHORTCUTS` without a handler here a **compile error** rather
+   * than a row in the help sheet that does nothing when pressed. That is the
+   * whole reason the table and this map are two halves of one thing: the
+   * sheet and the handler read the same array, and neither can grow a key the
+   * other lacks.
+   *
+   * The five view keys are numbers, not initials, because `Y` is wanted for
+   * both "year" and "yes, accept" (spec §7.6) — the reason `KEY_VIEW` gave
+   * before this map replaced it. Their target now travels in the table's own
+   * `view` field, so a key that switches views says so in one place.
+   */
+  const SHORTCUT_ACTIONS: Record<ShortcutId, () => void> = {
+    day: () => pick('day'),
+    week: () => pick('week'),
+    month: () => pick('month'),
+    year: () => pick('year'),
+    bigyear: () => pick('bigyear'),
+    prev: () => step(-1),
+    next: () => step(1),
+    today: goToday,
+    // `/` joins the bare-key family rather than inventing a modifier chord: it
+    // is the search key everywhere that has one, it collides with nothing
+    // here, and it is unshifted on the layouts this ships to. `isTypingTarget`
+    // keeps it out of every field, which is what makes a punctuation key safe
+    // to claim. Its `consumes` flag is why — see below.
+    search: () => (searchOpen = true),
+    create: newEventOnAnchor,
+    // `F`, joining the same bare-key family as the rest (spec §1). It is a
+    // no-op in Year and Big Year, where the control it duplicates is absent —
+    // see `toggleList`.
+    list: toggleList,
+    help: () => (helpOpen = true),
   };
 
   function handleKeydown(e: KeyboardEvent) {
@@ -921,42 +957,30 @@
     // below is a bare key, so this turns nothing off that ever worked — and it
     // keeps ⌘N in particular from opening an event form behind whatever the
     // platform does with it.
+    //
+    // Shift is deliberately *not* here: `?` is Shift-`/` on the layouts this
+    // ships to, and the sheet it opens is the one shortcut a reader needs
+    // before they know any of the others.
     if (e.metaKey || e.ctrlKey || e.altKey) return;
-    // Nothing on the keyboard reaches the views while a form or a delete
-    // confirmation is open. Their scrims have already made everything behind
-    // them unclickable, and `n` opening a second form on top of the first is
-    // the same mistake by keyboard. Escape is unaffected: each panel listens
-    // for it on `window` itself.
-    if (form || pendingDelete || searchOpen) return;
-    const keyed = KEY_VIEW[e.key];
-    if (keyed) {
-      pick(keyed);
-      return;
-    }
-    // `/` joins the existing single-key family (`1`-`5`, `h`/`l`, `t`, `n`)
-    // rather than inventing a modifier chord: it is the search key everywhere
-    // that has one, it collides with nothing here, and it is unshifted on the
-    // layouts this ships to. `isTypingTarget` above already keeps it out of
-    // every field, which is what makes a punctuation key safe to claim.
-    if (e.key === '/') {
-      // Consumed, or it becomes the first character of every query: WebKitGTK
-      // runs the keydown's default action — inserting the character — after
-      // the overlay has mounted and focused its field, so an unconsumed `/`
-      // lands in the input it just opened and "sync" is searched as "/sync".
-      e.preventDefault();
-      searchOpen = true;
-      return;
-    }
-    switch (e.key.toLowerCase()) {
-      case 'h': step(-1); break;
-      case 'l': step(1); break;
-      case 't': goToday(); break;
-      case 'n': newEventOnAnchor(); break;
-      // `F`, joining the same bare-key family as the rest (spec §1). It is a
-      // no-op in Year and Big Year, where the control it duplicates is absent
-      // — see `toggleList`.
-      case 'f': toggleList(); break;
-    }
+    // Nothing on the keyboard reaches the views while a form, a delete
+    // confirmation, the search overlay or the shortcut sheet is open. Their
+    // scrims have already made everything behind them unclickable, and `n`
+    // opening a second form on top of the first is the same mistake by
+    // keyboard. Escape is unaffected: each panel listens for it on `window`
+    // itself.
+    if (form || pendingDelete || searchOpen || helpOpen) return;
+
+    // Lowercased, which is what makes `H` step like `h` — the old `switch`
+    // did the same, and digits and punctuation are unaffected (`'?'` and
+    // `'/'` lowercase to themselves).
+    const hit = SHORTCUT_LIST.find((s) => s.key === e.key.toLowerCase());
+    if (!hit) return;
+    // Consumed where the table says so, which today is `/` alone: WebKitGTK
+    // runs the keydown's default action — inserting the character — *after*
+    // the overlay has mounted and focused its field, so an unconsumed `/`
+    // lands in the input it just opened and "sync" is searched as "/sync".
+    if (hit.consumes) e.preventDefault();
+    SHORTCUT_ACTIONS[hit.id]();
   }
 </script>
 
@@ -1066,6 +1090,10 @@
 
 {#if searchOpen}
   <SearchOverlay onclose={() => (searchOpen = false)} onpick={goToHit} />
+{/if}
+
+{#if helpOpen}
+  <ShortcutSheet onclose={() => (helpOpen = false)} />
 {/if}
 
 {#if gridSelId !== null && gridSelStart !== null && gridAnchor && gridDetail}

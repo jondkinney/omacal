@@ -1,7 +1,10 @@
 <!-- ui/src/lib/ViewSwitcher.svelte -->
 <script module lang="ts">
-  /** The five slots the plan settles on (spec §10). */
-  export type View = 'day' | 'week' | 'month' | 'year' | 'bigyear';
+  // Declared in `views.ts` and re-exported here, so `import { type View }
+  // from './ViewSwitcher.svelte'` goes on working while a plain `.ts` module
+  // can reach it too. See `views.ts` for why the move was forced.
+  export type { View } from './views';
+  import type { View } from './views';
 </script>
 
 <script lang="ts">

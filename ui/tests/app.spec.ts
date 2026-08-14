@@ -4,6 +4,7 @@
 // stubbed IPC layer (tests/harness/tauri.ts).
 
 import { test, expect, type Page } from '@playwright/test';
+import { SHORTCUT_LIST, SHORTCUT_TEXT } from '../src/lib/shortcuts';
 import {
   APP_MON, APP_NOW, weekLabel,
   APP_PRIMARY_CALENDAR_ID, APP_READER_CALENDAR_ID,
@@ -2877,5 +2878,131 @@ test.describe('App: the clock format', () => {
     await chooseFormat(page, '13:30');
     await expect(ruler(page).first()).toHaveText('00');
     await expect(ruler(page).nth(13)).toHaveText('13');
+  });
+});
+
+/**
+ * The keyboard sheet, and the table it and the handler both read.
+ *
+ * The point of the table is that it cannot drift from what the keys actually
+ * do, and most of that guarantee is structural rather than testable: `App`
+ * dispatches by looking a row up, and `SHORTCUT_ACTIONS` is typed
+ * `Record<ShortcutId, …>`, so a row added without a handler does not compile.
+ * What is left for a spec is the other end — that the sheet prints every row,
+ * and that the keys it prints are the keys that work.
+ */
+test.describe('App: the keyboard sheet', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.clock.setFixedTime(APP_NOW);
+  });
+
+  const sheet = (page: Page) => page.getByRole('dialog', { name: 'Keyboard shortcuts' });
+
+  /**
+   * Open the app **and wait for it to be listening**.
+   *
+   * Not ceremony: `<svelte:window onkeydown>` is attached when `App` mounts,
+   * and a `page.goto` resolves well before that. Every test here presses a
+   * bare key as its first act, so without this gate the press lands on a page
+   * with no handler and the assertion that follows fails for a reason that has
+   * nothing to do with what it is testing. Asserting the *absence* of the
+   * sheet first does not gate anything — an empty page has no sheet either.
+   */
+  const openApp = async (page: Page) => {
+    await page.goto(app());
+    await expect(page.locator('.vswitch button.active')).toBeVisible();
+  };
+
+  /**
+   * **`Shift+Slash`, not `'?'`.** Playwright will happily synthesise a bare
+   * `?` with `shiftKey: false`, which no keyboard on the layouts this ships to
+   * can produce — and a spec written that way passes with `e.shiftKey` added
+   * to the handler's modifier bail, which would make the key dead for every
+   * real user. The mutation sweep caught exactly that; this is the fixture
+   * that can witness it (testing standard §6).
+   */
+  test('? opens the sheet and Escape closes it', async ({ page }) => {
+    await openApp(page);
+    await expect(sheet(page)).toHaveCount(0);
+
+    await page.keyboard.press('Shift+Slash');
+    await expect(sheet(page)).toBeVisible();
+
+    await page.keyboard.press('Escape');
+    await expect(sheet(page)).toHaveCount(0);
+  });
+
+  /**
+   * **Every row, read from the table itself.** A sheet that hardcoded its own
+   * list would pass a test that hardcoded the same list, and the two would
+   * drift together — so the expectation here is imported from the module under
+   * test, and what it proves is the rendering, not the contents.
+   */
+  test('the sheet prints every shortcut in the table', async ({ page }) => {
+    await openApp(page);
+    await page.keyboard.press('Shift+Slash');
+
+    // Anchored, and escaped: the labels include `?` and `/`, and `1` through
+    // `5` would otherwise be read as backreferences rather than as digits —
+    // which fails in the direction that matters, but silently could not.
+    const literal = (t: string) => new RegExp(`^${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`);
+
+    for (const s of SHORTCUT_LIST) {
+      await expect(
+        sheet(page).locator('dt', { hasText: literal(s.label) }),
+        `${s.label} (${s.id}) is bound but not listed`,
+      ).toHaveCount(1);
+      await expect(
+        sheet(page).locator('.what', { hasText: literal(SHORTCUT_TEXT[s.id]) }),
+        `${s.id} is listed under a key but not described`,
+      ).toHaveCount(1);
+    }
+  });
+
+  /** The keys the sheet advertises are the keys that work — driven from the
+   *  same array, so a row whose binding was never wired up is caught here
+   *  rather than by a user pressing it. Only the five view keys can be
+   *  asserted generically; the rest have their own specs above. */
+  test('every view key in the table switches to its view', async ({ page }) => {
+    await openApp(page);
+    for (const s of SHORTCUT_LIST.filter((s) => s.view)) {
+      await page.keyboard.press(s.key);
+      await expect(
+        page.locator('.vswitch button.active'),
+        `${s.key} should select ${s.view}`,
+      ).toHaveText(SHORTCUT_TEXT[s.id]);
+    }
+  });
+
+  /** The sheet is a panel like the others: while it is open the bare keys
+   *  behind it are dead, or `3` read through it would switch the view under a
+   *  dialog the user is still reading. */
+  test('a view key does nothing while the sheet is open', async ({ page }) => {
+    await openApp(page);
+    await page.keyboard.press('2');
+    const before = await page.locator('.vswitch button.active').textContent();
+
+    await page.keyboard.press('Shift+Slash');
+    await page.keyboard.press('3');
+
+    await expect(sheet(page)).toBeVisible();
+    await expect(page.locator('.vswitch button.active')).toHaveText(before ?? '');
+  });
+
+  /** `?` is Shift-`/` on the layouts this ships to, so the modifier bail must
+   *  not include Shift — and `/` itself must still open search, not the
+   *  sheet. The two share a physical key and only `e.key` tells them apart. */
+  test('/ still opens search, and does not open the sheet', async ({ page }) => {
+    await openApp(page);
+    await page.keyboard.press('/');
+    await expect(page.getByRole('dialog', { name: 'Search' })).toBeVisible();
+    await expect(sheet(page)).toHaveCount(0);
+    // The `consumes` flag, witnessed. WebKitGTK runs the keydown's default
+    // action *after* the overlay has mounted and focused its field, so an
+    // unconsumed `/` becomes the first character of the query and "sync" is
+    // searched as "/sync". Asserting only that the overlay opened cannot see
+    // it — the sweep proved that by deleting the `preventDefault` and staying
+    // green. This runs under webkit too, which is where the bug lives.
+    await expect(page.getByRole('searchbox', { name: 'Search events' })).toHaveValue('');
   });
 });
