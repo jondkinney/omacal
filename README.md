@@ -8,6 +8,8 @@ day-to-day development happens.
 Colour comes from your Omarchy theme and follows `omarchy-theme-set` live, with
 no restart.
 
+![omacal's Week view on Omarchy](docs/images/omacal-week.webp)
+
 ## Install
 
     curl -fsSL https://extremelabs.io/omacal/install.sh | sh
@@ -59,7 +61,12 @@ Setup: [`docs/running-on-macos.md`](docs/running-on-macos.md) ·
 **Five views** — Day, Week, Month, Year (12-up) and Big Year (a 14-row ribbon of
 the whole year). Keys `1`–`5` switch between them; `h`/`l` step back and forward,
 `t` returns to today, `n` starts a new event, `/` opens search, `f` switches
-between grid and list, and `Escape` closes whatever is open.
+between grid and list, and `Escape` closes whatever is open. **Press `?` for the
+full list** — you never have to remember which key does what.
+
+| Month | Big Year |
+| --- | --- |
+| ![Month view](docs/images/omacal-month.webp) | ![Big Year view](docs/images/omacal-bigyear.webp) |
 
 **List mode** — the `▦`/`☰` control beside the view switcher, or `f`. It draws
 Day, Week and Month as a list of days rather than a grid, showing the time,
@@ -99,8 +106,9 @@ It searches only calendars you display: a result on a hidden calendar is one you
 could not land on.
 
 **Settings** — behind the hamburger, in four tabs. **General** carries the sync
-interval — which used to require editing the database by hand — and the
-calendar new events land on. **Calendars** holds the same rows as the header's
+interval — which used to require editing the database by hand — the calendar new
+events land on, and whether times read as `13:30` or `1:30 PM` (the hour ruler
+down the side of Day and Week follows the same choice). **Calendars** holds the same rows as the header's
 picker, each with a **colour** you choose from a curated set — *local to
 omacal*, never written to Google, so your phone, the web UI and anyone sharing
 the calendar are untouched. **Accounts** lists what is connected.
