@@ -130,20 +130,33 @@
   let panelEl: HTMLDivElement | undefined = $state();
   let titleEl: HTMLInputElement | undefined = $state();
   // A neutral default so the panel renders — and is measurable — before
-  // `onMount` places it. `anchor` never changes for this component's lifetime:
-  // a fresh form is mounted per open rather than reused, exactly as
-  // `EventPopover` is, so one placement is all this needs.
+  // `onMount` places it. `anchor` never changes for this component's lifetime
+  // — a fresh form is mounted per open rather than reused, exactly as
+  // `EventPopover` is — but the panel's own SIZE does: adding a guest makes
+  // the notify section exist, and each guest row makes the form taller. One
+  // placement clamped a height that then grew, and on Linux font metrics the
+  // grown bottom — the Create button — sat below the viewport with nothing
+  // to scroll it into view. So the placement follows the size.
   let pos = $state<{ top: number; left: number }>({ top: 0, left: 0 });
 
+  function place() {
+    if (!panelEl) return;
+    const viewport = { width: window.innerWidth, height: window.innerHeight };
+    pos = placePopover(anchor, { width: panelEl.offsetWidth, height: panelEl.offsetHeight }, viewport);
+  }
+
   onMount(() => {
-    if (panelEl) {
-      const viewport = { width: window.innerWidth, height: window.innerHeight };
-      pos = placePopover(anchor, { width: panelEl.offsetWidth, height: panelEl.offsetHeight }, viewport);
-    }
+    place();
+    // Re-clamp whenever the panel's box changes — `placePopover` is pure and
+    // already prefers the anchor, so a form that fits stays put and only a
+    // form that grew slides up enough to keep its buttons reachable.
+    const ro = new ResizeObserver(place);
+    if (panelEl) ro.observe(panelEl);
     // The first field, not the panel: this is a form, and the first thing
     // anybody does with it is type a title. `role="dialog"` + `aria-modal`
     // still oblige focus to start *inside*, which this satisfies.
     titleEl?.focus();
+    return () => ro.disconnect();
   });
 
   /** Moving the start date takes the end date with it, keeping the span.

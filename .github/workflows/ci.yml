@@ -53,15 +53,14 @@ jobs:
       - run: npm --prefix ui run check
       - name: Install Playwright browsers
         run: cd ui && npx playwright install --with-deps webkit chromium
-      # Two specs are skipped by name, with their debt on record rather than
-      # hidden in a green run:
-      #   - "a standalone view gets the same box the app gives it": its
-      #     APP_CHROME_PX constant bakes a macOS font metric and reads 1px
-      #     off under Linux font rendering.
-      #   - "reaches create_event as": fails on Linux hosts, undiagnosed,
-      #     tracked in the operations notes; passes on macOS.
-      # If either gets fixed, delete it from the filter so it gates again.
+      # One spec is skipped by name, its debt on record rather than hidden
+      # in a green run: "a standalone view gets the same box the app gives
+      # it" — its APP_CHROME_PX constant bakes a macOS font metric and reads
+      # 1px off under Linux font rendering. When that constant is fixed,
+      # delete the filter so it gates again. (The create_event specs used to
+      # be here too; their cause — a form that grew past the viewport after
+      # placement — was found and fixed on 2026-08-14.)
       - name: UI suite
         run: |
           cd ui && npx playwright test --ignore-snapshots \
-            --grep-invert "a standalone view gets the same box the app gives it|reaches create_event as"
+            --grep-invert "a standalone view gets the same box the app gives it"
