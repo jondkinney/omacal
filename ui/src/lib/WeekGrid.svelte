@@ -1,5 +1,7 @@
 <!-- ui/src/lib/WeekGrid.svelte -->
 <script lang="ts">
+  import { clockFormat } from './clock.svelte';
+  import { gutterLabel } from './timefmt';
   import { tick } from 'svelte';
   import type { WeekPayload, UiEvent } from './api';
   import type { Rect } from './position';
@@ -755,7 +757,7 @@
 <div class="grid body" style="--cols:{week.days.length}" bind:this={bodyEl} data-testid="week-body">
   <div class="gutter">
     {#each HOURS as h}
-      <span style="top:{hourFrac(gutterDay, h) * 100}%">{String(h).padStart(2, '0')}</span>
+      <span style="top:{hourFrac(gutterDay, h) * 100}%">{gutterLabel(h, clockFormat())}</span>
     {/each}
   </div>
 

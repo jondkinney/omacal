@@ -2789,3 +2789,93 @@ test.describe('App: one band, not two', () => {
     expect(offenders).toEqual([]);
   });
 });
+
+/**
+ * The clock format, from the select in Settings to every place the app prints
+ * a time.
+ *
+ * Deliberately end-to-end rather than a second table beside `timefmt.spec.ts`:
+ * the arithmetic is proved there, and what can still be wrong here is the
+ * wiring — a rune seeded at startup but not on change, a component still
+ * carrying its own copy of `hhmm`, a ruler nobody remembered follows the same
+ * preference. Each assertion below is a *different component* reading the same
+ * setting, which is the only thing this file can say that the unit spec cannot.
+ */
+test.describe('App: the clock format', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.clock.setFixedTime(APP_NOW);
+  });
+
+  /** The hour ruler down the left of Week, as a plain list of its labels. */
+  const ruler = (page: Page) => page.locator('[data-testid="week-body"] .gutter span');
+
+  const chooseFormat = async (page: Page, label: string) => {
+    await page.getByRole('button', { name: 'Menu' }).click();
+    await page.getByRole('button', { name: 'Settings…' }).click();
+    const modal = page.getByRole('dialog', { name: 'Settings' });
+    await modal.locator('#time-format').selectOption({ label });
+    await page.keyboard.press('Escape');
+    await expect(modal).toHaveCount(0);
+  };
+
+  test('the ruler and the blocks start on the 24-hour clock', async ({ page }) => {
+    await page.goto(app());
+    await expect(ruler(page).first()).toHaveText('00');
+    await expect(ruler(page).nth(13)).toHaveText('13');
+  });
+
+  /**
+   * **Without a restart.** `App` seeds the rune once at startup, so a change
+   * that only ever reached the database would still pass a test that reloaded
+   * the page — and would leave the running app showing the old clock until it
+   * was quit. That is what `onsettingschange` is for and what this asserts.
+   */
+  test('choosing the 12-hour clock repaints the ruler immediately', async ({ page }) => {
+    await page.goto(app());
+    await expect(ruler(page).first()).toHaveText('00');
+
+    await chooseFormat(page, '1:30 PM');
+
+    await expect(ruler(page).first()).toHaveText('12a');
+    await expect(ruler(page).nth(11)).toHaveText('11a');
+    await expect(ruler(page).nth(12)).toHaveText('12p');
+    await expect(ruler(page).nth(13)).toHaveText('1p');
+  });
+
+  /** The choice is a stored preference, not a session variable — the same
+   *  claim `listMode` earns its own spec for, and for the same reason: a
+   *  variable and a row are indistinguishable until something reloads. */
+  test('the chosen clock survives a reload', async ({ page }) => {
+    await page.goto(app());
+    await chooseFormat(page, '1:30 PM');
+    await expect(ruler(page).first()).toHaveText('12a');
+
+    await page.reload();
+    await expect(ruler(page).first()).toHaveText('12a');
+  });
+
+  /** A second component, reading the same rune. The popover prints the
+   *  occurrence's start and end, and it is opened from the grid rather than
+   *  constructed here so the path is the one the app actually takes. */
+  test('the popover prints its times in the chosen clock', async ({ page }) => {
+    await page.goto(app());
+    await chooseFormat(page, '1:30 PM');
+
+    await page.locator('.col .ev').first().click();
+    const when = page.locator('.pop .when');
+    await expect(when).toContainText(/\b(AM|PM)\b/);
+    await expect(when).not.toContainText(/\b\d{2}:\d{2}\s*–/);
+  });
+
+  /** And back again: a setting that could be turned on and not off is half a
+   *  setting, and the 24-hour branch is the one every golden depends on. */
+  test('choosing the 24-hour clock puts the ruler back', async ({ page }) => {
+    await page.goto(app());
+    await chooseFormat(page, '1:30 PM');
+    await expect(ruler(page).first()).toHaveText('12a');
+
+    await chooseFormat(page, '13:30');
+    await expect(ruler(page).first()).toHaveText('00');
+    await expect(ruler(page).nth(13)).toHaveText('13');
+  });
+});

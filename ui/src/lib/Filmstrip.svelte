@@ -1,5 +1,7 @@
 <!-- ui/src/lib/Filmstrip.svelte -->
 <script lang="ts">
+  import { clockFormat } from './clock.svelte';
+  import { formatClock } from './timefmt';
   import type { UiEvent } from './api';
   import type { Rect } from './position';
   import { locationLabel } from './location';
@@ -20,8 +22,7 @@
     onopen: (event: UiEvent, rect: Rect) => void;
   } = $props();
 
-  const hhmm = (ms: number) =>
-    new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+  const hhmm = (ms: number) => formatClock(ms, clockFormat());
 
   /** The day a section is about — the same fields, in the same order, as
    *  `EventPopover`'s own `DAY_FORMAT`, so a row and the popover it opens name

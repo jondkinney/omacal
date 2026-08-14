@@ -19,6 +19,7 @@
   import type { Rect } from './lib/position';
   import { daysFromMonth, daysFromWeek, listable } from './lib/filmstrip';
   import { getSettings, setListMode } from './lib/settings';
+  import { setClockFormat } from './lib/clock.svelte';
   import Filmstrip from './lib/Filmstrip.svelte';
   import WeekGrid from './lib/WeekGrid.svelte';
   import MonthGrid from './lib/MonthGrid.svelte';
@@ -159,6 +160,7 @@
     getSettings()
       .then((s) => {
         defaultCalendarId = s.defaultCalendarId;
+        setClockFormat(s.timeFormat);
         if (listModeChoices !== before) return; // superseded by the user's own choice
         listMode = s.listMode;
       })
@@ -980,7 +982,10 @@
     onNext={() => step(1)}
     onToday={goToday}
     onSearch={() => (searchOpen = true)}
-    onsettingschange={(s) => (defaultCalendarId = s.defaultCalendarId)}
+    onsettingschange={(s) => {
+      defaultCalendarId = s.defaultCalendarId;
+      setClockFormat(s.timeFormat);
+    }}
     onSignIn={handleSignIn}
     onWhatsNew={() => { void openLatestRelease(); }}
     onSync={handleSync}

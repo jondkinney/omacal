@@ -1,5 +1,7 @@
 <!-- ui/src/lib/EventPopover.svelte -->
 <script lang="ts">
+  import { clockFormat } from './clock.svelte';
+  import { formatClock } from './timefmt';
   import { onMount, tick } from 'svelte';
   import { escapeCloses } from './dismiss.svelte';
   import { placePopover, type Rect } from './position';
@@ -65,8 +67,7 @@
 
   const segments = $derived(descriptionSegments(detail.description));
 
-  const hhmm = (ms: number) =>
-    new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+  const hhmm = (ms: number) => formatClock(ms, clockFormat());
 
   const DAY_FORMAT: Intl.DateTimeFormatOptions =
     { weekday: 'short', month: 'short', day: 'numeric' };

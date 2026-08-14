@@ -8,8 +8,9 @@
   import { offerableCalendarId, writableCalendars, type Calendar } from './calendars';
   import {
     getSettings, minutesOf, msOfMinutes, setDefaultCalendar, setFallbackReminders,
-    setNotificationsEnabled, setSyncInterval, type AppSettings,
+    setNotificationsEnabled, setSyncInterval, setTimeFormat, type AppSettings,
   } from './settings';
+  import { formatClock, type TimeFormat } from './timefmt';
 
   let {
     accounts,
@@ -61,6 +62,30 @@
   });
 
   const floorMinutes = $derived(settings ? minutesOf(settings.minSyncIntervalMs) : 1);
+
+  /** 13:30 on an arbitrary day — the sample the two options are drawn with.
+   *  A fixed instant rather than `Date.now()`: an option list that reads
+   *  differently every time the modal opens is a control that looks broken,
+   *  and a screenshot of it could never be compared. */
+  const SAMPLE_MS = new Date(2026, 0, 1, 13, 30).getTime();
+
+  /**
+   * Stores the clock format and takes the settings as they now are.
+   *
+   * No optimistic local write: `settings` is replaced by what the backend
+   * answers, the same as every other control here, so the select can only ever
+   * show a value the database actually holds. `onsettingschange` is what
+   * repaints the calendar behind the modal — `App` owns the rune, and this
+   * modal deliberately does not reach past its own props to set it.
+   */
+  async function saveTimeFormat(format: TimeFormat) {
+    try {
+      settings = await setTimeFormat(format);
+      onsettingschange?.(settings);
+    } catch (e) {
+      note = { text: String(e), kind: 'error' };
+    }
+  }
 
   /**
    * Saves the interval and shows whatever comes back.
@@ -285,6 +310,32 @@
       <p class="hint">
         Only calendars omacal can write to are offered; if the choice ever
         stops being writable, creates fall back to your primary.
+      </p>
+
+      <div class="row">
+        <label class="lab" for="time-format">Show times as</label>
+        <div class="inline">
+          <select
+            id="time-format"
+            disabled={!settings}
+            value={settings?.timeFormat ?? '24h'}
+            onchange={(e) =>
+              saveTimeFormat((e.currentTarget as HTMLSelectElement).value as TimeFormat)}
+          >
+            <!-- Each option prints an actual time rather than naming the
+                 convention, because "24-hour" is a word you have to translate
+                 and `13:30` is the thing itself. Half past one on the sample
+                 clock deliberately: it is the hour that reads differently in
+                 the two formats, where 9am would not. -->
+            {#each ['24h', '12h'] as const as f (f)}
+              <option value={f}>{formatClock(SAMPLE_MS, f)}</option>
+            {/each}
+          </select>
+        </div>
+      </div>
+      <p class="hint">
+        Applies everywhere omacal prints a time, including the hour ruler down
+        the side of Day and Week.
       </p>
 
     {:else if tab === 'Calendars'}

@@ -6,7 +6,7 @@
 //! preference means a migration per preference, and these are a handful of
 //! scalars that a hand-edited row must never be able to crash the app with.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
 use crate::AppState;
@@ -16,6 +16,34 @@ const NOTIFICATIONS_KEY: &str = "notifications_enabled";
 const LIST_MODE_KEY: &str = "list_mode";
 const FALLBACK_KEY: &str = "fallback_reminder_minutes";
 const DEFAULT_CALENDAR_KEY: &str = "default_calendar_id";
+const TIME_FORMAT_KEY: &str = "time_format";
+
+/// Whether a clock is drawn as `13:30` or as `1:30 PM`.
+///
+/// An enum rather than the `String` the table actually holds, so the only two
+/// values that exist are the two the app can draw. That is what lets
+/// [`set_time_format`] take this type directly and skip a refusal path
+/// entirely: a third value cannot be sent, so there is no user-facing error
+/// to name, pin with a test and allowlist in `errors.rs` for a case the
+/// select element makes unreachable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TimeFormat {
+    #[serde(rename = "24h")]
+    H24,
+    #[serde(rename = "12h")]
+    H12,
+}
+
+impl TimeFormat {
+    /// The stored spelling. The same strings the wire uses, so a row read by
+    /// eye in `sqlite3` says what the settings modal says.
+    fn as_str(self) -> &'static str {
+        match self {
+            TimeFormat::H24 => "24h",
+            TimeFormat::H12 => "12h",
+        }
+    }
+}
 
 /// What the General and Notifications tabs show.
 ///
@@ -57,6 +85,12 @@ pub struct AppSettings {
     /// an id a create cannot land on) has to exist regardless — and a
     /// write-time check would only duplicate it with a second rule to drift.
     pub default_calendar_id: Option<i64>,
+    /// Whether times are drawn as `13:30` or `1:30 PM`, everywhere the app
+    /// prints one — event blocks, the filmstrip, the popover and the Week and
+    /// Day hour gutter, which follows deliberately: a 12-hour reader given a
+    /// 24-hour ruler has to convert in their head at exactly the moment the
+    /// ruler exists to save them from it.
+    pub time_format: TimeFormat,
 }
 
 async fn read(pool: &SqlitePool, key: &str) -> Option<String> {
@@ -123,6 +157,14 @@ pub async fn read_settings(pool: &SqlitePool) -> AppSettings {
         default_calendar_id: read(pool, DEFAULT_CALENDAR_KEY)
             .await
             .and_then(|v| v.parse().ok()),
+        // `== "12h"` rather than `!= "24h"`, the same polarity `list_mode`
+        // takes and for the same reason: absent, garbage, and a value written
+        // by some future version all land on the format the app has always
+        // drawn, rather than on the one nobody asked for.
+        time_format: read(pool, TIME_FORMAT_KEY)
+            .await
+            .map(|v| if v == "12h" { TimeFormat::H12 } else { TimeFormat::H24 })
+            .unwrap_or(TimeFormat::H24),
     }
 }
 
@@ -235,6 +277,20 @@ pub async fn set_list_mode(
     Ok(read_settings(&state.pool).await)
 }
 
+/// Stores the clock format. Like [`set_list_mode`] nothing is refused, and
+/// here the *type* is the reason rather than the triviality of a boolean:
+/// [`TimeFormat`] has no third variant for a caller to send.
+#[tauri::command]
+pub async fn set_time_format(
+    state: tauri::State<'_, AppState>,
+    format: TimeFormat,
+) -> Result<AppSettings, String> {
+    write(&state.pool, TIME_FORMAT_KEY, format.as_str())
+        .await
+        .map_err(|e| crate::errors::user_facing(&e))?;
+    Ok(read_settings(&state.pool).await)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,6 +314,11 @@ mod tests {
             "shipped as 60 and 10, not empty — an empty default is today's silence again"
         );
         assert_eq!(s.default_calendar_id, None, "no choice made is the old rule, not an id");
+        assert_eq!(
+            s.time_format,
+            TimeFormat::H24,
+            "the clock the app has always drawn, so no installed copy changes under its user"
+        );
     }
 
     /// `None` must clear a previously stored id back to the old rule — a
@@ -333,6 +394,50 @@ mod tests {
             "a refused value must not half-land",
         );
         assert_eq!(crate::errors::user_facing(&err), INTERVAL_TOO_SHORT);
+    }
+
+    /// Both directions, because a format that could be turned on and not off
+    /// is half a setting.
+    #[tokio::test]
+    async fn the_time_format_round_trips_both_ways() {
+        let p = pool().await;
+
+        write(&p, TIME_FORMAT_KEY, TimeFormat::H12.as_str()).await.unwrap();
+        assert_eq!(read_settings(&p).await.time_format, TimeFormat::H12);
+
+        write(&p, TIME_FORMAT_KEY, TimeFormat::H24.as_str()).await.unwrap();
+        assert_eq!(read_settings(&p).await.time_format, TimeFormat::H24);
+    }
+
+    /// The polarity rule, witnessed by a value the app never writes. A row
+    /// edited by hand — or written by a future version that learned a third
+    /// format — must land on the clock the app has always drawn, not on the
+    /// other one and not on a panic.
+    #[tokio::test]
+    async fn an_unrecognised_stored_format_reads_as_24h() {
+        let p = pool().await;
+        for stored in ["", "12", "H12", "twelve", "24h ", "🕐"] {
+            write(&p, TIME_FORMAT_KEY, stored).await.unwrap();
+            assert_eq!(
+                read_settings(&p).await.time_format,
+                TimeFormat::H24,
+                "{stored:?} is not 12h and must not be read as it"
+            );
+        }
+    }
+
+    /// The stored spelling is what the wire uses, so the row reads in
+    /// `sqlite3` as the modal says. Pinned because the two are written in
+    /// different places — `as_str` and a serde rename — and nothing else
+    /// would notice them drifting apart.
+    #[test]
+    fn the_stored_spelling_is_the_wire_spelling() {
+        for f in [TimeFormat::H24, TimeFormat::H12] {
+            assert_eq!(
+                serde_json::to_string(&f).unwrap(),
+                format!("\"{}\"", f.as_str()),
+            );
+        }
     }
 
     /// The interval the *loop* uses still clamps, because a row edited by hand

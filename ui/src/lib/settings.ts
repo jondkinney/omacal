@@ -1,5 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 
+import type { TimeFormat } from './timefmt';
+
 /**
  * The preferences the settings modal edits.
  *
@@ -31,6 +33,10 @@ export type AppSettings = {
    *  `null` for the old rule — primary, else first writable. Stored
    *  unvalidated; `offerableCalendarId` guards staleness at every use. */
   defaultCalendarId: number | null;
+  /** Whether the app draws `13:30` or `1:30 PM`. Read by `timefmt.ts` through
+   *  the `clock.svelte.ts` rune rather than as a prop — six components print a
+   *  time and none of them owns the preference. */
+  timeFormat: TimeFormat;
 };
 
 export const getSettings = () => invoke<AppSettings>('get_settings');
@@ -48,6 +54,12 @@ export const setSyncInterval = (ms: number) =>
 
 export const setNotificationsEnabled = (on: boolean) =>
   invoke<AppSettings>('set_notifications_enabled', { on });
+
+/** Stores the clock format. Nothing is refused: `settings::TimeFormat` has two
+ *  variants and the select offers both, so there is no third value to turn
+ *  down — see the note on `set_time_format`. */
+export const setTimeFormat = (format: TimeFormat) =>
+  invoke<AppSettings>('set_time_format', { format });
 
 /** Stores the filmstrip toggle. Nothing is refused: unlike the sync interval
  *  there is no value of a boolean the app has to protect anything from. */

@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { clockFormat } from './clock.svelte';
+  import { formatClock } from './timefmt';
   import type { UiEvent, Placed } from './api';
   import type { Rect } from './position';
   import { locationLabel } from './location';
@@ -38,8 +40,7 @@
   const showMeta = $derived(minutes >= 45);
   const showTime = $derived(minutes >= 90);
 
-  const hhmm = (ms: number) =>
-    new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
+  const hhmm = (ms: number) => formatClock(ms, clockFormat());
 
   // Location is the thing you act on when you are walking somewhere. A guest
   // count belongs here too, but attendees are not stored yet, and a hardcoded

@@ -13,6 +13,7 @@ import type { WeekPayload, MonthPayload, YearPayload, BigYearPayload } from '../
 import type { AppStatus } from '../../src/lib/status';
 import type { Calendar } from '../../src/lib/calendars';
 import type { EventDetail } from '../../src/lib/eventdetail';
+import type { TimeFormat } from '../../src/lib/timefmt';
 import {
   labelledWeek, weekLabel, APP_FIVE_MIN_AGO, APP_NOW, APP_SERIES_ID, APP_SERIES_OCCURRENCE,
   APP_ONE_OFF_ID, APP_ONE_OFF_START, APP_GUESTS_ID, APP_SOLO_SERIES_ID,
@@ -509,6 +510,7 @@ type StubSettings = {
   listMode: boolean;
   fallbackReminderMinutes: number[];
   defaultCalendarId: number | null;
+  timeFormat: TimeFormat;
 };
 
 const SETTINGS_KEY = 'omacal-stub-settings';
@@ -521,6 +523,9 @@ const DEFAULT_SETTINGS: StubSettings = {
   fallbackReminderMinutes: [60, 10],
   defaultCalendarId: null,
   listMode: false,
+  // The clock the app has always drawn, so every existing spec and every
+  // committed screenshot golden goes on describing the same pixels.
+  timeFormat: '24h',
 };
 
 function loadSettings(): StubSettings {
@@ -698,6 +703,9 @@ export function installTauriStub(scenario: string): Harness {
         return { ...settings };
       case 'set_list_mode':
         settings = saveSettings({ ...settings, listMode: args.on as boolean });
+        return { ...settings };
+      case 'set_time_format':
+        settings = saveSettings({ ...settings, timeFormat: args.format as TimeFormat });
         return { ...settings };
       case 'set_default_calendar':
         settings = saveSettings({ ...settings, defaultCalendarId: (args.id as number | null) ?? null });
