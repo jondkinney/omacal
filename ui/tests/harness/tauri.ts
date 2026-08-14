@@ -318,20 +318,30 @@ function statusFor(scenario: string): AppStatus {
     // "Connect Google Calendar" path rather than "Add account" — Task 7's
     // picker opens after either.
     case 'sign-in-adds-account':
-      return { accounts: [], last_sync_ms: null, demo: false, overlay_titlebar: false };
+      return {
+        accounts: [], needs_reauth: [], last_sync_ms: null, demo: false,
+        overlay_titlebar: false,
+      };
+    // A connected account the backend has stopped syncing: a dead refresh
+    // token, discovered by a sync, waiting on a re-consent.
+    case 'needs-reauth':
+      return {
+        accounts: ['me@x.com'], needs_reauth: ['me@x.com'],
+        last_sync_ms: APP_FIVE_MIN_AGO, demo: false, overlay_titlebar: false,
+      };
     // A macOS window whose controls are drawn over the webview. The default
     // below is the other platform — Omarchy, where they have a strip of their
     // own — which is also what every scenario that predates this one wants,
     // since none of them is about the title bar.
     case 'overlay-titlebar':
       return {
-        accounts: ['me@x.com'], last_sync_ms: APP_FIVE_MIN_AGO, demo: false,
-        overlay_titlebar: true,
+        accounts: ['me@x.com'], needs_reauth: [], last_sync_ms: APP_FIVE_MIN_AGO,
+        demo: false, overlay_titlebar: true,
       };
     default:
       return {
-        accounts: ['me@x.com'], last_sync_ms: APP_FIVE_MIN_AGO, demo: false,
-        overlay_titlebar: false,
+        accounts: ['me@x.com'], needs_reauth: [], last_sync_ms: APP_FIVE_MIN_AGO,
+        demo: false, overlay_titlebar: false,
       };
   }
 }
@@ -766,6 +776,12 @@ export function installTauriStub(scenario: string): Harness {
           // whatever this line happened to say.
           status = { ...status, accounts: ['new@x.com'], last_sync_ms: null };
           return 'new@x.com';
+        }
+        if (scenario === 'needs-reauth') {
+          // A real sign_in clears the account's reauth mark
+          // (`forget_stale_credentials`), so the next get_status stops asking.
+          status = { ...status, needs_reauth: [] };
+          return 'me@x.com';
         }
         return 'me@x.com';
       default:

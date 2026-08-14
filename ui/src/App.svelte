@@ -300,6 +300,11 @@
   $effect(() => {
     const un = listen<{ message?: string }>('sync-failed', (e) => {
       error = e.payload?.message ?? 'Sync failed.';
+      // The same cycle may also have marked an account as needing re-consent,
+      // and that state rides on `status` (`needs_reauth`), not on the event —
+      // without this refetch the reconnect prompt waits for the next
+      // successful sync to say so, which for a single dead account is never.
+      void refreshStatus();
     });
     return () => { un.then((f) => f()); };
   });

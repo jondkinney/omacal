@@ -26,6 +26,7 @@ const ok: Args = {
   connected: true,
   busy: false,
   error: null,
+  reauth: false,
   lastSyncMs: NOW - 5 * 60_000,
 };
 
@@ -40,6 +41,8 @@ test.describe('the status light', () => {
     { over: { error: 'network unreachable' }, state: 'failed',
       label: 'Something went wrong: network unreachable',
       why: 'the one state that has to be noticed — and it names what, not a category' },
+    { over: { reauth: true }, state: 'failed', label: 'An account needs to be reconnected',
+      why: 'an account the backend stopped syncing is a failure with a fix' },
     { over: { connected: false }, state: 'never', label: 'Not signed in',
       why: 'nothing to sync, which is not a failure' },
     { over: { lastSyncMs: null }, state: 'never', label: 'Not synced yet',
@@ -63,6 +66,22 @@ test.describe('the status light', () => {
     // Otherwise the light stays red through the retry that is fixing it, and
     // the one moment the user is watching says nothing is happening.
     expect(light({ busy: true, error: 'network unreachable' }).state).toBe('syncing');
+  });
+
+  test('a reconnect outranks the last successful sync', () => {
+    // `lastSyncMs` survives the account going dead — it is the last success —
+    // so a light reading it first says "Synced 5 min ago" in green while an
+    // account sync has stopped trying goes quietly stale. Same defect as the
+    // `error` ordering below, one row down.
+    expect(light({ reauth: true }).state).toBe('failed');
+  });
+
+  test('a fresh failure outranks the standing reconnect', () => {
+    // Both are red; the words differ. A reconnect is a standing state and a
+    // failure is news — and `error` carries its own message, which would be
+    // lost the other way round.
+    expect(light({ reauth: true, error: 'network unreachable' }).label)
+      .toBe('Something went wrong: network unreachable');
   });
 
   test('a failure outranks a successful sync in the past', () => {

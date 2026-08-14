@@ -47,6 +47,19 @@ pub struct AppState {
     /// changes hash on every rebuild — so "Always Allow" never stuck and the
     /// prompt returned every few minutes. One read per launch instead.
     pub tokens: tokio::sync::Mutex<std::collections::HashMap<String, CachedTokens>>,
+    /// Accounts whose refresh token the token endpoint has pronounced dead —
+    /// `invalid_grant` and its siblings, the answers that never change on
+    /// retry. Sync skips these instead of re-asking Google every five minutes,
+    /// and `get_status` surfaces them so the UI can offer the one thing that
+    /// helps: signing in again. Cleared per account by a successful sign-in.
+    ///
+    /// In memory only, deliberately: on relaunch the first sync re-discovers a
+    /// dead token in one request, which is cheaper than keeping a database
+    /// column truthful.
+    ///
+    /// A `BTreeSet` so `get_status` reports a stable order; a blocking mutex
+    /// because no holder crosses an await.
+    pub reauth: std::sync::Mutex<std::collections::BTreeSet<String>>,
 }
 
 /// The title bar style the shipped `tauri.conf.json` actually asked for.
@@ -72,7 +85,11 @@ async fn get_status(
         configured_title_bar_style(&app),
         cfg!(target_os = "macos"),
     );
-    status::read_status(&state.pool, state.demo, overlay).await.map_err(|e| e.to_string())
+    let needs_reauth: Vec<String> =
+        state.reauth.lock().expect("reauth mark poisoned").iter().cloned().collect();
+    status::read_status(&state.pool, state.demo, overlay, needs_reauth)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -307,7 +324,30 @@ fn load_refresh_token(email: &str) -> anyhow::Result<String> {
 /// exchange, keyring write, then account and calendar bootstrap.
 #[tauri::command]
 async fn sign_in(state: tauri::State<'_, AppState>) -> Result<String, String> {
-    sign_in_impl(&state.pool, state.demo).await
+    let email = sign_in_impl(&state.pool, state.demo).await?;
+    forget_stale_credentials(
+        &mut *state.tokens.lock().await,
+        &mut state.reauth.lock().expect("reauth mark poisoned"),
+        &email,
+    );
+    Ok(email)
+}
+
+/// What a successful (re-)sign-in resets for its account.
+///
+/// The cached tokens first: `access_token_for` prefers the cache's refresh
+/// token over the keyring's, so after a re-sign-in the cache still holds the
+/// dead pair that forced it — and would keep presenting it, turning the fresh
+/// consent into no fix at all. The reauth mark second, so the account rejoins
+/// the sync rotation. Other accounts' entries are none of this function's
+/// business: reconnecting one account must not log out another's cache.
+fn forget_stale_credentials(
+    tokens: &mut std::collections::HashMap<String, CachedTokens>,
+    reauth: &mut std::collections::BTreeSet<String>,
+    email: &str,
+) {
+    tokens.remove(email);
+    reauth.remove(email);
 }
 
 /// The body of `sign_in`, minus the Tauri `State` wrapper so it is reachable
@@ -572,10 +612,18 @@ pub(crate) async fn calendars_to_sync(
 /// unshared behind our back answers 403 or 404 forever — neither is a reason to
 /// stop syncing anything else.
 ///
-/// Returns the rows written and a label per failed account or calendar. The
-/// labels are for the log; the caller turns their *count* into the user-facing
-/// failure, because an email address has no business being handed to a
-/// user-facing string.
+/// Returns the rows written, a label per failed account or calendar, and the
+/// accounts whose refresh token is dead for good. The labels are for the log;
+/// the caller turns their *count* into the user-facing failure, because an
+/// email address has no business being handed to a user-facing string.
+///
+/// Dead tokens are their own list, not entries in `failed`: a transient
+/// failure's story is "it will keep trying", and for a dead grant that story
+/// is false — retrying is quota spent on an answer that cannot change. The
+/// caller marks these accounts, sync stops touching them, and the UI offers
+/// the only fix there is (sign in again). Their emails *are* shown to the
+/// user, which is fine on this path: it is the user's own account list, in
+/// the status payload — not an error string crossing `errors::user_facing`.
 async fn sync_accounts<F, Fut>(
     pool: &SqlitePool,
     accounts: &[(i64, String)],
@@ -583,19 +631,26 @@ async fn sync_accounts<F, Fut>(
     window_start_ms: i64,
     window_end_ms: i64,
     token_for: F,
-) -> (u64, Vec<String>)
+) -> (u64, Vec<String>, Vec<String>)
 where
     F: Fn(String) -> Fut,
     Fut: std::future::Future<Output = anyhow::Result<String>>,
 {
     let mut total = 0u64;
     let mut failed: Vec<String> = Vec::new();
+    let mut dead: Vec<String> = Vec::new();
 
     for (account_id, email) in accounts {
         // `%e`, never the token: `Tokens` has a hand-written redacting `Debug`
         // and no credential is interpolated anywhere on this path.
         let access_token = match token_for(email.clone()).await {
             Ok(t) => t,
+            Err(e) if omacal_google::auth::needs_reauth(&e) => {
+                tracing::warn!(account = %email, %e,
+                    "refresh token is dead; the account needs to be reconnected");
+                dead.push(email.clone());
+                continue;
+            }
             Err(e) => {
                 tracing::warn!(account = %email, %e, "no usable access token; skipping this account");
                 failed.push(email.clone());
@@ -629,7 +684,19 @@ where
         }
     }
 
-    (total, failed)
+    (total, failed, dead)
+}
+
+/// The accounts a sync should even attempt: everyone not marked as needing
+/// re-consent. A marked account's refresh is a request whose answer is
+/// already known — `invalid_grant` does not get better with retrying — spent
+/// from a shared quota and logged as a fresh warning every five minutes. The
+/// account rejoins the rotation when a sign-in clears its mark.
+fn accounts_to_attempt(
+    accounts: Vec<(i64, String)>,
+    marked: &std::collections::BTreeSet<String>,
+) -> Vec<(i64, String)> {
+    accounts.into_iter().filter(|(_, email)| !marked.contains(email)).collect()
 }
 
 /// Turns what a sync managed to do into what it reports.
@@ -680,11 +747,14 @@ pub(crate) async fn sync_all(state: &AppState) -> anyhow::Result<u64> {
     let accounts: Vec<(i64, String)> =
         sqlx::query_as("SELECT id, email FROM accounts ORDER BY id").fetch_all(pool).await?;
 
+    let marked = state.reauth.lock().expect("reauth mark poisoned").clone();
+    let accounts = accounts_to_attempt(accounts, &marked);
+
     let now = now_ms();
     let (window_start, window_end) = synced_window(now);
 
     let cfg = &cfg;
-    let (total, failed) = sync_accounts(
+    let (total, failed, dead) = sync_accounts(
         pool,
         &accounts,
         GOOGLE_CALENDAR_API,
@@ -693,6 +763,10 @@ pub(crate) async fn sync_all(state: &AppState) -> anyhow::Result<u64> {
         move |email| async move { access_token_for(state, cfg, &email).await },
     )
     .await;
+
+    if !dead.is_empty() {
+        state.reauth.lock().expect("reauth mark poisoned").extend(dead);
+    }
 
     sync_result(total, &failed)
 }
@@ -778,7 +852,7 @@ pub fn run() {
                 let _ = w.set_decorations(false);
             }
 
-            app.manage(AppState { pool, demo, tokens: Default::default() });
+            app.manage(AppState { pool, demo, tokens: Default::default(), reauth: Default::default() });
             sync_loop::spawn(app.handle().clone());
             theme_watch::spawn(app.handle().clone());
 
@@ -1172,7 +1246,7 @@ mod tests {
         let accounts = accounts_in_order(&pool).await;
         assert_eq!(accounts[0].1, "revoked@x", "the broken account must go first");
 
-        let (total, failed) = sync_accounts(
+        let (total, failed, _) = sync_accounts(
             &pool, &accounts, &server.uri(), 0, 9_999_999_999_999,
             |email| async move {
                 if email == "revoked@x" {
@@ -1194,6 +1268,93 @@ mod tests {
         .unwrap();
         assert_eq!(synced, vec!["cal-healthy".to_string()],
                    "the healthy account's calendar must have been fetched and stored");
+    }
+
+    /// The dead-token path: a rejection `needs_reauth` classifies must land in
+    /// the third list, not among the transient failures — `failed` is what
+    /// makes the sync report "it will keep trying", and for a dead grant that
+    /// sentence is false. The healthy account still syncs, same isolation as
+    /// above.
+    #[tokio::test]
+    async fn a_dead_token_is_reported_for_reconnection_not_as_a_failure() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(one_event_body()))
+            .mount(&server)
+            .await;
+
+        let pool = omacal_store::connect_memory().await.unwrap();
+        seed_account(&pool, "sub-dead", "dead@x").await;
+        let healthy = seed_account(&pool, "sub-healthy", "healthy@x").await;
+        seed_calendar(&pool, healthy, "cal-healthy", 1, 1).await;
+
+        let accounts = accounts_in_order(&pool).await;
+        let (total, failed, dead) = sync_accounts(
+            &pool, &accounts, &server.uri(), 0, 9_999_999_999_999,
+            |email| async move {
+                if email == "dead@x" {
+                    return Err(omacal_google::auth::TokenRejected::new(
+                        "invalid_grant", "Token has been expired or revoked.",
+                    )
+                    .into());
+                }
+                Ok("at-healthy".to_string())
+            },
+        )
+        .await;
+
+        assert_eq!(dead, vec!["dead@x".to_string()]);
+        assert!(failed.is_empty(),
+                "a dead grant is not a transient failure, and counting it as one \
+                 re-toasts a message whose promise (\"it will keep trying\") is false: {failed:?}");
+        assert_eq!(total, 1, "the healthy account still synced");
+        assert!(sync_result(total, &failed).is_ok(),
+                "the reconnect prompt is this state's surface; the generic failure is not");
+    }
+
+    /// The other half of going quiet: once marked, the account is not offered
+    /// to the sync at all. Without the filter every tick would re-spend a
+    /// token-endpoint request on an answer that cannot change.
+    #[test]
+    fn a_marked_account_is_left_out_of_the_attempt_list() {
+        let accounts = vec![(1, "dead@x".to_string()), (2, "healthy@x".to_string())];
+        let marked = std::collections::BTreeSet::from(["dead@x".to_string()]);
+
+        let attempted = accounts_to_attempt(accounts.clone(), &marked);
+        assert_eq!(attempted, vec![(2, "healthy@x".to_string())]);
+
+        let nobody_marked = accounts_to_attempt(accounts.clone(), &Default::default());
+        assert_eq!(nobody_marked, accounts, "an empty mark set must change nothing");
+    }
+
+    /// What a re-sign-in must reset, and the trap it exists for:
+    /// `access_token_for` prefers the cache's refresh token over the
+    /// keyring's, so a re-sign-in that leaves the cache alone keeps presenting
+    /// the dead pair the user just replaced — fresh consent, no fix. The other
+    /// account's entries stay: reconnecting one account is not a licence to
+    /// forget another's.
+    #[tokio::test]
+    async fn a_sign_in_forgets_the_accounts_stale_credentials_and_mark() {
+        let mut tokens = std::collections::HashMap::from([
+            ("dead@x".to_string(), CachedTokens {
+                refresh_token: "rt-dead".into(), access_token: "at-dead".into(),
+                expires_at_ms: 0,
+            }),
+            ("other@x".to_string(), CachedTokens {
+                refresh_token: "rt-other".into(), access_token: "at-other".into(),
+                expires_at_ms: i64::MAX,
+            }),
+        ]);
+        let mut reauth = std::collections::BTreeSet::from([
+            "dead@x".to_string(), "other@x".to_string(),
+        ]);
+
+        forget_stale_credentials(&mut tokens, &mut reauth, "dead@x");
+
+        assert!(!tokens.contains_key("dead@x"), "the dead pair would be presented again");
+        assert!(!reauth.contains("dead@x"), "the account would never rejoin the sync rotation");
+        assert!(tokens.contains_key("other@x"), "another account's cache was collateral");
+        assert!(reauth.contains("other@x"), "another account's mark was collateral");
     }
 
     /// The same isolation one level down. A shared calendar unshared behind our
@@ -1226,7 +1387,7 @@ mod tests {
         assert_eq!(calendars_to_sync(&pool, account).await.unwrap()[0].1, "cal-unshared");
 
         let accounts = accounts_in_order(&pool).await;
-        let (total, failed) = sync_accounts(
+        let (total, failed, _) = sync_accounts(
             &pool, &accounts, &server.uri(), 0, 9_999_999_999_999,
             |_| async { Ok("at".to_string()) },
         )
@@ -1259,7 +1420,7 @@ mod tests {
         seed_calendar(&pool, account, "cal-1", 1, 1).await;
 
         let accounts = accounts_in_order(&pool).await;
-        let (total, failed) = sync_accounts(
+        let (total, failed, _) = sync_accounts(
             &pool, &accounts, &server.uri(), 0, 9_999_999_999_999,
             |_| async { Ok("at".to_string()) },
         )

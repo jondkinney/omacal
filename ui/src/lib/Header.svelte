@@ -1,6 +1,6 @@
 <!-- ui/src/lib/Header.svelte -->
 <script lang="ts">
-  import { syncLight, type AppStatus } from './status';
+  import { reauthMessage, syncLight, type AppStatus } from './status';
   import type { Calendar } from './calendars';
   import { escapeCloses } from './dismiss.svelte';
   import { listable } from './filmstrip';
@@ -71,6 +71,10 @@
   };
   const unit = $derived(NAV_UNIT[view]);
   const connected = $derived((status?.accounts.length ?? 0) > 0);
+  /** Accounts whose Google sign-in is dead — the backend has stopped syncing
+   *  them and re-consent is the only fix, so this is the one failure with a
+   *  button on it. */
+  const reauth = $derived(status?.needs_reauth ?? []);
 
   // "Synced 4 min ago" is a function of the clock, so it has to be told the
   // clock moved. Without this it only ever recomputes when `status` changes —
@@ -101,7 +105,10 @@
    */
   const light = $derived(
     syncLight(
-      { connected, busy, error, lastSyncMs: status?.last_sync_ms ?? null },
+      {
+        connected, busy, error, reauth: reauth.length > 0,
+        lastSyncMs: status?.last_sync_ms ?? null,
+      },
       now,
     ),
   );
@@ -311,6 +318,21 @@
   <p class="err">{error}</p>
 {/if}
 
+<!-- The reconnect prompt, and the reason it is not the `error` banner above:
+     `error` is transient — cleared by the next navigation, overwritten by the
+     next failure — and re-consenting is the only fix for this state, so the
+     message has to sit there until it happens and has to carry the button
+     that does it. Never in demo mode, where no account went through OAuth and
+     `sign_in` refuses server-side anyway (`demo_sync_guard`). -->
+{#if reauth.length > 0 && !status?.demo}
+  <p class="err reauth" data-testid="reauth-banner">
+    <span>{reauthMessage(reauth)}</span>
+    <button class="primary" onclick={onSignIn} disabled={busy}>
+      {busy ? 'Connecting…' : 'Reconnect'}
+    </button>
+  </p>
+{/if}
+
 <style>
   /* `padding-top`, moved here out of `App`'s `main` — see the comment there
      for why it is layout-neutral. A drag region covers its own box and
@@ -392,4 +414,11 @@
          padding: 7px 10px; border-radius: 6px;
          background: color-mix(in srgb, var(--error) 9%, transparent);
          overflow-wrap: anywhere; }
+  /* The one banner with a button in it: the sentence wraps, the button
+     stays a button. Inherits .err's colours — this is still a failure, just
+     one with a fix attached. */
+  .reauth { display: flex; align-items: center; justify-content: space-between;
+            gap: 12px; flex-wrap: wrap; }
+  .reauth button { border: none; border-radius: 6px; padding: 5px 12px;
+                   font-size: 11.5px; cursor: pointer; }
 </style>

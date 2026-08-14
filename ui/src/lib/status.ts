@@ -2,6 +2,11 @@ import { invoke } from '@tauri-apps/api/core';
 
 export type AppStatus = {
   accounts: string[];
+  /** The subset of `accounts` whose Google sign-in is dead for good — the
+   *  token endpoint said so, sync has stopped trying them, and signing in
+   *  again is the only fix. Emails rather than a count, because "an account
+   *  needs attention" with two connected is a guessing game. */
+  needs_reauth: string[];
   last_sync_ms: number | null;
   demo: boolean;
   /** True when the window's controls are drawn over the webview instead of in
@@ -79,14 +84,34 @@ export type SyncState =
  * earns its cost. Not before.
  */
 export function syncLight(
-  o: { connected: boolean; busy: boolean; error: string | null; lastSyncMs: number | null },
+  o: {
+    connected: boolean; busy: boolean; error: string | null; reauth: boolean;
+    lastSyncMs: number | null;
+  },
   now: number,
 ): { state: SyncState; label: string } {
   if (o.busy) return { state: 'syncing', label: 'Syncing now' };
   if (o.error !== null) return { state: 'failed', label: `Something went wrong: ${o.error}` };
+  // After `error`: an account parked behind a reconnect is a standing state,
+  // and a fresh failure is news. Before `lastSyncMs`, or the light reads
+  // "Synced 5 min ago" in green while an account it stopped syncing goes
+  // quietly stale — the exact defect the `error` ordering above exists to
+  // avoid, one row down. This is the sync-specific status field the comment
+  // above said would one day earn its cost.
+  if (o.reauth) return { state: 'failed', label: 'An account needs to be reconnected' };
   if (!o.connected) return { state: 'never', label: 'Not signed in' };
   if (o.lastSyncMs === null) return { state: 'never', label: 'Not synced yet' };
   return { state: 'synced', label: `Synced ${relativeTime(o.lastSyncMs, now)}` };
+}
+
+/**
+ * The reconnect banner's sentence. Names the account, because with two
+ * connected the user's next action differs by which one is dead; "is no
+ * longer valid" rather than "expired", because a revoked grant and a
+ * client-pair change both land here and neither is about time.
+ */
+export function reauthMessage(emails: string[]): string {
+  return `Google sign-in for ${emails.join(', ')} is no longer valid. Reconnect to resume syncing.`;
 }
 
 /** "just now" / "4 min ago" / "2 h ago" — deliberately coarse. */

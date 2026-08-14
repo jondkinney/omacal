@@ -87,6 +87,30 @@ test.describe('App', () => {
     await expect(page.locator('.err')).toContainText('could not reach Google');
   });
 
+  // An account whose refresh token died gets its own surface: a standing
+  // banner naming the account, with the one button that fixes it. The generic
+  // "it will keep trying" toast would be a lie here — the backend has stopped
+  // trying — which is why this is `needs_reauth` on status and not `error`.
+  test('a dead account offers reconnect, and reconnecting clears it', async ({ page }) => {
+    await page.goto(app('needs-reauth'));
+
+    const banner = page.getByTestId('reauth-banner');
+    await expect(banner).toContainText('me@x.com');
+    // The light agrees with the banner rather than reading "Synced 5 min ago"
+    // in green off the last success.
+    await expect(page.locator('.light'))
+      .toHaveAttribute('aria-label', 'An account needs to be reconnected');
+
+    await banner.getByRole('button', { name: 'Reconnect' }).click();
+
+    // The click runs the real sign-in flow, and the refreshed status stops
+    // asking — banner gone, light back on the last successful sync.
+    await expect(banner).toHaveCount(0);
+    const signIns = await page.evaluate(() =>
+      window.__harness.calls.filter((c) => c.cmd === 'sign_in').length);
+    expect(signIns).toBe(1);
+  });
+
   // D2, the other half: the label has to keep counting on its own. It used to
   // recompute only when `status` changed — that is, only when a sync
   // succeeded — so it froze at its last value exactly when sync stopped.

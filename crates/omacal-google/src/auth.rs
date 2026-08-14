@@ -85,6 +85,55 @@ struct TokenResponse {
     error_description: Option<String>,
 }
 
+/// A rejection from the token endpoint, carrying the OAuth error code as a
+/// field so a caller can classify it without parsing the message back out of
+/// a string. Its `Display` is exactly the sentence `post_token` always
+/// emitted — our own text leading, for the reason given at the `Err` site —
+/// so nothing downstream of `anyhow` sees a different message.
+#[derive(Debug)]
+pub struct TokenRejected {
+    /// The endpoint's `error` field: `invalid_grant`, `unauthorized_client`, …
+    pub code: String,
+    description: String,
+}
+
+impl TokenRejected {
+    /// For tests in downstream crates that need the typed rejection without a
+    /// mocked endpoint — production code only ever gets one from `post_token`.
+    pub fn new(code: impl Into<String>, description: impl Into<String>) -> Self {
+        Self { code: code.into(), description: description.into() }
+    }
+}
+
+impl std::fmt::Display for TokenRejected {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the token endpoint rejected the request: {}: {}",
+            self.code, self.description
+        )
+    }
+}
+
+impl std::error::Error for TokenRejected {}
+
+/// Whether this error means the stored refresh token is dead for good, so
+/// re-consent is the only fix and retrying is pure quota noise.
+///
+/// The three codes are the ways a grant stops being honoured (RFC 6749 §5.2):
+/// `invalid_grant` is a token expired or revoked by the user, and
+/// `unauthorized_client`/`invalid_client` are a token minted by one OAuth
+/// client presented by another — which is exactly what happens when a machine
+/// that signed in under a personal dev client runs a release build carrying
+/// the official pair. Everything else (a 5xx dressed as
+/// `temporarily_unavailable`, transport failures, non-JSON bodies) stays
+/// unclassified and keeps being retried.
+pub fn needs_reauth(e: &anyhow::Error) -> bool {
+    e.downcast_ref::<TokenRejected>().is_some_and(|r| {
+        matches!(r.code.as_str(), "invalid_grant" | "unauthorized_client" | "invalid_client")
+    })
+}
+
 async fn post_token(endpoint: &str, form: &[(&str, &str)]) -> anyhow::Result<Tokens> {
     let resp = reqwest::Client::new()
         .post(endpoint)
@@ -102,11 +151,14 @@ async fn post_token(endpoint: &str, form: &[(&str, &str)]) -> anyhow::Result<Tok
         // strings this app emits. Let the endpoint's `error` field lead and it
         // can reproduce any of those strings exactly and have its
         // `error_description` rendered in the app header.
-        bail!(
-            "the token endpoint rejected the request: {}: {}",
-            err,
-            body.error_description.unwrap_or_default()
-        );
+        //
+        // A typed error rather than `bail!`, so `needs_reauth` can read the
+        // code as a field instead of grepping the message.
+        return Err(TokenRejected {
+            code: err,
+            description: body.error_description.unwrap_or_default(),
+        }
+        .into());
     }
 
     let access_token = body.access_token.context("token response had no access_token")?;
@@ -371,6 +423,55 @@ mod tests {
         let err = refresh(&format!("{}/token", server.uri()), "cid", "secret", "rt-old")
             .await.unwrap_err();
         assert!(err.to_string().contains("invalid_grant"));
+    }
+
+    /// The classifier the sync path uses to stop retrying a dead grant —
+    /// exercised through the real `refresh` path, so what is classified is
+    /// what the endpoint actually produces rather than a hand-built error.
+    /// All three codes, because each is a distinct way a grant dies:
+    /// revocation, and a client-pair mismatch spelled two ways.
+    #[tokio::test]
+    async fn a_dead_grant_is_classified_as_needing_reauth() {
+        for code in ["invalid_grant", "unauthorized_client", "invalid_client"] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/token"))
+                .respond_with(ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                    "error": code,
+                    "error_description": "endpoint detail"
+                })))
+                .mount(&server)
+                .await;
+
+            let err = refresh(&format!("{}/token", server.uri()), "cid", "secret", "rt")
+                .await.unwrap_err();
+            assert!(needs_reauth(&err), "{code} means re-consent is the only fix");
+        }
+    }
+
+    /// The other half, without which the classifier could be `|_| true`: a
+    /// retryable failure must stay unclassified, or one flaky answer would
+    /// park an account behind a reconnect prompt it does not need.
+    #[tokio::test]
+    async fn a_transient_failure_is_not_classified_as_needing_reauth() {
+        // An OAuth-shaped error that is not a dead grant.
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(503).set_body_json(serde_json::json!({
+                "error": "temporarily_unavailable",
+                "error_description": "try again"
+            })))
+            .mount(&server)
+            .await;
+
+        let err = refresh(&format!("{}/token", server.uri()), "cid", "secret", "rt")
+            .await.unwrap_err();
+        assert!(!needs_reauth(&err), "a 503 is a retry, not a reconnect");
+
+        // And an error with no token-endpoint shape at all — offline, bad
+        // JSON — is never a reason to demand re-consent.
+        assert!(!needs_reauth(&anyhow::anyhow!("token endpoint unreachable")));
     }
 
     /// The token endpoint writes both `error` and `error_description`, and

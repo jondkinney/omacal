@@ -671,6 +671,20 @@ test.describe('Header', () => {
     await expect(page.locator('header')).toHaveScreenshot('header-connected.png');
   });
 
+  /** The reconnect banner, from the fixture side: it names the account (with
+   *  two connected, "an account" is a guessing game) and carries the button.
+   *  The absence check runs over `connected` — same account, healthy — so
+   *  what is asserted is the field gating it, not the fixture existing. */
+  test('a dead account is named, and offered a reconnect', async ({ page }) => {
+    await page.goto(show('Header', 'reauth'));
+    const banner = page.getByTestId('reauth-banner');
+    await expect(banner).toContainText('Google sign-in for me@x.com is no longer valid');
+    await expect(banner.getByRole('button', { name: 'Reconnect' })).toBeEnabled();
+
+    await page.goto(show('Header', 'connected'));
+    await expect(page.getByTestId('reauth-banner')).toHaveCount(0);
+  });
+
   /** §1: the three rare controls are gone from the header itself. Asserted as
    *  an absence *before* the menu is opened, which is the half that says they
    *  moved rather than merely that they exist somewhere. */

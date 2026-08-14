@@ -8,6 +8,12 @@ const LAST_SYNC_KEY: &str = "last_sync_ms";
 pub struct AppStatus {
     /// Email addresses of connected accounts; empty means "not signed in".
     pub accounts: Vec<String>,
+    /// The subset of `accounts` whose refresh token is dead for good
+    /// (`AppState::reauth`): sync has stopped trying them, and the only fix
+    /// is signing in again. The UI turns a non-empty list into a reconnect
+    /// prompt — which is why this is emails rather than a count: "an account
+    /// needs attention" with two accounts connected is a guessing game.
+    pub needs_reauth: Vec<String>,
     pub last_sync_ms: Option<i64>,
     /// True when the app is running on synthetic data, so the UI can say so.
     pub demo: bool,
@@ -42,6 +48,7 @@ pub async fn read_status(
     pool: &SqlitePool,
     demo: bool,
     overlay_titlebar: bool,
+    needs_reauth: Vec<String>,
 ) -> anyhow::Result<AppStatus> {
     let accounts: Vec<String> =
         sqlx::query_scalar("SELECT email FROM accounts ORDER BY id")
@@ -50,6 +57,7 @@ pub async fn read_status(
 
     Ok(AppStatus {
         accounts,
+        needs_reauth,
         last_sync_ms: last_sync_ms(pool).await?,
         demo,
         overlay_titlebar,
@@ -100,7 +108,7 @@ mod tests {
     #[tokio::test]
     async fn status_reports_no_accounts_on_a_fresh_database() {
         let pool = omacal_store::connect_memory().await.unwrap();
-        let s = read_status(&pool, false, false).await.unwrap();
+        let s = read_status(&pool, false, false, vec![]).await.unwrap();
         assert!(s.accounts.is_empty());
         assert_eq!(s.last_sync_ms, None);
         assert!(!s.demo);
@@ -109,7 +117,7 @@ mod tests {
     #[tokio::test]
     async fn status_lists_connected_accounts_by_email() {
         let pool = pool_with_account().await;
-        let s = read_status(&pool, false, false).await.unwrap();
+        let s = read_status(&pool, false, false, vec![]).await.unwrap();
         assert_eq!(s.accounts, vec!["me@x.com".to_string()]);
     }
 
@@ -117,7 +125,7 @@ mod tests {
     async fn recording_a_sync_round_trips() {
         let pool = pool_with_account().await;
         record_sync(&pool, 1_785_715_200_000).await.unwrap();
-        let s = read_status(&pool, false, false).await.unwrap();
+        let s = read_status(&pool, false, false, vec![]).await.unwrap();
         assert_eq!(s.last_sync_ms, Some(1_785_715_200_000));
     }
 
@@ -126,8 +134,22 @@ mod tests {
         let pool = pool_with_account().await;
         record_sync(&pool, 1_000).await.unwrap();
         record_sync(&pool, 2_000).await.unwrap();
-        let s = read_status(&pool, false, false).await.unwrap();
+        let s = read_status(&pool, false, false, vec![]).await.unwrap();
         assert_eq!(s.last_sync_ms, Some(2_000));
+    }
+
+    /// The reconnect list rides through untouched — and as emails, because
+    /// "an account needs attention" with two accounts connected is a guessing
+    /// game the UI cannot resolve on the user's behalf.
+    #[tokio::test]
+    async fn status_surfaces_the_accounts_needing_reconnection() {
+        let pool = pool_with_account().await;
+
+        let s = read_status(&pool, false, false, vec!["me@x.com".into()]).await.unwrap();
+        assert_eq!(s.needs_reauth, vec!["me@x.com".to_string()]);
+
+        let none = read_status(&pool, false, false, vec![]).await.unwrap();
+        assert!(none.needs_reauth.is_empty(), "a healthy account was told to reconnect");
     }
 
     /// Both flags at once, and crossed: `demo` and `overlay_titlebar` are
@@ -138,11 +160,11 @@ mod tests {
     async fn the_demo_and_overlay_flags_are_surfaced_independently() {
         let pool = omacal_store::connect_memory().await.unwrap();
 
-        let demo_only = read_status(&pool, true, false).await.unwrap();
+        let demo_only = read_status(&pool, true, false, vec![]).await.unwrap();
         assert!(demo_only.demo, "the demo badge would never appear");
         assert!(!demo_only.overlay_titlebar, "demo leaked into the titlebar flag");
 
-        let overlay_only = read_status(&pool, false, true).await.unwrap();
+        let overlay_only = read_status(&pool, false, true, vec![]).await.unwrap();
         assert!(overlay_only.overlay_titlebar, "the header would never clear the traffic lights");
         assert!(!overlay_only.demo, "the titlebar flag leaked into the demo badge");
     }

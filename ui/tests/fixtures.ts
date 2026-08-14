@@ -294,8 +294,15 @@ const noop = () => {};
 // filmstrip toggle renders in all of these — deliberately, since a header
 // fixture that hid a control the real header shows would be describing a header
 // nobody has.
-const header = (status: AppStatus, busy = false) => ({
-  status, anchorMs: MON, weekStartMs: MON, busy, error: null as string | null, calendars: [] as Calendar[],
+// `needs_reauth` is defaulted here rather than restated in every fixture:
+// the field arrived long after this block, and an account needing re-consent
+// is one fixture's story, not thirty fixtures' boilerplate.
+const header = (
+  status: Omit<AppStatus, 'needs_reauth'> & { needs_reauth?: string[] },
+  busy = false,
+) => ({
+  status: { needs_reauth: [], ...status } as AppStatus,
+  anchorMs: MON, weekStartMs: MON, busy, error: null as string | null, calendars: [] as Calendar[],
   view: 'week' as View, onpick: noop, listMode: false, onToggleList: noop,
   onPrev: noop, onNext: noop, onToday: noop, onSearch: noop, onSignIn: noop, onSync: noop,
   oncalendarchange: noop,
@@ -1804,6 +1811,12 @@ export const FIXTURES: Record<string, Record<string, any>> = {
               summary: 'Holidays in Bulgaria', access_role: 'reader' }),
       ],
     },
+    // An account the backend has stopped syncing: still in `accounts` (it is
+    // connected; its data is just going stale), also in `needs_reauth`.
+    reauth: header({
+      accounts: ['me@x.com'], needs_reauth: ['me@x.com'],
+      last_sync_ms: FIVE_MIN_AGO, demo: false, overlay_titlebar: false,
+    }),
     demo: header({ accounts: [], last_sync_ms: null, demo: true, overlay_titlebar: false }),
     // Every fixture in this block is `overlay_titlebar: false` — Omarchy, and
     // macOS before this window asked for `titleBarStyle: "Overlay"` — so the
