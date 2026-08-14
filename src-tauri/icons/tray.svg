@@ -1,0 +1,15 @@
+<!-- The tray glyph: the OmaCal mark without its tile.
+
+     The app icon is the mark on a dark tile, and at tray sizes (~22px on a
+     dark bar) the tile swallows it. Here the bars themselves fill the canvas
+     — same geometry and colours as icon.png (periwinkle #8DA9F0, orange
+     #F97316), transparent background, drawn thick enough to survive 22px.
+
+     tray.png is rendered from this file:
+       rsvg-convert -w 128 -h 128 tray.svg -o tray.png -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <rect x="8" y="12" width="112" height="26" rx="13" fill="#8DA9F0"/>
+  <circle cx="23" cy="64" r="15" fill="#F97316"/>
+  <rect x="46" y="51" width="74" height="26" rx="13" fill="#8DA9F0"/>
+  <rect x="8" y="90" width="76" height="26" rx="13" fill="#8DA9F0"/>
+</svg>

@@ -71,12 +71,13 @@ pub(crate) fn build(app: &AppHandle) -> tauri::Result<()> {
         items.iter().map(|i| i as &dyn tauri::menu::IsMenuItem<_>).collect();
     let menu = Menu::with_items(app, &refs)?;
 
-    let mut builder = TrayIconBuilder::new().menu(&menu).show_menu_on_left_click(true);
-    if let Some(icon) = app.default_window_icon() {
-        builder = builder.icon(icon.clone());
-    }
-
-    builder
+    // Not the window icon: that is the mark on a dark tile, and at tray
+    // sizes on a dark bar the tile swallows it. tray.png is the mark alone
+    // (see icons/tray.svg), drawn to survive 22px.
+    TrayIconBuilder::new()
+        .menu(&menu)
+        .show_menu_on_left_click(true)
+        .icon(tauri::include_image!("icons/tray.png"))
         .on_menu_event(|app, event| match action_for(event.id.as_ref()) {
             Some(TrayAction::Open) => show_main_window(app),
             Some(TrayAction::SyncNow) => crate::sync_loop::request_now(app),
