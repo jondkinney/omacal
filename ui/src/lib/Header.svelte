@@ -387,16 +387,16 @@
      padding would be a dead gap. */
   header.overlay { padding-left: 60px; }
   .left, .right { display: flex; align-items: center; gap: 8px; }
-  h1 { font-size: 19px; font-weight: 600; letter-spacing: -.025em; margin: 0; white-space: nowrap; }
+  h1 { font-size: 20px; font-weight: 600; letter-spacing: -.025em; margin: 0; white-space: nowrap; }
   .nav { display: flex; gap: 1px; }
-  button { font: inherit; font-size: 11px; color: var(--muted); cursor: pointer;
+  button { font: inherit; font-size: 12px; color: var(--muted); cursor: pointer;
            background: color-mix(in srgb, var(--text) 6%, transparent);
            border: 0; border-radius: 6px; padding: 4px 10px; }
   button:disabled { opacity: .5; cursor: default; }
-  .nav button { width: 22px; padding: 3px 0; font-size: 13px; }
+  .nav button { width: 22px; padding: 3px 0; font-size: 14px; }
   .today { border: 1px solid color-mix(in srgb, var(--text) 12%, transparent); background: none; }
   .primary { background: var(--accent); color: var(--on-accent); font-weight: 600; }
-  .demo { font-size: 10.5px; }
+  .demo { font-size: 11.5px; }
 
   /* Spec §2. Eight pixels, no label, and **the healthy state must not draw the
      eye** — `--sync-ok` is a neutral at 30%/28% rather than a hue, so a synced
@@ -410,18 +410,18 @@
 
   /* A glyph, not a field. The magnifier is the one control search gets in the
      header; the overlay is where the typing happens. */
-  .search { font-size: 15px; line-height: 1; padding: 2px 8px; }
+  .search { font-size: 16px; line-height: 1; padding: 2px 8px; }
 
   /* Beside the switcher rather than inside it, and styled to sit *next to* it
      rather than as a sixth slot: the toggle is orthogonal to the view (spec
      §1), and a button sharing the switcher's joined-segment shape would read as
      a view you can be in. Pressed takes the same accent fill the active view
      slot does, because that is what "on" already looks like in this header. */
-  .filmstrip { font-size: 12px; line-height: 1; padding: 4px 8px; }
+  .filmstrip { font-size: 13px; line-height: 1; padding: 4px 8px; }
   .filmstrip[aria-pressed='true'] { background: var(--accent); color: var(--on-accent); }
 
   .menuwrap { position: relative; }
-  .burger { font-size: 13px; line-height: 1; padding: 3px 8px; }
+  .burger { font-size: 14px; line-height: 1; padding: 3px 8px; }
   .scrim { position: fixed; inset: 0; background: none; border: 0; cursor: default;
            z-index: 40; }
   /* Above its own scrim, and below `CalendarPopover`'s panel — which renders
@@ -434,9 +434,9 @@
   .menu button:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 6%, transparent); }
   .demo { color: var(--demo); letter-spacing: .06em; font-weight: 600; }
 
-  .tz { font-size: 10px; color: var(--muted); letter-spacing: .03em;
+  .tz { font-size: 11px; color: var(--muted); letter-spacing: .03em;
         white-space: nowrap; }
-  .err { color: var(--error); font-size: 11.5px; line-height: 1.45; margin: 0 0 12px;
+  .err { color: var(--error); font-size: 12.5px; line-height: 1.45; margin: 0 0 12px;
          padding: 7px 10px; border-radius: 6px;
          background: color-mix(in srgb, var(--error) 9%, transparent);
          overflow-wrap: anywhere; }
@@ -446,17 +446,17 @@
   .reauth { display: flex; align-items: center; justify-content: space-between;
             gap: 12px; flex-wrap: wrap; }
   .reauth button { border: none; border-radius: 6px; padding: 5px 12px;
-                   font-size: 11.5px; cursor: pointer; }
+                   font-size: 12.5px; cursor: pointer; }
   /* The .err shape in the accent's clothes: same box, calmer colours,
      because this banner reports an option rather than a problem. */
-  .notice { color: var(--text); font-size: 11.5px; line-height: 1.45;
+  .notice { color: var(--text); font-size: 12.5px; line-height: 1.45;
             margin: 0 0 12px; padding: 7px 10px; border-radius: 6px;
             background: color-mix(in srgb, var(--accent) 9%, transparent);
             display: flex; align-items: center; justify-content: space-between;
             gap: 12px; flex-wrap: wrap; }
   .notice-actions { display: flex; gap: 6px; }
   .notice button { border: none; border-radius: 6px; padding: 5px 12px;
-                   font-size: 11.5px; cursor: pointer;
+                   font-size: 12.5px; cursor: pointer;
                    background: color-mix(in srgb, var(--accent) 18%, transparent);
                    color: var(--text); }
   .notice button:hover { background: color-mix(in srgb, var(--accent) 28%, transparent); }

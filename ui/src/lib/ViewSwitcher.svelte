@@ -29,7 +29,7 @@
 <style>
   .vswitch { display: flex; gap: 1px; }
   .vswitch button {
-    font: inherit; font-size: 11px; color: var(--muted); cursor: pointer;
+    font: inherit; font-size: 12px; color: var(--muted); cursor: pointer;
     background: color-mix(in srgb, var(--text) 6%, transparent);
     border: 0; padding: 4px 10px;
   }
