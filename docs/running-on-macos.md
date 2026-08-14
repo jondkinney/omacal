@@ -1,5 +1,11 @@
 # Running omacal on macOS
 
+> **Just want to use it?** The [releases
+> page](https://github.com/x3me/omacal/releases) carries a `.dmg` (Apple
+> Silicon, unsigned: right-click → Open to get past Gatekeeper) with
+> credentials included — no Google Cloud project, no config file. Everything
+> below is for building and running from source.
+
 For Omarchy Linux, see [`running-on-omarchy.md`](running-on-omarchy.md) — the
 setup is the same except for token storage, which needs a Secret Service
 provider there.

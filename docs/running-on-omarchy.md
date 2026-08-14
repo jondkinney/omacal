@@ -1,5 +1,10 @@
 # Running omacal on Omarchy
 
+> **Just want to use it?**
+> `curl -fsSL https://extremelabs.io/omacal/install.sh | sh` installs the
+> latest release, credentials included: no Google Cloud project, no config
+> file. Everything below is for building and running from source.
+
 Omarchy is Arch-based and uses WebKitGTK rather than macOS's WKWebView. The app
 has been built and run there; the week grid, theming and live theme reload are
 all verified on real hardware.

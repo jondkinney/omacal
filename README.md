@@ -8,7 +8,23 @@ day-to-day development happens.
 Colour comes from your Omarchy theme and follows `omarchy-theme-set` live, with
 no restart.
 
-## Quick start
+## Install
+
+    curl -fsSL https://extremelabs.io/omacal/install.sh | sh
+
+Linux, x86_64. The latest release AppImage lands in `~/.local/bin/omacal` with
+a desktop entry; run the same line again to update. Prefer a package? The
+`.deb` and `.rpm` are on the [releases
+page](https://github.com/x3me/omacal/releases).
+
+Then run `omacal` and click **Connect Google Calendar**. No config file, no
+Google Cloud project: release builds carry their own client credentials. Two
+things worth knowing on first sign-in: Google shows an "unverified app" screen
+while our verification review is pending (Advanced → Continue past it), and
+the token lands in your keyring, so a minimal Hyprland session needs
+gnome-keyring, KeePassXC or kwallet running.
+
+## Building from source
 
     npm --prefix ui install               # once, after cloning
     OMACAL_SEED_DEMO=1 cargo tauri dev   # look at it now, with synthetic data
@@ -16,6 +32,8 @@ no restart.
     cargo test --workspace                # Rust suite
     npm --prefix ui run test:ui           # UI suite
 
+A source build signs in with your own Google Cloud credentials via
+`~/.config/omacal/config.toml`, which always wins over anything embedded.
 Setup: [`docs/running-on-macos.md`](docs/running-on-macos.md) ·
 [`docs/running-on-omarchy.md`](docs/running-on-omarchy.md)
 
