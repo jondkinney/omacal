@@ -54,11 +54,11 @@
            padding: 4px; overflow-y: auto; flex: 1; }
 
   .ymonth { display: flex; flex-direction: column; gap: 4px; }
-  .mname { font-size: 11px; font-weight: 600; color: var(--text);
+  .mname { font-size: 12px; font-weight: 600; color: var(--text);
            letter-spacing: .02em; }
 
   .dow { display: grid; grid-template-columns: repeat(7, 1fr); }
-  .dow span { text-align: center; font-size: 8px; color: var(--muted); }
+  .dow span { text-align: center; font-size: 9px; color: var(--muted); }
 
   .days { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; }
 
@@ -67,7 +67,7 @@
   .yday { appearance: none; -webkit-appearance: none; font: inherit; cursor: pointer;
           border: 0; background: transparent; margin: 0; padding: 0;
           aspect-ratio: 1; display: flex; align-items: center; justify-content: center;
-          position: relative; font-size: 9.5px; color: var(--text);
+          position: relative; font-size: 10.5px; color: var(--text);
           font-variant-numeric: tabular-nums; border-radius: 50%; }
   .yday:hover { background: var(--surface); }
 

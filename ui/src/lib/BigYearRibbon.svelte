@@ -383,7 +383,7 @@
      track, so its content box is the lane height and one line box fills it. */
   .pill { appearance: none; -webkit-appearance: none; font: inherit;
           text-align: left; cursor: pointer; border: 0;
-          font-size: 8px; line-height: var(--lane-h);
+          font-size: 9px; line-height: var(--lane-h);
           border-radius: 999px; padding: 0 5px; white-space: nowrap;
           overflow: hidden; text-overflow: ellipsis; margin: 0 1px;
           background: var(--cal); color: var(--ink); }
@@ -416,7 +416,7 @@
   .pill.lit { filter: brightness(1.35);
               box-shadow: inset 0 0 0 1px var(--ink); }
 
-  .more { font-size: 8px; color: var(--muted); opacity: .8; }
+  .more { font-size: 9px; color: var(--muted); opacity: .8; }
 
   /* The full-height box now, not a strip under the pills: it stretches to the
      grid cell it shares with `.pills`, so a day cell is as tall as its row and
@@ -429,7 +429,7 @@
      the rest of the box is where the events go. */
   .rday { display: flex; flex-direction: column; align-items: center;
           justify-content: flex-start;
-          min-width: 0; position: relative; font-size: 8.5px; color: var(--text);
+          min-width: 0; position: relative; font-size: 9.5px; color: var(--text);
           font-variant-numeric: tabular-nums; border-left: 1px solid var(--hairline); }
   .rday:first-child { border-left: 0; }
   .rday.wknd { background: color-mix(in srgb, var(--muted) 8%, transparent); }
@@ -456,7 +456,7 @@
   .dlabel { display: flex; align-items: center; gap: 2px;
             height: var(--date-band); line-height: var(--date-band);
             position: relative; z-index: 1; }
-  .mchip { font-size: 6.5px; font-weight: 600;
+  .mchip { font-size: 7px; font-weight: 600;
            color: var(--accent); letter-spacing: .02em; }
 
   .legend { display: flex; flex-wrap: wrap; gap: 10px 16px; padding: 4px; }
