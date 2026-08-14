@@ -695,5 +695,5 @@
   .actions button { font: inherit; font-size: 11.5px; cursor: pointer;
                     border-radius: 6px; padding: 5px 12px; border: 1px solid var(--hairline); }
   .ghost { background: none; color: var(--muted); }
-  .primary { background: var(--accent); border-color: var(--accent); color: var(--bg); }
+  .primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
 </style>

@@ -107,5 +107,5 @@
      destructive action comes from the dialog, the wording and where focus
      starts, not from a colour the theme cannot promise. */
   .actions :global(.primary) { background: var(--accent); border-color: var(--accent);
-                               color: var(--bg); }
+                               color: var(--on-accent); }
 </style>

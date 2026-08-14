@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { foregroundFor } from './ink';
 
 export type Palette = {
   bg: string; surface: string; text: string;
@@ -22,6 +23,14 @@ export function setPalette(p: Palette): void {
   r.setProperty('--text', p.text);
   r.setProperty('--muted', p.muted);
   r.setProperty('--accent', p.accent);
+  // The ink for text ON an accent fill — the active view chip, the Connect
+  // button, the today badge. It used to be `var(--bg)`, which worked only as
+  // long as the background happened to contrast with the accent; a light
+  // theme with a light accent (Rose Pine Dawn's rose) drew light-on-light.
+  // `foregroundFor` is the same luminance rule the Big Year pills already
+  // live by, so an accent from colors.toml — which can be anything the theme
+  // author liked — always gets a legible ink chosen against the fill itself.
+  r.setProperty('--on-accent', foregroundFor(p.accent));
   r.setProperty('--hairline', p.is_dark ? 'rgba(255,255,255,.055)' : 'rgba(0,0,0,.07)');
   r.setProperty('--hour-rule', p.is_dark ? 'rgba(255,255,255,.035)' : 'rgba(0,0,0,.05)');
   r.setProperty('--today-tint', p.is_dark ? 'rgba(255,255,255,.028)' : 'rgba(0,0,0,.025)');

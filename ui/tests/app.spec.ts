@@ -2104,6 +2104,29 @@ test.describe('App', () => {
       .toBe('#c04a2b');
   });
 
+  test('the accent chooses its own ink, against the fill and not the theme', async ({ page }) => {
+    // Text on an accent fill used to be `var(--bg)` — right whenever the
+    // background happened to contrast with the accent, wrong the day a light
+    // theme carried a light accent. Both palettes below are light; only the
+    // accent differs. If the ink followed `is_dark` instead of the fill's own
+    // luminance, the two assertions could not both hold.
+    await page.goto(app());
+    const onAccent = () => page.evaluate(() =>
+      document.documentElement.style.getPropertyValue('--on-accent').trim());
+
+    await page.evaluate(() => window.__harness.emit('theme-changed', {
+      bg: '#fdfdfb', surface: '#ffffff', text: '#1a1a1a',
+      muted: '#6b6b70', accent: '#e0af68', is_dark: false,
+    }));
+    await expect.poll(onAccent).toBe('var(--ink-on-light)');
+
+    await page.evaluate(() => window.__harness.emit('theme-changed', {
+      bg: '#fdfdfb', surface: '#ffffff', text: '#1a1a1a',
+      muted: '#6b6b70', accent: '#3b2a5a', is_dark: false,
+    }));
+    await expect.poll(onAccent).toBe('var(--ink-on-dark)');
+  });
+
   test('color-scheme follows the palette, so engine chrome matches the theme', async ({ page }) => {
     // The scrollbar is the one piece of the window omacal does not paint: the
     // engine draws it from `color-scheme`, which no published variable

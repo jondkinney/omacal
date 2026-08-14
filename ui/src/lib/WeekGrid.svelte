@@ -856,7 +856,7 @@
           letter-spacing: .05em; padding-bottom: 8px; }
   .head b { display: block; font-size: 15px; color: var(--text);
             font-weight: 500; letter-spacing: -.02em; margin-top: 2px; }
-  .head.today b { background: var(--accent); color: var(--bg); width: 23px; height: 23px;
+  .head.today b { background: var(--accent); color: var(--on-accent); width: 23px; height: 23px;
                   line-height: 23px; border-radius: 50%; margin: 2px auto 0; font-weight: 600; }
 
   /* No column borders: the grid reads through alignment, not rules (spec §7.1). */
