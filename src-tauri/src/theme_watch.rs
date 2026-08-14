@@ -7,9 +7,11 @@ use tauri::{AppHandle, Emitter};
 
 /// The directory to watch for theme changes.
 ///
-/// `~/.config/omarchy/current/theme` is normally a symlink, and switching
-/// themes replaces the link rather than editing files beneath it. Watching the
-/// PARENT directory catches the relink; watching the link target would not.
+/// Switching themes replaces the theme directory wholesale rather than
+/// editing files beneath it: Omarchy 4 stages `next-theme` and `rm -rf`s +
+/// `mv`s it over `current/theme`, and pre-4 swapped a `current/theme`
+/// symlink. Watching the PARENT directory catches the replacement either
+/// way; watching the theme path itself would not.
 pub fn watch_target() -> Option<PathBuf> {
     crate::theme::omarchy_theme_dir()?.parent().map(PathBuf::from)
 }

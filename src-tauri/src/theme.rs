@@ -56,9 +56,19 @@ struct AlacrittyNormal {
 /// ever a guess at this value — right for Tokyo Night, wrong for any theme
 /// whose accent is not its terminal blue — so when the theme author wrote
 /// the accent down, believe them.
+///
+/// Omarchy 4 grew this file into a full palette (`mode`, `background`,
+/// `foreground`, `muted`, …), making it the authoritative source; pre-4
+/// themes typically carry only `accent`, and every missing key just means
+/// "fall back to the alacritty guess".
 #[derive(Deserialize)]
 struct ColorsFile {
+    mode: Option<String>,
     accent: Option<String>,
+    background: Option<String>,
+    foreground: Option<String>,
+    muted: Option<String>,
+    blue: Option<String>,
 }
 
 /// The explicit accent from a theme's `colors.toml`, normalised, or `None`
@@ -67,6 +77,46 @@ struct ColorsFile {
 pub fn parse_colors_accent(toml_src: &str) -> Option<String> {
     let file: ColorsFile = toml::from_str(toml_src).ok()?;
     parse_hex(&file.accent?).map(format_hex)
+}
+
+/// A full palette from an Omarchy 4 `colors.toml`. Requires `background` and
+/// `foreground` — a file without both (every pre-4 theme) returns `None` and
+/// the alacritty chain takes over. `mode` is believed over luminance when the
+/// author stated it; a garbled `mode` falls back to measuring.
+pub fn parse_colors(toml_src: &str) -> Option<Palette> {
+    let file: ColorsFile = toml::from_str(toml_src).ok()?;
+    let bg_bytes = parse_hex(&file.background?)?;
+    let text_bytes = parse_hex(&file.foreground?)?;
+
+    let is_dark = match file.mode.as_deref() {
+        Some("dark") => true,
+        Some("light") => false,
+        _ => luminance(bg_bytes) < 0.5,
+    };
+
+    let accent = file
+        .accent
+        .as_deref()
+        .and_then(parse_hex)
+        .or_else(|| file.blue.as_deref().and_then(parse_hex))
+        .map(format_hex)
+        .unwrap_or_else(|| format_hex(text_bytes));
+
+    let muted = file
+        .muted
+        .as_deref()
+        .and_then(parse_hex)
+        .map(format_hex)
+        .unwrap_or_else(|| shift(text_bytes, if is_dark { -0.25 } else { 0.25 }));
+
+    Some(Palette {
+        bg: format_hex(bg_bytes),
+        surface: shift(bg_bytes, if is_dark { 0.03 } else { -0.03 }),
+        text: format_hex(text_bytes),
+        muted,
+        accent,
+        is_dark,
+    })
 }
 
 /// Parses `#rrggbb`, `0xrrggbb`, `0Xrrggbb`, or bare `rrggbb` into RGB bytes.
@@ -161,13 +211,20 @@ pub fn parse_alacritty(toml_src: &str) -> Option<Palette> {
 }
 
 /// Resolves the active palette, following the spec §10 fallback chain:
-/// `alacritty.toml` in the theme directory, then the built-in dark palette —
-/// and in either case, `colors.toml`'s explicit `accent` outranks whatever
+/// `colors.toml`'s full palette (Omarchy 4), then `alacritty.toml` in the
+/// theme directory, then the built-in dark palette — and on the alacritty and
+/// fallback bases, `colors.toml`'s explicit `accent` still outranks whatever
 /// the base produced. Never fails.
 pub fn resolve(theme_dir: Option<&Path>) -> Palette {
     let Some(dir) = theme_dir else {
         return Palette::fallback_dark();
     };
+    let colors_src = std::fs::read_to_string(dir.join("colors.toml")).ok();
+
+    if let Some(palette) = colors_src.as_deref().and_then(parse_colors) {
+        return palette;
+    }
+
     let mut palette = match std::fs::read_to_string(dir.join("alacritty.toml")) {
         Ok(src) => parse_alacritty(&src).unwrap_or_else(|| {
             tracing::warn!(?dir, "theme found but could not be parsed; using fallback");
@@ -183,19 +240,27 @@ pub fn resolve(theme_dir: Option<&Path>) -> Palette {
     // is broken but whose colors.toml names an accent gets the fallback's
     // legible base wearing the theme's own accent — closer to intent than
     // either file alone.
-    if let Ok(src) = std::fs::read_to_string(dir.join("colors.toml")) {
-        if let Some(accent) = parse_colors_accent(&src) {
-            palette.accent = accent;
-        }
+    if let Some(accent) = colors_src.as_deref().and_then(parse_colors_accent) {
+        palette.accent = accent;
     }
     palette
 }
 
 /// The conventional Omarchy location. Returns `None` off Linux or when absent.
+///
+/// Omarchy 4 keeps the live theme under the state dir (a hardcoded
+/// `~/.local/state` in Omarchy's own scripts, so no XDG lookup here); the
+/// `~/.config` path is where every earlier Omarchy put it.
 pub fn omarchy_theme_dir() -> Option<std::path::PathBuf> {
     let home = std::env::var_os("HOME")?;
-    let p = Path::new(&home).join(".config/omarchy/current/theme");
-    p.exists().then_some(p)
+    let home = Path::new(&home);
+    [
+        ".local/state/omarchy/current/theme",
+        ".config/omarchy/current/theme",
+    ]
+    .iter()
+    .map(|rel| home.join(rel))
+    .find(|p| p.exists())
 }
 
 #[cfg(test)]
@@ -371,6 +436,92 @@ foreground = "#c0caf5""##, "8 digits instead of 6"),
                 label
             );
         }
+    }
+
+    /// Omarchy 4's colors.toml carries the whole palette; nothing should be
+    /// guessed from alacritty when the author wrote it all down.
+    #[test]
+    fn an_omarchy_4_colors_file_yields_a_full_palette() {
+        let src = r##"
+mode = "dark"
+accent = "#7aa2f7"
+muted = "#414868"
+background = "#1a1b26"
+foreground = "#a9b1d6"
+blue = "#7aa2f7"
+"##;
+        let p = parse_colors(src).unwrap();
+        assert_eq!(p.bg, "#1a1b26");
+        assert_eq!(p.text, "#a9b1d6");
+        assert_eq!(p.accent, "#7aa2f7");
+        assert_eq!(p.muted, "#414868");
+        assert!(p.is_dark);
+        assert_ne!(p.surface, p.bg, "surface should differ from bg");
+    }
+
+    /// The author's `mode` outranks luminance — a deliberately dark-looking
+    /// background declared light must classify as light.
+    #[test]
+    fn a_declared_mode_outranks_measured_luminance() {
+        let dark_bg_declared_light = "mode = \"light\"\nbackground = \"#1a1b26\"\nforeground = \"#a9b1d6\"";
+        assert!(!parse_colors(dark_bg_declared_light).unwrap().is_dark);
+
+        let garbled_mode = "mode = \"mauve\"\nbackground = \"#1a1b26\"\nforeground = \"#a9b1d6\"";
+        assert!(parse_colors(garbled_mode).unwrap().is_dark, "bad mode falls back to luminance");
+    }
+
+    /// A pre-4 colors.toml (accent only) must NOT parse as a full palette —
+    /// that is what keeps the alacritty chain alive for old themes.
+    #[test]
+    fn an_accent_only_colors_file_is_not_a_full_palette() {
+        assert!(parse_colors("accent = \"#e0af68\"").is_none());
+        assert!(parse_colors("background = \"#1a1b26\"").is_none(), "foreground required");
+        assert!(parse_colors("this is not toml {{{").is_none());
+    }
+
+    /// End to end: with both files present, colors.toml wins outright — the
+    /// alacritty file deliberately disagrees on every value.
+    #[test]
+    fn a_full_colors_file_outranks_alacritty_entirely() {
+        let temp_dir = std::env::temp_dir().join(format!("omacal_colors4_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        std::fs::write(
+            temp_dir.join("alacritty.toml"),
+            "[colors.primary]\nbackground = \"#000000\"\nforeground = \"#ffffff\"\n[colors.normal]\nblue = \"#0000ff\"",
+        )
+        .unwrap();
+        std::fs::write(
+            temp_dir.join("colors.toml"),
+            "mode = \"dark\"\naccent = \"#e0af68\"\nmuted = \"#414868\"\nbackground = \"#1a1b26\"\nforeground = \"#a9b1d6\"",
+        )
+        .unwrap();
+
+        let p = resolve(Some(&temp_dir));
+        assert_eq!(p.bg, "#1a1b26");
+        assert_eq!(p.text, "#a9b1d6");
+        assert_eq!(p.accent, "#e0af68");
+        assert_eq!(p.muted, "#414868");
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    /// An Omarchy 4 theme with no alacritty.toml at all still themes the app.
+    #[test]
+    fn a_colors_only_theme_directory_resolves() {
+        let temp_dir = std::env::temp_dir().join(format!("omacal_noala_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+        std::fs::write(
+            temp_dir.join("colors.toml"),
+            "mode = \"light\"\nbackground = \"#eff1f5\"\nforeground = \"#4c4f69\"\naccent = \"#1e66f5\"",
+        )
+        .unwrap();
+
+        let p = resolve(Some(&temp_dir));
+        assert_eq!(p.bg, "#eff1f5");
+        assert_eq!(p.accent, "#1e66f5");
+        assert!(!p.is_dark);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     #[test]

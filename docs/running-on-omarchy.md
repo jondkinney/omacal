@@ -32,12 +32,18 @@ all five views without needing an account.
 
 ## Theming
 
-Colour is read from `~/.config/omarchy/current/theme` and follows
+Colour is read from `~/.local/state/omarchy/current/theme` (Omarchy 4) or
+`~/.config/omarchy/current/theme` (earlier Omarchy) and follows
 `omarchy-theme-set` **live** — the UI repaints within about a second, no restart.
 
-The watcher observes the *parent* directory rather than the symlink target,
-because `omarchy-theme-set` replaces the link rather than editing files beneath
-it; watching the link would never fire.
+The palette comes from the theme's `colors.toml` when it carries the full
+Omarchy 4 palette (`mode`, `background`, `foreground`, …); older themes fall
+back to `alacritty.toml`, with an `accent` from `colors.toml` still honoured.
+
+The watcher observes the *parent* directory rather than the theme path itself,
+because `omarchy-theme-set` replaces the theme wholesale — Omarchy 4 swaps in
+a freshly staged directory, pre-4 relinked a symlink — rather than editing
+files beneath it; watching the theme path would never fire.
 
 ## Connecting your real calendar
 
@@ -142,7 +148,7 @@ The four worth knowing without following a link:
 | --- | --- | --- |
 | Database | `~/Library/Application Support/com.omacal.app/omacal.db` | `~/.local/share/com.omacal.app/omacal.db` |
 | Config | `~/.config/omacal/config.toml` | same |
-| Theme | (none — falls back to built-in colours) | `~/.config/omarchy/current/theme` |
+| Theme | (none — falls back to built-in colours) | `~/.local/state/omarchy/current/theme`, else `~/.config/omarchy/current/theme` |
 
 The database is SQLite in WAL mode, so it is **three** files — `omacal.db`, plus
 `-wal` and `-shm`. Copy or delete all three together.
@@ -209,6 +215,7 @@ step was skipped. The message names the exact path it looked for.
 **Blank window** — check `npm --prefix ui run build` succeeds, then rerun.
 
 **The theme does not follow `omarchy-theme-set`** — check
-`~/.config/omarchy/current/theme` exists and is a symlink. omacal watches its
-parent directory; if the path is missing, live reload is silently disabled and
+`~/.local/state/omarchy/current/theme` (Omarchy 4) or
+`~/.config/omarchy/current/theme` (earlier) exists. omacal watches its parent
+directory; if both paths are missing, live reload is silently disabled and
 the app keeps the palette it started with.
