@@ -960,7 +960,19 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<main>
+<!-- The webview's own context menu — Reload, Back, View Source — is browser
+     chrome inside what presents itself as a native app, so it is suppressed
+     everywhere except the places right-click genuinely works for the user:
+     text fields, where it carries copy and paste. The grid's own right-click
+     behaviour (create at that slot) lives in WeekGrid; this only decides
+     whether the browser menu may appear. -->
+<main
+  oncontextmenu={(e) => {
+    const t = e.target as HTMLElement;
+    if (t.closest('input, textarea, select, [contenteditable="true"]')) return;
+    e.preventDefault();
+  }}
+>
   <Header
     {status} {anchorMs} {weekStartMs} {busy} {error} {calendars} {view} {listMode}
     onToggleList={toggleList}

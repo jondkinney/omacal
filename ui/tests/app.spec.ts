@@ -1088,6 +1088,44 @@ test.describe('App', () => {
   });
 
   /**
+   * Right-click is the other spelling of "new event here" — the gesture
+   * every desktop calendar answers. Same column, same slot arithmetic as the
+   * left-click spec above; only the button differs.
+   */
+  test('right-clicking empty grid space opens the form at that time', async ({ page }) => {
+    await writable(page);
+    const col = page.locator('.col').first();
+    await page.locator('[data-testid="week-body"]').evaluate((el) => {
+      el.scrollTop = Math.max(0, (10.5 / 24) * el.scrollHeight - el.clientHeight / 2);
+    });
+    const box = (await col.boundingBox())!;
+    await page.mouse.click(box.x + box.width / 2, box.y + (box.height * 10) / 24, { button: 'right' });
+
+    await expect(newForm(page)).toBeVisible();
+    await expect(newForm(page).getByLabel('Start', { exact: true })).toHaveValue('10:00');
+  });
+
+  /**
+   * And the browser's own menu stays out of the app — except over text
+   * fields, where right-click carries copy and paste. `dispatchEvent`
+   * returns false when a handler called `preventDefault`, which is the
+   * closest a DOM test can get to "no native menu appeared".
+   */
+  test('the webview context menu is suppressed, except in text fields', async ({ page }) => {
+    await writable(page);
+    const allowed = (selector: string) => page.evaluate((sel) => {
+      const el = document.querySelector(sel)!;
+      return el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+    }, selector);
+
+    expect(await allowed('.col'), 'the grid must not offer Reload and View Source').toBe(false);
+
+    await page.keyboard.press('n');
+    await expect(newForm(page)).toBeVisible();
+    expect(await allowed('input.title'), 'a text field keeps its copy/paste menu').toBe(true);
+  });
+
+  /**
    * **A gesture cannot outlive the grid it was made in.**
    *
    * `WeekGrid` hangs its pointer handlers off `window` while a sweep or a drag

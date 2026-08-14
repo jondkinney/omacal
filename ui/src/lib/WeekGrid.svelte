@@ -775,6 +775,13 @@
         tabindex="-1"
         onclick={(e) => startCreate(day, e)}
         onpointerdown={(e) => startSweep(day, e)}
+        oncontextmenu={(e) => {
+          // Right-click is the other spelling of "new event here" — the
+          // gesture every desktop calendar answers — and it must not also
+          // summon the browser menu the app-level handler suppresses.
+          e.preventDefault();
+          startCreate(day, e);
+        }}
       ></button>
 
       {#each HOURS as h}
