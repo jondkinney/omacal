@@ -34,7 +34,8 @@ says "omacal" — which still cannot touch anyone's data without that person
 clicking Approve, and the secret can be rotated in the Cloud Console at any
 time (a new build picks it up).
 
-**Design (agreed, not yet implemented):**
+**Design (implemented 2026-08-14 — `load_config_from` in `src-tauri/src/lib.rs`,
+precedence pinned by four tests proven against two mutations):**
 
 - Compile-time `option_env!("OMACAL_CLIENT_ID")` / `OMACAL_CLIENT_SECRET`,
   baked only when the release build sets them:
@@ -201,7 +202,7 @@ homepage + privacy policy that Google verification requires.
 1. **Company accounts first** — GitHub org, Google Cloud project under the
    company account, subdomain + Search Console, Apple org enrollment
    started (the longest bureaucratic lead time).
-2. Credentials embedding (§1) — unblocks everything else.
+2. Credentials embedding (§1) — **done** (2026-08-14).
 3. LICENSE + DCO + README + CI (§5), secret-scan the history, flip public.
 4. Web page with privacy policy (§7), then the verification submission (§2)
    — the long pole, so early; the 100-user cap is what actually gates

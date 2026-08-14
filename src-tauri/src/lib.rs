@@ -235,15 +235,63 @@ struct Config {
     client_secret: String,
 }
 
+/// The pair baked into official release builds, and only those: absent unless
+/// the build ran with `OMACAL_CLIENT_ID`/`OMACAL_CLIENT_SECRET` set
+/// (distribution.md §1). `option_env!` reads them at *compile* time, so a dev
+/// build on a machine without the env vars carries `None` and behaves exactly
+/// as it always has. The values arrive in CI as repository secrets; they are
+/// extractable from any shipped binary regardless — Google's own position for
+/// installed apps — and keeping them out of source is what keeps rotation
+/// meaningful.
+const EMBEDDED_CLIENT_ID: Option<&str> = option_env!("OMACAL_CLIENT_ID");
+const EMBEDDED_CLIENT_SECRET: Option<&str> = option_env!("OMACAL_CLIENT_SECRET");
+
 /// Reads `~/.config/omacal/config.toml`, which holds the Google Cloud client
-/// credentials (spec §9 — single-user, credentials supplied by config file).
+/// credentials (spec §9), falling back to the embedded pair when the file is
+/// absent.
 fn load_config() -> anyhow::Result<Config> {
     let home = std::env::var("HOME")?;
     let path = std::path::Path::new(&home).join(".config/omacal/config.toml");
-    let src = std::fs::read_to_string(&path).map_err(|e| {
-        anyhow::anyhow!("no config at {}: {e}. Create it with client_id and client_secret.", path.display())
-    })?;
-    Ok(toml::from_str(&src)?)
+    load_config_from(&path, EMBEDDED_CLIENT_ID, EMBEDDED_CLIENT_SECRET)
+}
+
+/// The precedence, stated once: **a present `config.toml` always wins** —
+/// including by failing loudly when it is malformed or unreadable, because
+/// falling back to the embedded pair on a broken file would silently sign the
+/// user into a client they did not choose. The embedded pair applies only
+/// when the file is *absent* (and only when the build actually baked one in;
+/// an empty env var counts as not baked). Only when neither exists does the
+/// "no config at …" error appear — the same message as always, which
+/// `errors.rs` safelists by that exact prefix.
+///
+/// Separate from `load_config` and parameterised on the embedded pair because
+/// `option_env!` is decided when the binary compiles: a test cannot vary it,
+/// but it can vary these arguments, and the precedence is the entire behaviour
+/// worth pinning.
+fn load_config_from(
+    path: &std::path::Path,
+    embedded_id: Option<&str>,
+    embedded_secret: Option<&str>,
+) -> anyhow::Result<Config> {
+    match std::fs::read_to_string(path) {
+        Ok(src) => Ok(toml::from_str(&src)?),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            fn baked(v: Option<&str>) -> Option<&str> {
+                v.filter(|s| !s.trim().is_empty())
+            }
+            match (baked(embedded_id), baked(embedded_secret)) {
+                (Some(id), Some(secret)) => Ok(Config {
+                    client_id: id.to_string(),
+                    client_secret: secret.to_string(),
+                }),
+                _ => Err(anyhow::anyhow!(
+                    "no config at {}: {e}. Create it with client_id and client_secret.",
+                    path.display()
+                )),
+            }
+        }
+        Err(e) => Err(anyhow::anyhow!("config at {} is unreadable: {e}", path.display())),
+    }
 }
 
 fn store_refresh_token(email: &str, token: &str) -> anyhow::Result<()> {
@@ -825,6 +873,68 @@ mod tests {
         assert!(!DEMO_SYNC_MESSAGE.to_lowercase().contains("credential"),
             "the demo-mode message must read as intentional, not as a leaked technical error");
         assert_eq!(demo_sync_guard(false), Ok(()));
+    }
+
+    /// A path in the OS temp dir unique to this test run, so parallel tests
+    /// and stale files from an aborted run cannot collide.
+    fn scratch_config(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("omacal-test-{}-{name}.toml", std::process::id()))
+    }
+
+    #[test]
+    fn a_present_config_file_wins_over_the_embedded_pair() {
+        let path = scratch_config("file-wins");
+        std::fs::write(&path, "client_id = \"file-id\"\nclient_secret = \"file-secret\"\n").unwrap();
+        let cfg = load_config_from(&path, Some("embedded-id"), Some("embedded-secret")).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(cfg.client_id, "file-id");
+        assert_eq!(cfg.client_secret, "file-secret");
+    }
+
+    /// A corrupt file must fail, not fall back: signing the user into the
+    /// embedded client because their own config broke would be a silent
+    /// account-of-record change, which is worse than an error.
+    #[test]
+    fn a_malformed_config_file_fails_rather_than_falling_back() {
+        let path = scratch_config("malformed");
+        std::fs::write(&path, "client_id = ").unwrap();
+        // `match` rather than `unwrap_err`, which would demand `Debug` on
+        // `Config` — an impl a secret-bearing struct should not grow.
+        let err = match load_config_from(&path, Some("embedded-id"), Some("embedded-secret")) {
+            Ok(_) => panic!("a malformed file must not produce a Config"),
+            Err(e) => e.to_string(),
+        };
+        std::fs::remove_file(&path).unwrap();
+        assert!(
+            !err.starts_with("no config at "),
+            "a present-but-broken file must not read as absent: {err}"
+        );
+    }
+
+    #[test]
+    fn the_embedded_pair_applies_only_when_the_file_is_absent() {
+        let path = scratch_config("absent-embedded");
+        let cfg = load_config_from(&path, Some("embedded-id"), Some("embedded-secret")).unwrap();
+        assert_eq!(cfg.client_id, "embedded-id");
+        assert_eq!(cfg.client_secret, "embedded-secret");
+    }
+
+    /// The historical error, verbatim: `errors.rs` safelists the "no config
+    /// at " prefix, and the message must keep naming the path it looked for.
+    /// An empty env var at build time counts as not baked — `OMACAL_CLIENT_ID=""
+    /// cargo tauri build` must not produce a binary that signs in with "".
+    #[test]
+    fn absent_file_and_no_embedded_pair_names_the_path_it_looked_for() {
+        let path = scratch_config("absent-bare");
+        for embedded in [None, Some("")] {
+            let err = match load_config_from(&path, embedded, embedded) {
+                Ok(_) => panic!("nothing to load from, yet a Config appeared"),
+                Err(e) => e.to_string(),
+            };
+            assert!(err.starts_with("no config at "), "unexpected message: {err}");
+            assert!(err.contains(path.to_str().unwrap()));
+            assert!(err.contains("Create it with client_id and client_secret."));
+        }
     }
 
     fn cached(expires_at_ms: i64) -> CachedTokens {
