@@ -11,6 +11,7 @@ mod fixtures;
 mod golden;
 mod notify;
 mod notify_loop;
+mod resume;
 mod search;
 mod settings;
 mod status;
@@ -870,6 +871,8 @@ pub fn run() {
             sync_loop::spawn(app.handle().clone());
             theme_watch::spawn(app.handle().clone());
             update::spawn(app.handle().clone());
+            #[cfg(target_os = "linux")]
+            resume::spawn(app.handle().clone());
 
             // The tray is the only way to quit, since closing the window hides
             // it. A failure here is logged rather than fatal: an app that

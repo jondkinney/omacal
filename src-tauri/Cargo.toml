@@ -50,6 +50,11 @@ notify = "8.2.0"
 # only this one has action buttons, and Join/Snooze are half the feature.
 [target.'cfg(target_os = "linux")'.dependencies]
 notify-rust = "4"
+# The suspend watcher's bus client (resume.rs). Already in the tree twice —
+# notify-rust and the keyring's secret-service both ride zbus — so pinning
+# the same major adds no new compilation, only the right to import it.
+zbus = "5"
+futures-util = { version = "0.3", default-features = false }
 
 # macOS, best-effort (spec §2.4): an unsigned bundle may simply be refused.
 [target.'cfg(target_os = "macos")'.dependencies]
