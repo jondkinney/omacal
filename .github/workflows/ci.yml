@@ -21,6 +21,10 @@ on:
 jobs:
   rust:
     runs-on: ubuntu-22.04
+    # The suite runs in ~6 minutes; a hang once burned 48 (2026-08-14, the
+    # cargo-test step, cancelled logs lost). The bound turns the next hang
+    # into a fast, named failure instead of an hour of runner smoke.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -42,6 +46,7 @@ jobs:
 
   ui:
     runs-on: ubuntu-22.04
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
