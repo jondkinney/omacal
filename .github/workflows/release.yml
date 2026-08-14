@@ -57,27 +57,61 @@ jobs:
       - name: UI dependencies
         run: npm --prefix ui install
 
-      # Tag push: build and attach to a draft release for the tag.
-      - name: Build and attach to draft release
-        if: startsWith(github.ref, 'refs/tags/')
+      # Build only — attaching happens after the AppImage is repaired below.
+      # (tauri-action's own release upload would publish the artifact before
+      # the strip step could touch it.)
+      - name: Build the bundles
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OMACAL_CLIENT_ID: ${{ secrets.OMACAL_CLIENT_ID }}
           OMACAL_CLIENT_SECRET: ${{ secrets.OMACAL_CLIENT_SECRET }}
-        with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "omacal ${{ github.ref_name }}"
-          releaseDraft: true
 
-      # Manual run: same build, nothing published.
-      - name: Build only (smoke test)
-        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        uses: tauri-apps/tauri-action@v0
+      # The bundler ships Ubuntu's whole Wayland client stack inside the
+      # AppImage. On hosts with a newer Mesa (Arch, so Omarchy itself) the
+      # system EGL refuses those older libs — `EGL_BAD_PARAMETER` — and the
+      # webview renders a blank window (proven on Omarchy, 2026-08-14).
+      # Every desktop the AppImage can run on ships its own libwayland, so
+      # remove the bundled copies and let the host's be found.
+      - name: Strip bundled Wayland libraries from the AppImage
+        if: startsWith(matrix.platform, 'ubuntu')
+        run: |
+          cd target/release/bundle/appimage
+          image=$(ls *.AppImage)
+          ./"$image" --appimage-extract >/dev/null
+          rm -v squashfs-root/usr/lib/libwayland-*
+          curl -fsSL -o appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+          APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64 ./appimagetool squashfs-root "$image"
+          rm -rf squashfs-root appimagetool
+          # Re-extract the repacked image and prove the strip held.
+          ./"$image" --appimage-extract >/dev/null
+          if ls squashfs-root/usr/lib/libwayland-* 2>/dev/null; then
+            echo "libwayland survived the repack" >&2
+            exit 1
+          fi
+          rm -rf squashfs-root
+
+      # Tag push: attach the repaired bundles to a draft release for the tag.
+      # Both matrix jobs race to create it; the loser just uploads.
+      - name: Attach to draft release
+        if: startsWith(github.ref, 'refs/tags/')
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          OMACAL_CLIENT_ID: ${{ secrets.OMACAL_CLIENT_ID }}
-          OMACAL_CLIENT_SECRET: ${{ secrets.OMACAL_CLIENT_SECRET }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
+              --draft --title "omacal $tag" --notes "" || true
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            files=$(ls target/release/bundle/appimage/*.AppImage \
+                       target/release/bundle/deb/*.deb \
+                       target/release/bundle/rpm/*.rpm)
+          else
+            files=$(ls target/release/bundle/dmg/*.dmg)
+          fi
+          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber $files
 
       # The bundles are useful even from a smoke test — graded runners keep
       # them a few days, long enough to hand one to a tester.
