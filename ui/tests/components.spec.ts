@@ -2604,7 +2604,9 @@ test.describe('BigYearRibbon', () => {
     // The container is 620px of `.rows` at the suite's default 1280x720
     // viewport (`devices['Desktop Chrome']`/`['Desktop Safari']` in
     // playwright.config.ts — no `setViewportSize` here, same as every other
-    // spec in this file), against fourteen rows' own ~539px minimum. It used
+    // spec in this file), against fourteen rows' own 615px minimum at the
+    // 14px lanes of the 2026-08-14 readability pass — a 5px margin, the
+    // tightest this promise has ever been held by. It used
     // to be 530px, which is *less* than that minimum: the ribbon was pinned at
     // `calc(100vh - 190px)` and this spec passed only because a fourteen-row
     // ribbon with one pill per row is a hair under what 530px holds. It now
@@ -2613,10 +2615,10 @@ test.describe('BigYearRibbon', () => {
     // pins to the real thing — so this is a claim about 720p in the app and
     // not only about the harness.
     //
-    // 720p is below the 757px at which a third lane fits, so this is also the
+    // 720p is below the 923px at which a third lane fits, so this is also the
     // regression net for the reservation not creeping up: pinned to a constant
-    // three, `.rows` overflows here by exactly 37px (measured, and the number
-    // this fails with). It deliberately does *not* also assert the lane count.
+    // three, `.rows` overflows here by 205px (the 14px-lane arithmetic, and
+    // the order of what this fails with). It deliberately does *not* also assert the lane count.
     // Three lanes at 720p always overflow, so a lane-count line here could
     // never fail on its own — it would be a passenger, and the reservation at
     // the small end is claimed where it can be seen instead: "a tall window
@@ -2628,13 +2630,13 @@ test.describe('BigYearRibbon', () => {
   });
 
   test('a window tall enough for a third lane reserves one', async ({ page }) => {
-    // The other end. 757px is the measured height at which fourteen rows of
+    // The other end. 923px is the measured height at which fourteen rows of
     // three reserved lanes plus the legend first fit — `.pills`'s own comment
     // has the arithmetic and how it was measured. Set one pixel above it rather
     // than exactly on it: this spec is about the reservation being taken when
     // there is room, and sitting on the boundary would make it a spec about the
     // boundary, which the pair below is for.
-    await page.setViewportSize({ width: 1280, height: 758 });
+    await page.setViewportSize({ width: 1280, height: 924 });
     await page.goto(show('y2026'));
     await expect(page.locator('.rrow')).toHaveCount(14);
     expect(await reservedLanes(page, 2)).toBe(3);
@@ -2646,15 +2648,15 @@ test.describe('BigYearRibbon', () => {
   test('the third lane is taken exactly where it starts fitting', async ({ page }) => {
     // The threshold itself, from both sides, one pixel apart. A spec that only
     // checked a tall window and a short one would pass for a threshold anywhere
-    // between them; this is what says the number is 757 and not "somewhere
-    // around 800".
+    // between them; this is what says the number is 923 and not "somewhere
+    // around 950".
     await page.goto(show('y2026'));
 
-    await page.setViewportSize({ width: 1280, height: 757 });
+    await page.setViewportSize({ width: 1280, height: 923 });
     expect(await reservedLanes(page, 2)).toBe(3);
     expect(await rowsOverflow(page)).toBeLessThanOrEqual(0);
 
-    await page.setViewportSize({ width: 1280, height: 756 });
+    await page.setViewportSize({ width: 1280, height: 922 });
     expect(await reservedLanes(page, 2)).toBe(2);
     expect(await rowsOverflow(page)).toBeLessThanOrEqual(0);
   });
@@ -2675,7 +2677,7 @@ test.describe('BigYearRibbon', () => {
     const quiet = page.locator('.rrow').nth(1).locator('.pills');
     await expect(page.locator('.rrow').nth(0).locator('.pill')).toHaveCount(3);
 
-    await page.setViewportSize({ width: 1280, height: 758 });
+    await page.setViewportSize({ width: 1280, height: 924 });
 
     // The premise of the whole method, and it needs stating because it is one
     // CSS declaration away from being false: `.pills` is the lane strip, so its

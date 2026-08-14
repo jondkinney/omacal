@@ -269,7 +269,7 @@
      them: `.dlabel` sizes itself by `--date-band` and `.pills` clears it by
      exactly the same value, so the date and lane 0 cannot drift apart. */
   .rrow { flex: 1; display: grid; border-top: 1px solid var(--hairline);
-          --date-band: 11px; --lane-h: 11px; --lane-gap: 1px; }
+          --date-band: 14px; --lane-h: 14px; --lane-gap: 1px; }
   .rrow:first-child { border-top: 0; }
   .rdays, .pills { grid-area: 1 / 1; }
 
@@ -303,27 +303,29 @@
      pill strip, it is one box holding a date band and the lanes, so every
      number below moved.
 
-     Fourteen rows reserving three lanes need 657px of `.rows`. A row is 46px —
-     11px of date band plus a 35px lane strip (3 × 11px and two 1px gaps) — with
-     a 1px top border on all but the first: 13 × 47 + 46 = 657. Around that sit
-     the legend at 21px, this element's 8px of gap and padding, and App's 63px:
-     63 + 4 + 657 + 8 + 21 + 4 = 757. Measured by stepping the viewport a pixel
-     at a time against `.rows`'s own overflow: 757 is the first height that fits
-     and 756 overflows by exactly 1px. Two lanes fit from 589px, and at 720p
-     three lanes overflow by 37px — which is why the reservation below 757 is
-     still two.
+     Fourteen rows reserving three lanes need 825px of `.rows`. A row is 58px —
+     14px of date band plus a 44px lane strip (3 × 14px and two 1px gaps) — with
+     a 1px top border on all but the first: 13 × 59 + 58 = 825. Around that sit
+     the legend at 19px, this element's 8px of gap and padding, and App's 63px:
+     63 + 4 + 825 + 8 + 19 + 4 = 923. Measured by stepping the viewport a pixel
+     at a time against `.rows`'s own overflow: 923 is the first height that
+     fits, in both engines, and the arithmetic lands on the same number. Two
+     lanes fit from 713px, and at 720p three lanes overflow by 205px — which is
+     why the reservation below 923 is still two.
 
-     Overlaying the two strips bought height back even though the lanes grew
-     from 10px to 11px: the date used to hold a 15px strip of its own that
-     nothing else could use, and now holds an 11px band inside a box the pills
-     share. Three lanes went from 771px to 757px and two from 617px to 589px.
+     The 14px lanes are the 2026-08-14 readability pass (11px before it, and
+     8px pill text read as decoration). What that spent: §4's one-screen
+     promise at 720p now survives on 5px — two-lane rows need 615px of the
+     620 the default viewport leaves `.rows` — so any future lane growth must
+     re-check "all fourteen rows fit on one screen" before anything else.
 
-     Do not read the 21px legend as a constant. It is one line of legend, which
-     is what a handful of calendars comes to; a wrapped second line costs 23px
-     (measured), and at 757 exactly that scrolls. No fixed threshold can prevent
-     that — a third line would cost 23px again — so the measured one-line height
-     is what this uses, and a taller legend does what it already does today:
-     `.rows` scrolls, which is what its `overflow-y` is for. */
+     Do not read the 19px legend as a constant. It is one line of legend, which
+     is what a handful of calendars comes to; a wrapped second line costs about
+     as much again, and at 923 exactly that scrolls. No fixed threshold can
+     prevent that — a third line would cost the same again — so the measured
+     one-line height is what this uses, and a taller legend does what it
+     already does today: `.rows` scrolls, which is what its `overflow-y` is
+     for. */
   .pills { display: grid; grid-template-columns: repeat(28, 1fr);
            --lanes: 2;
            grid-template-rows: repeat(var(--lanes), var(--lane-h));
@@ -355,7 +357,7 @@
               in a row with no pills at all would pass either way. */
            pointer-events: none; }
   .pill, .more { pointer-events: auto; }
-  @media (min-height: 757px) { .pills { --lanes: 3; } }
+  @media (min-height: 923px) { .pills { --lanes: 3; } }
 
   /* Solid, not a 16% wash. Fourteen rows of pastel smudge is what the ribbon
      read as; a bar of the calendar's actual colour is what makes the year
@@ -383,7 +385,7 @@
      track, so its content box is the lane height and one line box fills it. */
   .pill { appearance: none; -webkit-appearance: none; font: inherit;
           text-align: left; cursor: pointer; border: 0;
-          font-size: 9px; line-height: var(--lane-h);
+          font-size: 10.5px; line-height: var(--lane-h);
           border-radius: 999px; padding: 0 5px; white-space: nowrap;
           overflow: hidden; text-overflow: ellipsis; margin: 0 1px;
           background: var(--cal); color: var(--ink); }
@@ -416,7 +418,7 @@
   .pill.lit { filter: brightness(1.35);
               box-shadow: inset 0 0 0 1px var(--ink); }
 
-  .more { font-size: 9px; color: var(--muted); opacity: .8; }
+  .more { font-size: 10px; color: var(--muted); opacity: .8; }
 
   /* The full-height box now, not a strip under the pills: it stretches to the
      grid cell it shares with `.pills`, so a day cell is as tall as its row and
@@ -429,7 +431,7 @@
      the rest of the box is where the events go. */
   .rday { display: flex; flex-direction: column; align-items: center;
           justify-content: flex-start;
-          min-width: 0; position: relative; font-size: 9.5px; color: var(--text);
+          min-width: 0; position: relative; font-size: 10.5px; color: var(--text);
           font-variant-numeric: tabular-nums; border-left: 1px solid var(--hairline); }
   .rday:first-child { border-left: 0; }
   .rday.wknd { background: color-mix(in srgb, var(--muted) 8%, transparent); }
@@ -456,7 +458,7 @@
   .dlabel { display: flex; align-items: center; gap: 2px;
             height: var(--date-band); line-height: var(--date-band);
             position: relative; z-index: 1; }
-  .mchip { font-size: 7px; font-weight: 600;
+  .mchip { font-size: 8px; font-weight: 600;
            color: var(--accent); letter-spacing: .02em; }
 
   .legend { display: flex; flex-wrap: wrap; gap: 10px 16px; padding: 4px; }

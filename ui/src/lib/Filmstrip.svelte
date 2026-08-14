@@ -100,7 +100,7 @@
   /* Sticky, so the day a row belongs to is still named after scrolling past its
      heading — the one thing a list loses that a grid gives for free. */
   .sdate { position: sticky; top: 0; z-index: 1; margin: 0 0 4px;
-           font-size: 10px; font-weight: 600; color: var(--muted);
+           font-size: 11px; font-weight: 600; color: var(--muted);
            letter-spacing: .05em; text-transform: uppercase;
            background: var(--bg); padding: 2px 0; }
 
@@ -116,17 +116,17 @@
   /* Tabular figures so the times form a column the eye can run down, and a
      fixed width so a title never starts at a different x from the row above
      it. Wide enough for `09:00–09:30`; `All day` sits in the same box. */
-  .when { font-style: normal; flex: none; width: 84px;
-          font-size: 10.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .when { font-style: normal; flex: none; width: 92px;
+          font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
   .srow.allday .when { color: color-mix(in srgb, var(--cal) 60%, var(--muted)); }
 
-  .srow b { flex: 1 1 auto; min-width: 0; font-size: 11.5px; font-weight: 500;
+  .srow b { flex: 1 1 auto; min-width: 0; font-size: 12.5px; font-weight: 500;
             letter-spacing: -.01em; white-space: nowrap; overflow: hidden;
             text-overflow: ellipsis; }
 
-  .where { font-style: normal; flex: 0 1 auto; min-width: 0; font-size: 10px;
+  .where { font-style: normal; flex: 0 1 auto; min-width: 0; font-size: 11px;
            color: var(--muted); white-space: nowrap; overflow: hidden;
            text-overflow: ellipsis; }
 
-  .none { font-size: 11.5px; color: var(--muted); margin: 0; padding: 10px 2px; }
+  .none { font-size: 12.5px; color: var(--muted); margin: 0; padding: 10px 2px; }
 </style>
