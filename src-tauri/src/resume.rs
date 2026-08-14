@@ -25,6 +25,14 @@
 /// that failed to deserialize, and it reads as sleep on purpose: the
 /// signal's content is whatever the bus delivered, and a malformed message
 /// must never be able to conjure network traffic.
+///
+/// Not `#[cfg(target_os = "linux")]`, though its only caller is: gating the
+/// function would gate its test with it, and this is the pure half — the one
+/// piece of this module that *can* be checked on a Mac. Marked instead as
+/// allowed to be unused off Linux, which is what makes `cargo clippy
+/// --workspace -- -D warnings` — the CI gate — runnable on the machine most
+/// of this app is written on.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 pub(crate) fn is_resume(body: Option<bool>) -> bool {
     body == Some(false)
 }
