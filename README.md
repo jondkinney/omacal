@@ -24,6 +24,23 @@ while our verification review is pending (Advanced → Continue past it), and
 the token lands in your keyring, so a minimal Hyprland session needs
 gnome-keyring, KeePassXC or kwallet running.
 
+## Bring your own Google credentials
+
+You don't have to use our OAuth client at all. Create a free Google Cloud
+project with the Calendar API and a Desktop OAuth client, and put the pair in
+`~/.config/omacal/config.toml`:
+
+    client_id = "YOUR_ID.apps.googleusercontent.com"
+    client_secret = "..."
+
+A present config file **always wins** over the shipped credentials — the
+precedence is pinned by tests — so sign-in then runs under your own client,
+on your own quota, with us entirely out of the loop. Either way the token
+only ever lands in your keyring and your calendar data stays in a local
+database: there are no servers behind this app. Setup walkthrough:
+[`docs/running-on-macos.md`](docs/running-on-macos.md) (the Cloud-project
+steps are the same on Linux).
+
 ## Building from source
 
     npm --prefix ui install               # once, after cloning
