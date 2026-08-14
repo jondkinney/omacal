@@ -14,6 +14,10 @@ pub struct AppStatus {
     /// prompt — which is why this is emails rather than a count: "an account
     /// needs attention" with two accounts connected is a guessing game.
     pub needs_reauth: Vec<String>,
+    /// A newer published release, when the daily check has found one — the
+    /// header turns it into a quiet notice. `None` means current, unchecked,
+    /// or demo; the UI has no reason to tell those apart.
+    pub update: Option<crate::update::UpdateNotice>,
     pub last_sync_ms: Option<i64>,
     /// True when the app is running on synthetic data, so the UI can say so.
     pub demo: bool,
@@ -49,6 +53,7 @@ pub async fn read_status(
     demo: bool,
     overlay_titlebar: bool,
     needs_reauth: Vec<String>,
+    update: Option<crate::update::UpdateNotice>,
 ) -> anyhow::Result<AppStatus> {
     let accounts: Vec<String> =
         sqlx::query_scalar("SELECT email FROM accounts ORDER BY id")
@@ -58,6 +63,7 @@ pub async fn read_status(
     Ok(AppStatus {
         accounts,
         needs_reauth,
+        update,
         last_sync_ms: last_sync_ms(pool).await?,
         demo,
         overlay_titlebar,
@@ -108,7 +114,7 @@ mod tests {
     #[tokio::test]
     async fn status_reports_no_accounts_on_a_fresh_database() {
         let pool = omacal_store::connect_memory().await.unwrap();
-        let s = read_status(&pool, false, false, vec![]).await.unwrap();
+        let s = read_status(&pool, false, false, vec![], None).await.unwrap();
         assert!(s.accounts.is_empty());
         assert_eq!(s.last_sync_ms, None);
         assert!(!s.demo);
@@ -117,7 +123,7 @@ mod tests {
     #[tokio::test]
     async fn status_lists_connected_accounts_by_email() {
         let pool = pool_with_account().await;
-        let s = read_status(&pool, false, false, vec![]).await.unwrap();
+        let s = read_status(&pool, false, false, vec![], None).await.unwrap();
         assert_eq!(s.accounts, vec!["me@x.com".to_string()]);
     }
 
@@ -125,7 +131,7 @@ mod tests {
     async fn recording_a_sync_round_trips() {
         let pool = pool_with_account().await;
         record_sync(&pool, 1_785_715_200_000).await.unwrap();
-        let s = read_status(&pool, false, false, vec![]).await.unwrap();
+        let s = read_status(&pool, false, false, vec![], None).await.unwrap();
         assert_eq!(s.last_sync_ms, Some(1_785_715_200_000));
     }
 
@@ -134,7 +140,7 @@ mod tests {
         let pool = pool_with_account().await;
         record_sync(&pool, 1_000).await.unwrap();
         record_sync(&pool, 2_000).await.unwrap();
-        let s = read_status(&pool, false, false, vec![]).await.unwrap();
+        let s = read_status(&pool, false, false, vec![], None).await.unwrap();
         assert_eq!(s.last_sync_ms, Some(2_000));
     }
 
@@ -145,11 +151,30 @@ mod tests {
     async fn status_surfaces_the_accounts_needing_reconnection() {
         let pool = pool_with_account().await;
 
-        let s = read_status(&pool, false, false, vec!["me@x.com".into()]).await.unwrap();
+        let s = read_status(&pool, false, false, vec!["me@x.com".into()], None).await.unwrap();
         assert_eq!(s.needs_reauth, vec!["me@x.com".to_string()]);
 
-        let none = read_status(&pool, false, false, vec![]).await.unwrap();
+        let none = read_status(&pool, false, false, vec![], None).await.unwrap();
         assert!(none.needs_reauth.is_empty(), "a healthy account was told to reconnect");
+    }
+
+    /// The update notice rides through whole — version and URL — because the
+    /// header renders one and the open command needs the other.
+    #[tokio::test]
+    async fn status_surfaces_a_newer_release() {
+        let pool = pool_with_account().await;
+
+        let n = crate::update::UpdateNotice {
+            version: "0.2.0".into(),
+            url: "https://github.com/x3me/omacal/releases/tag/v0.2.0".into(),
+        };
+        let s = read_status(&pool, false, false, vec![], Some(n)).await.unwrap();
+        let got = s.update.expect("the notice was dropped on the way to the UI");
+        assert_eq!(got.version, "0.2.0");
+        assert!(got.url.ends_with("v0.2.0"));
+
+        let current = read_status(&pool, false, false, vec![], None).await.unwrap();
+        assert!(current.update.is_none(), "a current install was told to update");
     }
 
     /// Both flags at once, and crossed: `demo` and `overlay_titlebar` are
@@ -160,11 +185,11 @@ mod tests {
     async fn the_demo_and_overlay_flags_are_surfaced_independently() {
         let pool = omacal_store::connect_memory().await.unwrap();
 
-        let demo_only = read_status(&pool, true, false, vec![]).await.unwrap();
+        let demo_only = read_status(&pool, true, false, vec![], None).await.unwrap();
         assert!(demo_only.demo, "the demo badge would never appear");
         assert!(!demo_only.overlay_titlebar, "demo leaked into the titlebar flag");
 
-        let overlay_only = read_status(&pool, false, true, vec![]).await.unwrap();
+        let overlay_only = read_status(&pool, false, true, vec![], None).await.unwrap();
         assert!(overlay_only.overlay_titlebar, "the header would never clear the traffic lights");
         assert!(!overlay_only.demo, "the titlebar flag leaked into the demo badge");
     }

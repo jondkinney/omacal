@@ -294,18 +294,22 @@ const noop = () => {};
 // filmstrip toggle renders in all of these — deliberately, since a header
 // fixture that hid a control the real header shows would be describing a header
 // nobody has.
-// `needs_reauth` is defaulted here rather than restated in every fixture:
-// the field arrived long after this block, and an account needing re-consent
-// is one fixture's story, not thirty fixtures' boilerplate.
+// `needs_reauth` and `update` are defaulted here rather than restated in
+// every fixture: both fields arrived long after this block, and an account
+// needing re-consent or a pending update is one fixture's story each, not
+// thirty fixtures' boilerplate.
 const header = (
-  status: Omit<AppStatus, 'needs_reauth'> & { needs_reauth?: string[] },
+  status: Omit<AppStatus, 'needs_reauth' | 'update'> & {
+    needs_reauth?: string[];
+    update?: AppStatus['update'];
+  },
   busy = false,
 ) => ({
-  status: { needs_reauth: [], ...status } as AppStatus,
+  status: { needs_reauth: [], update: null, ...status } as AppStatus,
   anchorMs: MON, weekStartMs: MON, busy, error: null as string | null, calendars: [] as Calendar[],
   view: 'week' as View, onpick: noop, listMode: false, onToggleList: noop,
   onPrev: noop, onNext: noop, onToday: noop, onSearch: noop, onSignIn: noop, onSync: noop,
-  oncalendarchange: noop,
+  oncalendarchange: noop, onWhatsNew: noop,
 });
 
 /** Exactly five minutes before `FIXED_NOW`, so a frozen clock always reads "5 min ago". */
@@ -1811,6 +1815,12 @@ export const FIXTURES: Record<string, Record<string, any>> = {
               summary: 'Holidays in Bulgaria', access_role: 'reader' }),
       ],
     },
+    // A newer release exists. Healthy account, working sync — the notice is
+    // the only thing different, which is what lets a spec pin its calm.
+    update: header({
+      accounts: ['me@x.com'], last_sync_ms: FIVE_MIN_AGO, demo: false, overlay_titlebar: false,
+      update: { version: '0.2.0', url: 'https://github.com/x3me/omacal/releases/tag/v0.2.0' },
+    }),
     // An account the backend has stopped syncing: still in `accounts` (it is
     // connected; its data is just going stale), also in `needs_reauth`.
     reauth: header({

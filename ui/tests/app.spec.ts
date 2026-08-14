@@ -111,6 +111,21 @@ test.describe('App', () => {
     expect(signIns).toBe(1);
   });
 
+  // The update notice's one action goes through the backend: no URL crosses
+  // from the webview, the command opens the page the daily check fetched.
+  test("What's new asks the backend to open the release page", async ({ page }) => {
+    await page.goto(app('update-available'));
+    const banner = page.getByTestId('update-banner');
+    await expect(banner).toContainText('OmaCal 0.2.0 is available');
+
+    await banner.getByRole('button', { name: "What's new" }).click();
+    const calls = await page.evaluate(() =>
+      window.__harness.calls.filter((c) => c.cmd === 'open_latest_release'));
+    expect(calls).toHaveLength(1);
+    // No argument at all — the URL is the backend's to choose.
+    expect(calls[0].args).toEqual({});
+  });
+
   // D2, the other half: the label has to keep counting on its own. It used to
   // recompute only when `status` changed — that is, only when a sync
   // succeeded — so it froze at its last value exactly when sync stopped.

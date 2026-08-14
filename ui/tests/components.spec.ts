@@ -685,6 +685,25 @@ test.describe('Header', () => {
     await expect(page.getByTestId('reauth-banner')).toHaveCount(0);
   });
 
+  /** The update notice: present when status carries one, absent otherwise
+   *  (the absence over `connected` is what pins the field as the gate), calm
+   *  rather than alarming (not `.err` — teaching users to ignore red is the
+   *  one thing a status surface must not do), and dismissible for the
+   *  session. */
+  test('a newer release is offered quietly, and can be waved away', async ({ page }) => {
+    await page.goto(show('Header', 'update'));
+    const banner = page.getByTestId('update-banner');
+    await expect(banner).toContainText('OmaCal 0.2.0 is available');
+    await expect(banner).not.toHaveClass(/\berr\b/);
+    await expect(banner.getByRole('button', { name: "What's new" })).toBeEnabled();
+
+    await banner.getByRole('button', { name: 'Dismiss update notice' }).click();
+    await expect(page.getByTestId('update-banner')).toHaveCount(0);
+
+    await page.goto(show('Header', 'connected'));
+    await expect(page.getByTestId('update-banner')).toHaveCount(0);
+  });
+
   /** §1: the three rare controls are gone from the header itself. Asserted as
    *  an absence *before* the menu is opened, which is the half that says they
    *  moved rather than merely that they exist somewhere. */

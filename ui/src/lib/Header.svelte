@@ -13,6 +13,7 @@
     onsettingschange,
     listMode, onToggleList,
     onPrev, onNext, onToday, onSearch, onSignIn, onSync, oncalendarchange,
+    onWhatsNew,
     open = $bindable(false),
   }: {
     status: AppStatus | null;
@@ -43,6 +44,10 @@
     /** Passed straight through to `SettingsModal` — see its own comment. */
     onsettingschange?: (s: import('./settings').AppSettings) => void;
     onSignIn: () => void; onSync: () => void; oncalendarchange: () => void;
+    /** Opens the latest release's page — the update notice's one action.
+     *  Passed in like every other invoke, so this component stays free of
+     *  Tauri imports. */
+    onWhatsNew: () => void;
     /** Bound through to `CalendarPopover` — lets `App` open the picker
      *  straight after a sign-in, from outside the popover's own trigger. */
     open?: boolean;
@@ -75,6 +80,11 @@
    *  them and re-consent is the only fix, so this is the one failure with a
    *  button on it. */
   const reauth = $derived(status?.needs_reauth ?? []);
+  /** The newer release, if the backend's daily check found one. */
+  const update = $derived(status?.update ?? null);
+  /** Dismissal is session-local on purpose: the notice returns on the next
+   *  launch, which is the gentlest cadence that still eventually lands. */
+  let updateDismissed = $state(false);
 
   // "Synced 4 min ago" is a function of the clock, so it has to be told the
   // clock moved. Without this it only ever recomputes when `status` changes —
@@ -333,6 +343,21 @@
   </p>
 {/if}
 
+<!-- Not an error and not styled as one: nothing is wrong, the calendar
+     works, and a red banner for "a new version exists" would teach users to
+     ignore red. Below the reauth banner because a broken sign-in outranks an
+     available update in every sense a user cares about. -->
+{#if update && !updateDismissed}
+  <p class="notice" data-testid="update-banner">
+    <span>OmaCal {update.version} is available. Re-run the install command to update.</span>
+    <span class="notice-actions">
+      <button onclick={onWhatsNew}>What's new</button>
+      <button aria-label="Dismiss update notice" title="Dismiss"
+              onclick={() => (updateDismissed = true)}>×</button>
+    </span>
+  </p>
+{/if}
+
 <style>
   /* `padding-top`, moved here out of `App`'s `main` — see the comment there
      for why it is layout-neutral. A drag region covers its own box and
@@ -421,4 +446,17 @@
             gap: 12px; flex-wrap: wrap; }
   .reauth button { border: none; border-radius: 6px; padding: 5px 12px;
                    font-size: 11.5px; cursor: pointer; }
+  /* The .err shape in the accent's clothes: same box, calmer colours,
+     because this banner reports an option rather than a problem. */
+  .notice { color: var(--text); font-size: 11.5px; line-height: 1.45;
+            margin: 0 0 12px; padding: 7px 10px; border-radius: 6px;
+            background: color-mix(in srgb, var(--accent) 9%, transparent);
+            display: flex; align-items: center; justify-content: space-between;
+            gap: 12px; flex-wrap: wrap; }
+  .notice-actions { display: flex; gap: 6px; }
+  .notice button { border: none; border-radius: 6px; padding: 5px 12px;
+                   font-size: 11.5px; cursor: pointer;
+                   background: color-mix(in srgb, var(--accent) 18%, transparent);
+                   color: var(--text); }
+  .notice button:hover { background: color-mix(in srgb, var(--accent) 28%, transparent); }
 </style>

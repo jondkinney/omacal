@@ -18,6 +18,7 @@ mod sync_loop;
 mod theme;
 mod theme_watch;
 mod tray;
+mod update;
 mod write;
 
 use sqlx::SqlitePool;
@@ -60,6 +61,12 @@ pub struct AppState {
     /// A `BTreeSet` so `get_status` reports a stable order; a blocking mutex
     /// because no holder crosses an await.
     pub reauth: std::sync::Mutex<std::collections::BTreeSet<String>>,
+    /// A newer published release, once the daily check has found one —
+    /// `None` until then. Set by `update::spawn`, carried to the UI on
+    /// `get_status`, and read back by `open_latest_release` for the URL to
+    /// open. In memory only: on relaunch the first check re-learns it in one
+    /// request, same reasoning as `reauth`.
+    pub update: std::sync::Mutex<Option<update::UpdateNotice>>,
 }
 
 /// The title bar style the shipped `tauri.conf.json` actually asked for.
@@ -87,7 +94,8 @@ async fn get_status(
     );
     let needs_reauth: Vec<String> =
         state.reauth.lock().expect("reauth mark poisoned").iter().cloned().collect();
-    status::read_status(&state.pool, state.demo, overlay, needs_reauth)
+    let update = state.update.lock().expect("update notice poisoned").clone();
+    status::read_status(&state.pool, state.demo, overlay, needs_reauth, update)
         .await
         .map_err(|e| e.to_string())
 }
@@ -852,9 +860,15 @@ pub fn run() {
                 let _ = w.set_decorations(false);
             }
 
-            app.manage(AppState { pool, demo, tokens: Default::default(), reauth: Default::default() });
+            app.manage(AppState {
+                pool, demo,
+                tokens: Default::default(),
+                reauth: Default::default(),
+                update: Default::default(),
+            });
             sync_loop::spawn(app.handle().clone());
             theme_watch::spawn(app.handle().clone());
+            update::spawn(app.handle().clone());
 
             // The tray is the only way to quit, since closing the window hides
             // it. A failure here is logged rather than fatal: an app that
@@ -909,6 +923,7 @@ pub fn run() {
             get_status,
             sign_in,
             sync_now,
+            update::open_latest_release,
             calendars::get_calendars,
             calendars::set_calendar_selected,
             calendars::set_calendar_sync,

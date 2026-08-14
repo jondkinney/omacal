@@ -6,7 +6,7 @@
     getWeek, getDay, getMonth, getYear, getBigYear, weekStart,
     type WeekPayload, type MonthPayload, type YearPayload, type BigYearPayload, type UiEvent,
   } from './lib/api';
-  import { getStatus, signIn, syncNow, type AppStatus } from './lib/status';
+  import { getStatus, openLatestRelease, signIn, syncNow, type AppStatus } from './lib/status';
   import { getCalendars, offerableCalendarId, type Calendar } from './lib/calendars';
   import {
     createEvent, deleteEvent, getEventDetail, updateEvent,
@@ -960,6 +960,7 @@
     onSearch={() => (searchOpen = true)}
     onsettingschange={(s) => (defaultCalendarId = s.defaultCalendarId)}
     onSignIn={handleSignIn}
+    onWhatsNew={() => { void openLatestRelease(); }}
     onSync={handleSync}
     oncalendarchange={handleCalendarChange}
     onpick={pick}

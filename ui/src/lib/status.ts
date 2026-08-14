@@ -7,6 +7,10 @@ export type AppStatus = {
    *  again is the only fix. Emails rather than a count, because "an account
    *  needs attention" with two connected is a guessing game. */
   needs_reauth: string[];
+  /** A newer published release, when the backend's daily check found one —
+   *  the header shows a quiet notice for it. Null means current, unchecked,
+   *  or demo; the UI has no reason to tell those apart. */
+  update: { version: string; url: string } | null;
   last_sync_ms: number | null;
   demo: boolean;
   /** True when the window's controls are drawn over the webview instead of in
@@ -26,6 +30,10 @@ export type AppStatus = {
 export const getStatus = () => invoke<AppStatus>('get_status');
 export const signIn = () => invoke<string>('sign_in');
 export const syncNow = () => invoke<number>('sync_now');
+/** Opens the latest release's page in the system browser. No argument on
+ *  purpose: the backend opens the URL *it* fetched, so the webview never
+ *  chooses what the browser is pointed at. */
+export const openLatestRelease = () => invoke<void>('open_latest_release');
 
 /**
  * What the header's status light is showing.

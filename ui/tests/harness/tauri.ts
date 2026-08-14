@@ -319,14 +319,21 @@ function statusFor(scenario: string): AppStatus {
     // picker opens after either.
     case 'sign-in-adds-account':
       return {
-        accounts: [], needs_reauth: [], last_sync_ms: null, demo: false,
+        accounts: [], needs_reauth: [], update: null, last_sync_ms: null, demo: false,
         overlay_titlebar: false,
+      };
+    // A newer release, as the daily check would have left it on AppState.
+    case 'update-available':
+      return {
+        accounts: ['me@x.com'], needs_reauth: [],
+        update: { version: '0.2.0', url: 'https://github.com/x3me/omacal/releases/tag/v0.2.0' },
+        last_sync_ms: APP_FIVE_MIN_AGO, demo: false, overlay_titlebar: false,
       };
     // A connected account the backend has stopped syncing: a dead refresh
     // token, discovered by a sync, waiting on a re-consent.
     case 'needs-reauth':
       return {
-        accounts: ['me@x.com'], needs_reauth: ['me@x.com'],
+        accounts: ['me@x.com'], needs_reauth: ['me@x.com'], update: null,
         last_sync_ms: APP_FIVE_MIN_AGO, demo: false, overlay_titlebar: false,
       };
     // A macOS window whose controls are drawn over the webview. The default
@@ -335,12 +342,12 @@ function statusFor(scenario: string): AppStatus {
     // since none of them is about the title bar.
     case 'overlay-titlebar':
       return {
-        accounts: ['me@x.com'], needs_reauth: [], last_sync_ms: APP_FIVE_MIN_AGO,
+        accounts: ['me@x.com'], needs_reauth: [], update: null, last_sync_ms: APP_FIVE_MIN_AGO,
         demo: false, overlay_titlebar: true,
       };
     default:
       return {
-        accounts: ['me@x.com'], needs_reauth: [], last_sync_ms: APP_FIVE_MIN_AGO,
+        accounts: ['me@x.com'], needs_reauth: [], update: null, last_sync_ms: APP_FIVE_MIN_AGO,
         demo: false, overlay_titlebar: false,
       };
   }
@@ -592,6 +599,10 @@ export function installTauriStub(scenario: string): Harness {
       }
       case 'get_palette':
         return PALETTE;
+      // Recorded in `calls` like everything else; the real one opens a
+      // browser, which a test can only assert was *asked for*.
+      case 'open_latest_release':
+        return null;
       case 'get_status':
         return status;
       case 'get_week':

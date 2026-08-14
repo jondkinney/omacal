@@ -32,6 +32,7 @@ tracing.workspace = true
 omacal-core = { version = "0.1.0", path = "../crates/omacal-core" }
 omacal-store = { version = "0.1.0", path = "../crates/omacal-store" }
 omacal-google = { version = "0.1.0", path = "../crates/omacal-google" }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 omacal-sync = { version = "0.1.0", path = "../crates/omacal-sync" }
 jiff = "0.2.35"
 keyring = "4.1.6"
