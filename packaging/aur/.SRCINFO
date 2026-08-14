@@ -14,7 +14,7 @@ pkgbase = omacal
 	options = !debug
 	source = omacal-0.1.4.deb::https://github.com/x3me/omacal/releases/download/v0.1.4/omacal_0.1.4_amd64.deb
 	source = LICENSE-0.1.4::https://raw.githubusercontent.com/x3me/omacal/v0.1.4/LICENSE
-	sha256sums = f225249d858dd1d6253f0fa756b0d33561ef66a3f4f2e3b7dd3b047fd7d0f4ed
+	sha256sums = 58ae7d863d9e1bdf653cba230479ff6b36552bcbf43553312dab04688afd693c
 	sha256sums = 6d6c6bf89ad055436e423034485b18882a00ce3a1aa0464a3377d2f0c6d9f622
 
 pkgname = omacal
