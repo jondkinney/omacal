@@ -80,6 +80,18 @@ jobs:
           image=$(ls *.AppImage)
           ./"$image" --appimage-extract >/dev/null
           rm -v squashfs-root/usr/lib/libwayland-*
+          # The GTK hook forces GDK_BACKEND=x11, guarding a WebKit-on-Wayland
+          # crash (tauri#8541) that in this AppImage was the bundled libwayland
+          # removed one line up. XWayland is not free either: under Hyprland's
+          # xwayland:force_zero_scaling with a session GDK_SCALE, the app
+          # renders at the wrong size (160% on the reference Omarchy laptop).
+          # Native Wayland sizes correctly whatever GDK_SCALE says.
+          sed -i 's/^export GDK_BACKEND=x11.*/# GDK_BACKEND left alone: the Wayland crash this guarded was the bundled libwayland this workflow strips./' \
+            squashfs-root/apprun-hooks/linuxdeploy-plugin-gtk.sh
+          if grep -q '^export GDK_BACKEND=x11' squashfs-root/apprun-hooks/*.sh; then
+            echo "the x11 forcing survived" >&2
+            exit 1
+          fi
           curl -fsSL -o appimagetool \
             https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x appimagetool
