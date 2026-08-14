@@ -477,6 +477,11 @@
     return at.getTime();
   }
 
+  /** Where a right button went down, or `null`. The release decides whether
+   *  it was a click (create here) or a drag (nothing) — see the `.newhere`
+   *  handlers. */
+  let rightPress: { x: number; y: number } | null = null;
+
   function startCreate(day: { start_ms: number; end_ms: number }, e: MouseEvent) {
     // The `click` the browser dispatches after a sweep's `pointerup` is not a
     // click on empty grid — it is the tail of a gesture that has already asked
@@ -774,14 +779,26 @@
         aria-label="New event"
         tabindex="-1"
         onclick={(e) => startCreate(day, e)}
-        onpointerdown={(e) => startSweep(day, e)}
-        oncontextmenu={(e) => {
-          // Right-click is the other spelling of "new event here" — the
-          // gesture every desktop calendar answers — and it must not also
-          // summon the browser menu the app-level handler suppresses.
-          e.preventDefault();
-          startCreate(day, e);
+        onpointerdown={(e) => {
+          // Right-click is the other spelling of "new event here" — but not
+          // right-DRAG, which "a right-button drag over empty grid sweeps
+          // nothing" pins: a create cannot ride `contextmenu`, which fires at
+          // the press, before the gesture has a shape. So the press is only
+          // remembered here, and the release below decides — the same
+          // threshold discipline the left button's click/sweep split uses.
+          if (e.button === 2) {
+            rightPress = { x: e.clientX, y: e.clientY };
+            return;
+          }
+          startSweep(day, e);
         }}
+        onpointerup={(e) => {
+          if (e.button !== 2 || !rightPress) return;
+          const still = !beganDrag(e.clientX - rightPress.x, e.clientY - rightPress.y);
+          rightPress = null;
+          if (still) startCreate(day, e);
+        }}
+        oncontextmenu={(e) => e.preventDefault()}
       ></button>
 
       {#each HOURS as h}
