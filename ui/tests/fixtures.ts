@@ -299,13 +299,17 @@ const noop = () => {};
 // needing re-consent or a pending update is one fixture's story each, not
 // thirty fixtures' boilerplate.
 const header = (
-  status: Omit<AppStatus, 'needs_reauth' | 'update'> & {
+  status: Omit<AppStatus, 'needs_reauth' | 'update' | 'version'> & {
     needs_reauth?: string[];
     update?: AppStatus['update'];
+    version?: string;
   },
   busy = false,
 ) => ({
-  status: { needs_reauth: [], update: null, ...status } as AppStatus,
+  // '9.9.9' rather than the real version: a spec asserting the footer must
+  // fail when the wiring breaks, not ride along on a hardcoded string that
+  // happens to match the build.
+  status: { needs_reauth: [], update: null, version: '9.9.9', ...status } as AppStatus,
   anchorMs: MON, weekStartMs: MON, busy, error: null as string | null, calendars: [] as Calendar[],
   view: 'week' as View, onpick: noop, listMode: false, onToggleList: noop,
   onPrev: noop, onNext: noop, onToday: noop, onSearch: noop, onSignIn: noop, onSync: noop,

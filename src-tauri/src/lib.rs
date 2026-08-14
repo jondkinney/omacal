@@ -95,7 +95,8 @@ async fn get_status(
     let needs_reauth: Vec<String> =
         state.reauth.lock().expect("reauth mark poisoned").iter().cloned().collect();
     let update = state.update.lock().expect("update notice poisoned").clone();
-    status::read_status(&state.pool, state.demo, overlay, needs_reauth, update)
+    let version = app.package_info().version.to_string();
+    status::read_status(&state.pool, state.demo, overlay, needs_reauth, update, version)
         .await
         .map_err(|e| e.to_string())
 }

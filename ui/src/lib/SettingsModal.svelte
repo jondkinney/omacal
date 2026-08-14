@@ -13,6 +13,7 @@
 
   let {
     accounts,
+    version = '',
     busy,
     calendars,
     onclose,
@@ -23,6 +24,11 @@
     /** The connected accounts, from `AppStatus`. Read only — this modal adds
      *  one through `onSignIn` and cannot remove one, because nothing can yet. */
     accounts: string[];
+    /** The running build's version, from `AppStatus` — the one place the app
+     *  says what it is, which a bug report and the update notice both need
+     *  the user able to find. Empty until status lands; the footer hides
+     *  rather than claim "OmaCal " and nothing. */
+    version?: string;
     busy: boolean;
     /** Every calendar the app knows about, handed straight to `CalendarList` —
      *  the same rows the header's popover shows, from the same component. */
@@ -398,10 +404,18 @@
     {#if note}
       <p class="note" class:err={note.kind === 'error'} data-testid="settings-note">{note.text}</p>
     {/if}
+
+    {#if version}
+      <p class="version" data-testid="app-version">OmaCal {version}</p>
+    {/if}
   </div>
 </div>
 
 <style>
+  /* A colophon, not a control: the quietest text in the modal, at the very
+     bottom, on every tab — where "what version am I on?" goes looking. */
+  .version { margin: 14px 0 0; font-size: 10.5px; color: var(--muted);
+             text-align: right; }
   .fallback { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
   .frow { display: flex; align-items: center; gap: 5px; font-size: 12px; }
   .frow input[type='number'] { width: 56px; }

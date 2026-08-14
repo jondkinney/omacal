@@ -11,6 +11,9 @@ export type AppStatus = {
    *  the header shows a quiet notice for it. Null means current, unchecked,
    *  or demo; the UI has no reason to tell those apart. */
   update: { version: string; url: string } | null;
+  /** The running build's own version, shown in Settings. Same source the
+   *  update check compares against, so the two can never disagree. */
+  version: string;
   last_sync_ms: number | null;
   demo: boolean;
   /** True when the window's controls are drawn over the webview instead of in

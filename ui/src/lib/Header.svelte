@@ -307,6 +307,7 @@
 {#if settingsOpen}
   <SettingsModal
     accounts={status?.accounts ?? []}
+    version={status?.version ?? ''}
     {busy}
     onclose={() => (settingsOpen = false)}
     {calendars}

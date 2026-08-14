@@ -735,6 +735,18 @@ test.describe('Header', () => {
     await expect(page.getByTestId('update-banner')).toHaveCount(0);
   });
 
+  /** The Settings colophon: the one place the app says what version it is —
+   *  which a bug report needs findable, and the update notice's "0.2.0 is
+   *  available" needs comparable against. '9.9.9' is the fixture default,
+   *  nothing a real build would carry, so this fails when the wiring breaks
+   *  rather than riding along on a hardcoded string. */
+  test('Settings names the running version', async ({ page }) => {
+    await page.goto(show('Header', 'connected'));
+    await openMenu(page);
+    await page.getByRole('button', { name: 'Settings…' }).click();
+    await expect(page.getByTestId('app-version')).toHaveText('OmaCal 9.9.9');
+  });
+
   /** §1: the three rare controls are gone from the header itself. Asserted as
    *  an absence *before* the menu is opened, which is the half that says they
    *  moved rather than merely that they exist somewhere. */
