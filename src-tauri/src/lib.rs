@@ -815,10 +815,16 @@ pub fn run() {
         // Closing the window only hides omacal (see `tray`), so "start it
         // again" used to mean a second full instance: two schedulers, two
         // tray icons, and every reminder twice. Now it means the running
-        // instance shows its window again, which is what launching an
-        // already-running app asks for.
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            tray::show_main_window(app);
+        // instance does what the argv asks — show the window on a bare
+        // launch, or the tray menu's other two actions via `--sync-now` and
+        // `--quit`, which is how a surface outside this process (the Omarchy
+        // bar widget) drives the app. See `tray::instance_action`.
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            match tray::instance_action(&argv) {
+                tray::TrayAction::Quit => app.exit(0),
+                tray::TrayAction::SyncNow => sync_loop::request_now(app),
+                tray::TrayAction::Open => tray::show_main_window(app),
+            }
         }))
         .plugin(tauri_plugin_opener::init())
         // Registered unconditionally; *enabling* it is what the demo guard
@@ -838,6 +844,22 @@ pub fn run() {
 
     builder
         .setup(|app| {
+            // The control flags are messages to a RUNNING instance (see
+            // `tray::instance_action`), and the single-instance plugin is the
+            // messenger: a second process delivers its argv during plugin
+            // init and never reaches here. Reaching `setup` with `--quit`
+            // therefore means there was nothing to quit — honour the intent
+            // by leaving before anything is built, rather than starting a
+            // whole calendar app in order to close it. Checked HERE and not
+            // at the top of `run`, where it once was: an early return there
+            // kills the messenger before it delivers, and `--quit` against a
+            // running app silently does nothing (found live, the hard way).
+            // `--sync-now` with nothing running falls through to a normal
+            // launch, which syncs on startup anyway.
+            if std::env::args().any(|a| a == "--quit") {
+                std::process::exit(0);
+            }
+
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
 
@@ -889,12 +911,20 @@ pub fn run() {
             #[cfg(target_os = "linux")]
             resume::spawn(app.handle().clone());
 
-            // The tray is the only way to quit, since closing the window hides
-            // it. A failure here is logged rather than fatal: an app that
-            // refuses to start because a system tray is unavailable is worse
-            // than one running without a tray icon.
+            // The tray is the default way to quit, since closing the window
+            // hides it. A failure here is logged rather than fatal: an app
+            // that refuses to start because a system tray is unavailable is
+            // worse than one running without a tray icon. Built even when the
+            // setting hides it — hidden-then-shown is one toggle, while
+            // never-built could not come back without a restart.
             if let Err(e) = tray::build(app.handle()) {
                 tracing::warn!(%e, "could not build the tray icon");
+            } else {
+                let settings =
+                    tauri::async_runtime::block_on(settings::read_settings(&app.state::<AppState>().pool));
+                if !settings.tray_icon {
+                    tray::set_visible(app.handle(), false);
+                }
             }
 
             // Start on login (§2.6) — never in demo mode.
@@ -951,6 +981,7 @@ pub fn run() {
             settings::get_settings,
             settings::set_sync_interval,
             settings::set_notifications_enabled,
+            settings::set_tray_icon,
             settings::set_list_mode,
             settings::set_fallback_reminders,
             settings::set_default_calendar,

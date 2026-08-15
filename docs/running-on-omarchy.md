@@ -39,6 +39,12 @@ something — with times, locations, headcounts, and a join button for events
 with a conferencing link. Install and usage:
 [`packaging/omarchy-plugin/README.md`](../packaging/omarchy-plugin/README.md).
 
+The widget's bar button is omacal's own mark, and its popup carries the
+tray menu's whole vocabulary — open, sync now, quit — over the app's
+single-instance flags (`omacal --sync-now`, `omacal --quit`). With the
+widget installed you can therefore turn the tray icon off (Settings →
+General) and keep a single omacal icon in the bar.
+
 It reads the feed omacal writes to `$XDG_STATE_HOME/omacal/upcoming.json`
 (default `~/.local/state/...`) — rewritten atomically on startup, after
 every successful sync, and after every local edit. The feed follows the

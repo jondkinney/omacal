@@ -28,6 +28,24 @@ pub(crate) enum TrayAction {
 /// Maps a menu id to the thing it does. Separate from doing it, so the mapping
 /// is testable without an `AppHandle` — an id that silently matched nothing
 /// would be a menu entry that does nothing when clicked.
+/// What a second `omacal` invocation asks of the running instance, read off
+/// its argv. This is the tray menu's vocabulary arriving over the
+/// single-instance channel — it exists so a surface that is not this process
+/// (the Omarchy bar widget, a script, a keybinding) can drive the app:
+/// `omacal --quit`, `omacal --sync-now`, and a bare `omacal` meaning what
+/// launching an already-running app has always meant, show the window.
+/// Unknown flags fall through to Open rather than erroring — a second
+/// instance has no stderr anyone will ever read.
+pub(crate) fn instance_action(argv: &[String]) -> TrayAction {
+    if argv.iter().any(|a| a == "--quit") {
+        TrayAction::Quit
+    } else if argv.iter().any(|a| a == "--sync-now") {
+        TrayAction::SyncNow
+    } else {
+        TrayAction::Open
+    }
+}
+
 pub(crate) fn action_for(id: &str) -> Option<TrayAction> {
     match id {
         "open" => Some(TrayAction::Open),
@@ -57,6 +75,20 @@ pub(crate) fn hide_instead_of_closing() -> bool {
     true
 }
 
+/// The tray icon's id, shared by [`build`] and [`set_visible`].
+const TRAY_ID: &str = "omacal-tray";
+
+/// Shows or hides the tray icon on a running app — the live half of the
+/// `tray_icon` setting. A no-op when the tray never built (macOS refusals,
+/// headless oddities): the setting still persists and applies next launch.
+pub(crate) fn set_visible(app: &AppHandle, on: bool) {
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        if let Err(e) = tray.set_visible(on) {
+            tracing::warn!(%e, on, "could not change tray icon visibility");
+        }
+    }
+}
+
 /// Builds the tray icon and wires its menu.
 ///
 /// **Untested.** Everything it decides is decided by [`MENU`] and
@@ -74,7 +106,11 @@ pub(crate) fn build(app: &AppHandle) -> tauri::Result<()> {
     // Not the window icon: that is the mark on a dark tile, and at tray
     // sizes on a dark bar the tile swallows it. tray.png is the mark alone
     // (see icons/tray.svg), drawn to survive 22px.
-    TrayIconBuilder::new()
+    //
+    // Built with an id so `set_visible` below can find it again: the tray
+    // icon is now a *setting*, because on Omarchy 4 the bar widget carries
+    // the same three actions and a second omacal icon is one too many.
+    TrayIconBuilder::with_id(TRAY_ID)
         .menu(&menu)
         .show_menu_on_left_click(true)
         .icon(tauri::include_image!("icons/tray.png"))
@@ -146,6 +182,28 @@ mod tests {
         assert_eq!(action_for("open"), Some(TrayAction::Open));
         assert_eq!(action_for("sync"), Some(TrayAction::SyncNow));
         assert_eq!(action_for("quit"), Some(TrayAction::Quit));
+    }
+
+    fn argv(args: &[&str]) -> Vec<String> {
+        args.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// The whole contract of the second-invocation channel: the two flags,
+    /// the bare-launch default, and — the case that matters most, because a
+    /// stray flag must never quit someone's app — unknown arguments reading
+    /// as Open.
+    #[test]
+    fn a_second_invocations_argv_maps_to_an_action() {
+        assert_eq!(instance_action(&argv(&["omacal", "--quit"])), TrayAction::Quit);
+        assert_eq!(instance_action(&argv(&["omacal", "--sync-now"])), TrayAction::SyncNow);
+        assert_eq!(instance_action(&argv(&["omacal"])), TrayAction::Open);
+        assert_eq!(instance_action(&argv(&["omacal", "--wat"])), TrayAction::Open);
+        // Quit outranks sync when both are passed: the stronger ask wins,
+        // and a sync on a quitting app is work thrown away.
+        assert_eq!(
+            instance_action(&argv(&["omacal", "--sync-now", "--quit"])),
+            TrayAction::Quit
+        );
         assert_eq!(action_for("nonsense"), None);
     }
 

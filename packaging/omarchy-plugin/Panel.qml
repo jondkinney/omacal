@@ -17,6 +17,23 @@ Panel {
   id: root
   moduleName: "omacal.upcoming"
   ipcTarget: "omacal.upcoming"
+  // Own handler rather than the base's (same pattern as omarchy.dropbox):
+  // the extra methods make every popup action scriptable —
+  // `omarchy-shell omacal.upcoming syncNow` from a keybinding, a script,
+  // or a test.
+  manageIpc: false
+
+  IpcHandler {
+    target: root.ipcTarget
+    function open(): void { root.open() }
+    function close(): void { root.close() }
+    function show(): void { root.open() }
+    function hide(): void { root.close() }
+    function toggle(): void { root.toggle() }
+    function openApp(): void { root.openApp() }
+    function syncNow(): string { root.syncNow(); return "ok" }
+    function quitApp(): string { root.quitApp(); return "ok" }
+  }
 
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color urgent: bar ? bar.urgent : Color.urgent
@@ -73,6 +90,18 @@ Panel {
     root.close()
   }
 
+  // The tray menu's other two actions, carried over the app's
+  // single-instance channel (OmaCal ≥ 0.1.10) — this widget plus these two
+  // is what lets the tray icon be turned off without losing anything.
+  function syncNow() {
+    Quickshell.execDetached(["omacal", "--sync-now"])
+  }
+
+  function quitApp() {
+    Quickshell.execDetached(["omacal", "--quit"])
+    root.close()
+  }
+
   // A row's primary action: join the call when there is one, otherwise bring
   // up the app — the two things a calendar row in a status bar is for.
   function activateRow(ev) {
@@ -123,10 +152,21 @@ Panel {
     id: button
     anchors.fill: parent
     bar: root.bar
-    text: ""
     active: root.imminent
     dimmed: root.events === null || root.events.length === 0
     tooltipText: root.heroMeta()
+    // The app's own mark, not a generic glyph: with the tray icon off this
+    // is omacal's one presence in the bar. Monochrome like its neighbours;
+    // urgent-tinted when a meeting is imminent, as the glyph was.
+    iconComponent: Component {
+      Item {
+        OmacalMark {
+          anchors.centerIn: parent
+          iconSize: Style.space(12)
+          color: root.imminent ? root.urgent : button.foreground
+        }
+      }
+    }
     onPressed: function(buttonCode) {
       if (buttonCode === Qt.MiddleButton) root.openApp()
       else root.toggle()
@@ -156,6 +196,8 @@ Panel {
       onTextKey: function(t) {
         if (t === "o" || t === "O") root.openApp()
         else if (t === "r" || t === "R") feedFile.reload()
+        else if (t === "s" || t === "S") root.syncNow()
+        else if (t === "q" || t === "Q") root.quitApp()
       }
 
       Flickable {
@@ -181,11 +223,11 @@ Panel {
             foreground: root.foreground
             fontFamily: root.fontFamily
             iconComponent: Component {
-              Text {
-                text: ""
-                color: root.imminent ? root.urgent : root.foreground
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.display
+              OmacalMark {
+                iconSize: Style.font.display
+                color: root.foreground
+                // The hero can afford the brand's own orange; the bar cannot.
+                dotColor: "#F97316"
               }
             }
             trailingControl: Component {
@@ -267,6 +309,50 @@ Panel {
                   event: modelData
                   flatIndex: sectionColumn.rowBase + index
                   sectionTitle: sectionColumn.modelData.title
+                }
+              }
+            }
+          }
+
+          // The tray menu's remaining vocabulary, so the tray icon is
+          // dispensable: sync (s) and quit (q). Open lives on the hero.
+          Column {
+            width: parent.width
+            spacing: Style.space(6)
+
+            PanelSeparator {
+              foreground: root.foreground
+            }
+
+            Row {
+              anchors.right: parent.right
+              spacing: Style.space(6)
+
+              PanelActionButton {
+                id: syncButton
+                iconText: ""
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onClicked: root.syncNow()
+
+                PanelToolTip {
+                  visible: syncButton.containsMouse
+                  text: "Sync now"
+                  fontFamily: root.fontFamily
+                }
+              }
+
+              PanelActionButton {
+                id: quitButton
+                iconText: ""
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onClicked: root.quitApp()
+
+                PanelToolTip {
+                  visible: quitButton.containsMouse
+                  text: "Quit OmaCal"
+                  fontFamily: root.fontFamily
                 }
               }
             }

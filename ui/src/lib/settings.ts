@@ -41,6 +41,10 @@ export type AppSettings = {
   /** The day a week begins on. Read by the grids through the
    *  `weekstartstore.svelte.ts` rune, for the same reason `timeFormat` is. */
   weekStart: WeekStartDay;
+  /** Whether the system tray icon is shown. On by default — the tray is where
+   *  Quit lives. Turning it off is for setups where something else carries
+   *  those actions, like Omarchy 4's bar widget. */
+  trayIcon: boolean;
 };
 
 export const getSettings = () => invoke<AppSettings>('get_settings');
@@ -58,6 +62,11 @@ export const setSyncInterval = (ms: number) =>
 
 export const setNotificationsEnabled = (on: boolean) =>
   invoke<AppSettings>('set_notifications_enabled', { on });
+
+/** Stores the tray-icon preference; the backend also applies it to the
+ *  running tray immediately, so the icon reacts to the click. */
+export const setTrayIcon = (on: boolean) =>
+  invoke<AppSettings>('set_tray_icon', { on });
 
 /** Stores the clock format. Nothing is refused: `settings::TimeFormat` has two
  *  variants and the select offers both, so there is no third value to turn

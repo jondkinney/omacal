@@ -18,6 +18,7 @@ const FALLBACK_KEY: &str = "fallback_reminder_minutes";
 const DEFAULT_CALENDAR_KEY: &str = "default_calendar_id";
 const TIME_FORMAT_KEY: &str = "time_format";
 const WEEK_START_KEY: &str = "week_start";
+const TRAY_ICON_KEY: &str = "tray_icon";
 
 /// Whether a clock is drawn as `13:30` or as `1:30 PM`.
 ///
@@ -159,6 +160,13 @@ pub struct AppSettings {
     /// an id a create cannot land on) has to exist regardless — and a
     /// write-time check would only duplicate it with a second rule to drift.
     pub default_calendar_id: Option<i64>,
+    /// Whether the system tray icon is shown. **On by default** — the tray is
+    /// where Quit lives, and an app that hides its only quit affordance on a
+    /// fresh install has made a decision nobody asked it to. Turning it off
+    /// is for setups where something else carries the tray's three actions —
+    /// the Omarchy 4 bar widget being the case this was built for, driving
+    /// the app over the single-instance flags (`--sync-now`, `--quit`).
+    pub tray_icon: bool,
     /// Whether times are drawn as `13:30` or `1:30 PM`, everywhere the app
     /// prints one — event blocks, the filmstrip, the popover and the Week and
     /// Day hour gutter, which follows deliberately: a 12-hour reader given a
@@ -252,6 +260,10 @@ pub async fn read_settings(pool: &SqlitePool) -> AppSettings {
             Some("saturday") => WeekStart::Saturday,
             _ => WeekStart::Monday,
         },
+        // Same polarity as `notifications_enabled`, same reason: absent and
+        // garbage both keep the icon — losing the quit affordance must take
+        // an explicit "0", never a typo.
+        tray_icon: read(pool, TRAY_ICON_KEY).await.map(|v| v != "0").unwrap_or(true),
     }
 }
 
@@ -303,6 +315,22 @@ pub async fn set_notifications_enabled(
     write(&state.pool, NOTIFICATIONS_KEY, if on { "1" } else { "0" })
         .await
         .map_err(|e| crate::errors::user_facing(&e))?;
+    Ok(read_settings(&state.pool).await)
+}
+
+/// Stores the tray-icon preference and applies it to the running tray in the
+/// same breath — a visibility toggle that only took effect next launch would
+/// read as broken every single time.
+#[tauri::command]
+pub async fn set_tray_icon(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    on: bool,
+) -> Result<AppSettings, String> {
+    write(&state.pool, TRAY_ICON_KEY, if on { "1" } else { "0" })
+        .await
+        .map_err(|e| crate::errors::user_facing(&e))?;
+    crate::tray::set_visible(&app, on);
     Ok(read_settings(&state.pool).await)
 }
 

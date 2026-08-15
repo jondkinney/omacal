@@ -8,7 +8,7 @@
   import { offerableCalendarId, writableCalendars, type Calendar } from './calendars';
   import {
     getSettings, minutesOf, msOfMinutes, setDefaultCalendar, setFallbackReminders,
-    setNotificationsEnabled, setSyncInterval, setTimeFormat, setWeekStart,
+    setNotificationsEnabled, setSyncInterval, setTimeFormat, setTrayIcon, setWeekStart,
     type AppSettings,
   } from './settings';
   import { formatClock, type TimeFormat } from './timefmt';
@@ -196,6 +196,17 @@
     }
   }
 
+  async function toggleTrayIcon(on: boolean) {
+    note = null;
+    try {
+      settings = await setTrayIcon(on);
+    } catch (e) {
+      note = { text: String(e), kind: 'error' };
+      // Same checkbox repair as `toggleNotifications`.
+      settings = settings ? { ...settings } : null;
+    }
+  }
+
   /**
    * The four tabs of spec §3, in the order it lists them.
    *
@@ -378,6 +389,21 @@
       </div>
       <p class="hint">
         Week, Month, Year and Big Year all start their rows on this day.
+      </p>
+
+      <label class="check">
+        <input
+          type="checkbox"
+          checked={settings?.trayIcon ?? true}
+          disabled={!settings}
+          onchange={(e) => toggleTrayIcon(e.currentTarget.checked)}
+        />
+        Show the tray icon
+      </label>
+      <p class="hint">
+        The tray is where Quit lives — only turn this off when something else
+        covers it, like the Omarchy bar widget, which can quit and sync the
+        app itself.
       </p>
 
     {:else if tab === 'Calendars'}

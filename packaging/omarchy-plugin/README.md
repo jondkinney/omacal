@@ -33,9 +33,19 @@ omarchy plugin enable omacal.upcoming --section right
 - Click the bar icon (or `omarchy-shell omacal.upcoming toggle`) to open.
 - Middle-click the icon opens the OmaCal app directly.
 - In the popup: arrows move, Enter joins the call (or opens the app),
-  `o` opens the app, `r` reloads the feed, Esc closes.
+  `o` opens the app, `s` syncs now, `q` quits OmaCal, `r` reloads the
+  feed, Esc closes. Sync and Quit also sit at the popup's foot.
 - Clicking a row joins its call when there is one, and opens OmaCal
   otherwise.
+
+## One icon, not two
+
+The bar button is OmaCal's own mark, and the popup carries everything the
+app's tray menu does — open, sync now, quit (the latter two need OmaCal ≥
+0.1.10, which accepts `--sync-now` and `--quit` on a second invocation).
+So with this widget installed the tray icon is redundant: turn it off in
+OmaCal's **Settings → General → "Show the tray icon"**, and the mark in
+the bar becomes the app's one presence.
 
 The `maxEvents` setting (default 12) caps the rows shown; edit it from the
 bar's widget settings or in `shell.json`.
