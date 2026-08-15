@@ -143,7 +143,7 @@ pub async fn event_detail(
 /// wrapper could pass `false` for `demo` and the entire workspace stayed green
 /// at 240 passing tests — while the demo popover started offering three RSVP
 /// buttons again, the exact thing the gate inside exists to prevent.
-async fn event_detail_impl(state: &AppState, id: i64) -> anyhow::Result<EventDetail> {
+pub(crate) async fn event_detail_impl(state: &AppState, id: i64) -> anyhow::Result<EventDetail> {
     let (event, access_role, cal_tz) = omacal_store::event_by_id(&state.pool, id)
         .await?
         .ok_or_else(|| anyhow::anyhow!("that event is no longer here"))?;
@@ -767,6 +767,13 @@ async fn create_impl(
         crate::write::validate_reminders(r).map_err(|m| anyhow::anyhow!(m))?;
     }
 
+    // A CalDAV calendar takes the resource path: rewrite, etag-guarded PUT,
+    // resync. `send_updates` does not travel — CalDAV has no notify question,
+    // and the form never asks one on these calendars.
+    if crate::caldav_write::is_caldav_calendar(&state.pool, calendar_id).await? {
+        return crate::caldav_write::create(state, calendar_id, fields).await;
+    }
+
     let (cal_google_id, access_role, account_email, cal_tz) =
         omacal_store::calendar_for_write(&state.pool, calendar_id)
             .await?
@@ -1295,6 +1302,22 @@ async fn update_impl(
     // (reminders spec §4).
     if let Some(r) = &fields.reminders {
         crate::write::validate_reminders(r).map_err(|m| anyhow::anyhow!(m))?;
+    }
+
+    // The CalDAV path, decided off the event's own calendar — see
+    // `create_impl` for the shape.
+    {
+        let cal_id: Option<i64> =
+            sqlx::query_scalar("SELECT calendar_id FROM events WHERE id = ?1")
+                .bind(id)
+                .fetch_optional(&state.pool)
+                .await?;
+        if let Some(cal_id) = cal_id {
+            if crate::caldav_write::is_caldav_calendar(&state.pool, cal_id).await? {
+                return crate::caldav_write::update(state, id, scope, occurrence_start_ms, fields)
+                    .await;
+            }
+        }
     }
 
     let (ev, access_role, cal_google_id, account_email) =
@@ -2013,6 +2036,20 @@ async fn delete_impl(
     // explain to a user.
     if !matches!(scope, "this" | "all" | "following") {
         anyhow::bail!("that delete scope is not available yet");
+    }
+
+    // The CalDAV path — see `create_impl` for the shape.
+    {
+        let cal_id: Option<i64> =
+            sqlx::query_scalar("SELECT calendar_id FROM events WHERE id = ?1")
+                .bind(id)
+                .fetch_optional(&state.pool)
+                .await?;
+        if let Some(cal_id) = cal_id {
+            if crate::caldav_write::is_caldav_calendar(&state.pool, cal_id).await? {
+                return crate::caldav_write::delete(state, id, scope, occurrence_start_ms).await;
+            }
+        }
     }
 
     let (ev, access_role, cal_google_id, account_email) =

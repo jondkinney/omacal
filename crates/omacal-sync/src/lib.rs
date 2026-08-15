@@ -1,3 +1,4 @@
+pub mod caldav;
 pub mod convert;
 pub use convert::{
     from_google_attendee, from_google_reminder, from_google_reminders, is_tombstone,

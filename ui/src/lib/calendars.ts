@@ -23,6 +23,10 @@ export type Calendar = {
    *  `reader`, `freeBusyReader`. Only the first two can be written to — see
    *  `writableCalendars` below, the one place that decides it. */
   access_role: string;
+  /** The owning account's provider: `google` | `caldav`. Both write events
+   *  now; the difference is vocabulary — CalDAV has no guest management and
+   *  no notify question, which `EventForm` gates on this field. */
+  provider: string;
 };
 
 /** The two roles a create can land on. Google's `calendarList` reports two more

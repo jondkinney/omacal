@@ -522,7 +522,7 @@ pub(crate) fn rrule_for(repeat: &str) -> Option<String> {
 /// clock, but only to name a calendar date — and a date is what a transition
 /// leaves alone. `shifted_like` needed civil arithmetic precisely because it
 /// carries a *span* across a transition; nothing here carries a span.
-fn until_value(before_ms: i64, is_all_day: bool, tz: &str) -> String {
+pub(crate) fn until_value(before_ms: i64, is_all_day: bool, tz: &str) -> String {
     let at = |ms: i64| {
         let ts = jiff::Timestamp::from_millisecond(ms).unwrap_or(jiff::Timestamp::UNIX_EPOCH);
         ts.in_tz(tz).unwrap_or_else(|_| ts.in_tz("UTC").expect("UTC always resolves"))

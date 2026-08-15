@@ -6,6 +6,7 @@
   import { listable } from './filmstrip';
   import CalendarPopover from './CalendarPopover.svelte';
   import SettingsModal from './SettingsModal.svelte';
+  import TasksPanel from './TasksPanel.svelte';
   import ViewSwitcher, { type View } from './ViewSwitcher.svelte';
 
   let {
@@ -127,10 +128,16 @@
    *  used rarely now lives here (spec §1). */
   let menuOpen = $state(false);
   let settingsOpen = $state(false);
+  let tasksOpen = $state(false);
 
   function openSettings() {
     menuOpen = false;
     settingsOpen = true;
+  }
+
+  function openTasks() {
+    menuOpen = false;
+    tasksOpen = true;
   }
 
   /** Runs `fn` and shuts the menu — every item in it is a one-shot action, and
@@ -297,12 +304,17 @@
             <button onclick={() => fromMenu(onSync)} disabled={busy}>Sync now</button>
             <button onclick={() => fromMenu(onSignIn)} disabled={busy}>Add account</button>
           {/if}
+          <button onclick={openTasks}>Tasks…</button>
           <button onclick={openSettings}>Settings…</button>
         </div>
       {/if}
     </div>
   </div>
 </header>
+
+{#if tasksOpen}
+  <TasksPanel onclose={() => (tasksOpen = false)} />
+{/if}
 
 {#if settingsOpen}
   <SettingsModal

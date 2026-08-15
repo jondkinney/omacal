@@ -43,6 +43,12 @@
   // `repeat` to tell "the user did not touch Repeat" from "the user chose the
   // same thing" — the difference between leaving a rule alone and rewriting it.
   const offerable = $derived(writableCalendars(calendars));
+  /** The selected calendar's provider. CalDAV has no guest management and no
+   *  notify question — the editor hides and Save never asks; attendee lines
+   *  on the server survive our rewrites untouched. */
+  const provider = $derived(
+    calendars.find((c) => c.id === value.calendarId)?.provider ?? 'google',
+  );
   // A snapshot, deliberately, which is what the `svelte-ignore` below says out
   // loud: `value` must stop tracking `initial` the moment the user types, or
   // every keystroke would be competing with the prop. Nothing re-renders this
@@ -217,7 +223,7 @@
     // Nobody to tell means nothing to choose between, so a save with no guests
     // goes straight out — with `'none'`, so that `all` appears only where
     // somebody chose it. Same rule as the drag path's.
-    if (guests === 0) {
+    if (guests === 0 || provider !== 'google') {
       onsave({ ...result, notify: 'none' });
       return;
     }
@@ -501,6 +507,7 @@
          removable and neither the "(you)" marker nor the self-removal hint
          appears. All three are right — there is no organizer row and no self
          row on an event that does not exist yet. -->
+    {#if provider === 'google'}
     <div class="guests" data-testid="guests">
       <span class="lab">Guests</span>
       <ul>
@@ -564,8 +571,9 @@
         </p>
       {/if}
     </div>
+    {/if}
 
-    {#if guests > 0}
+    {#if guests > 0 && provider === 'google'}
       <!-- What used to say "Saving will notify N guests." It cannot say that
            any more: §3 makes it a choice, and the buttons on the panel Save
            opens are where the choice is made. -->

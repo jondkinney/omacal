@@ -1,5 +1,7 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 
+mod caldav_account;
+mod caldav_write;
 mod calendars;
 mod commands;
 mod errors;
@@ -16,6 +18,7 @@ mod search;
 mod settings;
 mod status;
 mod sync_loop;
+mod tasks;
 mod theme;
 mod theme_watch;
 mod tray;
@@ -761,29 +764,81 @@ pub(crate) fn synced_window(now_ms: i64) -> (i64, i64) {
 /// which handles the demo gate and `record_sync` itself.
 pub(crate) async fn sync_all(state: &AppState) -> anyhow::Result<u64> {
     let pool = &state.pool;
-    let cfg = load_config()?;
     // `ORDER BY id`, so which account goes first is a decision rather than
     // whatever rowid order happens to be — it used to decide whose failure
     // stopped the rest.
-    let accounts: Vec<(i64, String)> =
-        sqlx::query_as("SELECT id, email FROM accounts ORDER BY id").fetch_all(pool).await?;
+    // (id, email, provider, server_url, username)
+    type AccountRow = (i64, String, String, Option<String>, Option<String>);
+    let all: Vec<AccountRow> = sqlx::query_as(
+        "SELECT id, email, provider, server_url, username FROM accounts ORDER BY id",
+    )
+    .fetch_all(pool)
+    .await?;
 
     let marked = state.reauth.lock().expect("reauth mark poisoned").clone();
-    let accounts = accounts_to_attempt(accounts, &marked);
+    let google: Vec<(i64, String)> = all
+        .iter()
+        .filter(|(_, _, p, _, _)| p == "google")
+        .map(|(id, email, _, _, _)| (*id, email.clone()))
+        .collect();
+    let google = accounts_to_attempt(google, &marked);
 
     let now = now_ms();
     let (window_start, window_end) = synced_window(now);
 
-    let cfg = &cfg;
-    let (total, failed, dead) = sync_accounts(
-        pool,
-        &accounts,
-        GOOGLE_CALENDAR_API,
-        window_start,
-        window_end,
-        move |email| async move { access_token_for(state, cfg, &email).await },
-    )
-    .await;
+    let mut total = 0u64;
+    let mut failed: Vec<String> = Vec::new();
+    let mut dead: Vec<String> = Vec::new();
+
+    // `load_config` moved inside the Google branch: a CalDAV-only install
+    // has no Google client pair anywhere and must not need one to sync.
+    if !google.is_empty() {
+        let cfg = load_config()?;
+        let cfg = &cfg;
+        let (t, f, d) = sync_accounts(
+            pool,
+            &google,
+            GOOGLE_CALENDAR_API,
+            window_start,
+            window_end,
+            move |email| async move { access_token_for(state, cfg, &email).await },
+        )
+        .await;
+        total += t;
+        failed.extend(f);
+        dead.extend(d);
+    }
+
+    for (account_id, email, _, server_url, username) in
+        all.iter().filter(|(_, _, p, _, _)| p == "caldav")
+    {
+        if marked.contains(email) {
+            continue; // dead credentials; the banner is already up
+        }
+        let client =
+            match caldav_account::client_for(email, server_url.as_deref(), username.as_deref()) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(account = %email, %e, "no usable CalDAV credentials");
+                    failed.push(email.clone());
+                    continue;
+                }
+            };
+        match caldav_account::sync_account(pool, *account_id, &client, window_start, window_end)
+            .await
+        {
+            Ok(n) => total += n,
+            Err(e) if e.needs_reauth() => {
+                tracing::warn!(account = %email,
+                    "the CalDAV password was rejected; the account needs to be reconnected");
+                dead.push(email.clone());
+            }
+            Err(e) => {
+                tracing::warn!(account = %email, %e, "CalDAV sync failed");
+                failed.push(email.clone());
+            }
+        }
+    }
 
     if !dead.is_empty() {
         state.reauth.lock().expect("reauth mark poisoned").extend(dead);
@@ -988,6 +1043,12 @@ pub fn run() {
             settings::set_sync_interval,
             settings::set_notifications_enabled,
             settings::set_tray_icon,
+            caldav_account::connect_caldav,
+            tasks::list_tasks,
+            tasks::set_task_completed,
+            tasks::create_task,
+            tasks::delete_task_cmd,
+            tasks::task_lists,
             settings::set_list_mode,
             settings::set_fallback_reminders,
             settings::set_default_calendar,

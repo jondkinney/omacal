@@ -192,3 +192,33 @@ function current(events, nowMs) {
 function title(ev) {
   return ev && ev.title ? String(ev.title) : "(no title)"
 }
+
+// The feed's task slice (OmaCal ≥ 0.2.0), re-judged against the popup's own
+// clock: what the writer called "due soon" may have become overdue since.
+function taskRows(feed, nowMs) {
+  if (!feed || !Array.isArray(feed.tasks)) return []
+  var out = []
+  for (var i = 0; i < feed.tasks.length; i++) {
+    var t = feed.tasks[i]
+    var deadline = t.all_day ? t.due_ms + 86400000 : t.due_ms
+    out.push({
+      title: t.title,
+      color: t.color || null,
+      list: t.list || "",
+      overdue: deadline <= nowMs,
+      label: taskLabel(t, nowMs)
+    })
+  }
+  return out
+}
+
+function taskLabel(t, nowMs) {
+  var deadline = t.all_day ? t.due_ms + 86400000 : t.due_ms
+  if (deadline <= nowMs) return "OVERDUE"
+  var today = dayStart(nowMs, 0)
+  var anchor = t.all_day ? t.due_ms + 43200000 : t.due_ms
+  var offset = Math.floor((dayStart(anchor, 0) - today) / 86400000)
+  if (offset <= 0) return t.all_day ? "today" : clock(t.due_ms)
+  if (offset === 1) return "tomorrow"
+  return dayTitle(anchor)
+}

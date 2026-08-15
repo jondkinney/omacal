@@ -31,10 +31,12 @@ toml = "1"
 tracing.workspace = true
 omacal-core = { version = "0.1.0", path = "../crates/omacal-core" }
 omacal-store = { version = "0.1.0", path = "../crates/omacal-store" }
+omacal-caldav = { version = "0.1.0", path = "../crates/omacal-caldav" }
 omacal-google = { version = "0.1.0", path = "../crates/omacal-google" }
 reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 omacal-sync = { version = "0.1.0", path = "../crates/omacal-sync" }
 jiff = "0.2.35"
+uuid = { version = "1", features = ["v4"] }
 keyring = "4.1.6"
 open = "5.4.0"
 tracing-subscriber = "0.3.23"

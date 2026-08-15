@@ -35,6 +35,10 @@ pub struct CalendarRow {
     /// (`can_edit`, applied server-side against this same column via
     /// `calendar_for_write`); this field is what stops the UI walking into it.
     pub access_role: String,
+    /// The owning account's provider (`google` | `caldav`) — what the UI
+    /// gates provider-specific affordances on (event editing is
+    /// Google-only until the CalDAV write phase lands).
+    pub provider: String,
 }
 
 /// Every calendar across every account, primary first, then alphabetical —
@@ -44,7 +48,7 @@ pub async fn list_calendars(pool: &SqlitePool) -> anyhow::Result<Vec<CalendarRow
         "SELECT c.id, c.account_id, a.email AS account_email, c.summary,
                 COALESCE(c.color_override, c.color_hex) AS color_hex,
                 c.color_override,
-                c.selected, c.sync_enabled, c.is_primary, c.access_role
+                c.selected, c.sync_enabled, c.is_primary, c.access_role, a.provider
          FROM calendars c
          JOIN accounts a ON a.id = c.account_id
          ORDER BY a.email, c.is_primary DESC, c.summary COLLATE NOCASE",
@@ -65,6 +69,7 @@ pub async fn list_calendars(pool: &SqlitePool) -> anyhow::Result<Vec<CalendarRow
             sync_enabled: r.get::<i64, _>("sync_enabled") != 0,
             is_primary: r.get::<i64, _>("is_primary") != 0,
             access_role: r.get("access_role"),
+            provider: r.get("provider"),
         })
         .collect())
 }

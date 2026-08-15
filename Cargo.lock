@@ -3010,6 +3010,7 @@ dependencies = [
  "keyring",
  "notify",
  "notify-rust",
+ "omacal-caldav",
  "omacal-core",
  "omacal-google",
  "omacal-store",
@@ -3030,8 +3031,24 @@ dependencies = [
  "toml 1.1.4+spec-1.1.0",
  "tracing",
  "tracing-subscriber",
+ "uuid",
  "wiremock",
  "zbus",
+]
+
+[[package]]
+name = "omacal-caldav"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "jiff",
+ "reqwest 0.12.28",
+ "roxmltree",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+ "url",
+ "wiremock",
 ]
 
 [[package]]
@@ -3080,9 +3097,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "jiff",
+ "omacal-caldav",
  "omacal-core",
  "omacal-google",
  "omacal-store",
+ "reqwest 0.12.28",
  "serde_json",
  "sqlx",
  "tokio",
@@ -3824,6 +3843,12 @@ dependencies = [
  "untrusted",
  "windows-sys 0.52.0",
 ]
+
+[[package]]
+name = "roxmltree"
+version = "0.20.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 
 [[package]]
 name = "rrule"

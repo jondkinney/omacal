@@ -47,6 +47,24 @@ pub struct Feed {
     /// When this snapshot was computed — the reader's staleness check.
     pub generated_ms: i64,
     pub events: Vec<FeedEvent>,
+    /// Open tasks worth a glance: overdue, or due within the next two days.
+    /// An added field, not a version bump — readers ignore what they do not
+    /// know, and a pre-tasks reader keeps working untouched.
+    #[serde(default)]
+    pub tasks: Vec<FeedTask>,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+pub struct FeedTask {
+    pub title: String,
+    pub due_ms: i64,
+    pub all_day: bool,
+    /// Already past due at generation time. The reader re-derives against
+    /// its own clock too; this is just the honest state at write time.
+    pub overdue: bool,
+    pub list: Option<String>,
+    pub color: Option<String>,
+    pub priority: i64,
 }
 
 #[derive(Debug, Serialize, PartialEq)]
@@ -124,7 +142,43 @@ pub(crate) fn assemble(
     });
     events.truncate(CAP);
 
-    Feed { version: VERSION, generated_ms: now_ms, events }
+    Feed { version: VERSION, generated_ms: now_ms, events, tasks: Vec::new() }
+}
+
+/// How far ahead a due date still counts as "worth a glance in the bar".
+const TASK_HORIZON_MS: i64 = 2 * 24 * 3_600_000;
+/// A bar section, not a task manager: the app has the full list.
+const TASK_CAP: usize = 10;
+
+/// The bar-worthy slice of the task list: open, dated, and either overdue or
+/// due soon. Undated tasks are deliberately absent — "someday" is not a
+/// status-bar concern.
+pub(crate) fn assemble_tasks(rows: &[omacal_store::TaskRow], now_ms: i64) -> Vec<FeedTask> {
+    let mut out: Vec<FeedTask> = rows
+        .iter()
+        .filter(|r| r.task.status != "completed" && r.task.status != "cancelled")
+        .filter_map(|r| {
+            let due_ms = r.task.due_utc?;
+            // An all-day due is "the whole day": overdue only once its day
+            // is over, not at one millisecond past midnight.
+            let deadline = if r.task.due_all_day { due_ms + 24 * 3_600_000 } else { due_ms };
+            if due_ms > now_ms.saturating_add(TASK_HORIZON_MS) {
+                return None;
+            }
+            Some(FeedTask {
+                title: r.task.summary.clone().unwrap_or_else(|| "(untitled)".into()),
+                due_ms,
+                all_day: r.task.due_all_day,
+                overdue: deadline <= now_ms,
+                list: Some(r.calendar_summary.clone()),
+                color: r.color_hex.clone(),
+                priority: r.task.priority,
+            })
+        })
+        .collect();
+    out.sort_by_key(|t| (t.due_ms, t.priority));
+    out.truncate(TASK_CAP);
+    out
 }
 
 /// Where the feed lives: `$XDG_STATE_HOME/omacal/upcoming.json`, defaulting to
@@ -175,7 +229,11 @@ async fn refresh_impl(pool: &SqlitePool, now_ms: i64) -> anyhow::Result<()> {
         .into_iter()
         .map(|c| (c.id, c.summary))
         .collect();
-    let feed = assemble(&stored, &names, now_ms);
+    let mut feed = assemble(&stored, &names, now_ms);
+    // Tasks ride the same snapshot: overdue-or-imminent only, and a store
+    // without a single CalDAV account contributes an empty list for free.
+    let task_rows = omacal_store::tasks_for_ui(pool, now_ms).await?;
+    feed.tasks = assemble_tasks(&task_rows, now_ms);
     write_atomic(&path, &serde_json::to_vec_pretty(&feed)?)
 }
 
@@ -326,6 +384,62 @@ mod tests {
         assert_eq!(e.color.as_deref(), Some("#7aa2f7"));
         assert_eq!(e.response.as_deref(), Some("accepted"));
         assert_eq!(e.calendar.as_deref(), Some("Work"));
+    }
+
+    fn task_row(uid: &str, due: Option<i64>, all_day: bool, status: &str) -> omacal_store::TaskRow {
+        omacal_store::TaskRow {
+            task: omacal_store::StoredTask {
+                id: 0,
+                calendar_id: 1,
+                uid: uid.into(),
+                etag: None,
+                caldav_href: None,
+                summary: Some(uid.to_string()),
+                description: None,
+                due_utc: due,
+                due_tz: Some("UTC".into()),
+                due_all_day: all_day,
+                status: status.into(),
+                completed_utc: None,
+                priority: 0,
+                updated_at: 0,
+                raw_ics: None,
+            },
+            calendar_summary: "Chores".into(),
+            color_hex: Some("#7aa2f7".into()),
+            access_role: "owner".into(),
+        }
+    }
+
+    #[test]
+    fn the_feed_carries_only_glanceable_tasks() {
+        let rows = vec![
+            task_row("overdue", Some(T0900Z - DAY), false, "needs-action"),
+            task_row("soon", Some(T0900Z + DAY), false, "needs-action"),
+            task_row("far", Some(T0900Z + 5 * DAY), false, "needs-action"),
+            task_row("undated", None, false, "needs-action"),
+            task_row("done", Some(T0900Z), false, "completed"),
+        ];
+        let tasks = assemble_tasks(&rows, T0900Z);
+        let titles: Vec<&str> = tasks.iter().map(|t| t.title.as_str()).collect();
+        assert_eq!(titles, vec!["overdue", "soon"], "far, undated and done stay out");
+        assert!(tasks[0].overdue);
+        assert!(!tasks[1].overdue);
+        assert_eq!(tasks[0].list.as_deref(), Some("Chores"));
+    }
+
+    /// An all-day due is the whole day: at 09:00 on its due date it is
+    /// "today", not "overdue".
+    #[test]
+    fn an_all_day_due_is_not_overdue_during_its_day() {
+        let midnight = T0900Z - 9 * HOUR;
+        let rows = vec![task_row("today", Some(midnight), true, "needs-action")];
+        let tasks = assemble_tasks(&rows, T0900Z);
+        assert_eq!(tasks.len(), 1);
+        assert!(!tasks[0].overdue);
+        // And once its day has ended, it is.
+        let after = assemble_tasks(&rows, midnight + 25 * HOUR);
+        assert!(after[0].overdue);
     }
 
     #[test]

@@ -1,11 +1,13 @@
 <!-- ui/src/lib/SettingsModal.svelte -->
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { invoke } from '@tauri-apps/api/core';
 
   import { escapeCloses } from './dismiss.svelte';
   import { REMINDER_UNITS, reminderAmountOf, reminderMax, reminderUnitOf } from './reminders';
   import CalendarList from './CalendarList.svelte';
   import { offerableCalendarId, writableCalendars, type Calendar } from './calendars';
+  import { connectCaldav } from './tasks';
   import {
     getSettings, minutesOf, msOfMinutes, setDefaultCalendar, setFallbackReminders,
     setNotificationsEnabled, setSyncInterval, setTimeFormat, setTrayIcon, setWeekStart,
@@ -193,6 +195,51 @@
       // The click already flipped the checkbox; put it back to what the
       // backend still holds, the same repair `CalendarPopover` makes.
       settings = settings ? { ...settings } : null;
+    }
+  }
+
+  // The CalDAV connect form's own little state machine: which form is open
+  // (none, iCloud-worded, or generic), its fields, and its in-flight flag —
+  // separate from `busy`, which belongs to the Google flow.
+  let caldavForm = $state<null | 'icloud' | 'caldav'>(null);
+  let caldavUrl = $state('');
+  let caldavEmail = $state('');
+  let caldavUser = $state('');
+  let caldavPassword = $state('');
+  let caldavBusy = $state(false);
+
+  function openCaldavForm(kind: 'icloud' | 'caldav') {
+    note = null;
+    caldavForm = kind;
+    caldavUrl = '';
+    caldavEmail = '';
+    caldavUser = '';
+    caldavPassword = '';
+  }
+
+  async function submitCaldav() {
+    if (caldavForm === null || caldavBusy) return;
+    note = null;
+    caldavBusy = true;
+    try {
+      const email = await connectCaldav({
+        kind: caldavForm,
+        serverUrl: caldavForm === 'caldav' ? caldavUrl : undefined,
+        email: caldavEmail,
+        username: caldavForm === 'caldav' ? caldavUser : undefined,
+        password: caldavPassword,
+      });
+      caldavForm = null;
+      note = { text: `${email} connected — syncing…`, kind: 'info' };
+      // The account's calendars are in the store already (connect wrote
+      // them); the sync fills in their events and tasks.
+      await invoke('sync_now').catch(() => {});
+      oncalendarchange?.();
+      note = { text: `${email} connected. Its calendars are in the list — pick which to show under Calendars.`, kind: 'info' };
+    } catch (e) {
+      note = { text: String(e), kind: 'error' };
+    } finally {
+      caldavBusy = false;
     }
   }
 
@@ -438,6 +485,76 @@
            half-did it would leave rows nothing can reach. -->
       <p class="hint">Signing an account out is not built yet.</p>
 
+      <!-- CalDAV: the auth story with no OAuth in it. One form serves both —
+           "iCloud" only fixes the server address and words the fields. -->
+      <div class="caldav" role="group" aria-label="Connect a CalDAV account">
+        {#if caldavForm === null}
+          <div class="provider-row">
+            <button type="button" onclick={() => openCaldavForm('icloud')} disabled={busy}>
+              Add iCloud account
+            </button>
+            <button type="button" onclick={() => openCaldavForm('caldav')} disabled={busy}>
+              Add CalDAV account
+            </button>
+          </div>
+        {:else}
+          <form
+            class="caldav-form"
+            onsubmit={(e) => {
+              e.preventDefault();
+              void submitCaldav();
+            }}
+          >
+            {#if caldavForm === 'caldav'}
+              <input
+                type="url"
+                placeholder="https://dav.example.com/"
+                aria-label="Server address"
+                bind:value={caldavUrl}
+                disabled={caldavBusy}
+              />
+            {/if}
+            <input
+              type="email"
+              placeholder={caldavForm === 'icloud' ? 'Apple ID' : 'Email'}
+              aria-label={caldavForm === 'icloud' ? 'Apple ID' : 'Email'}
+              bind:value={caldavEmail}
+              disabled={caldavBusy}
+            />
+            {#if caldavForm === 'caldav'}
+              <input
+                type="text"
+                placeholder="Username (when it differs from the email)"
+                aria-label="Username"
+                bind:value={caldavUser}
+                disabled={caldavBusy}
+              />
+            {/if}
+            <input
+              type="password"
+              placeholder={caldavForm === 'icloud' ? 'App-specific password' : 'Password'}
+              aria-label="Password"
+              bind:value={caldavPassword}
+              disabled={caldavBusy}
+            />
+            {#if caldavForm === 'icloud'}
+              <p class="hint">
+                Not your Apple ID password: create an app-specific password at
+                appleid.apple.com → Sign-In and Security.
+              </p>
+            {/if}
+            <div class="provider-row">
+              <button type="submit" disabled={caldavBusy}>
+                {caldavBusy ? 'Connecting…' : 'Connect'}
+              </button>
+              <button type="button" onclick={() => (caldavForm = null)} disabled={caldavBusy}>
+                Cancel
+              </button>
+            </div>
+          </form>
+        {/if}
+      </div>
+
     {:else}
       <label class="check">
         <input
@@ -596,6 +713,14 @@
   .caldot { width: 10px; height: 10px; border-radius: 3px; flex: none; }
 
   .check { display: flex; align-items: center; gap: 7px; font-size: 12.5px; cursor: pointer; }
+
+  .caldav { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+  .provider-row { display: flex; gap: 8px; }
+  .caldav-form { display: flex; flex-direction: column; gap: 6px; }
+  .caldav-form input { font: inherit; font-size: 12.5px; color: var(--text);
+    background: var(--bg); border: 1px solid var(--hairline); border-radius: 5px;
+    padding: 5px 8px; }
+  .caldav-form input:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
 
   .accounts { list-style: none; margin: 0; padding: 0; display: flex;
               flex-direction: column; gap: 3px; font-size: 12.5px; }

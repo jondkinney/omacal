@@ -47,6 +47,11 @@ single-instance flags (`omacal --sync-now`, `omacal --quit`). With the
 widget installed you can therefore turn the tray icon off (Settings →
 General) and keep a single omacal icon in the bar.
 
+With an iCloud or CalDAV account connected, the popup also shows a TASKS
+section: open tasks that are overdue or due within two days, colored by
+their list. Display only — completing them happens in the app's Tasks
+panel (menu → Tasks…).
+
 It reads the feed omacal writes to `$XDG_STATE_HOME/omacal/upcoming.json`
 (default `~/.local/state/...`) — rewritten atomically on startup, after
 every successful sync, and after every local edit. The feed follows the

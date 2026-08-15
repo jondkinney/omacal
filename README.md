@@ -1,9 +1,19 @@
 # omacal
 
-A minimal desktop Google Calendar client. Five views, live background sync, and
-full create/edit/delete against your real calendar. Built with Tauri v2, Rust and
-Svelte 5, primarily for Omarchy Linux — it also runs on macOS, which is where
-day-to-day development happens.
+A minimal desktop calendar client. Five views, live background sync, and
+full create/edit/delete against your real calendar — **Google Calendar,
+iCloud, or any CalDAV server**, including CalDAV **task lists** (VTODO)
+with tasks fully manageable (complete, add, delete) from the app. Built with
+Tauri v2, Rust and Svelte 5, primarily for Omarchy Linux — it also runs on
+macOS, which is where day-to-day development happens.
+
+iCloud connects with an app-specific password from appleid.apple.com — no
+OAuth dance. Edits on CalDAV events are etag-guarded (a change that raced
+another device tells you instead of clobbering); the one thing CalDAV
+calendars don't do yet is guest management, which stays a Google feature
+for now. Note that iCloud's CalDAV carries calendars and legacy task lists
+only — Apple's own Reminders app moved to a private store in 2019 and no
+third-party app can reach it.
 
 Colour comes from your Omarchy theme and follows `omarchy-theme-set` live, with
 no restart.
@@ -20,10 +30,10 @@ a desktop entry; run the same line again to update. Prefer a package? The
 page](https://github.com/x3me/omacal/releases).
 
 Then run `omacal` and click **Connect Google Calendar**. No config file, no
-Google Cloud project: release builds carry their own client credentials. Two
-things worth knowing on first sign-in: Google shows an "unverified app" screen
-while our verification review is pending (Advanced → Continue past it), and
-the token lands in your keyring, so a minimal Hyprland session needs
+Google Cloud project: release builds carry their own client credentials, and
+the app is Google-verified — sign-in is the ordinary consent screen, no
+warnings to click through. One thing worth knowing on first sign-in: the
+token lands in your keyring, so a minimal Hyprland session needs
 gnome-keyring, KeePassXC or kwallet running.
 
 ## Bring your own Google credentials

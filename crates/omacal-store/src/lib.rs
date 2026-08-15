@@ -5,11 +5,16 @@ use std::str::FromStr;
 pub mod calendars;
 pub mod events;
 pub mod reminders;
+pub mod tasks;
 pub use calendars::{
     calendar_for_write, list_calendars, set_color_override, set_selected, set_sync_enabled,
     CalendarRow,
 };
 pub use reminders::{fired_keys, prune_fired, record_fired};
+pub use tasks::{
+    delete_task, delete_tasks_not_in, mark_task_status, task_by_id, tasks_for_ui, upsert_task,
+    StoredTask, TaskRow,
+};
 pub use events::{
     delete_event, delete_series, event_by_id, event_for_write, events_in_window, exceptions_from,
     search_events, upsert_event, Attendee, Reminder, Reminders, StoredEvent,

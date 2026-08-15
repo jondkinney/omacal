@@ -192,7 +192,11 @@
   // The popover's own reload trigger — a show/hide takes effect the moment
   // the grid re-fetches, since `get_week` filters on `selected` server-side.
   async function handleCalendarChange() {
-    await Promise.all([refreshCalendars(), reload()]);
+    // Status rides along because the Accounts list is drawn from it: a
+    // freshly connected account must appear in the modal the moment its
+    // calendars do, not at the next status poll — "did it work?" deserves
+    // an answer the user can see.
+    await Promise.all([refreshCalendars(), reload(), refreshStatus()]);
   }
 
   // What to fetch for the view currently on screen, at the date currently

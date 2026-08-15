@@ -54,6 +54,7 @@ Panel {
 
   property var feed: null
   readonly property var events: feed ? feed.events : null
+  readonly property var taskRows: Model.taskRows(feed, nowMs)
   readonly property var panelSections: Model.sections(events, nowMs, root.setting("maxEvents", 12))
   readonly property var runningEvent: Model.current(events, nowMs)
   readonly property var nextEvent: Model.nextAhead(events, nowMs)
@@ -260,7 +261,7 @@ Panel {
           }
 
           Text {
-            visible: root.feed !== null && root.empty
+            visible: root.feed !== null && root.empty && root.taskRows.length === 0
             width: parent.width
             text: "Nothing scheduled in the next two weeks."
             color: root.dim
@@ -309,6 +310,81 @@ Panel {
                   event: modelData
                   flatIndex: sectionColumn.rowBase + index
                   sectionTitle: sectionColumn.modelData.title
+                }
+              }
+            }
+          }
+
+          // Overdue-or-imminent tasks (OmaCal ≥ 0.2.0 writes them into the
+          // feed). Display only — a click opens the app, where the checkbox
+          // lives; the bar is for noticing, not managing.
+          Column {
+            visible: root.taskRows.length > 0
+            width: parent.width
+            spacing: Style.space(6)
+
+            PanelSeparator {
+              visible: !root.empty
+              foreground: root.foreground
+            }
+
+            PanelSectionHeader {
+              text: "TASKS"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+            }
+
+            Repeater {
+              model: root.taskRows
+
+              CursorSurface {
+                id: taskRow
+                required property var modelData
+                width: column.width
+                hasCursor: false
+                foreground: root.foreground
+                implicitHeight: taskContent.implicitHeight + Style.spacing.rowPaddingX
+
+                MouseArea {
+                  anchors.fill: parent
+                  hoverEnabled: true
+                  cursorShape: Qt.PointingHandCursor
+                  onClicked: root.openApp()
+                }
+
+                RowLayout {
+                  id: taskContent
+                  anchors.left: parent.left
+                  anchors.right: parent.right
+                  anchors.verticalCenter: parent.verticalCenter
+                  anchors.leftMargin: Style.space(10)
+                  anchors.rightMargin: Style.space(10)
+                  spacing: Style.space(10)
+
+                  Rectangle {
+                    width: 3
+                    height: Style.space(20)
+                    radius: 1.5
+                    color: taskRow.modelData.color ? taskRow.modelData.color : root.dim
+                    Layout.alignment: Qt.AlignVCenter
+                  }
+
+                  Text {
+                    Layout.fillWidth: true
+                    text: taskRow.modelData.title
+                    color: root.foreground
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.body
+                    elide: Text.ElideRight
+                  }
+
+                  Text {
+                    text: taskRow.modelData.label
+                    color: taskRow.modelData.overdue ? root.urgent : root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                    Layout.alignment: Qt.AlignVCenter
+                  }
                 }
               }
             }
