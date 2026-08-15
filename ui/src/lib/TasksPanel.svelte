@@ -32,7 +32,7 @@
     })();
   });
 
-  escapeCloses(() => true, onclose);
+  escapeCloses(() => true, () => onclose());
 
   const open = $derived((tasks ?? []).filter((t) => !t.completed));
   const done = $derived((tasks ?? []).filter((t) => t.completed));

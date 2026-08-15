@@ -368,13 +368,13 @@ function statusFor(scenario: string): AppStatus {
 const SIGNED_IN_CALENDARS: Calendar[] = [
   { id: 1, account_id: 1, account_email: 'new@x.com', summary: 'Personal',
     color_hex: '#5b8def', color_override: null, selected: true, sync_enabled: true, is_primary: true,
-    access_role: 'owner' },
+    access_role: 'owner', provider: 'google' },
   // A subscribed holiday calendar really is a `reader`, and this is the one
   // fixture in the suite that stands in for a real `sign_in` import — so it
   // carries the role a real one would rather than a uniformly writable list.
   { id: 2, account_id: 1, account_email: 'new@x.com', summary: 'Holidays',
     color_hex: '#e2a03f', color_override: null, selected: true, sync_enabled: true, is_primary: false,
-    access_role: 'reader' },
+    access_role: 'reader', provider: 'google' },
 ];
 
 function getWeek(scenario: string, weekStartMs: number): Promise<WeekPayload> {

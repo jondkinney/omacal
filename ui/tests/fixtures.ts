@@ -321,6 +321,7 @@ const FIVE_MIN_AGO = FIXED_NOW - 5 * 60_000;
 
 const cal = (o: Partial<Calendar> & { id: number; account_email: string; summary: string }): Calendar => ({
   account_id: 1,
+  provider: 'google',
   color_hex: '#5b8def',
   // No override by default: every fixture that predates per-calendar colour
   // describes a calendar following Google's own, which is what they all were.
