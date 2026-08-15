@@ -1130,16 +1130,30 @@ test.describe('Header', () => {
   test('Accounts lists the connected account and offers to add another', async ({ page }) => {
     await page.goto(show('Header', 'connected'));
     const modal = await openSettings(page, 'Accounts');
-    await expect(modal.getByRole('listitem')).toHaveText(['me@x.com']);
+    await expect(modal.getByRole('listitem')).toContainText(['me@x.com']);
     await expect(modal.getByRole('button', { name: 'Add account' })).toBeVisible();
+  });
+
+  test('signing an account out asks first, then empties the list', async ({ page }) => {
+    // Two clicks by design: the first arms, the second is worded as the
+    // destructive thing it is. The harness's sign_out answers with no
+    // accounts left, and the tab must say so rather than show stale rows.
+    await page.goto(show('Header', 'connected'));
+    const modal = await openSettings(page, 'Accounts');
+    await modal.getByRole('button', { name: 'Sign out…' }).click();
+    await expect(modal.getByRole('button', { name: 'Keep' })).toBeVisible();
+    await modal.getByRole('button', { name: 'Really sign out' }).click();
+    await expect(modal).toContainText('No account is connected');
+    await expect(modal).toContainText('signed out');
   });
 
   test('what is not built yet says so rather than being absent', async ({ page }) => {
     // A control that is missing reads as "never"; a line saying it is not built
-    // reads as "not yet", which is the true one.
+    // reads as "not yet", which is the true one. Sign-out graduated out of
+    // this test in v0.2.x; what remains here is the honesty rule itself.
     await page.goto(show('Header', 'connected'));
     const modal = await openSettings(page, 'Accounts');
-    await expect(modal).toContainText('Signing an account out is not built yet');
+    await expect(modal).toContainText('Signing out removes the account');
 
     // Switching tabs inside the open modal, not reopening it: the scrim covers
     // the hamburger, so a second `openSettings` would be clicking a button

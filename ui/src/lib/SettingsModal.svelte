@@ -8,6 +8,7 @@
   import CalendarList from './CalendarList.svelte';
   import { offerableCalendarId, writableCalendars, type Calendar } from './calendars';
   import { connectCaldav } from './tasks';
+  import { listAccounts, signOut, type Account } from './accounts';
   import {
     getSettings, minutesOf, msOfMinutes, setDefaultCalendar, setFallbackReminders,
     setNotificationsEnabled, setSyncInterval, setTimeFormat, setTrayIcon, setWeekStart,
@@ -195,6 +196,41 @@
       // The click already flipped the checkbox; put it back to what the
       // backend still holds, the same repair `CalendarPopover` makes.
       settings = settings ? { ...settings } : null;
+    }
+  }
+
+  /** The accounts with their ids and providers — richer than the `accounts`
+   *  prop (emails only), which stays as the fallback while this loads. */
+  let accountRows = $state<Account[] | null>(null);
+  /** The account whose Sign out is one click from happening. */
+  let confirmingSignOut = $state<number | null>(null);
+  let signingOut = $state(false);
+
+  $effect(() => {
+    listAccounts()
+      .then((rows) => (accountRows = rows))
+      .catch(() => (accountRows = null));
+  });
+
+  async function doSignOut(row: Account) {
+    if (signingOut) return;
+    note = null;
+    signingOut = true;
+    try {
+      accountRows = await signOut(row.id);
+      confirmingSignOut = null;
+      oncalendarchange?.();
+      note = {
+        text:
+          row.provider === 'caldav'
+            ? `${row.email} signed out and its local data removed. To revoke the password itself, visit your provider (for iCloud: account.apple.com).`
+            : `${row.email} signed out, its access revoked, and its local data removed.`,
+        kind: 'info',
+      };
+    } catch (e) {
+      note = { text: String(e), kind: 'error' };
+    } finally {
+      signingOut = false;
     }
   }
 
@@ -471,19 +507,38 @@
 
     {:else if tab === 'Accounts'}
       <ul class="accounts">
-        {#each accounts as email (email)}
-          <li>{email}</li>
+        {#each accountRows ?? accounts.map((email, i) => ({ id: -1 - i, email, provider: 'google' })) as row (row.id)}
+          <li class="account-row">
+            <span class="acct-email">{row.email}</span>
+            <span class="acct-prov">{row.provider === 'caldav' ? 'CalDAV' : 'Google'}</span>
+            {#if row.id >= 0}
+              {#if confirmingSignOut === row.id}
+                <button
+                  type="button"
+                  class="danger"
+                  disabled={signingOut}
+                  onclick={() => doSignOut(row)}
+                >{signingOut ? 'Signing out…' : 'Really sign out'}</button>
+                <button type="button" disabled={signingOut} onclick={() => (confirmingSignOut = null)}>
+                  Keep
+                </button>
+              {:else}
+                <button type="button" onclick={() => (confirmingSignOut = row.id)}>Sign out…</button>
+              {/if}
+            {/if}
+          </li>
         {/each}
       </ul>
-      {#if accounts.length === 0}
+      {#if (accountRows ?? accounts).length === 0}
         <p class="soon">No account is connected.</p>
       {/if}
       <button type="button" onclick={onSignIn} disabled={busy}>Add account</button>
-      <!-- Signing an account out is not a button: it means revoking a token,
-           clearing the Keychain entry and deleting that account's calendars and
-           their events. There is no command for it, and a control that only
-           half-did it would leave rows nothing can reach. -->
-      <p class="hint">Signing an account out is not built yet.</p>
+      <p class="hint">
+        Signing out removes the account's local data (its calendars, events
+        and tasks re-sync if you connect again). For Google, the app's access
+        is revoked too; for iCloud and CalDAV, the password stays valid until
+        you revoke it at your provider.
+      </p>
 
       <!-- CalDAV: the auth story with no OAuth in it. One form serves both —
            "iCloud" only fixes the server address and words the fields. -->
@@ -713,6 +768,12 @@
   .caldot { width: 10px; height: 10px; border-radius: 3px; flex: none; }
 
   .check { display: flex; align-items: center; gap: 7px; font-size: 12.5px; cursor: pointer; }
+
+  .account-row { display: flex; align-items: center; gap: 8px; }
+  .acct-email { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .acct-prov { color: var(--muted); font-size: 11px; letter-spacing: 0.04em;
+    text-transform: uppercase; }
+  .account-row .danger { color: var(--danger, #e66); border-color: var(--danger, #e66); }
 
   .caldav { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
   .provider-row { display: flex; gap: 8px; }

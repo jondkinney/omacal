@@ -1,5 +1,6 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 
+mod accounts;
 mod caldav_account;
 mod caldav_write;
 mod calendars;
@@ -1044,6 +1045,8 @@ pub fn run() {
             settings::set_notifications_enabled,
             settings::set_tray_icon,
             caldav_account::connect_caldav,
+            accounts::list_accounts,
+            accounts::sign_out,
             tasks::list_tasks,
             tasks::set_task_completed,
             tasks::create_task,

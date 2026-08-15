@@ -7,8 +7,8 @@ pub mod events;
 pub mod reminders;
 pub mod tasks;
 pub use calendars::{
-    calendar_for_write, list_calendars, set_color_override, set_selected, set_sync_enabled,
-    CalendarRow,
+    calendar_for_write, delete_account, list_calendars, set_color_override, set_selected,
+    set_sync_enabled, CalendarRow,
 };
 pub use reminders::{fired_keys, prune_fired, record_fired};
 pub use tasks::{

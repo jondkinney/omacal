@@ -54,6 +54,12 @@ Panel {
 
   property var feed: null
   readonly property var events: feed ? feed.events : null
+
+  // Whether the OmaCal process itself is alive. The popup keeps showing the
+  // last feed either way (a stale agenda beats a blank one), but the hero
+  // says so, the bar icon dims, and the power button becomes a start button
+  // — a Quit that silently no-ops reads as broken, and was reported as such.
+  property bool appRunning: true
   readonly property var taskRows: Model.taskRows(feed, nowMs)
   readonly property var panelSections: Model.sections(events, nowMs, root.setting("maxEvents", 12))
   readonly property var runningEvent: Model.current(events, nowMs)
@@ -78,6 +84,7 @@ Panel {
   }
 
   function heroMeta() {
+    if (!appRunning) return "OmaCal is not running"
     if (runningEvent)
       return Model.title(runningEvent) + " · " + Model.endsText(runningEvent, nowMs)
     if (nextEvent)
@@ -88,6 +95,7 @@ Panel {
 
   function openApp() {
     Quickshell.execDetached(["omacal"])
+    root.appRunning = true // optimistic; the next check corrects if not
     root.close()
   }
 
@@ -129,7 +137,21 @@ Panel {
     rowCursor = 0
     nowMs = Date.now()
     feedFile.reload()
+    appCheck.running = true
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+  }
+
+  Process {
+    id: appCheck
+    command: ["pgrep", "-x", "omacal"]
+    onExited: function(exitCode) { root.appRunning = exitCode === 0 }
+  }
+
+  Timer {
+    interval: root.opened ? 5000 : 60000
+    running: true
+    repeat: true
+    onTriggered: if (!appCheck.running) appCheck.running = true
   }
 
   FileView {
@@ -154,7 +176,7 @@ Panel {
     anchors.fill: parent
     bar: root.bar
     active: root.imminent
-    dimmed: root.events === null || root.events.length === 0
+    dimmed: !root.appRunning || root.events === null || root.events.length === 0
     tooltipText: root.heroMeta()
     // The app's own mark, not a generic glyph: with the tray icon off this
     // is omacal's one presence in the bar. Monochrome like its neighbours;
@@ -197,8 +219,8 @@ Panel {
       onTextKey: function(t) {
         if (t === "o" || t === "O") root.openApp()
         else if (t === "r" || t === "R") feedFile.reload()
-        else if (t === "s" || t === "S") root.syncNow()
-        else if (t === "q" || t === "Q") root.quitApp()
+        else if (t === "s" || t === "S") { if (root.appRunning) root.syncNow() }
+        else if (t === "q" || t === "Q") root.appRunning ? root.quitApp() : root.openApp()
       }
 
       Flickable {
@@ -407,6 +429,7 @@ Panel {
               PanelActionButton {
                 id: syncButton
                 iconText: ""
+                enabled: root.appRunning
                 foreground: root.foreground
                 fontFamily: root.fontFamily
                 onClicked: root.syncNow()
@@ -420,14 +443,14 @@ Panel {
 
               PanelActionButton {
                 id: quitButton
-                iconText: ""
+                iconText: root.appRunning ? "\uf011" : "\uf04b"
                 foreground: root.foreground
                 fontFamily: root.fontFamily
-                onClicked: root.quitApp()
+                onClicked: root.appRunning ? root.quitApp() : root.openApp()
 
                 PanelToolTip {
                   visible: quitButton.containsMouse
-                  text: "Quit OmaCal"
+                  text: root.appRunning ? "Quit OmaCal" : "Start OmaCal"
                   fontFamily: root.fontFamily
                 }
               }

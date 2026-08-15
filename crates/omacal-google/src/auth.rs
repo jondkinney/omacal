@@ -197,6 +197,27 @@ pub async fn exchange_code(
     .await
 }
 
+/// Tells Google to invalidate a refresh token — the server half of signing
+/// out. Takes the endpoint as a parameter like everything here, so a test
+/// can point it at wiremock; production callers pass
+/// `https://oauth2.googleapis.com/revoke`.
+///
+/// Callers treat failure as advisory: the local sign-out proceeds either
+/// way, because a token we can no longer revoke (already expired, network
+/// down) must not hold the account hostage. The user can always finish the
+/// job at myaccount.google.com/permissions.
+pub async fn revoke(revoke_endpoint: &str, token: &str) -> anyhow::Result<()> {
+    let resp = reqwest::Client::new()
+        .post(revoke_endpoint)
+        .form(&[("token", token)])
+        .send()
+        .await?;
+    if !resp.status().is_success() {
+        anyhow::bail!("revoke answered {}", resp.status());
+    }
+    Ok(())
+}
+
 pub async fn refresh(
     token_endpoint: &str,
     client_id: &str,

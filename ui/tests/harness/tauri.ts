@@ -621,6 +621,15 @@ export function installTauriStub(scenario: string): Harness {
         return null;
       case 'get_status':
         return status;
+      case 'list_accounts':
+        // The richer per-account shape the Accounts tab fetches: the same
+        // emails the scenario's status carries, as Google accounts.
+        return (status as { accounts: string[] }).accounts.map((email, i) => ({
+          id: i + 1, email, provider: 'google',
+        }));
+      case 'sign_out':
+        // Signing out the only fixture account leaves none.
+        return [];
       case 'get_week':
         return getWeek(scenario, args.weekStartMs);
       case 'get_day':

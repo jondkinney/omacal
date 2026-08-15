@@ -474,3 +474,81 @@ mod tests {
         assert_eq!(list_calendars(&pool).await.unwrap()[0].color_hex.as_deref(), Some("#e2a03f"));
     }
 }
+
+/// Removes one account and everything it owned: its calendars, their events,
+/// tasks and sync cursors through the schema's cascades — and its
+/// fired-reminder records by hand, because that table deliberately carries no
+/// foreign key (the scheduler prunes it by time instead). Left behind, those
+/// rows could suppress a reminder if SQLite ever handed a new event the same
+/// rowid. Returns how many account rows went (0 or 1) — the caller decides
+/// whether 0 is an error.
+///
+/// Lives in the store rather than in a command so the removal chain is
+/// testable against the real schema: a migration that broke a CASCADE would
+/// otherwise only be discovered by a user with orphaned rows.
+pub async fn delete_account(pool: &SqlitePool, account_id: i64) -> anyhow::Result<u64> {
+    let mut tx = pool.begin().await?;
+    sqlx::query(
+        "DELETE FROM fired_reminders WHERE event_id IN (
+            SELECT e.id FROM events e
+            JOIN calendars c ON c.id = e.calendar_id
+            WHERE c.account_id = ?1)",
+    )
+    .bind(account_id)
+    .execute(&mut *tx)
+    .await?;
+    let gone = sqlx::query("DELETE FROM accounts WHERE id = ?1")
+        .bind(account_id)
+        .execute(&mut *tx)
+        .await?
+        .rows_affected();
+    tx.commit().await?;
+    Ok(gone)
+}
+
+#[cfg(test)]
+mod cascade_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn deleting_an_account_cascades_through_everything_it_owned() {
+        let pool = crate::connect_memory().await.unwrap();
+        sqlx::query(
+            "INSERT INTO accounts (google_sub, email, created_at, provider)
+             VALUES ('caldav:x', 'x@x', 0, 'caldav')",
+        )
+        .execute(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO calendars (account_id, google_id, summary, timezone, access_role, supports_tasks)
+             VALUES (1, 'url', 'Cal', 'UTC', 'owner', 1)",
+        )
+        .execute(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO events (calendar_id, google_id, start_utc, end_utc, start_tz, end_tz, updated_at)
+             VALUES (1, 'ev', 0, 1, 'UTC', 'UTC', 0)",
+        )
+        .execute(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO tasks (calendar_id, uid, updated_at) VALUES (1, 't', 0)",
+        )
+        .execute(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO sync_state (calendar_id, sync_token, window_start, window_end)
+             VALUES (1, 'ctag', 0, 1)",
+        )
+        .execute(&pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO fired_reminders (event_id, occurrence_ms, minutes, occurrence_end_ms, fired_at_ms)
+             VALUES (1, 0, 5, 1, 0)",
+        )
+        .execute(&pool).await.unwrap();
+
+        assert_eq!(delete_account(&pool, 1).await.unwrap(), 1);
+        for table in ["accounts", "calendars", "events", "tasks", "sync_state", "fired_reminders"] {
+            let n: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {table}"))
+                .fetch_one(&pool).await.unwrap();
+            assert_eq!(n, 0, "{table} should be empty after the cascade");
+        }
+        assert_eq!(delete_account(&pool, 1).await.unwrap(), 0, "second delete finds nothing");
+    }
+}
