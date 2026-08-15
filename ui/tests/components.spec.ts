@@ -526,6 +526,20 @@ test.describe('EventBlock tooltip', () => {
     await page.mouse.move(0, 0);
     await expect(tip).toHaveCount(0);
   });
+
+  test('hover outranks the inline column z-index', async ({ page }) => {
+    // The block carries an inline `z-index: column+1`, and an inline style
+    // beats a plain hover rule — which left a hovered block (tooltip and
+    // all, `position: fixed` notwithstanding: the tooltip lives inside the
+    // block's stacking context) UNDER its higher-column neighbours in any
+    // dense week. The fix is `!important`, same as the hover rule's own
+    // `left`/`width` and the `.dragging` rule always had; this pins the
+    // computed value so the inline style can never quietly win again.
+    await page.goto(show('EventBlock', 'ladder-60'));
+    const ev = page.locator('.ev');
+    await ev.hover();
+    await expect.poll(() => ev.evaluate((el) => getComputedStyle(el).zIndex)).toBe('20');
+  });
 });
 
 // A hovered block widens over its neighbours. The resting fills are near-

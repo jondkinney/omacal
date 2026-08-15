@@ -169,8 +169,16 @@
     font: inherit;
   }
   /* Hover lifts the block to full width so a squeezed 3-way pile stays
-     readable without changing the layout rules (spec §7.1). */
-  .ev:hover { left: 3px !important; width: calc(100% - 6px) !important; z-index: 20;
+     readable without changing the layout rules (spec §7.1).
+
+     `z-index` needs `!important` exactly as `left`/`width` beside it do: the
+     element carries an inline `z-index: column+1`, which quietly outranks a
+     plain rule — leaving the hovered block (and the tooltip trapped in its
+     stacking context, `position: fixed` notwithstanding) UNDER its
+     higher-column neighbours. `.ev.dragging` below got this right from day
+     one; this rule had been losing the same fight invisibly until a dense
+     iCloud week made it obvious. */
+  .ev:hover { left: 3px !important; width: calc(100% - 6px) !important; z-index: 20 !important;
               box-shadow: inset 2px 0 0 0 var(--spine), 0 4px 14px rgba(0, 0, 0, .5); }
 
   /* 11.5/10.5, up from 10/9 (2026-08-14): at 10px the grid read as decoration
