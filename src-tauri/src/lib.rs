@@ -19,6 +19,8 @@ mod sync_loop;
 mod theme;
 mod theme_watch;
 mod tray;
+#[cfg(target_os = "linux")]
+mod omarchy_plugin;
 mod upcoming;
 mod update;
 mod write;
@@ -906,6 +908,10 @@ pub fn run() {
             {
                 let state = app.state::<AppState>();
                 upcoming::refresh_soon(state.pool.clone(), state.demo);
+                // And on Omarchy, make sure that widget exists at all — the
+                // app is its install medium (see `omarchy_plugin`).
+                #[cfg(target_os = "linux")]
+                omarchy_plugin::spawn(state.pool.clone(), state.demo);
             }
             update::spawn(app.handle().clone());
             #[cfg(target_os = "linux")]

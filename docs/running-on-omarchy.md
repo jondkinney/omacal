@@ -36,7 +36,9 @@ all five views without needing an account.
 calendar icon whose popup lists the event you are in right now and the rest
 of today's agenda — or, when today is done, the nearest day that has
 something — with times, locations, headcounts, and a join button for events
-with a conferencing link. Install and usage:
+with a conferencing link. **The app installs it automatically** on the
+first start on an Omarchy machine (omacal ≥ 0.1.11), keeps it updated, and
+never brings it back once you remove it. Usage and the hand-install path:
 [`packaging/omarchy-plugin/README.md`](../packaging/omarchy-plugin/README.md).
 
 The widget's bar button is omacal's own mark, and its popup carries the

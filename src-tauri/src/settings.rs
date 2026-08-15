@@ -179,7 +179,7 @@ pub struct AppSettings {
     pub week_start: WeekStart,
 }
 
-async fn read(pool: &SqlitePool, key: &str) -> Option<String> {
+pub(crate) async fn read(pool: &SqlitePool, key: &str) -> Option<String> {
     sqlx::query_scalar("SELECT value FROM settings WHERE key = ?1")
         .bind(key)
         .fetch_optional(pool)
@@ -188,7 +188,7 @@ async fn read(pool: &SqlitePool, key: &str) -> Option<String> {
         .flatten()
 }
 
-async fn write(pool: &SqlitePool, key: &str, value: &str) -> anyhow::Result<()> {
+pub(crate) async fn write(pool: &SqlitePool, key: &str, value: &str) -> anyhow::Result<()> {
     sqlx::query(
         "INSERT INTO settings (key, value) VALUES (?1, ?2)
          ON CONFLICT (key) DO UPDATE SET value = excluded.value",

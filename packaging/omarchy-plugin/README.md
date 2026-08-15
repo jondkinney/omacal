@@ -19,14 +19,25 @@ sync, and after every local edit.
 
 ## Install
 
-Until this directory has its own repo (`omarchy plugin add` clones a repo
-whose `manifest.json` sits at the root), install by hand:
+**You don't.** OmaCal ≥ 0.1.11 carries this plugin inside the app binary
+and installs it itself on the first start on an Omarchy machine — files
+into `~/.config/omarchy/plugins/omacal.upcoming/`, enabled once in the
+bar's right section, and kept up to date by later app releases (see
+`src-tauri/src/omarchy_plugin.rs` for the exact rules). Remove the widget
+(`omarchy plugin remove omacal.upcoming`) and the app respects that
+forever; move it around your bar and updates never touch its placement.
+
+On an older OmaCal, or to hack on the widget, install by hand:
 
 ```bash
 cp -r packaging/omarchy-plugin ~/.config/omarchy/plugins/omacal.upcoming
 omarchy-shell shell rescanPlugins
 omarchy plugin enable omacal.upcoming --section right
 ```
+
+(A hand-installed copy is *adopted* by the app afterwards, not fought —
+but note the app rewrites the files whenever its embedded copy is newer,
+so hack in the repo checkout, not in `~/.config`.)
 
 ## Drive it
 
