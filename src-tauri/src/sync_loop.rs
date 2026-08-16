@@ -98,6 +98,7 @@ async fn sync_and_report(app: &AppHandle) {
             }
             let _ = app.emit("sync-finished", serde_json::json!({ "upserted": n }));
             crate::upcoming::refresh(&state.pool, state.demo).await;
+            crate::invites::after_sync(app).await;
         }
         // No token yet, offline, revoked consent — all normal. Retry next tick.
         Err(e) => {

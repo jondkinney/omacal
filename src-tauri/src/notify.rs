@@ -37,6 +37,39 @@ pub(crate) enum Action {
     /// is acceptable and much simpler than persisting it, and the missed rule
     /// re-fires the reminder anyway while the event is still live.
     Snooze5m,
+    /// Accept the invitation this notification announces, for the whole
+    /// series (`respond_to_event`'s scope `all` — what answering the email
+    /// would do).
+    ///
+    /// Registered under the D-Bus key `default`, which is the click itself:
+    /// Omarchy's shell renders no action buttons and invokes exactly one
+    /// action, `default`, on left-click (right-click dismisses). One action,
+    /// not three — a Maybe or a No stays a considered answer in the popover,
+    /// while a click on "Invitation: …" is the yes it says it is.
+    ///
+    /// `start_ms` is the master's own start, carried so the handler needs no
+    /// re-read; scope `all` never resolves an instance, so any occurrence
+    /// anchor satisfies `respond_to_event_impl`.
+    AcceptInvite { event_id: i64, start_ms: i64 },
+}
+
+/// The D-Bus action key a clicked notification comes back with, resolved to
+/// the [`Action`] it stood for — `None` for a dismissal (`__closed`) or a key
+/// this notification never offered. Pure, because it is the one decision in
+/// the click path and the transport around it cannot be tested at all.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn action_for_key(actions: &[Action], key: &str) -> Option<Action> {
+    actions
+        .iter()
+        .find(|a| {
+            matches!(
+                (a, key),
+                (Action::Join(_), "join")
+                    | (Action::Snooze5m, "snooze")
+                    | (Action::AcceptInvite { .. }, "default")
+            )
+        })
+        .cloned()
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -64,7 +97,7 @@ pub(crate) trait Notifier: Send + Sync {
 /// The fallback title. Google will hold an event with no summary, and the same
 /// string is used by the grid (`commands.rs`) and the popover, so one untitled
 /// event is described one way wherever it appears.
-const NO_TITLE: &str = "(no title)";
+pub(crate) const NO_TITLE: &str = "(no title)";
 
 /// What one reminder should say, read in `tz` — the **display** zone, the
 /// user's own, not the calendar's. The calendar's zone decides *when* a
@@ -112,7 +145,7 @@ pub(crate) fn notification_for(d: &Due, tz: &str) -> Notification {
 
 /// `HH:MM` for an instant, read in `tz`. Falls back to UTC for an unknown zone
 /// rather than panicking, the same policy as `omacal_core::zone::date_in_zone`.
-fn time_in_zone(ms: i64, tz: &str) -> String {
+pub(crate) fn time_in_zone(ms: i64, tz: &str) -> String {
     let ts = jiff::Timestamp::from_millisecond(ms).unwrap_or(jiff::Timestamp::UNIX_EPOCH);
     let z = ts.in_tz(tz).unwrap_or_else(|_| ts.in_tz("UTC").expect("UTC always resolves"));
     format!("{:02}:{:02}", z.hour(), z.minute())
@@ -157,14 +190,32 @@ impl Notifier for RecordingNotifier {
 /// Omarchy's path: D-Bus `org.freedesktop.Notifications`, via `notify-rust`,
 /// with the action buttons that are the reason this is not the Tauri plugin.
 ///
-/// **Never compiled by this project's gates.** The only installed Rust target
-/// here is `aarch64-apple-darwin`, so `cargo test`, `cargo clippy` and
-/// `cargo check` all skip this block entirely. It is kept as thin as a wrapper
-/// can be for exactly that reason — every decision it could get wrong has been
-/// moved into [`notification_for`], which is tested. Spec §6 already records
-/// that the Omarchy box needs a visit; this is on the list for it.
+/// Kept as thin as a wrapper can be: every decision it could get wrong has
+/// been moved into [`notification_for`]/[`action_for_key`], which are tested,
+/// while this block only carries bytes to the bus and clicks back from it.
+///
+/// **Clicks flow through `on_action`.** The daemon reports an invoked action
+/// as a D-Bus signal for the notification's id, and `notify-rust` surfaces it
+/// only to a caller that keeps the handle and blocks on it — so each posted
+/// notification that could be acted on parks one thread in
+/// `wait_for_action`, which returns on click *or* dismissal. The callback is
+/// injected once at startup (`set_on_action`) rather than passed per post,
+/// so [`Notifier`]'s signature — and every tested caller of it — stays
+/// untouched.
 #[cfg(target_os = "linux")]
-pub(crate) struct DbusNotifier;
+#[derive(Default)]
+pub(crate) struct DbusNotifier {
+    on_action: std::sync::OnceLock<std::sync::Arc<dyn Fn(Action) + Send + Sync>>,
+}
+
+#[cfg(target_os = "linux")]
+impl DbusNotifier {
+    /// Injects the click handler. Second and later calls are ignored — one
+    /// dispatcher, wired once, in `run()`'s setup.
+    pub(crate) fn set_on_action(&self, f: std::sync::Arc<dyn Fn(Action) + Send + Sync>) {
+        let _ = self.on_action.set(f);
+    }
+}
 
 #[cfg(target_os = "linux")]
 impl Notifier for DbusNotifier {
@@ -176,13 +227,28 @@ impl Notifier for DbusNotifier {
             match action {
                 Action::Join(_) => builder.action("join", "Join"),
                 Action::Snooze5m => builder.action("snooze", "Snooze 5m"),
+                Action::AcceptInvite { .. } => builder.action("default", "Accept"),
             };
         }
 
-        builder
-            .show()
-            .map(|_| ())
-            .map_err(|e| NotifyError::Unavailable(e.to_string()))
+        let handle = builder.show().map_err(|e| NotifyError::Unavailable(e.to_string()))?;
+
+        // Dropping the handle leaves the notification up; it only forfeits
+        // the click. So the thread is parked only when a click could mean
+        // something — actions to hear about and a dispatcher to tell.
+        if let Some(cb) = self.on_action.get().cloned() {
+            if !n.actions.is_empty() {
+                let actions = n.actions.clone();
+                std::thread::spawn(move || {
+                    handle.wait_for_action(move |key| {
+                        if let Some(action) = action_for_key(&actions, key) {
+                            cb(action);
+                        }
+                    });
+                });
+            }
+        }
+        Ok(())
     }
 }
 
@@ -333,6 +399,28 @@ mod tests {
         assert_eq!(posted.len(), 2);
         assert_eq!(posted[0].title, "Standup");
         assert_eq!(posted[1].title, "Retro");
+    }
+
+    /// The one decision in the click path: which offered action a returned
+    /// D-Bus key stood for. `default` is the click itself — Omarchy's shell
+    /// invokes only that key, on left-click — and a dismissal (`__closed`)
+    /// must resolve to nothing, or closing an invitation would answer it.
+    #[test]
+    fn a_returned_key_resolves_only_to_an_action_the_notification_offered() {
+        let accept = Action::AcceptInvite { event_id: 7, start_ms: T0900Z };
+        let offered = vec![accept.clone()];
+        assert_eq!(action_for_key(&offered, "default"), Some(accept));
+        assert_eq!(action_for_key(&offered, "__closed"), None, "dismissal is not consent");
+        assert_eq!(action_for_key(&offered, "join"), None, "never offered here");
+
+        let reminder = vec![Action::Join("https://meet/x".into()), Action::Snooze5m];
+        assert_eq!(action_for_key(&reminder, "join"), Some(Action::Join("https://meet/x".into())));
+        assert_eq!(action_for_key(&reminder, "snooze"), Some(Action::Snooze5m));
+        assert_eq!(
+            action_for_key(&reminder, "default"),
+            None,
+            "a reminder registers no default — clicking one must not join a meeting"
+        );
     }
 
     /// A notifier that cannot post is the macOS case (§2.4), and the driver has

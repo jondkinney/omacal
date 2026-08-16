@@ -12,6 +12,7 @@ mod fixtures;
 /// that reads or writes `ui/tests/` is compiled into the shipped app.
 #[cfg(test)]
 mod golden;
+mod invites;
 mod notify;
 mod notify_loop;
 mod resume;
@@ -76,6 +77,13 @@ pub struct AppState {
     /// request, same reasoning as `reauth`.
     pub update: std::sync::Mutex<Option<update::UpdateNotice>>,
 }
+
+/// The notification transport, managed on its own rather than inside
+/// [`AppState`]: it exists only on desktop and only once `setup` has built
+/// it, and `AppState` is constructed by tests that must not need one.
+/// Readers use `try_state`, so its absence means "post nowhere" instead of a
+/// panic.
+pub(crate) struct NotifierHandle(pub(crate) std::sync::Arc<dyn notify::Notifier>);
 
 /// The title bar style the shipped `tauri.conf.json` actually asked for.
 ///
@@ -850,7 +858,10 @@ pub(crate) async fn sync_all(state: &AppState) -> anyhow::Result<u64> {
 
 /// Refreshes the access token and syncs every calendar of every account.
 #[tauri::command]
-async fn sync_now(state: tauri::State<'_, AppState>) -> Result<u64, String> {
+async fn sync_now(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+) -> Result<u64, String> {
     // Checked here, at the command boundary, rather than inside `sync_all` —
     // Task 4's background sync loop is a second caller that needs its own
     // demo check, and burying this one inside `sync_all` would leave that
@@ -859,6 +870,7 @@ async fn sync_now(state: tauri::State<'_, AppState>) -> Result<u64, String> {
 
     let n = sync_all(&state).await.map_err(|e| errors::user_facing(&e))?;
     status::record_sync(&state.pool, now_ms()).await.map_err(|e| e.to_string())?;
+    invites::after_sync(&app).await;
     Ok(n)
 }
 
@@ -1003,10 +1015,37 @@ pub fn run() {
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             {
                 #[cfg(target_os = "linux")]
-                let notifier: Box<dyn notify::Notifier> = Box::new(notify::DbusNotifier);
+                let notifier: std::sync::Arc<dyn notify::Notifier> = {
+                    let dbus = std::sync::Arc::new(notify::DbusNotifier::default());
+                    // The one dispatcher for clicked notification actions.
+                    // Wired here because it is the only place that has the
+                    // app handle the actions need; everything it does beyond
+                    // routing lives in tested functions.
+                    let handle = app.handle().clone();
+                    dbus.set_on_action(std::sync::Arc::new(move |action| match action {
+                        notify::Action::AcceptInvite { event_id, start_ms } => {
+                            let app = handle.clone();
+                            tauri::async_runtime::spawn(async move {
+                                invites::accept_from_notification(app, event_id, start_ms).await;
+                            });
+                        }
+                        notify::Action::Join(uri) => {
+                            if let Err(e) = tauri_plugin_opener::open_url(&uri, None::<&str>) {
+                                tracing::warn!(%e, "could not open the meeting link");
+                            }
+                        }
+                        // Still display-only; re-queueing is §2.5's future.
+                        notify::Action::Snooze5m => {}
+                    }));
+                    dbus
+                };
                 #[cfg(target_os = "macos")]
-                let notifier: Box<dyn notify::Notifier> =
-                    Box::new(notify::MacNotifier { app: app.handle().clone() });
+                let notifier: std::sync::Arc<dyn notify::Notifier> =
+                    std::sync::Arc::new(notify::MacNotifier { app: app.handle().clone() });
+                // Managed so the invite pass (`invites::after_sync`) and the
+                // click handler can post through the same transport the
+                // reminder loop uses.
+                app.manage(NotifierHandle(notifier.clone()));
                 notify_loop::spawn(app.handle().clone(), notifier);
             }
 

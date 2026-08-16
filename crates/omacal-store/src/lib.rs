@@ -4,11 +4,16 @@ use std::str::FromStr;
 
 pub mod calendars;
 pub mod events;
+pub mod invites;
 pub mod reminders;
 pub mod tasks;
 pub use calendars::{
     calendar_for_write, delete_account, list_calendars, set_color_override, set_selected,
     set_sync_enabled, CalendarRow,
+};
+pub use invites::{
+    mark_invites_seeded, record_invite_notice, unanswered_invites, unseeded_calendars,
+    InviteCandidate,
 };
 pub use reminders::{fired_keys, prune_fired, record_fired};
 pub use tasks::{

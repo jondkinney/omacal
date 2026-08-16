@@ -155,6 +155,21 @@ pub async fn set_sync_enabled(pool: &SqlitePool, id: i64, on: bool) -> anyhow::R
     let removed = if on {
         0
     } else {
+        // The invite ledger goes with the events — through them, so before
+        // them. Left behind, a stale `invite_scan` row would make a re-added
+        // calendar's backlog read as news, and orphaned notices could
+        // silence a fresh invitation if SQLite ever reissued a rowid.
+        sqlx::query(
+            "DELETE FROM invite_notices WHERE event_id IN (
+                SELECT id FROM events WHERE calendar_id = ?1)",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+        sqlx::query("DELETE FROM invite_scan WHERE calendar_id = ?1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
         let n = sqlx::query("DELETE FROM events WHERE calendar_id = ?1")
             .bind(id)
             .execute(&mut *tx)
@@ -497,6 +512,25 @@ pub async fn delete_account(pool: &SqlitePool, account_id: i64) -> anyhow::Resul
     .bind(account_id)
     .execute(&mut *tx)
     .await?;
+    // The invite ledger carries no foreign keys either, for the same reason
+    // as fired_reminders — so the same by-hand sweep, and through the events
+    // before the cascade takes them.
+    sqlx::query(
+        "DELETE FROM invite_notices WHERE event_id IN (
+            SELECT e.id FROM events e
+            JOIN calendars c ON c.id = e.calendar_id
+            WHERE c.account_id = ?1)",
+    )
+    .bind(account_id)
+    .execute(&mut *tx)
+    .await?;
+    sqlx::query(
+        "DELETE FROM invite_scan WHERE calendar_id IN (
+            SELECT id FROM calendars WHERE account_id = ?1)",
+    )
+    .bind(account_id)
+    .execute(&mut *tx)
+    .await?;
     let gone = sqlx::query("DELETE FROM accounts WHERE id = ?1")
         .bind(account_id)
         .execute(&mut *tx)
@@ -542,9 +576,14 @@ mod cascade_tests {
              VALUES (1, 0, 5, 1, 0)",
         )
         .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO invite_notices (event_id, noticed_at_ms, posted) VALUES (1, 0, 1)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO invite_scan (calendar_id, seeded_at_ms) VALUES (1, 0)")
+            .execute(&pool).await.unwrap();
 
         assert_eq!(delete_account(&pool, 1).await.unwrap(), 1);
-        for table in ["accounts", "calendars", "events", "tasks", "sync_state", "fired_reminders"] {
+        for table in ["accounts", "calendars", "events", "tasks", "sync_state", "fired_reminders",
+                      "invite_notices", "invite_scan"] {
             let n: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {table}"))
                 .fetch_one(&pool).await.unwrap();
             assert_eq!(n, 0, "{table} should be empty after the cascade");

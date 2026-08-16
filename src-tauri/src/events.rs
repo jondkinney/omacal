@@ -481,7 +481,7 @@ pub async fn respond_to_event(
 /// The gate is the first statement. Everything past it reads the config file,
 /// the Keychain and Google, and then *writes to somebody's real calendar* —
 /// the first thing in this app that does.
-async fn respond_to_event_impl(
+pub(crate) async fn respond_to_event_impl(
     state: &AppState,
     id: i64,
     response: &str,

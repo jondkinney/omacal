@@ -272,7 +272,7 @@ pub(crate) fn next_wake_ms(next_fire_ms: Option<i64>, now_ms: i64, sync_interval
 /// every due reminder as fired while posting nothing, and a recorded reminder
 /// is never offered again — it would have silently consumed the first day of
 /// notifications.
-pub(crate) fn spawn(app: tauri::AppHandle, notifier: Box<dyn crate::notify::Notifier>) {
+pub(crate) fn spawn(app: tauri::AppHandle, notifier: std::sync::Arc<dyn crate::notify::Notifier>) {
     tauri::async_runtime::spawn(async move {
         loop {
             let (pool, demo, interval) = {
