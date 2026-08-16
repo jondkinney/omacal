@@ -227,6 +227,30 @@ mod tests {
         assert!(out.iter().all(|i| i.start_ms != MON_0900_SOFIA + DAY));
     }
 
+    /// The shape a real "custom" series arrives in (seen live, 2026-08-16):
+    /// a monthly nth-weekday rule, plus one EXDATE line naming *several*
+    /// deleted occurrences in a comma list, in a zone with a half-hour
+    /// offset. Everything before this covered only single-value EXDATEs.
+    #[test]
+    fn a_comma_list_exdate_removes_each_named_instance() {
+        // Wednesday 2025-08-20 13:30 Asia/Kolkata (+5:30) == 08:00Z, the
+        // third Wednesday of its month. Verify with:
+        // `python3 -c "import datetime as d; print(int(d.datetime(2025,8,20,8,tzinfo=d.timezone.utc).timestamp()*1000))"`
+        let s = Series {
+            dtstart_ms: 1_755_676_800_000, dtstart_tz: "Asia/Kolkata",
+            duration_ms: 3 * HOUR, is_all_day: false,
+            recurrence: &weekly(&[
+                "RRULE:FREQ=MONTHLY;BYDAY=3WE",
+                "EXDATE;TZID=Asia/Kolkata:20260218T133000,20260318T133000,20260520T133000,20260617T133000,20260715T133000",
+            ]),
+        };
+        // Feb 1 .. Sep 1 2026 (UTC): five of the seven third Wednesdays are
+        // excluded, leaving exactly Apr 15 and Aug 19, both at 08:00Z.
+        let out = expand(&s, 1_769_904_000_000, 1_788_220_800_000, 50).unwrap().intervals;
+        let starts: Vec<i64> = out.iter().map(|i| i.start_ms).collect();
+        assert_eq!(starts, vec![1_776_240_000_000, 1_787_126_400_000]);
+    }
+
     #[test]
     fn count_is_respected() {
         let s = Series {

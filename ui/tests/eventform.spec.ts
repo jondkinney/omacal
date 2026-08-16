@@ -97,22 +97,55 @@ test.describe('ruleInWords', () => {
     expect(words.endsWith('…')).toBe(true);
   });
 
-  test('shows a multi-line rule verbatim — the commonest real custom', () => {
+  test('describes a rule-plus-EXDATE blob — the commonest real custom', () => {
     // `recurrence` is newline-joined (`convert.rs`), and what actually makes a
     // real event `custom` is usually not an exotic RRULE at all: it is an
-    // ordinary weekly rule plus an EXDATE naming occurrences somebody deleted.
-    // Describing the first line alone would omit the deletions entirely, so
-    // the tidy `Custom · Every 2 weeks` in the DOM spec is the pretty case,
-    // not the representative one.
-    const rule = 'RRULE:FREQ=WEEKLY\nEXDATE;TZID=Europe/Sofia:20260817T090000';
-    expect(ruleInWords(rule)).toBe(rule);
+    // ordinary rule plus an EXDATE naming occurrences somebody deleted. The
+    // deletions stay in the sentence — as a count, not as the raw timestamps
+    // the popover was caught printing where its cadence line goes.
+    expect(ruleInWords('RRULE:FREQ=WEEKLY\nEXDATE;TZID=Europe/Sofia:20260817T090000'))
+      .toBe('Weekly, except 1 date');
 
-    // Honest note on what the line above does and does not prove: this input
-    // reaches the verbatim branch *anyway*, because `TZID` is not a part the
-    // whitelist knows. Deleting the newline guard does not fail it. The guard
-    // is a second lock on the same door, and this is the input that turns it —
-    // a `;` before the line break leaves `COUNT=3` looking like an ordinary
-    // part of the first line, and without the guard the whole thing is
+    // The blob seen live (2026-08-16): EXDATE line first, six dates in one
+    // comma list, the rule last. Line order carries no meaning.
+    const live = 'EXDATE;TZID=Asia/Kolkata:20250917T133000,20260218T133000,20260318T133000,'
+      + '20260520T133000,20260617T133000,20260715T133000\nRRULE:FREQ=MONTHLY;BYDAY=3WE';
+    expect(ruleInWords(live)).toBe('Monthly on the third Wednesday, except 6 dates');
+
+    // RDATEs are the same trade in the other direction.
+    expect(ruleInWords('RRULE:FREQ=WEEKLY\nRDATE;TZID=Europe/Sofia:20260901T090000'))
+      .toBe('Weekly, plus 1 added date');
+
+    // The cap guards the verbatim fallback, not the parse: an EXDATE list
+    // from a long-lived series sails past 200 characters while its
+    // description stays one line. Asserted over-cap, or this proves nothing.
+    const dates = Array.from({ length: 15 }, (_, i) =>
+      `2026${String((i % 12) + 1).padStart(2, '0')}01T090000`).join(',');
+    const long = `RRULE:FREQ=WEEKLY\nEXDATE;TZID=Europe/Sofia:${dates}`;
+    expect(long.length).toBeGreaterThan(200);
+    expect(ruleInWords(long)).toBe('Weekly, except 15 dates');
+  });
+
+  test('shows a blob carrying any line it does not fully model verbatim', () => {
+    // Two rules in one recurrence is legal and beyond the vocabulary.
+    const two = 'RRULE:FREQ=WEEKLY\nRRULE:FREQ=DAILY';
+    expect(ruleInWords(two)).toBe(two);
+
+    // Dates with no rule to hang them on.
+    const bare = 'EXDATE;TZID=Europe/Sofia:20260817T090000\nEXDATE;TZID=Europe/Sofia:20260824T090000';
+    expect(ruleInWords(bare)).toBe(bare);
+
+    // A PERIOD-valued RDATE names spans, not dates — a count would lie.
+    const period = 'RRULE:FREQ=WEEKLY\nRDATE;VALUE=PERIOD:20260817T090000Z/20260817T100000Z';
+    expect(ruleInWords(period)).toBe(period);
+
+    // An unmodelled RRULE poisons the whole blob — "Monthly, except 1 date"
+    // for a BYSETPOS rule is the partial description this function refuses.
+    const exotic = 'RRULE:FREQ=MONTHLY;BYDAY=MO;BYSETPOS=2\nEXDATE;TZID=Europe/Sofia:20260817T090000';
+    expect(ruleInWords(exotic)).toBe(exotic);
+
+    // A `;` before the line break leaves `COUNT=3` looking like an ordinary
+    // part of the first line; glued back together, the whole thing would be
     // described as "Weekly, 3 times".
     const spanning = 'RRULE:FREQ=WEEKLY;\nCOUNT=3';
     expect(ruleInWords(spanning)).toBe(spanning);

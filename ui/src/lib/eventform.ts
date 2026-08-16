@@ -1053,7 +1053,9 @@ function sameReminders(value: EventFormValue, initial: EventFormValue): boolean 
 // actually does.
 
 /** A rule longer than this is not one anybody reads in a dropdown, and the
- *  text arrives from whoever created the event. */
+ *  text arrives from whoever created the event. Caps the RRULE line offered
+ *  for parsing and the verbatim fallback — not an EXDATE list, whose length
+ *  never reaches the description (`ruleInWords` shows it as a count). */
 const MAX_RULE_LENGTH = 200;
 
 /** Singular phrase, plural noun. */
@@ -1116,74 +1118,136 @@ const listInWords = (items: string[]): string =>
     ? (items[0] ?? '')
     : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
 
-/**
- * An RRULE, described in English.
- *
- * Falls back to the rule itself — never to a partial description — whenever it
- * meets a part it does not model, an unreadable value, or no `FREQ` at all.
- * That is the whole design: showing "Monthly" for
- * `FREQ=MONTHLY;BYMONTHDAY=15;BYSETPOS=1` would tell the user the rule is
- * something simpler than it is, immediately before offering to replace it.
- * The raw rule is ugly and always honest.
- */
-export function ruleInWords(rule: string | null): string {
-  if (!rule) return '';
-  const raw = rule.trim();
-
-  // Over the cap: shown as a visibly-cut rule, never parsed. Truncating first
-  // and describing the remainder is how a rule whose only unmodelled part sits
-  // past the cut — `…;BYSETPOS=2` at character 205 — gets a full, confident
-  // English description with the part that changes its meaning silently gone.
-  // A cut rule still *looks* like a rule; a cut description does not look cut.
-  if (raw.length > MAX_RULE_LENGTH) return `${raw.slice(0, MAX_RULE_LENGTH)}…`;
-
-  // More than one iCalendar line. `recurrence` is newline-joined
-  // (`convert.rs`), and the commonest `custom` in real data is an ordinary
-  // `RRULE` followed by an `EXDATE` naming occurrences somebody deleted —
-  // which is *why* it is custom. Nothing here models a second line, and a
-  // description of the first alone would omit the deletions entirely.
-  if (raw.includes('\n')) return raw;
-
-  const body = /^rrule:/i.test(raw) ? raw.slice('RRULE:'.length) : raw;
-
+/** The body of one RRULE (no `RRULE:` prefix) in English, or `null` the
+ *  moment it meets a part it does not model, an unreadable value, or no
+ *  `FREQ` at all — never a partial description. */
+function rruleBodyInWords(body: string): string | null {
   const parts = new Map<string, string>();
   for (const part of body.split(';')) {
     if (part.trim() === '') continue;
     const eq = part.indexOf('=');
-    if (eq <= 0) return raw;
+    if (eq <= 0) return null;
     const key = part.slice(0, eq).trim().toUpperCase();
-    if (!KNOWN_PARTS.has(key) || parts.has(key)) return raw;
+    if (!KNOWN_PARTS.has(key) || parts.has(key)) return null;
     parts.set(key, part.slice(eq + 1).trim());
   }
 
   const freq = FREQ_WORDS[(parts.get('FREQ') ?? '').toUpperCase()];
-  if (!freq) return raw;
+  if (!freq) return null;
 
   const interval = Number(parts.get('INTERVAL') ?? '1');
-  if (!Number.isInteger(interval) || interval < 1) return raw;
+  if (!Number.isInteger(interval) || interval < 1) return null;
   let words = interval > 1 ? `Every ${interval} ${freq[1]}` : freq[0];
 
   const byday = parts.get('BYDAY');
   if (byday !== undefined) {
     const tokens = byday.split(',');
     const days = tokens.map(dayInWords);
-    if (days.some((d) => d === null)) return raw;
+    if (days.some((d) => d === null)) return null;
     words += ` on ${listInWords(days as string[])}`;
   }
 
   const count = parts.get('COUNT');
   if (count !== undefined) {
     const n = Number(count);
-    if (!Number.isInteger(n) || n < 1) return raw;
+    if (!Number.isInteger(n) || n < 1) return null;
     words += `, ${n} time${n === 1 ? '' : 's'}`;
   }
 
   const until = parts.get('UNTIL');
   if (until !== undefined) {
     const when = untilInWords(until);
-    if (!when) return raw;
+    if (!when) return null;
     words += `, until ${when}`;
   }
 
+  return words;
+}
+
+/** How many dates an `EXDATE`/`RDATE` line names, or `null` for a line this
+ *  cannot honestly count: any other property, a `PERIOD`-valued `RDATE`
+ *  (those name spans, not dates), or a value that does not read as an
+ *  iCalendar date or date-time. Values are shape-checked but not interpreted:
+ *  a count needs to know how many they are, not when they fall. */
+function datesListed(line: string): { kind: 'EXDATE' | 'RDATE'; count: number } | null {
+  const m = /^(EXDATE|RDATE)[;:]/i.exec(line);
+  if (!m) return null;
+  const colon = line.indexOf(':');
+  if (colon < 0) return null;
+  if (line.slice(0, colon).toUpperCase().includes('VALUE=PERIOD')) return null;
+  const values = line.slice(colon + 1).split(',').map((v) => v.trim());
+  if (!values.every((v) => /^\d{8}(T\d{6}Z?)?$/.test(v))) return null;
+  return { kind: m[1].toUpperCase() as 'EXDATE' | 'RDATE', count: values.length };
+}
+
+/**
+ * A recurrence, described in English.
+ *
+ * Falls back to the raw text — never to a partial description — whenever it
+ * meets anything it does not fully model. That is the whole design: showing
+ * "Monthly" for `FREQ=MONTHLY;BYMONTHDAY=15;BYSETPOS=1` would tell the user
+ * the rule is something simpler than it is, immediately before offering to
+ * replace it. The raw rule is ugly and always honest.
+ *
+ * `recurrence` is newline-joined (`convert.rs`), and the commonest `custom`
+ * in real data is not an exotic RRULE at all: it is an ordinary rule plus an
+ * `EXDATE` naming occurrences somebody deleted — which is *why* it is custom.
+ * That blob is described too, with the deletions as a count — "Monthly on the
+ * third Wednesday, except 6 dates". The count is what keeps the description
+ * honest: the deletions stay in the sentence, without the six raw timestamps
+ * the popover was caught printing where its cadence line goes (2026-08-16).
+ * Exactly one `RRULE` line, every other line a countable `EXDATE`/`RDATE`,
+ * or the whole blob shows verbatim.
+ */
+export function ruleInWords(rule: string | null): string {
+  if (!rule) return '';
+  const raw = rule.trim();
+  if (raw === '') return '';
+
+  // The verbatim fallback: visibly cut over the cap. A cut rule still *looks*
+  // like a rule; a cut description does not look cut — which is why nothing
+  // over the cap is ever offered for parsing (below), only shown.
+  const verbatim = raw.length > MAX_RULE_LENGTH ? `${raw.slice(0, MAX_RULE_LENGTH)}…` : raw;
+
+  const lines = raw.split('\n').map((l) => l.trim()).filter((l) => l !== '');
+
+  // One line: the rule itself, its `RRULE:` prefix optional. Never parsed
+  // over the cap: describing a rule's readable half in full, confident
+  // English — `…;BYSETPOS=2` at character 205 silently gone — is the failure
+  // mode the cap exists for.
+  if (lines.length === 1) {
+    const line = lines[0];
+    if (line.length > MAX_RULE_LENGTH) return verbatim;
+    const body = /^rrule:/i.test(line) ? line.slice('RRULE:'.length) : line;
+    return rruleBodyInWords(body) ?? verbatim;
+  }
+
+  // A multi-line blob: the rule, plus the deletions/additions that made it
+  // custom. An EXDATE list has no cap of its own — a long-lived series with
+  // a dozen deletions is exactly the event this path exists for, and its
+  // count stays one word however long the list grows.
+  let ruleBody: string | null = null;
+  let added = 0;
+  let except = 0;
+  for (const line of lines) {
+    if (/^rrule:/i.test(line)) {
+      // Two rules in one recurrence is legal (events.rs models it) and
+      // beyond this vocabulary.
+      if (ruleBody !== null || line.length > MAX_RULE_LENGTH) return verbatim;
+      ruleBody = line.slice('RRULE:'.length);
+      continue;
+    }
+    const dates = datesListed(line);
+    if (dates === null) return verbatim;
+    if (dates.kind === 'RDATE') added += dates.count;
+    else except += dates.count;
+  }
+  // Dates with no rule to hang them on: nothing to describe them against.
+  if (ruleBody === null) return verbatim;
+
+  let words = rruleBodyInWords(ruleBody);
+  if (words === null) return verbatim;
+  if (added > 0) words += `, plus ${added} added date${added === 1 ? '' : 's'}`;
+  if (except > 0) words += `, except ${except} date${except === 1 ? '' : 's'}`;
   return words;
 }
