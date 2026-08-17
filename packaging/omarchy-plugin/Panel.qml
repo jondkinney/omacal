@@ -95,18 +95,18 @@ Panel {
     return "Nothing scheduled"
   }
 
-  // The popup's header line. NOT `heroMeta`: with the sections on screen the
-  // running meeting is already the ONGOING row directly beneath, and echoing
-  // it up here said the same thing twice (2026-08-17, by request). What the
-  // header can add is the one number no row carries — how long until the
-  // next meeting.
+  // The popup's header line. NOT `heroMeta`: with the sections on screen,
+  // anything the header says about a meeting is some row said again — first
+  // the running one, then, once that moved into ONGOING, the next one, which
+  // is just the first UPCOMING row (both caught live, 2026-08-17). So the
+  // line only speaks when there are no rows to speak for it: the app being
+  // down, the feed missing, an empty day. Empty string collapses — PanelHero
+  // hides an empty meta.
   function popupHeroMeta() {
     if (!appRunning) return "OmaCal is not running"
-    if (nextEvent)
-      return Model.title(nextEvent) + " · " + Model.leadText(nextEvent.start_ms, nowMs)
-    if (runningEvent) return "Nothing after this"
     if (!feed) return "Waiting for OmaCal"
-    return "Nothing scheduled"
+    if (empty) return "Nothing scheduled"
+    return ""
   }
 
   function openApp() {
