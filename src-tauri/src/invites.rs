@@ -83,8 +83,15 @@ pub(crate) fn invite_notification(c: &InviteCandidate, display_tz: &str) -> Noti
     } else {
         Vec::new()
     };
+    // A sticky card with no visible control needs its ways out spelled on
+    // the card itself — "how do you dismiss it?" was the first question the
+    // sticky toast earned in the field (2026-08-17). Omarchy's shell draws
+    // no buttons and no close cross; the body line is the one surface this
+    // app owns there.
     if !actions.is_empty() {
-        body.push_str("\nClick to accept");
+        body.push_str("\nClick to accept · right-click to dismiss");
+    } else if cfg!(target_os = "linux") {
+        body.push_str("\nRight-click to dismiss");
     }
 
     Notification {
@@ -571,13 +578,21 @@ mod tests {
             n.actions,
             vec![Action::AcceptInvite { event_id: 7, start_ms: NOW + HOUR }]
         );
-        assert!(n.body.ends_with("Click to accept"), "{}", n.body);
+        assert!(
+            n.body.ends_with("Click to accept · right-click to dismiss"),
+            "{}", n.body
+        );
 
         let mut caldav = candidate();
         caldav.provider = "caldav".into();
         let n = invite_notification(&caldav, SOFIA);
         assert!(n.actions.is_empty(), "no RSVP write exists for CalDAV");
-        assert!(!n.body.contains("Click"), "must not instruct a click that does nothing");
+        assert!(
+            !n.body.contains("Click to accept"),
+            "must not instruct a click that does nothing"
+        );
+        // Sticky with no click of its own still spells its way out.
+        assert!(n.body.ends_with("Right-click to dismiss"), "{}", n.body);
 
         let mut reader = candidate();
         reader.access_role = "reader".into();
