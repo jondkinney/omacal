@@ -25,9 +25,16 @@ no restart.
     curl -fsSL https://extremelabs.io/omacal/install.sh | sh
 
 Linux, x86_64. The latest release AppImage lands in `~/.local/bin/omacal` with
-a desktop entry; run the same line again to update. Prefer a package? The
-`.deb` and `.rpm` are on the [releases
-page](https://github.com/x3me/omacal/releases).
+a desktop entry; run the same line again to update. The AppImage needs FUSE2 —
+stock Ubuntu 24.04+ doesn't ship it, and the installer offers to add it there.
+
+**On Debian/Ubuntu**, the `.deb` from the [releases
+page](https://github.com/x3me/omacal/releases) is the native path — no FUSE
+needed, dependencies resolved by apt:
+
+    sudo apt install ./omacal_<version>_amd64.deb
+
+The `.rpm` on the same page covers Fedora-family the same way.
 
 Then run `omacal` and click **Connect Google Calendar**. No config file, no
 Google Cloud project: release builds carry their own client credentials, and
