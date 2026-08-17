@@ -88,16 +88,21 @@ function endsText(ev, nowMs) {
 // Groups the feed into the popup's sections at `nowMs`. The popup is a
 // glance, not a planner, so it shows **one day**:
 //
-//   NOW       timed events started and not yet over
-//   ONGOING   multi-day all-day events that began before today (a trip, a
-//             conference). Context, not agenda — they never count as "today
-//             still has something".
-//   TODAY     starts later today (all-day events starting today included)
+//   ONGOING   timed events started and not yet over — meetings actually
+//             happening right now, and nothing else (2026-08-17, by
+//             request: this word had been spent on multi-day spans while
+//             the running meeting sat under "NOW")
+//   ALL DAY   all-day events covering today, whether they began today or
+//             weeks ago (a trip, a conference). Context, not agenda — they
+//             never count as "today still has something".
+//   UPCOMING  timed events starting later today
 //
 // When nothing is left for today, the day section becomes the **nearest
 // future day that has anything** — Friday evening with an empty Saturday
 // shows Sunday's plans under "SUNDAY 16 AUG", not a blank. Days between are
-// silently skipped; days past the chosen one are never shown.
+// silently skipped; days past the chosen one are never shown. All-day
+// events on such a future day stay in its rows: that section is a day's
+// agenda, and ALL DAY here means "today".
 //
 // Events already over are dropped — the feed refreshes on sync, and between
 // syncs this is what keeps the list truthful. Rows beyond `cap` are cut from
@@ -106,8 +111,8 @@ function endsText(ev, nowMs) {
 function sections(events, nowMs, cap) {
   if (!events) return []
   var today = dayStart(nowMs, 0)
-  var now = []
   var ongoing = []
+  var allDay = []
   var byOffset = {}
   var offsets = []
 
@@ -115,15 +120,15 @@ function sections(events, nowMs, cap) {
     var ev = events[i]
     if (ev.end_ms <= nowMs) continue
     if (!ev.all_day && ev.start_ms <= nowMs) {
-      now.push(ev)
+      ongoing.push(ev)
       continue
     }
     // All-day starts are midnight in the calendar's zone; anchoring half a
     // day in buckets them onto the right local date whatever the skew.
     var anchor = ev.all_day ? ev.start_ms + 43200000 : ev.start_ms
     var offset = Math.floor((dayStart(anchor, 0) - today) / 86400000)
-    if (ev.all_day && offset < 0) {
-      ongoing.push(ev)
+    if (ev.all_day && offset <= 0) {
+      allDay.push(ev)
       continue
     }
     if (offset < 0) offset = 0
@@ -149,14 +154,21 @@ function sections(events, nowMs, cap) {
     out.push({ title: title, rows: kept })
   }
 
-  if (now.length) push("NOW", now)
   if (ongoing.length) push("ONGOING", ongoing)
-  if (chosen === 0) push("TODAY", byOffset[0])
+  if (allDay.length) push("ALL DAY", allDay)
+  if (chosen === 0) push("UPCOMING", byOffset[0])
   else if (chosen === 1) push("TOMORROW", byOffset[1])
   // Title from the chosen day itself, not from an event's start instant —
   // an all-day start is a foreign-zone midnight and can misname the day.
   else if (chosen > 1) push(dayTitle(dayStart(nowMs, chosen) + 43200000), byOffset[chosen])
   return out
+}
+
+// Whether an all-day event covers more than one calendar day — what decides
+// if an ALL DAY row carries an "until 12 DEC" caption. A single day is
+// 23–25 hours across DST, so the midpoint test is the safe one.
+function isMultiDay(ev) {
+  return !!ev.all_day && (ev.end_ms - ev.start_ms) > 129600000 // 1.5 days
 }
 
 // "until 12 DEC" for an ongoing multi-day event. `end_ms` is an exclusive

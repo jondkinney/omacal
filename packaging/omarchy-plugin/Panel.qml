@@ -41,7 +41,7 @@ Panel {
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
   // The machine clock the popup buckets and counts against. Ticks while the
-  // popup is open so "ends in 12 min" and the NOW section stay honest; a
+  // popup is open so "ends in 12 min" and the ONGOING section stay honest; a
   // slower tick keeps the closed bar icon's state fresh without cost.
   property double nowMs: Date.now()
 
@@ -94,7 +94,22 @@ Panel {
   }
 
   function openApp() {
-    Quickshell.execDetached(["omacal"])
+    if (root.appRunning) {
+      // A running app answers the messenger with show()+set_focus(), and on
+      // Hyprland an app-side focus request cannot pull the user to a window
+      // on ANOTHER workspace — the button read as dead exactly there
+      // (2026-08-17, reported live). Only the compositor can cross
+      // workspaces, so: deliver the messenger (un-hides a tray-hidden
+      // window), give it a beat to map, then have hyprctl jump to it. The
+      // messenger runs backgrounded inside the shell so a stale appRunning
+      // (app actually gone) turns it into a plain launch that this line
+      // never waits on; focuswindow then finds nothing yet, which is fine —
+      // a fresh window opens focused on the current workspace anyway.
+      Quickshell.execDetached(["sh", "-c",
+        "(omacal >/dev/null 2>&1 &); sleep 0.4; exec hyprctl dispatch focuswindow class:omacal"])
+    } else {
+      Quickshell.execDetached(["omacal"])
+    }
     root.appRunning = true // optimistic; the next check corrects if not
     root.close()
   }
@@ -318,7 +333,7 @@ Panel {
 
               PanelSectionHeader {
                 text: sectionColumn.modelData.title
-                foreground: sectionColumn.modelData.title === "NOW" ? root.urgent : root.foreground
+                foreground: sectionColumn.modelData.title === "ONGOING" ? root.urgent : root.foreground
                 fontFamily: root.fontFamily
               }
 
@@ -466,8 +481,8 @@ Panel {
     property var event: null
     property int flatIndex: 0
     property string sectionTitle: ""
-    readonly property bool inNow: sectionTitle === "NOW"
     readonly property bool inOngoing: sectionTitle === "ONGOING"
+    readonly property bool inAllDay: sectionTitle === "ALL DAY"
 
     hasCursor: root.cursorActive && root.rowCursor === flatIndex
     foreground: root.foreground
@@ -520,8 +535,10 @@ Panel {
           text: {
             var meta = Model.metaText(row.event)
             var lead = ""
-            if (row.inNow) lead = Model.endsText(row.event, root.nowMs)
-            else if (row.inOngoing) lead = Model.untilText(row.event)
+            if (row.inOngoing) lead = Model.endsText(row.event, root.nowMs)
+            // A single-day event under ALL DAY needs no caption — the
+            // section header already says everything its dates could.
+            else if (row.inAllDay && Model.isMultiDay(row.event)) lead = Model.untilText(row.event)
             if (lead === "") return meta
             return meta === "" ? lead : lead + "  ·  " + meta
           }
@@ -533,10 +550,12 @@ Panel {
       }
 
       Text {
-        visible: !row.inOngoing
-        text: row.inOngoing ? "" : Model.timeText(row.event)
-        color: row.inNow ? root.urgent : root.foreground
-        opacity: row.inNow ? 1.0 : 0.75
+        // In the ALL DAY section the time column would only repeat the
+        // header, so the whole column goes.
+        visible: !row.inAllDay
+        text: row.inAllDay ? "" : Model.timeText(row.event)
+        color: row.inOngoing ? root.urgent : root.foreground
+        opacity: row.inOngoing ? 1.0 : 0.75
         font.family: root.fontFamily
         font.pixelSize: Style.font.bodySmall
         Layout.alignment: Qt.AlignVCenter
