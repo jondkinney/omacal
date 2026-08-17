@@ -119,10 +119,19 @@ Panel {
       // window), give it a beat to map, then have hyprctl jump to it. The
       // messenger runs backgrounded inside the shell so a stale appRunning
       // (app actually gone) turns it into a plain launch that this line
-      // never waits on; focuswindow then finds nothing yet, which is fine —
+      // never waits on; the dispatches then find nothing, which is fine —
       // a fresh window opens focused on the current workspace anyway.
+      //
+      // Hyprland ≥ 0.56 (Omarchy 4) speaks Lua through hyprctl — the old
+      // keyword dispatchers are gone, `focuswindow class:…` is a parse
+      // error. And focus alone does not restack: without bring_to_top a
+      // floating omacal covered by another float takes keyboard focus while
+      // staying hidden, which reads as a dead button with keystrokes going
+      // to the wrong window.
       Quickshell.execDetached(["sh", "-c",
-        "(omacal >/dev/null 2>&1 &); sleep 0.4; exec hyprctl dispatch focuswindow class:omacal"])
+        "(omacal >/dev/null 2>&1 &); sleep 0.4; " +
+        "hyprctl dispatch 'hl.dsp.focus({ window = \"class:omacal\" })'; " +
+        "exec hyprctl dispatch 'hl.dsp.window.bring_to_top({ window = \"class:omacal\" })'"])
     } else {
       Quickshell.execDetached(["omacal"])
     }
