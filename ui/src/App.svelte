@@ -736,6 +736,11 @@
    */
   async function refreshAfterWrite() {
     await reload();
+    // The invitation badge is a function of self_response, and an RSVP from
+    // the popover is a write that changes it — without this, answering an
+    // invitation on its block left the tray claiming it for up to a sync
+    // interval (noticed live, 2026-08-17, minutes after the tray shipped).
+    await refreshInvites();
     busy = true;
     try {
       await syncNow();
