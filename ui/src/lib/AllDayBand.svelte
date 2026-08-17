@@ -89,7 +89,12 @@
   .chip { appearance: none; -webkit-appearance: none;
           font: inherit; text-align: left; cursor: pointer;
           border: 0; border-left: 2px solid var(--cal);
-          font-size: 10.5px; border-radius: 4px; padding: 2px 7px; white-space: nowrap;
+          /* The same size and near the same weight as a timed block's title
+             (EventBlock 11.5px/600): at 10.5px these were the faintest text
+             on the grid, on the row least likely to be looked at directly
+             (2026-08-17, by request). */
+          font-size: 11.5px; font-weight: 500;
+          border-radius: 4px; padding: 2px 7px; white-space: nowrap;
           overflow: hidden; text-overflow: ellipsis;
           margin: 0 2px 2px 0;
           background: color-mix(in srgb, var(--cal) 16%, transparent);
