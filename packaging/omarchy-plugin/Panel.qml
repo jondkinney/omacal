@@ -83,12 +83,28 @@ Panel {
     return rows
   }
 
+  // The bar tooltip's line: with the popup closed, the running meeting and
+  // when it ends is exactly the glance the bar is for.
   function heroMeta() {
     if (!appRunning) return "OmaCal is not running"
     if (runningEvent)
       return Model.title(runningEvent) + " · " + Model.endsText(runningEvent, nowMs)
     if (nextEvent)
       return Model.title(nextEvent) + " · " + Model.leadText(nextEvent.start_ms, nowMs)
+    if (!feed) return "Waiting for OmaCal"
+    return "Nothing scheduled"
+  }
+
+  // The popup's header line. NOT `heroMeta`: with the sections on screen the
+  // running meeting is already the ONGOING row directly beneath, and echoing
+  // it up here said the same thing twice (2026-08-17, by request). What the
+  // header can add is the one number no row carries — how long until the
+  // next meeting.
+  function popupHeroMeta() {
+    if (!appRunning) return "OmaCal is not running"
+    if (nextEvent)
+      return Model.title(nextEvent) + " · " + Model.leadText(nextEvent.start_ms, nowMs)
+    if (runningEvent) return "Nothing after this"
     if (!feed) return "Waiting for OmaCal"
     return "Nothing scheduled"
   }
@@ -257,7 +273,7 @@ Panel {
           PanelHero {
             width: parent.width
             title: "OmaCal"
-            meta: root.heroMeta()
+            meta: root.popupHeroMeta()
             foreground: root.foreground
             fontFamily: root.fontFamily
             iconComponent: Component {
