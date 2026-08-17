@@ -119,7 +119,15 @@ if (name === 'App') {
       // the app was told — which is a different fact from the command having
       // been sent, and the one a second host for these rows can silently drop.
       (window as any).__calendarChanges = 0;
-      props = { ...props, oncalendarchange: () => { (window as any).__calendarChanges += 1; } };
+      // Same capture for the invitation tray's callback, same reasoning: the
+      // command going out (`respond_to_event`, in `harness.calls`) and `App`
+      // being told to refetch are two separate facts.
+      (window as any).__inviteAnswers = 0;
+      props = {
+        ...props,
+        oncalendarchange: () => { (window as any).__calendarChanges += 1; },
+        oninvitesanswered: () => { (window as any).__inviteAnswers += 1; },
+      };
     }
     // EventBlock is absolutely positioned; give it a sized relative parent.
     if (name === 'EventBlock') {

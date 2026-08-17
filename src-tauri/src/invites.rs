@@ -162,6 +162,77 @@ pub(crate) async fn run_pass(
     Ok(pass)
 }
 
+/// One row of the app's invitation tray — the in-app answer to a missed
+/// notification (a toast can evaporate; this list cannot). The UI's shape,
+/// ready to render: times as instants, the all-day days as calendar-zone
+/// dates (the store's all-day instants are foreign-zone midnights the
+/// browser must never re-derive — `EventDetail::start_date` documents that
+/// trap), and `can_respond` already decided so the buttons appear exactly
+/// where the popover's would.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub(crate) struct PendingInvite {
+    pub id: i64,
+    pub title: Option<String>,
+    pub start_ms: i64,
+    pub end_ms: i64,
+    pub is_all_day: bool,
+    /// The first and last day an all-day invite covers (`yyyy-mm-dd`,
+    /// calendar zone, last day inclusive); `None` for a timed one.
+    pub start_date: Option<String>,
+    pub end_date: Option<String>,
+    pub organizer_email: Option<String>,
+    pub color: Option<String>,
+    pub can_respond: bool,
+}
+
+fn to_pending(c: &InviteCandidate, demo: bool) -> PendingInvite {
+    let (start_date, end_date) = if c.is_all_day {
+        let (s, e) =
+            crate::write::all_day_span_dates(c.start_utc, c.end_utc, &c.calendar_timezone);
+        (Some(s), Some(e))
+    } else {
+        (None, None)
+    };
+    PendingInvite {
+        id: c.event_id,
+        title: c.summary.clone(),
+        start_ms: c.start_utc,
+        end_ms: c.end_utc,
+        is_all_day: c.is_all_day,
+        start_date,
+        end_date,
+        organizer_email: c.organizer_email.clone(),
+        color: c.color_hex.clone(),
+        // The popover's own gate, provider included — a CalDAV invitation
+        // lists (it is real, and unanswered) but carries no buttons, since
+        // no RSVP write exists for it.
+        can_respond: c.provider == "google"
+            && crate::events::can_respond(demo, &c.access_role, &c.attendees),
+    }
+}
+
+pub(crate) async fn pending_invites_impl(
+    pool: &SqlitePool,
+    demo: bool,
+    now_ms: i64,
+) -> anyhow::Result<Vec<PendingInvite>> {
+    Ok(omacal_store::pending_invites(pool, now_ms)
+        .await?
+        .iter()
+        .map(|c| to_pending(c, demo))
+        .collect())
+}
+
+/// What the header's invitation badge and tray render — see [`PendingInvite`].
+#[tauri::command]
+pub(crate) async fn pending_invites(
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<Vec<PendingInvite>, String> {
+    pending_invites_impl(&state.pool, state.demo, crate::now_ms())
+        .await
+        .map_err(|e| crate::errors::user_facing(&e))
+}
+
 /// Runs the invite pass with the app's own state, after a sync. Failures are
 /// logged and dropped — an announcement is never worth failing a sync over.
 pub(crate) async fn after_sync(app: &tauri::AppHandle) {
@@ -294,6 +365,7 @@ mod tests {
             calendar_id: 1,
             summary: Some("NVP sync meeting".into()),
             start_utc: NOW + HOUR, // 10:00Z = 13:00 Sofia
+            end_utc: NOW + 2 * HOUR,
             is_all_day: false,
             organizer_email: Some("ana@x.com".into()),
             calendar_timezone: SOFIA.into(),
@@ -301,6 +373,7 @@ mod tests {
             provider: "google".into(),
             access_role: "owner".into(),
             attendees: invite("x", NOW).attendees,
+            color_hex: Some("#5b8def".into()),
         }
     }
 
@@ -398,6 +471,54 @@ mod tests {
             .execute(&pool).await.unwrap();
         let shown = run_pass(&pool, false, NOW, SOFIA, &fake).await.unwrap();
         assert_eq!(shown.posted, vec![id], "still unanswered, so still news");
+    }
+
+    // --- the tray's rows -------------------------------------------------
+
+    /// The tray exists for the invitation whose toast was missed — so the
+    /// ledger that silences the announcer must not silence it.
+    #[tokio::test]
+    async fn the_tray_lists_an_already_announced_invitation_with_buttons() {
+        let pool = seeded_pool().await;
+        seeded_and_swallowed(&pool).await;
+        let id = upsert_event(&pool, &invite("new-1", NOW + HOUR)).await.unwrap();
+        run_pass(&pool, false, NOW, SOFIA, &RecordingNotifier::default()).await.unwrap();
+
+        let rows = pending_invites_impl(&pool, false, NOW).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        let r = &rows[0];
+        assert_eq!(r.id, id);
+        assert_eq!(r.title.as_deref(), Some("NVP sync meeting"));
+        assert!(r.can_respond, "a writable Google invite carries the buttons");
+        assert_eq!(r.start_date, None, "timed events carry no dates");
+    }
+
+    /// The gates the popover applies, applied here too: demo mode and
+    /// providers without an RSVP write list without buttons.
+    #[test]
+    fn rows_without_a_working_rsvp_carry_no_buttons() {
+        assert!(to_pending(&candidate(), false).can_respond);
+        assert!(!to_pending(&candidate(), true).can_respond, "demo answers nothing");
+
+        let mut caldav = candidate();
+        caldav.provider = "caldav".into();
+        assert!(!to_pending(&caldav, false).can_respond);
+    }
+
+    /// An all-day invite carries its calendar-zone days, worked out here —
+    /// the browser must never re-derive them from the instant
+    /// (`EventDetail::start_date`'s trap).
+    #[test]
+    fn an_all_day_invite_carries_its_days_not_just_instants() {
+        let mut c = candidate();
+        c.is_all_day = true;
+        // Midnight Aug 11 Sofia (2026-08-10T21:00Z) through the 12th,
+        // exclusive: a one-day event on the 11th.
+        c.start_utc = 1_786_395_600_000;
+        c.end_utc = c.start_utc + 24 * HOUR;
+        let r = to_pending(&c, false);
+        assert_eq!(r.start_date.as_deref(), Some("2026-08-11"));
+        assert_eq!(r.end_date.as_deref(), Some("2026-08-11"), "inclusive last day");
     }
 
     // --- what the announcement says -------------------------------------

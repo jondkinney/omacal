@@ -12,8 +12,8 @@ pub use calendars::{
     set_sync_enabled, CalendarRow,
 };
 pub use invites::{
-    mark_invites_seeded, record_invite_notice, unanswered_invites, unseeded_calendars,
-    InviteCandidate,
+    mark_invites_seeded, pending_invites, record_invite_notice, unanswered_invites,
+    unseeded_calendars, InviteCandidate,
 };
 pub use reminders::{fired_keys, prune_fired, record_fired};
 pub use tasks::{

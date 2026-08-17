@@ -1064,6 +1064,7 @@ pub fn run() {
             _ => {}
         })
         .invoke_handler(tauri::generate_handler![
+            invites::pending_invites,
             get_palette,
             get_week,
             get_day,

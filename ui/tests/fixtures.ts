@@ -1854,6 +1854,31 @@ export const FIXTURES: Record<string, Record<string, any>> = {
       ...header({ accounts: [], last_sync_ms: null, demo: true, overlay_titlebar: false }),
       error: 'Sync failed.' as string | null,
     },
+    /** Two unanswered invitations: one answerable Google invite (buttons)
+     *  and one CalDAV all-day span (no buttons — no RSVP write exists).
+     *  Timed instants deliberately inside the fixture week so the "when"
+     *  line's premise is checkable; the all-day days come as calendar-zone
+     *  strings, exactly as `pending_invites` sends them, so no spec here
+     *  can accidentally pass through instant-derived dates. */
+    'with-invites': {
+      ...header({
+        accounts: ['me@x.com'], last_sync_ms: FIVE_MIN_AGO, demo: false, overlay_titlebar: false,
+      }),
+      invites: [
+        {
+          id: 901, title: 'NVP sync meeting',
+          start_ms: MON + 34 * 3_600_000, end_ms: MON + 35 * 3_600_000,
+          is_all_day: false, start_date: null, end_date: null,
+          organizer_email: 'ana@x.com', color: '#5b8def', can_respond: true,
+        },
+        {
+          id: 902, title: 'Team offsite',
+          start_ms: MON + 24 * 3_600_000, end_ms: MON + 96 * 3_600_000,
+          is_all_day: true, start_date: '2024-01-30', end_date: '2024-02-01',
+          organizer_email: 'ops@x.com', color: '#e2a03f', can_respond: false,
+        },
+      ],
+    },
     // A **connected** account with a recent successful sync *and* an error.
     // Both halves are load bearing: `last_sync_ms` is still set after a sync
     // fails — it records the last one that worked — so a light reading it

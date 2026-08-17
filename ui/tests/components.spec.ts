@@ -3626,3 +3626,80 @@ test.describe('DeleteConfirm', () => {
     await expect(page.getByTestId('delete-no-undo')).toBeVisible();
   });
 });
+
+test.describe('Header invitation tray', () => {
+  /** The tray exists because a notification toast can be missed (it was,
+   *  live, 2026-08-17) — so the header itself must carry the debt: a badge
+   *  while invitations await an answer, a list with the answer buttons
+   *  behind it, and nothing at all at inbox-zero. */
+
+  test('inbox-zero renders no badge at all', async ({ page }) => {
+    await page.goto(show('Header', 'connected'));
+    await expect(page.getByRole('button', { name: 'Menu' })).toBeVisible();
+    await expect(page.getByRole('button', { name: /pending invitation/ })).toHaveCount(0);
+  });
+
+  test('the badge counts, and the tray lists both kinds of row', async ({ page }) => {
+    await page.goto(show('Header', 'with-invites'));
+    const badge = page.getByRole('button', { name: '2 pending invitations' });
+    await expect(badge).toBeVisible();
+    await badge.click();
+
+    const rows = page.getByTestId('invite-row');
+    await expect(rows).toHaveCount(2);
+    await expect(rows.nth(0)).toContainText('NVP sync meeting');
+    await expect(rows.nth(0)).toContainText('from ana@x.com');
+    await expect(rows.nth(0).getByRole('button', { name: 'Yes' })).toBeVisible();
+    await expect(rows.nth(0).getByRole('button', { name: 'Maybe' })).toBeVisible();
+    await expect(rows.nth(0).getByRole('button', { name: 'No' })).toBeVisible();
+
+    // The CalDAV row is real and listed — but no RSVP write exists for it,
+    // so it says where the answer lives instead of offering three buttons
+    // that could only fail.
+    await expect(rows.nth(1)).toContainText('Team offsite');
+    await expect(rows.nth(1)).toContainText('answer at your provider');
+    await expect(rows.nth(1).getByRole('button', { name: 'Yes' })).toHaveCount(0);
+    // Its days come from the calendar-zone strings the backend sent — the
+    // fixture's `2024-01-30`, whatever zone this browser runs in.
+    await expect(rows.nth(1)).toContainText('Jan 30');
+    await expect(rows.nth(1)).toContainText('All day');
+  });
+
+  test('Yes answers the whole series with the invite\'s own start', async ({ page }) => {
+    await page.goto(show('Header', 'with-invites'));
+    await page.getByRole('button', { name: '2 pending invitations' }).click();
+    await page.getByTestId('invite-row').nth(0).getByRole('button', { name: 'Yes' }).click();
+
+    // `App` was told — the fact a second host for these rows could drop.
+    await expect.poll(() => page.evaluate(() => (window as any).__inviteAnswers)).toBe(1);
+
+    // The premise read from the fixture itself, not a copy typed here.
+    const expected = await page.evaluate(() => {
+      const inv = (window as any).__fixtureProps.invites[0];
+      return { id: inv.id, startMs: inv.start_ms };
+    });
+    const call = await page.evaluate(() =>
+      (window as any).__harness.calls.find((c: { cmd: string }) => c.cmd === 'respond_to_event')?.args);
+    expect(call).toEqual({
+      id: expected.id,
+      response: 'accepted',
+      scope: 'all',
+      occurrenceStartMs: expected.startMs,
+    });
+  });
+
+  test('a failed answer stays on its row instead of vanishing', async ({ page }) => {
+    await page.goto(show('Header', 'with-invites'));
+    await page.evaluate(() =>
+      (window as any).__harness.failNextEventCall(
+        'respond_to_event', 901, 'could not reach Google right now.'));
+
+    await page.getByRole('button', { name: '2 pending invitations' }).click();
+    const row = page.getByTestId('invite-row').nth(0);
+    await row.getByRole('button', { name: 'No' }).click();
+
+    await expect(row).toContainText('could not reach Google right now.');
+    await expect(row.getByRole('button', { name: 'No' })).toBeEnabled();
+    expect(await page.evaluate(() => (window as any).__inviteAnswers)).toBe(0);
+  });
+});

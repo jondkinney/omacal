@@ -5,9 +5,11 @@
   import { escapeCloses } from './dismiss.svelte';
   import { listable } from './filmstrip';
   import CalendarPopover from './CalendarPopover.svelte';
+  import InviteTray from './InviteTray.svelte';
   import SettingsModal from './SettingsModal.svelte';
   import TasksPanel from './TasksPanel.svelte';
   import ViewSwitcher, { type View } from './ViewSwitcher.svelte';
+  import type { PendingInvite } from './invites';
 
   let {
     status, anchorMs, weekStartMs, busy, error, calendars, view, onpick,
@@ -15,6 +17,7 @@
     listMode, onToggleList,
     onPrev, onNext, onToday, onSearch, onSignIn, onSync, oncalendarchange,
     onWhatsNew,
+    invites = [], oninvitesanswered = () => {},
     open = $bindable(false),
   }: {
     status: AppStatus | null;
@@ -45,6 +48,12 @@
     /** Passed straight through to `SettingsModal` — see its own comment. */
     onsettingschange?: (s: import('./settings').AppSettings) => void;
     onSignIn: () => void; onSync: () => void; oncalendarchange: () => void;
+    /** Unanswered invitations, for the tray beside the sync light — `App`'s
+     *  own list, refetched on every sync. Empty renders nothing at all. */
+    invites?: PendingInvite[];
+    /** An invitation was answered from the tray. `App` refetches the list
+     *  and reloads the grid — the tray never mutates what it was given. */
+    oninvitesanswered?: () => void;
     /** Opens the latest release's page — the update notice's one action.
      *  Passed in like every other invoke, so this component stays free of
      *  Tauri imports. */
@@ -233,6 +242,11 @@
     {#if status?.demo}
       <span class="demo">DEMO DATA</span>
     {/if}
+
+    <!-- Before the sync light: the one header element that asks for an
+         action, so it sits where the eye already checks state. Renders
+         nothing at inbox-zero — see InviteTray. -->
+    <InviteTray {invites} onanswered={oninvitesanswered} />
 
     <!-- **Spec §2: a light, not a sentence.** `is this stale?` is a question
          answered by glancing, so the state stays in the header while the words

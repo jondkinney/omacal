@@ -7,6 +7,7 @@
     type WeekPayload, type MonthPayload, type YearPayload, type BigYearPayload, type UiEvent,
   } from './lib/api';
   import { getStatus, openLatestRelease, signIn, syncNow, type AppStatus } from './lib/status';
+  import { pendingInvites } from './lib/invites';
   import { getCalendars, offerableCalendarId, type Calendar } from './lib/calendars';
   import {
     createEvent, deleteEvent, getEventDetail, updateEvent,
@@ -114,9 +115,19 @@
     try { calendars = await getCalendars(); } catch (e) { error = String(e); }
   }
 
+  /** Unanswered invitations, for the header's tray. Refetched wherever the
+   *  world may have changed under it: startup, every finished sync, and an
+   *  answer given from the tray itself. A failed fetch keeps the last list
+   *  rather than raising a banner — the tray is a convenience surface, and
+   *  the next sync retries it anyway. */
+  let invites = $state<import('./lib/invites').PendingInvite[]>([]);
+  async function refreshInvites() {
+    try { invites = await pendingInvites(); } catch { /* keep the last list */ }
+  }
+
   // Calendars ride along with status on startup: both describe what's
   // connected, and neither is meaningful before an account exists.
-  $effect(() => { refreshStatus(); refreshCalendars(); });
+  $effect(() => { refreshStatus(); refreshCalendars(); refreshInvites(); });
 
   /**
    * Whether Day, Week and Month draw as a list rather than a grid.
@@ -349,6 +360,7 @@
   $effect(() => {
     const un = listen('sync-finished', async () => {
       await refreshStatus();
+      await refreshInvites();
       await reload();
     });
     return () => { un.then((f) => f()); };
@@ -1036,6 +1048,8 @@
     onWhatsNew={() => { void openLatestRelease(); }}
     onSync={handleSync}
     oncalendarchange={handleCalendarChange}
+    {invites}
+    oninvitesanswered={() => { void refreshInvites(); void reload(); }}
     onpick={pick}
     bind:open={pickerOpen}
   />

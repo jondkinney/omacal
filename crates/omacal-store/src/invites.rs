@@ -33,26 +33,29 @@ pub struct InviteCandidate {
     pub provider: String,
     pub access_role: String,
     pub attendees: Vec<Attendee>,
+    /// The colour the calendar draws in — override first, Google's second,
+    /// the same `COALESCE` the event queries use.
+    pub color_hex: Option<String>,
+    pub end_utc: i64,
 }
 
-/// Every unanswered invitation not yet in `invite_notices`, oldest start
-/// first.
-///
-/// "Invitation" here means: the user's own attendee row says `needsAction`,
-/// on a non-cancelled master row (an exception inherits its series' answer —
-/// announcing it separately would ring twice for one meeting), on a calendar
-/// that is still syncing. Past events are skipped — an invitation nobody saw
-/// in time is the grid's to show, not a notification's — except that a
-/// recurring master outlives its first occurrence's end, so a rule keeps a
-/// series eligible on its own.
-pub async fn unanswered_invites(
+/// The query both readers below share; `extra_clause` is the one line they
+/// differ by. "Invitation" means: the user's own attendee row says
+/// `needsAction`, on a non-cancelled master row (an exception inherits its
+/// series' answer — surfacing it separately would ring twice for one
+/// meeting), on a calendar that is still syncing. Past events are skipped —
+/// except that a recurring master outlives its first occurrence's end, so a
+/// rule keeps a series eligible on its own.
+async fn invites_where(
     pool: &SqlitePool,
     now_ms: i64,
+    extra_clause: &str,
 ) -> anyhow::Result<Vec<InviteCandidate>> {
-    let rows = sqlx::query(
-        "SELECT e.id, e.calendar_id, e.summary, e.start_utc, e.is_all_day,
+    let sql = format!(
+        "SELECT e.id, e.calendar_id, e.summary, e.start_utc, e.end_utc, e.is_all_day,
                 e.organizer_email, e.attendees_json,
-                c.timezone, c.selected, c.access_role, a.provider
+                c.timezone, c.selected, c.access_role, a.provider,
+                COALESCE(c.color_override, c.color_hex) AS color_hex
            FROM events e
            JOIN calendars c ON c.id = e.calendar_id
            JOIN accounts a ON a.id = c.account_id
@@ -61,12 +64,10 @@ pub async fn unanswered_invites(
             AND e.recurring_event_id IS NULL
             AND (e.end_utc > ?1 OR e.recurrence IS NOT NULL)
             AND c.sync_enabled = 1
-            AND e.id NOT IN (SELECT event_id FROM invite_notices)
+            {extra_clause}
           ORDER BY e.start_utc, e.id",
-    )
-    .bind(now_ms)
-    .fetch_all(pool)
-    .await?;
+    );
+    let rows = sqlx::query(&sql).bind(now_ms).fetch_all(pool).await?;
 
     Ok(rows
         .iter()
@@ -75,6 +76,7 @@ pub async fn unanswered_invites(
             calendar_id: row.get("calendar_id"),
             summary: row.get("summary"),
             start_utc: row.get("start_utc"),
+            end_utc: row.get("end_utc"),
             is_all_day: row.get::<i64, _>("is_all_day") != 0,
             organizer_email: row.get("organizer_email"),
             calendar_timezone: row.get("timezone"),
@@ -85,8 +87,31 @@ pub async fn unanswered_invites(
                 .get::<Option<String>, _>("attendees_json")
                 .and_then(|s| serde_json::from_str(&s).ok())
                 .unwrap_or_default(),
+            color_hex: row.get("color_hex"),
         })
         .collect())
+}
+
+/// Every unanswered invitation not yet in `invite_notices`, oldest start
+/// first — what the announcement pass consumes. Hidden calendars stay in the
+/// result on purpose; see [`InviteCandidate::calendar_selected`].
+pub async fn unanswered_invites(
+    pool: &SqlitePool,
+    now_ms: i64,
+) -> anyhow::Result<Vec<InviteCandidate>> {
+    invites_where(pool, now_ms, "AND e.id NOT IN (SELECT event_id FROM invite_notices)").await
+}
+
+/// Every unanswered invitation on a *shown* calendar, announced or not —
+/// what the app's own invitation tray lists. The ledger deliberately plays
+/// no part: it records what was said out loud, and a missed notification is
+/// precisely the case this list exists for (2026-08-17, after the first
+/// live click test's toast evaporated unseen).
+pub async fn pending_invites(
+    pool: &SqlitePool,
+    now_ms: i64,
+) -> anyhow::Result<Vec<InviteCandidate>> {
+    invites_where(pool, now_ms, "AND c.selected = 1").await
 }
 
 /// Syncing calendars whose backlog has not been seeded yet — each one's
@@ -282,6 +307,31 @@ mod tests {
             .execute(&pool).await.unwrap();
 
         assert!(unanswered_invites(&pool, NOW).await.unwrap().is_empty());
+    }
+
+    /// The tray's list and the announcer's worklist part ways on exactly two
+    /// clauses, both asserted here: the ledger silences the announcer but
+    /// never the tray, and hiding a calendar empties the tray but leaves the
+    /// announcer's (deliberately broader) view intact.
+    #[tokio::test]
+    async fn the_tray_ignores_the_ledger_and_honours_hiding() {
+        let pool = seeded_pool().await;
+        let id = upsert_event(&pool, &event("inv-1", NOW + HOUR)).await.unwrap();
+
+        record_invite_notice(&pool, id, true, NOW).await.unwrap();
+        assert!(unanswered_invites(&pool, NOW).await.unwrap().is_empty(),
+                "announced once means announced");
+        let pending = pending_invites(&pool, NOW).await.unwrap();
+        assert_eq!(pending.len(), 1, "still unanswered, so still in the tray");
+        assert_eq!(pending[0].end_utc, NOW + 2 * HOUR);
+        assert!(pending[0].color_hex.is_none(), "no colour seeded on this calendar");
+
+        sqlx::query("UPDATE calendars SET selected = 0 WHERE id = 1")
+            .execute(&pool).await.unwrap();
+        assert!(pending_invites(&pool, NOW).await.unwrap().is_empty(),
+                "a hidden calendar is muted in the app too");
+        assert_eq!(unanswered_invites(&pool, NOW).await.unwrap().len(), 0,
+                   "(ledgered either way)");
     }
 
     #[tokio::test]

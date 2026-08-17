@@ -745,6 +745,11 @@ export function installTauriStub(scenario: string): Harness {
         return calendarResult(cmd, CALENDAR_SYNC_REMOVED);
       case 'sync_now':
         return 0;
+      // The header's invitation tray. Empty by default so every App spec that
+      // predates it keeps describing a header without a badge; Header specs
+      // that want rows mount the component with fixture props instead.
+      case 'pending_invites':
+        return [];
       case 'event_detail':
         return eventCallResult('event_detail', args.id);
       case 'refresh_event':
