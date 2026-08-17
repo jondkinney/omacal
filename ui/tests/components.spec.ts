@@ -994,7 +994,18 @@ test.describe('Header', () => {
     await modal.getByLabel('Sync every').fill('15');
     await modal.getByRole('button', { name: 'Save' }).click();
 
-    await expect(page.getByTestId('settings-note')).toHaveText('Saved.');
+    // **Beside the button, not the modal-bottom note.** The shared note sits
+    // below every tab's content in a modal that scrolls, so "Saved." landed
+    // off-screen exactly when the tab was full — reported live (2026-08-17)
+    // as "no visual clue it saved". The row itself is where the eye is.
+    const row = modal.locator('.inline', { has: page.getByLabel('Sync every') });
+    await expect(row.getByTestId('interval-note')).toHaveText('Saved.');
+
+    // Typing again retires the stale confirmation: "Saved." next to a value
+    // that has not been must not survive the first keystroke.
+    await modal.getByLabel('Sync every').fill('16');
+    await expect(row.getByTestId('interval-note')).toHaveCount(0);
+    await modal.getByLabel('Sync every').fill('15');
 
     // **Reopened, not read off the box.** The box holds what was typed whether
     // or not anything was stored, so asserting it here would pass against a
@@ -1017,7 +1028,7 @@ test.describe('Header', () => {
     await modal.getByLabel('Sync every').fill('0');
     await modal.getByRole('button', { name: 'Save' }).click();
 
-    await expect(page.getByTestId('settings-note')).toContainText('will not sync more often');
+    await expect(page.getByTestId('interval-note')).toContainText('will not sync more often');
     // And nothing was stored: reopening shows what was there before.
     await page.keyboard.press('Escape');
     const again = await openSettings(page);

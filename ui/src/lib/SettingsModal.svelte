@@ -56,6 +56,12 @@
    *  number, so a half-typed "1" is not read as one minute mid-keystroke. */
   let intervalText = $state('');
   let note = $state<{ text: string; kind: 'info' | 'error' } | null>(null);
+  /** The interval row's own feedback, rendered beside the field it is about.
+   *  Not the shared `note` below: that one sits at the bottom of a modal
+   *  that scrolls, so "Saved." was landing off-screen exactly when the
+   *  General tab had enough content to scroll — reported as "no visual clue
+   *  it saved" (2026-08-17), which for every practical purpose it was. */
+  let intervalNote = $state<{ text: string; kind: 'info' | 'error' } | null>(null);
 
   $effect(() => {
     getSettings()
@@ -129,10 +135,10 @@
   async function saveInterval() {
     const minutes = Number(intervalText);
     if (!Number.isFinite(minutes) || !Number.isInteger(minutes)) {
-      note = { text: 'Enter a whole number of minutes.', kind: 'error' };
+      intervalNote = { text: 'Enter a whole number of minutes.', kind: 'error' };
       return;
     }
-    note = null;
+    intervalNote = null;
     try {
       // The answer is deliberately **not** kept. Nothing on screen is derived
       // from it — the box holds what was typed and the floor does not move —
@@ -141,9 +147,9 @@
       // has to guarantee is that the value was *stored*, and the spec asserts
       // that by reopening the modal, which re-fetches.
       await setSyncInterval(msOfMinutes(minutes));
-      note = { text: 'Saved.', kind: 'info' };
+      intervalNote = { text: 'Saved.', kind: 'info' };
     } catch (e) {
-      note = { text: String(e), kind: 'error' };
+      intervalNote = { text: String(e), kind: 'error' };
     }
   }
 
@@ -383,6 +389,7 @@
             min={floorMinutes}
             step="1"
             bind:value={intervalText}
+            oninput={() => (intervalNote = null)}
             onkeydown={(e) => {
               if (e.key === 'Enter') {
                 e.preventDefault();
@@ -392,6 +399,13 @@
           />
           <span class="unit">minutes</span>
           <button type="button" onclick={saveInterval} disabled={!settings}>Save</button>
+          {#if intervalNote}
+            <span
+              class="rownote"
+              class:err={intervalNote.kind === 'error'}
+              data-testid="interval-note"
+            >{intervalNote.text}</span>
+          {/if}
         </div>
       </div>
       <!-- Said, not enforced silently. A value accepted and then quietly
@@ -750,8 +764,12 @@
   .lab { font-size: 10.5px; color: var(--muted); letter-spacing: .05em; }
   .inline { display: flex; align-items: center; gap: 6px; }
   .unit { font-size: 12px; color: var(--muted); }
+  /* No max-width: the 40ch cap that used to sit here wrapped every hint at
+     about half the modal and left the right side conspicuously empty
+     (reported 2026-08-17). The modal's own 480px is the measure; hints are
+     a line or two and read fine at it. */
   .hint { font-size: 11px; color: var(--muted); opacity: .85; line-height: 1.45; margin: 0;
-          max-width: 40ch; }
+          align-self: stretch; }
 
   input[type='number'], select {
     font: inherit; font-size: 13px; color: var(--text);
@@ -794,6 +812,12 @@
                  background: color-mix(in srgb, var(--text) 6%, transparent);
                  border: 0; border-radius: 6px; padding: 4px 10px; }
   .body button:disabled { opacity: .5; cursor: default; }
+
+  /* Beside the Save button, where the eye already is when it lands. The
+     accent for success, so "Saved." reads as a state change and not as one
+     more piece of muted hint text. */
+  .rownote { font-size: 11.5px; color: var(--accent); white-space: nowrap; }
+  .rownote.err { color: var(--error); white-space: normal; }
 
   .note { font-size: 11.5px; color: var(--muted); line-height: 1.4; margin: 0;
           padding: 6px 8px; border-radius: 5px;
