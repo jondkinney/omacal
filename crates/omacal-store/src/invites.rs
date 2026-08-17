@@ -334,6 +334,39 @@ mod tests {
                    "(ledgered either way)");
     }
 
+    /// The field failure of 2026-08-17, reproduced: delete a noticed
+    /// invitation, let SQLite hand its rowid to a brand-new one, and the
+    /// stale notice must not silence it. The 0009 trigger is what passes
+    /// this; before it, the new invitation simply never announced.
+    #[tokio::test]
+    async fn a_reused_rowid_does_not_inherit_the_old_events_notice() {
+        let pool = seeded_pool().await;
+        let id = upsert_event(&pool, &event("doomed", NOW + HOUR)).await.unwrap();
+        record_invite_notice(&pool, id, true, NOW).await.unwrap();
+        crate::delete_event(&pool, 1, "doomed").await.unwrap();
+
+        let reused = upsert_event(&pool, &event("fresh-invite", NOW + 2 * HOUR)).await.unwrap();
+        assert_eq!(reused, id, "the premise: SQLite reuses the freed rowid");
+        let found = unanswered_invites(&pool, NOW).await.unwrap();
+        assert_eq!(found.len(), 1, "a stale notice silenced a brand-new invitation");
+        assert_eq!(found[0].summary.as_deref(), Some("Planning"));
+    }
+
+    /// The trigger walks every deletion path — `delete_series` included.
+    #[tokio::test]
+    async fn a_series_delete_takes_its_notices_with_it() {
+        let pool = seeded_pool().await;
+        let mut series = event("series", NOW + HOUR);
+        series.recurrence = Some("RRULE:FREQ=WEEKLY".into());
+        let id = upsert_event(&pool, &series).await.unwrap();
+        record_invite_notice(&pool, id, true, NOW).await.unwrap();
+
+        crate::delete_series(&pool, 1, "series").await.unwrap();
+        let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM invite_notices")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(left, 0);
+    }
+
     #[tokio::test]
     async fn seeding_is_once_per_calendar_and_idempotent() {
         let pool = seeded_pool().await;
