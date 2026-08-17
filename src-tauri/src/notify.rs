@@ -23,6 +23,16 @@ pub(crate) struct Notification {
     /// One line, read at a glance. The popover is where detail lives.
     pub body: String,
     pub actions: Vec<Action>,
+    /// Stay on screen until acted on or dismissed, instead of expiring.
+    ///
+    /// For a notification whose click *does* something, expiry is loss: the
+    /// invitation toast evaporated after a few seconds while the user read
+    /// another window, and once a popup ages into Omarchy's history its
+    /// actions are dead (2026-08-17, missed live during the first click
+    /// test). Omarchy's shell clamps requested timeouts to 30s and never
+    /// expires only `urgency=critical`, so that is what this maps to on the
+    /// wire — `Timeout::Never` rides along for daemons that honour it.
+    pub sticky: bool,
 }
 
 /// A button on a notification.
@@ -140,6 +150,9 @@ pub(crate) fn notification_for(d: &Due, tz: &str) -> Notification {
         title: d.title.clone().filter(|t| !t.is_empty()).unwrap_or_else(|| NO_TITLE.into()),
         body,
         actions,
+        // A reminder is about a moment; once the moment is near, an expired
+        // toast has done its job. Only actionable announcements stick.
+        sticky: false,
     }
 }
 
@@ -222,6 +235,14 @@ impl Notifier for DbusNotifier {
     fn post(&self, n: &Notification) -> Result<(), NotifyError> {
         let mut builder = notify_rust::Notification::new();
         builder.summary(&n.title).body(&n.body).appname("omacal");
+        if n.sticky {
+            // See `Notification::sticky` for why this is urgency and not
+            // just a timeout. It does not pierce do-not-disturb: Omarchy's
+            // bypass admits criticals from `notify-send` alone.
+            builder
+                .urgency(notify_rust::Urgency::Critical)
+                .timeout(notify_rust::Timeout::Never);
+        }
 
         for action in &n.actions {
             match action {
@@ -360,6 +381,14 @@ mod tests {
         assert!(notification_for(&due(Some("Standup"), None, None), SOFIA)
             .actions
             .contains(&Action::Snooze5m));
+    }
+
+    /// A reminder announces a moment; once the moment is near, expiring is
+    /// its job done. Sticky is the *invitation's* property (`invites.rs`),
+    /// and a reminder that inherited it would pile up unread criticals.
+    #[test]
+    fn a_reminder_expires_like_an_ordinary_notification() {
+        assert!(!notification_for(&due(Some("Standup"), None, None), SOFIA).sticky);
     }
 
     /// **The rule the plan calls out.** A meeting with nowhere to join must not

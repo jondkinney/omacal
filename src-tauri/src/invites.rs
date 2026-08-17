@@ -94,6 +94,12 @@ pub(crate) fn invite_notification(c: &InviteCandidate, display_tz: &str) -> Noti
         ),
         body,
         actions,
+        // An invitation waits for an answer, so its announcement waits for
+        // one too — the first live click test failed precisely because this
+        // expired into history, click and all, while the user read another
+        // window. Sticky whether or not the click is offered: a CalDAV
+        // invite still deserves to be seen, and dismissal is one right-click.
+        sticky: true,
     }
 }
 
@@ -197,6 +203,8 @@ pub(crate) async fn accept_from_notification(app: tauri::AppHandle, event_id: i6
                 title: detail.title.filter(|t| !t.is_empty()).unwrap_or_else(|| crate::notify::NO_TITLE.into()),
                 body: "Invitation accepted".into(),
                 actions: Vec::new(),
+                // A confirmation is read once; expiring is its job done.
+                sticky: false,
             });
             let state = app.state::<crate::AppState>();
             let _ = app.emit("sync-finished", serde_json::json!({ "upserted": 1 }));
@@ -209,6 +217,9 @@ pub(crate) async fn accept_from_notification(app: tauri::AppHandle, event_id: i6
                 // `respond_to_event_impl` errors are already user-facing text.
                 body: format!("{e} Open omacal to answer."),
                 actions: Vec::new(),
+                // A failure asks the user to do something; it must not
+                // evaporate before it is read.
+                sticky: true,
             });
         }
     }
@@ -416,6 +427,19 @@ mod tests {
         let mut c = candidate();
         c.summary = None;
         assert_eq!(invite_notification(&c, SOFIA).title, "Invitation: (no title)");
+    }
+
+    /// The lesson of the first live click test: the toast expired into
+    /// history — click and all — while the user read another window. An
+    /// announcement that waits for an answer must wait to be answered,
+    /// clickable or not.
+    #[test]
+    fn an_invitation_announcement_stays_until_dealt_with() {
+        assert!(invite_notification(&candidate(), SOFIA).sticky);
+
+        let mut caldav = candidate();
+        caldav.provider = "caldav".into();
+        assert!(invite_notification(&caldav, SOFIA).sticky, "no click, still worth seeing");
     }
 
     /// The click is offered — and instructed — only where it can act.
