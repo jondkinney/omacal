@@ -7,7 +7,7 @@
     type WeekPayload, type MonthPayload, type YearPayload, type BigYearPayload, type UiEvent,
   } from './lib/api';
   import { getStatus, openLatestRelease, signIn, syncNow, type AppStatus } from './lib/status';
-  import { declinedGuests, pendingInvites } from './lib/invites';
+  import { changedMeetings, declinedGuests, pendingInvites } from './lib/invites';
   import { getCalendars, offerableCalendarId, type Calendar } from './lib/calendars';
   import {
     createEvent, deleteEvent, getEventDetail, updateEvent,
@@ -124,9 +124,12 @@
   /** The tray's other section: guests who declined the user's own meetings.
    *  Same lifecycle, same failure policy. */
   let declines = $state<import('./lib/invites').DeclineNotice[]>([]);
+  /** And the attendee's: meetings that moved or were cancelled under them. */
+  let changes = $state<import('./lib/invites').ChangeNotice[]>([]);
   async function refreshInvites() {
     try { invites = await pendingInvites(); } catch { /* keep the last list */ }
     try { declines = await declinedGuests(); } catch { /* keep the last list */ }
+    try { changes = await changedMeetings(); } catch { /* keep the last list */ }
   }
 
   // Calendars ride along with status on startup: both describe what's
@@ -1059,6 +1062,7 @@
     oncalendarchange={handleCalendarChange}
     {invites}
     {declines}
+    {changes}
     oninvitesanswered={() => { void refreshInvites(); void reload(); }}
     onpick={pick}
     bind:open={pickerOpen}

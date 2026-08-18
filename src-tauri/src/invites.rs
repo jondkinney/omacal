@@ -325,6 +325,106 @@ pub(crate) async fn dismiss_decline_notice(
         .map_err(|e| crate::errors::user_facing(&e))
 }
 
+/// One meeting that moved or was cancelled under the user — the tray's
+/// Rescheduled/Cancelled sections, in-app only like the declines. The
+/// all-day date strings follow the same calendar-zone rule as everything
+/// else in this file.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub(crate) struct ChangeNotice {
+    pub calendar_id: i64,
+    pub gid: String,
+    /// `moved` | `cancelled`.
+    pub kind: String,
+    pub title: Option<String>,
+    pub is_all_day: bool,
+    pub old_start_ms: i64,
+    pub old_end_ms: Option<i64>,
+    pub new_start_ms: Option<i64>,
+    pub new_end_ms: Option<i64>,
+    /// First covered day (`yyyy-mm-dd`, calendar zone) of the old and new
+    /// slots for an all-day meeting; `None` for timed ones.
+    pub old_start_date: Option<String>,
+    pub new_start_date: Option<String>,
+    pub color: Option<String>,
+}
+
+const DAY_MS: i64 = 24 * 3_600_000;
+
+pub(crate) async fn changed_meetings_impl(
+    pool: &SqlitePool,
+    now_ms: i64,
+) -> anyhow::Result<Vec<ChangeNotice>> {
+    Ok(omacal_store::changed_meetings(pool, now_ms)
+        .await?
+        .into_iter()
+        .map(|m| {
+            let day_of = |start: i64, end: Option<i64>| {
+                crate::write::all_day_span_dates(
+                    start,
+                    end.unwrap_or(start + DAY_MS),
+                    &m.calendar_timezone,
+                )
+                .0
+            };
+            let (old_start_date, new_start_date) = if m.is_all_day {
+                (
+                    Some(day_of(m.old_start_utc, m.old_end_utc)),
+                    m.new_start_utc.map(|s| day_of(s, m.new_end_utc)),
+                )
+            } else {
+                (None, None)
+            };
+            ChangeNotice {
+                calendar_id: m.calendar_id,
+                gid: m.gid,
+                kind: m.kind,
+                title: m.summary,
+                is_all_day: m.is_all_day,
+                old_start_ms: m.old_start_utc,
+                old_end_ms: m.old_end_utc,
+                new_start_ms: m.new_start_utc,
+                new_end_ms: m.new_end_utc,
+                old_start_date,
+                new_start_date,
+                color: m.color_hex,
+            }
+        })
+        .collect())
+}
+
+/// What the tray's Rescheduled and Cancelled sections render.
+#[tauri::command]
+pub(crate) async fn changed_meetings(
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<Vec<ChangeNotice>, String> {
+    changed_meetings_impl(&state.pool, crate::now_ms())
+        .await
+        .map_err(|e| crate::errors::user_facing(&e))
+}
+
+/// The ×: acknowledges one change.
+#[tauri::command]
+pub(crate) async fn dismiss_change_notice(
+    state: tauri::State<'_, crate::AppState>,
+    calendar_id: i64,
+    gid: String,
+) -> Result<(), String> {
+    omacal_store::dismiss_change(&state.pool, calendar_id, &gid)
+        .await
+        .map_err(|e| crate::errors::user_facing(&e))
+}
+
+/// One section's Dismiss all — `kind` is `moved` or `cancelled`.
+#[tauri::command]
+pub(crate) async fn dismiss_all_change_notices(
+    state: tauri::State<'_, crate::AppState>,
+    kind: String,
+) -> Result<usize, String> {
+    omacal_store::dismiss_all_changes(&state.pool, &kind, crate::now_ms())
+        .await
+        .map_err(|e| crate::errors::user_facing(&e))
+}
+
 /// Runs the invite pass with the app's own state, after a sync. Failures are
 /// logged and dropped — an announcement is never worth failing a sync over.
 pub(crate) async fn after_sync(app: &tauri::AppHandle) {

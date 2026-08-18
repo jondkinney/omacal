@@ -3757,6 +3757,58 @@ test.describe('Header invitation tray', () => {
     await expect(page.getByRole('button', { name: 'Dismiss all' })).toHaveCount(0);
   });
 
+  test('rescheduled and cancelled meetings list with their old and new slots', async ({ page }) => {
+    await page.goto(show('Header', 'with-changes'));
+    const badge = page.getByRole('button', {
+      name: '1 decline, 2 rescheduled, 2 cancelled',
+    });
+    await expect(badge).toHaveText('✉ 5');
+    await badge.click();
+
+    const moved = page.getByTestId('moved-row');
+    await expect(moved).toHaveCount(2);
+    // Timed: old day+time → new day+time. The premise (a five-hour, next-day
+    // move) is the fixture's own instants.
+    await expect(moved.nth(0)).toContainText('NVP sync');
+    await expect(moved.nth(0)).toContainText('→');
+    // All-day: the calendar-zone date strings, not instant-derived days.
+    await expect(moved.nth(1)).toContainText('Offsite');
+    await expect(moved.nth(1)).toContainText('Jan 30');
+    await expect(moved.nth(1)).toContainText('Feb 2');
+
+    const cancelled = page.getByTestId('cancelled-row');
+    await expect(cancelled).toHaveCount(2);
+    await expect(cancelled.nth(0)).toContainText('Retro');
+    await expect(cancelled.nth(0)).toContainText('was ');
+
+    // One × acknowledges one change, under its stable ids.
+    await moved.nth(0).getByRole('button', { name: 'Dismiss reschedule of NVP sync' }).click();
+    await expect(page.getByTestId('moved-row')).toHaveCount(1);
+    const call = await page.evaluate(() =>
+      (window as any).__harness.calls.find((c: { cmd: string }) => c.cmd === 'dismiss_change_notice')?.args);
+    expect(call).toEqual({ calendarId: 1, gid: 'nvp' });
+  });
+
+  test('Dismiss all is per section: cancelled goes, rescheduled and declines stay', async ({ page }) => {
+    await page.goto(show('Header', 'with-changes'));
+    await page.getByRole('button', { name: '1 decline, 2 rescheduled, 2 cancelled' }).click();
+
+    // The Cancelled section's own stroke — scoped by the section, since
+    // Rescheduled offers an identically labelled button.
+    const cancelledSect = page.locator('.sect', { hasText: 'Cancelled' });
+    await cancelledSect.getByRole('button', { name: 'Dismiss all' }).click();
+
+    await expect(page.getByTestId('cancelled-row')).toHaveCount(0);
+    await expect(page.getByTestId('moved-row')).toHaveCount(2);
+    await expect(page.getByTestId('decline-row')).toHaveCount(1);
+    const call = await page.evaluate(() =>
+      (window as any).__harness.calls.find((c: { cmd: string }) => c.cmd === 'dismiss_all_change_notices')?.args);
+    expect(call).toEqual({ kind: 'cancelled' });
+    await expect(
+      page.getByRole('button', { name: '1 decline, 2 rescheduled' })
+    ).toHaveText('✉ 3');
+  });
+
   test('a failed answer stays on its row instead of vanishing', async ({ page }) => {
     await page.goto(show('Header', 'with-invites'));
     await page.evaluate(() =>

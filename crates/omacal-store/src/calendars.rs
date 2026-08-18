@@ -175,6 +175,13 @@ pub async fn set_sync_enabled(pool: &SqlitePool, id: i64, on: bool) -> anyhow::R
             .execute(&mut *tx)
             .await?
             .rows_affected();
+        // AFTER the events delete, in the same transaction: the 0011 delete
+        // trigger just recorded every one of those rows as "cancelled", and
+        // a removed calendar is not a hundred cancellations.
+        sqlx::query("DELETE FROM event_changes WHERE calendar_id = ?1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
         sqlx::query("DELETE FROM sync_state WHERE calendar_id = ?1")
             .bind(id)
             .execute(&mut *tx)
@@ -531,11 +538,27 @@ pub async fn delete_account(pool: &SqlitePool, account_id: i64) -> anyhow::Resul
     .bind(account_id)
     .execute(&mut *tx)
     .await?;
+    // The calendar ids, captured before the cascade takes the rows they
+    // would be read from — the change-ledger sweep below needs them *after*
+    // the cascade's deletes have fired the 0011 trigger.
+    let calendar_ids: Vec<i64> =
+        sqlx::query_scalar("SELECT id FROM calendars WHERE account_id = ?1")
+            .bind(account_id)
+            .fetch_all(&mut *tx)
+            .await?;
     let gone = sqlx::query("DELETE FROM accounts WHERE id = ?1")
         .bind(account_id)
         .execute(&mut *tx)
         .await?
         .rows_affected();
+    // Same reasoning as set_sync_enabled's sweep: the cascade just recorded
+    // every deleted event as "cancelled", and signing out is not that.
+    for id in calendar_ids {
+        sqlx::query("DELETE FROM event_changes WHERE calendar_id = ?1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+    }
     tx.commit().await?;
     Ok(gone)
 }
@@ -581,9 +604,11 @@ mod cascade_tests {
         sqlx::query("INSERT INTO invite_scan (calendar_id, seeded_at_ms) VALUES (1, 0)")
             .execute(&pool).await.unwrap();
 
+        // An event the cascade will delete — whatever 0011's delete trigger
+        // records about it, the sweep must take back out.
         assert_eq!(delete_account(&pool, 1).await.unwrap(), 1);
         for table in ["accounts", "calendars", "events", "tasks", "sync_state", "fired_reminders",
-                      "invite_notices", "invite_scan"] {
+                      "invite_notices", "invite_scan", "event_changes"] {
             let n: i64 = sqlx::query_scalar(&format!("SELECT count(*) FROM {table}"))
                 .fetch_one(&pool).await.unwrap();
             assert_eq!(n, 0, "{table} should be empty after the cascade");

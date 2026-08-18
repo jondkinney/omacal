@@ -3,6 +3,7 @@ use sqlx::SqlitePool;
 use std::str::FromStr;
 
 pub mod calendars;
+pub mod changes;
 pub mod declines;
 pub mod events;
 pub mod invites;
@@ -11,6 +12,9 @@ pub mod tasks;
 pub use calendars::{
     calendar_for_write, delete_account, list_calendars, set_color_override, set_selected,
     set_sync_enabled, CalendarRow,
+};
+pub use changes::{
+    changed_meetings, dismiss_all_changes, dismiss_change, forget_changes, ChangedMeeting,
 };
 pub use declines::{declined_guests, dismiss_all_declines, dismiss_decline, DeclinedGuest};
 pub use invites::{

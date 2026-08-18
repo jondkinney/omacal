@@ -2000,10 +2000,34 @@ pub async fn delete_event_cmd(
     scope: String,
     occurrence_start_ms: i64,
 ) -> Result<(), String> {
+    // Captured before the delete — afterwards there may be no row to ask.
+    // A departure the user chose must not come back through the change
+    // ledger as "cancelled" news, so a successful delete erases the
+    // meeting's ledger memory (series root, exceptions included).
+    let target: Option<(i64, String, Option<String>)> = sqlx::query_as(
+        "SELECT calendar_id, google_id, recurring_event_id FROM events WHERE id = ?1",
+    )
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await
+    .ok()
+    .flatten();
+
     delete_impl(&state, id, &scope, occurrence_start_ms)
         .await
         .map_err(|e| crate::errors::user_facing(&e))
-        .inspect(|_| crate::upcoming::refresh_soon(state.pool.clone(), state.demo))
+        .inspect(|_| {
+            crate::upcoming::refresh_soon(state.pool.clone(), state.demo);
+            if let Some((calendar_id, gid, series)) = target {
+                let pool = state.pool.clone();
+                tauri::async_runtime::spawn(async move {
+                    let root = series.unwrap_or(gid);
+                    if let Err(e) = omacal_store::forget_changes(&pool, calendar_id, &root).await {
+                        tracing::warn!(%e, "could not clear the change ledger after a delete");
+                    }
+                });
+            }
+        })
 }
 
 /// The body of `delete_event_cmd`, minus the Tauri `State` wrapper — the same

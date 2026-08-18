@@ -758,6 +758,12 @@ export function installTauriStub(scenario: string): Harness {
         return null;
       case 'dismiss_all_decline_notices':
         return 0;
+      case 'changed_meetings':
+        return [];
+      case 'dismiss_change_notice':
+        return null;
+      case 'dismiss_all_change_notices':
+        return 0;
       case 'event_detail':
         return eventCallResult('event_detail', args.id);
       case 'refresh_event':

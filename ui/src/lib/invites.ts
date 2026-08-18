@@ -61,3 +61,32 @@ export const dismissDeclineNotice = (n: DeclineNotice) =>
  *  resolves "all" against the same query that fills the list, so the two
  *  cannot disagree. */
 export const dismissAllDeclineNotices = () => invoke<number>('dismiss_all_decline_notices');
+
+/**
+ * One meeting the user attends that moved or was cancelled — the tray's
+ * Rescheduled and Cancelled sections. `old_*` is the slot the user last
+ * knew; `new_*` is where it stands now, absent for a cancellation. All-day
+ * days arrive as calendar-zone strings, the same rule as everywhere else.
+ */
+export type ChangeNotice = {
+  calendar_id: number;
+  gid: string;
+  kind: 'moved' | 'cancelled';
+  title: string | null;
+  is_all_day: boolean;
+  old_start_ms: number;
+  old_end_ms: number | null;
+  new_start_ms: number | null;
+  new_end_ms: number | null;
+  old_start_date: string | null;
+  new_start_date: string | null;
+  color: string | null;
+};
+
+export const changedMeetings = () => invoke<ChangeNotice[]>('changed_meetings');
+
+export const dismissChangeNotice = (n: ChangeNotice) =>
+  invoke<void>('dismiss_change_notice', { calendarId: n.calendar_id, gid: n.gid });
+
+export const dismissAllChangeNotices = (kind: 'moved' | 'cancelled') =>
+  invoke<number>('dismiss_all_change_notices', { kind });

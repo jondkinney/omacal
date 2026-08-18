@@ -1910,6 +1910,53 @@ export const FIXTURES: Record<string, Record<string, any>> = {
         },
       ],
     },
+    /** The attendee's side of the tray: two rescheduled meetings (one timed,
+     *  one all-day, so both "old → new" shapes render) and two cancelled,
+     *  beside one decline — every section at once, which is the state the
+     *  per-kind Dismiss all has to discriminate in. */
+    'with-changes': {
+      ...header({
+        accounts: ['me@x.com'], last_sync_ms: FIVE_MIN_AGO, demo: false, overlay_titlebar: false,
+      }),
+      declines: [
+        {
+          calendar_id: 1, gid: 'weekly-ops', email: 'victor@x.com',
+          display_name: 'Victor', title: 'Weekly ops',
+          start_ms: MON + 58 * 3_600_000, end_ms: MON + 59 * 3_600_000,
+          is_all_day: false, start_date: null, end_date: null, color: '#e2a03f',
+        },
+      ],
+      changes: [
+        {
+          calendar_id: 1, gid: 'nvp', kind: 'moved' as const, title: 'NVP sync',
+          is_all_day: false,
+          old_start_ms: MON + 34 * 3_600_000, old_end_ms: MON + 35 * 3_600_000,
+          new_start_ms: MON + 58 * 3_600_000, new_end_ms: MON + 59 * 3_600_000,
+          old_start_date: null, new_start_date: null, color: '#5b8def',
+        },
+        {
+          calendar_id: 1, gid: 'offsite', kind: 'moved' as const, title: 'Offsite',
+          is_all_day: true,
+          old_start_ms: MON + 24 * 3_600_000, old_end_ms: MON + 48 * 3_600_000,
+          new_start_ms: MON + 96 * 3_600_000, new_end_ms: MON + 120 * 3_600_000,
+          old_start_date: '2024-01-30', new_start_date: '2024-02-02', color: '#5b8def',
+        },
+        {
+          calendar_id: 1, gid: 'retro', kind: 'cancelled' as const, title: 'Retro',
+          is_all_day: false,
+          old_start_ms: MON + 80 * 3_600_000, old_end_ms: MON + 81 * 3_600_000,
+          new_start_ms: null, new_end_ms: null,
+          old_start_date: null, new_start_date: null, color: '#e2a03f',
+        },
+        {
+          calendar_id: 1, gid: 'townhall', kind: 'cancelled' as const, title: 'Townhall',
+          is_all_day: false,
+          old_start_ms: MON + 100 * 3_600_000, old_end_ms: MON + 101 * 3_600_000,
+          new_start_ms: null, new_end_ms: null,
+          old_start_date: null, new_start_date: null, color: '#5b8def',
+        },
+      ],
+    },
     // A **connected** account with a recent successful sync *and* an error.
     // Both halves are load bearing: `last_sync_ms` is still set after a sync
     // fails — it records the last one that worked — so a light reading it

@@ -5,11 +5,12 @@
   import { formatClock } from './timefmt';
   import { escapeCloses } from './dismiss.svelte';
   import {
-    dismissAllDeclineNotices, dismissDeclineNotice,
-    type DeclineNotice, type PendingInvite,
+    dismissAllChangeNotices, dismissAllDeclineNotices,
+    dismissChangeNotice, dismissDeclineNotice,
+    type ChangeNotice, type DeclineNotice, type PendingInvite,
   } from './invites';
 
-  let { invites, declines = [], onanswered }: {
+  let { invites, declines = [], changes = [], onanswered }: {
     /** `App`'s list — this component never mutates it. An answered row
      *  disappears because `onanswered` makes `App` refetch, not because
      *  anything here spliced. */
@@ -18,6 +19,9 @@
      *  organizer's side of the same tray (2026-08-18, by request: in the
      *  app only, no toast). */
     declines?: DeclineNotice[];
+    /** Meetings the user attends that moved or were cancelled under them —
+     *  the attendee's side, same request, same lifecycle. */
+    changes?: ChangeNotice[];
     /** One invitation was answered (or a decline acknowledged) and the write
      *  landed. `App` refetches the lists and reloads the grid. */
     onanswered: () => void;
@@ -87,6 +91,43 @@
     }
   }
 
+  /** Same pair of moves for the change sections, keyed and stroked per kind. */
+  let ackedChanges = $state<string[]>([]);
+  const changeKey = (c: ChangeNotice) => `${c.calendar_id}:${c.gid}`;
+  const shownMoved = $derived(
+    changes.filter((c) => c.kind === 'moved' && !ackedChanges.includes(changeKey(c))));
+  const shownCancelled = $derived(
+    changes.filter((c) => c.kind === 'cancelled' && !ackedChanges.includes(changeKey(c))));
+
+  async function acknowledgeChange(c: ChangeNotice) {
+    ackedChanges = [...ackedChanges, changeKey(c)];
+    try {
+      await dismissChangeNotice(c);
+      onanswered();
+    } catch {
+      ackedChanges = ackedChanges.filter((k) => k !== changeKey(c));
+    }
+  }
+
+  async function acknowledgeAllChanges(kind: 'moved' | 'cancelled') {
+    const before = ackedChanges;
+    const batch = kind === 'moved' ? shownMoved : shownCancelled;
+    ackedChanges = [...ackedChanges, ...batch.map(changeKey)];
+    try {
+      await dismissAllChangeNotices(kind);
+      onanswered();
+    } catch {
+      ackedChanges = before;
+    }
+  }
+
+  /** "Wed, Jan 3 · 15:30" — one endpoint of a move, or a cancellation's
+   *  vacated slot. All-day meetings speak in their calendar-zone day. */
+  function slot(dateStr: string | null, ms: number, allDay: boolean): string {
+    if (allDay && dateStr) return dateWords(dateStr);
+    return `${day(ms)} · ${hhmm(ms)}`;
+  }
+
   async function answer(inv: PendingInvite, response: 'accepted' | 'tentative' | 'declined') {
     busyIds = [...busyIds, inv.id];
     const { [inv.id]: _gone, ...rest } = errors;
@@ -108,7 +149,7 @@
   escapeCloses(() => open, () => (open = false));
 </script>
 
-{#if invites.length + shownDeclines.length > 0}
+{#if invites.length + shownDeclines.length + shownMoved.length + shownCancelled.length > 0}
   <div class="wrap">
     <!-- The badge: present exactly while something awaits attention, so its
          absence means inbox-zero rather than "feature off". A count, not a
@@ -122,6 +163,8 @@
           ? `${invites.length} pending ${invites.length === 1 ? 'invitation' : 'invitations'}` : '',
         shownDeclines.length > 0
           ? `${shownDeclines.length} ${shownDeclines.length === 1 ? 'decline' : 'declines'}` : '',
+        shownMoved.length > 0 ? `${shownMoved.length} rescheduled` : '',
+        shownCancelled.length > 0 ? `${shownCancelled.length} cancelled` : '',
       ].filter(Boolean).join(', ')}
       aria-expanded={open}
       title="Invitations and replies"
@@ -131,7 +174,7 @@
         // Header's burger carries, for the same Escape-needs-a-focus reason.
         if (open) (e.currentTarget as HTMLElement).focus();
       }}
-    >✉ {invites.length + shownDeclines.length}</button>
+    >✉ {invites.length + shownDeclines.length + shownMoved.length + shownCancelled.length}</button>
 
     {#if open}
       <button class="scrim" aria-label="Close invitations" onclick={() => (open = false)}></button>
@@ -188,6 +231,61 @@
               aria-label="Dismiss decline by {d.display_name ?? d.email}"
               title="Got it"
               onclick={() => acknowledge(d)}
+            >×</button>
+          </div>
+        {/each}
+
+        {#if shownMoved.length > 0}
+          <div class="sect" class:joined={invites.length + shownDeclines.length > 0}>
+            <span>Rescheduled</span>
+            {#if shownMoved.length > 1}
+              <button class="ackall" onclick={() => acknowledgeAllChanges('moved')}>Dismiss all</button>
+            {/if}
+          </div>
+        {/if}
+        {#each shownMoved as c (changeKey(c))}
+          <div class="row" data-testid="moved-row">
+            <span class="tick" style:background={c.color ?? 'var(--muted)'}></span>
+            <div class="text">
+              <span class="title">{c.title ?? '(no title)'}</span>
+              <span class="meta">
+                {slot(c.old_start_date, c.old_start_ms, c.is_all_day)}
+                &nbsp;→&nbsp;
+                {#if c.new_start_ms !== null}
+                  {slot(c.new_start_date, c.new_start_ms, c.is_all_day)}{#if !c.is_all_day && c.new_end_ms !== null}&nbsp;– {hhmm(c.new_end_ms)}{/if}
+                {/if}
+              </span>
+            </div>
+            <button
+              class="ack"
+              aria-label="Dismiss reschedule of {c.title ?? '(no title)'}"
+              title="Got it"
+              onclick={() => acknowledgeChange(c)}
+            >×</button>
+          </div>
+        {/each}
+
+        {#if shownCancelled.length > 0}
+          <div class="sect"
+               class:joined={invites.length + shownDeclines.length + shownMoved.length > 0}>
+            <span>Cancelled</span>
+            {#if shownCancelled.length > 1}
+              <button class="ackall" onclick={() => acknowledgeAllChanges('cancelled')}>Dismiss all</button>
+            {/if}
+          </div>
+        {/if}
+        {#each shownCancelled as c (changeKey(c))}
+          <div class="row" data-testid="cancelled-row">
+            <span class="tick" style:background={c.color ?? 'var(--muted)'}></span>
+            <div class="text">
+              <span class="title">{c.title ?? '(no title)'}</span>
+              <span class="meta">was {slot(c.old_start_date, c.old_start_ms, c.is_all_day)}</span>
+            </div>
+            <button
+              class="ack"
+              aria-label="Dismiss cancellation of {c.title ?? '(no title)'}"
+              title="Got it"
+              onclick={() => acknowledgeChange(c)}
             >×</button>
           </div>
         {/each}
