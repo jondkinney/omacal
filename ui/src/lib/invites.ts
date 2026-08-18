@@ -56,3 +56,8 @@ export const dismissDeclineNotice = (n: DeclineNotice) =>
   invoke<void>('dismiss_decline_notice', {
     calendarId: n.calendar_id, gid: n.gid, email: n.email,
   });
+
+/** Every currently listed decline acknowledged in one stroke — the backend
+ *  resolves "all" against the same query that fills the list, so the two
+ *  cannot disagree. */
+export const dismissAllDeclineNotices = () => invoke<number>('dismiss_all_decline_notices');

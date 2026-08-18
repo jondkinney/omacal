@@ -134,6 +134,17 @@ pub async fn dismiss_decline(
     Ok(())
 }
 
+/// The tray's "dismiss all": acknowledges every decline currently listed —
+/// exactly the set [`declined_guests`] answers, so the two cannot disagree
+/// about what "all" means. Returns how many were acknowledged.
+pub async fn dismiss_all_declines(pool: &SqlitePool, now_ms: i64) -> anyhow::Result<usize> {
+    let all = declined_guests(pool, now_ms).await?;
+    for d in &all {
+        dismiss_decline(pool, d.calendar_id, &d.gid, &d.email, now_ms).await?;
+    }
+    Ok(all.len())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,6 +272,27 @@ mod tests {
         // One × acknowledges the meeting, exceptions included.
         dismiss_decline(&pool, 1, "ser", "ana@x.com", NOW).await.unwrap();
         assert!(declined_guests(&pool, NOW).await.unwrap().is_empty());
+    }
+
+    /// Dismiss-all acknowledges exactly what is listed — several guests
+    /// across several meetings in one stroke — and nothing that is not.
+    #[tokio::test]
+    async fn dismiss_all_clears_the_list_and_reports_the_count() {
+        let pool = seeded_pool().await;
+        upsert_event(&pool, &mine("m1", NOW + HOUR, vec![
+            me("accepted"), guest("ana@x.com", "declined"), guest("bo@x.com", "declined"),
+        ])).await.unwrap();
+        upsert_event(&pool, &mine("m2", NOW + 2 * HOUR, vec![
+            me("accepted"), guest("cid@x.com", "declined"),
+        ])).await.unwrap();
+
+        assert_eq!(dismiss_all_declines(&pool, NOW).await.unwrap(), 3);
+        assert!(declined_guests(&pool, NOW).await.unwrap().is_empty());
+        // A decline arriving after the stroke is new news, not pre-forgiven.
+        upsert_event(&pool, &mine("m3", NOW + 3 * HOUR, vec![
+            me("accepted"), guest("dee@x.com", "declined"),
+        ])).await.unwrap();
+        assert_eq!(declined_guests(&pool, NOW).await.unwrap().len(), 1);
     }
 
     /// The list is state-derived: a guest who un-declines disappears with no

@@ -756,6 +756,8 @@ export function installTauriStub(scenario: string): Harness {
       // the component's own optimistic hide, so nothing needs answering.
       case 'dismiss_decline_notice':
         return null;
+      case 'dismiss_all_decline_notices':
+        return 0;
       case 'event_detail':
         return eventCallResult('event_detail', args.id);
       case 'refresh_event':

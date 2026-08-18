@@ -3708,8 +3708,7 @@ test.describe('Header invitation tray', () => {
 
     const rows = page.getByTestId('decline-row');
     await expect(rows).toHaveCount(2);
-    // The section label appears exactly because both kinds are present.
-    await expect(page.locator('.sect')).toHaveText('Declined your meeting');
+    await expect(page.locator('.sect span')).toHaveText('Declined your meeting');
     await expect(rows.nth(0)).toContainText('Victor declined');
     await expect(rows.nth(0)).toContainText('Weekly ops');
     // No display name falls back to the address; the all-day when line
@@ -3730,6 +3729,32 @@ test.describe('Header invitation tray', () => {
       (window as any).__harness.calls.find((c: { cmd: string }) => c.cmd === 'dismiss_decline_notice')?.args);
     expect(call).toEqual({ calendarId: 1, gid: 'weekly-ops', email: 'victor@x.com' });
     await expect.poll(() => page.evaluate(() => (window as any).__inviteAnswers)).toBe(1);
+  });
+
+  test('Dismiss all clears every decline in one stroke, invitations untouched', async ({ page }) => {
+    await page.goto(show('Header', 'with-declines'));
+    await page.getByRole('button', { name: '1 pending invitation, 2 declines' }).click();
+    await page.getByRole('button', { name: 'Dismiss all' }).click();
+
+    await expect(page.getByTestId('decline-row')).toHaveCount(0);
+    // The invitation still awaits its answer — Dismiss all is declines-only.
+    await expect(page.getByTestId('invite-row')).toHaveCount(1);
+    await expect(
+      page.getByRole('button', { name: '1 pending invitation' })
+    ).toHaveText('✉ 1');
+    expect(await page.evaluate(() =>
+      (window as any).__harness.calls.some((c: { cmd: string }) => c.cmd === 'dismiss_all_decline_notices'))).toBe(true);
+    await expect.poll(() => page.evaluate(() => (window as any).__inviteAnswers)).toBe(1);
+  });
+
+  test('one decline offers only its own ×, not a Dismiss all', async ({ page }) => {
+    // A single decline's × is already under the finger; "all" of one is
+    // noise. Reached by dismissing one of the fixture's two.
+    await page.goto(show('Header', 'with-declines'));
+    await page.getByRole('button', { name: '1 pending invitation, 2 declines' }).click();
+    await page.getByRole('button', { name: 'Dismiss decline by Victor' }).click();
+    await expect(page.getByTestId('decline-row')).toHaveCount(1);
+    await expect(page.getByRole('button', { name: 'Dismiss all' })).toHaveCount(0);
   });
 
   test('a failed answer stays on its row instead of vanishing', async ({ page }) => {

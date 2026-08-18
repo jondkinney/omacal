@@ -4,7 +4,10 @@
   import { clockFormat } from './clock.svelte';
   import { formatClock } from './timefmt';
   import { escapeCloses } from './dismiss.svelte';
-  import { dismissDeclineNotice, type DeclineNotice, type PendingInvite } from './invites';
+  import {
+    dismissAllDeclineNotices, dismissDeclineNotice,
+    type DeclineNotice, type PendingInvite,
+  } from './invites';
 
   let { invites, declines = [], onanswered }: {
     /** `App`'s list — this component never mutates it. An answered row
@@ -68,6 +71,19 @@
     } catch {
       // The write failed; the row comes back rather than lying about it.
       acked = acked.filter((k) => k !== ackKey(d));
+    }
+  }
+
+  /** All the ×s in one stroke — same optimistic hide, same honesty on
+   *  failure: rows return rather than pretending they were acknowledged. */
+  async function acknowledgeAll() {
+    const before = acked;
+    acked = [...acked, ...shownDeclines.map(ackKey)];
+    try {
+      await dismissAllDeclineNotices();
+      onanswered();
+    } catch {
+      acked = before;
     }
   }
 
@@ -148,8 +164,16 @@
           </div>
         {/each}
 
-        {#if invites.length > 0 && shownDeclines.length > 0}
-          <p class="sect">Declined your meeting</p>
+        {#if shownDeclines.length > 0}
+          <!-- The section row earns its keep beyond labelling: it carries
+               Dismiss all, offered once there is an "all" to speak of — a
+               single decline's × is already under the finger. -->
+          <div class="sect" class:joined={invites.length > 0}>
+            <span>Declined your meeting</span>
+            {#if shownDeclines.length > 1}
+              <button class="ackall" onclick={acknowledgeAll}>Dismiss all</button>
+            {/if}
+          </div>
         {/if}
         {#each shownDeclines as d (ackKey(d))}
           <div class="row" data-testid="decline-row">
@@ -204,11 +228,18 @@
                  background: color-mix(in srgb, var(--text) 6%, transparent); }
   .rsvp button:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 22%, transparent); }
   .rsvp button:disabled { opacity: .5; cursor: default; }
-  /* The section label between the two kinds of row, shown only when both
-     are present — one kind alone needs no explaining. */
-  .sect { font-size: 10.5px; color: var(--muted); letter-spacing: .05em;
-          margin: 4px 0 0; padding: 2px 8px 0;
-          border-top: 1px solid var(--hairline); }
+  /* The declines section row: label left, Dismiss all right. The hairline
+     only when invitations sit above it — a divider with nothing above is a
+     stray line. */
+  .sect { display: flex; align-items: center; justify-content: space-between;
+          font-size: 10.5px; color: var(--muted); letter-spacing: .05em;
+          margin: 0; padding: 2px 8px 0; }
+  .sect.joined { margin-top: 4px; border-top: 1px solid var(--hairline); }
+  .ackall { font: inherit; font-size: 10.5px; letter-spacing: .05em;
+            cursor: pointer; border: 0; border-radius: 5px; padding: 2px 7px;
+            color: var(--muted); background: none; }
+  .ackall:hover { color: var(--text);
+                  background: color-mix(in srgb, var(--text) 8%, transparent); }
   /* The ×: acknowledgement, not deletion — quiet until hovered. */
   .ack { font: inherit; font-size: 14px; line-height: 1; cursor: pointer;
          border: 0; border-radius: 6px; padding: 4px 8px; flex: none;

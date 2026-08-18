@@ -1067,6 +1067,7 @@ pub fn run() {
             invites::pending_invites,
             invites::declined_guests,
             invites::dismiss_decline_notice,
+            invites::dismiss_all_decline_notices,
             get_palette,
             get_week,
             get_day,

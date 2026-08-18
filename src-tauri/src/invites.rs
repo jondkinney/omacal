@@ -301,6 +301,17 @@ pub(crate) async fn declined_guests(
         .map_err(|e| crate::errors::user_facing(&e))
 }
 
+/// The tray's "Dismiss all": every currently listed decline acknowledged in
+/// one stroke. Returns the count, purely for the log.
+#[tauri::command]
+pub(crate) async fn dismiss_all_decline_notices(
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<usize, String> {
+    omacal_store::dismiss_all_declines(&state.pool, crate::now_ms())
+        .await
+        .map_err(|e| crate::errors::user_facing(&e))
+}
+
 /// The ×: acknowledges one guest's decline of one meeting.
 #[tauri::command]
 pub(crate) async fn dismiss_decline_notice(
