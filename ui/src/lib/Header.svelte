@@ -9,7 +9,7 @@
   import SettingsModal from './SettingsModal.svelte';
   import TasksPanel from './TasksPanel.svelte';
   import ViewSwitcher, { type View } from './ViewSwitcher.svelte';
-  import type { PendingInvite } from './invites';
+  import type { DeclineNotice, PendingInvite } from './invites';
 
   let {
     status, anchorMs, weekStartMs, busy, error, calendars, view, onpick,
@@ -17,7 +17,7 @@
     listMode, onToggleList,
     onPrev, onNext, onToday, onSearch, onSignIn, onSync, oncalendarchange,
     onWhatsNew,
-    invites = [], oninvitesanswered = () => {},
+    invites = [], declines = [], oninvitesanswered = () => {},
     open = $bindable(false),
   }: {
     status: AppStatus | null;
@@ -51,6 +51,9 @@
     /** Unanswered invitations, for the tray beside the sync light — `App`'s
      *  own list, refetched on every sync. Empty renders nothing at all. */
     invites?: PendingInvite[];
+    /** Guests who declined the user's own meetings — the same tray's other
+     *  section, same lifecycle. */
+    declines?: DeclineNotice[];
     /** An invitation was answered from the tray. `App` refetches the list
      *  and reloads the grid — the tray never mutates what it was given. */
     oninvitesanswered?: () => void;
@@ -246,7 +249,7 @@
     <!-- Before the sync light: the one header element that asks for an
          action, so it sits where the eye already checks state. Renders
          nothing at inbox-zero — see InviteTray. -->
-    <InviteTray {invites} onanswered={oninvitesanswered} />
+    <InviteTray {invites} {declines} onanswered={oninvitesanswered} />
 
     <!-- **Spec §2: a light, not a sentence.** `is this stale?` is a question
          answered by glancing, so the state stays in the header while the words

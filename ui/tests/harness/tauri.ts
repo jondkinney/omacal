@@ -750,6 +750,12 @@ export function installTauriStub(scenario: string): Harness {
       // that want rows mount the component with fixture props instead.
       case 'pending_invites':
         return [];
+      case 'declined_guests':
+        return [];
+      // Recorded in `calls` like everything else; the row's disappearance is
+      // the component's own optimistic hide, so nothing needs answering.
+      case 'dismiss_decline_notice':
+        return null;
       case 'event_detail':
         return eventCallResult('event_detail', args.id);
       case 'refresh_event':

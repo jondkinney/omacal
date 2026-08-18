@@ -3699,6 +3699,39 @@ test.describe('Header invitation tray', () => {
     });
   });
 
+  test('declines by others list beside the invitations, and × acknowledges', async ({ page }) => {
+    await page.goto(show('Header', 'with-declines'));
+    // One invitation and two declines, counted together and named apart.
+    const badge = page.getByRole('button', { name: '1 pending invitation, 2 declines' });
+    await expect(badge).toHaveText('✉ 3');
+    await badge.click();
+
+    const rows = page.getByTestId('decline-row');
+    await expect(rows).toHaveCount(2);
+    // The section label appears exactly because both kinds are present.
+    await expect(page.locator('.sect')).toHaveText('Declined your meeting');
+    await expect(rows.nth(0)).toContainText('Victor declined');
+    await expect(rows.nth(0)).toContainText('Weekly ops');
+    // No display name falls back to the address; the all-day when line
+    // comes from the calendar-zone date strings.
+    await expect(rows.nth(1)).toContainText('iskren@x.com declined');
+    await expect(rows.nth(1)).toContainText('Jan 30');
+    // Declines ask only to be seen: no Yes/Maybe/No on these rows.
+    await expect(rows.nth(0).getByRole('button', { name: 'Yes' })).toHaveCount(0);
+
+    await rows.nth(0).getByRole('button', { name: 'Dismiss decline by Victor' }).click();
+    // Gone immediately — the optimistic hide — and the badge follows.
+    await expect(page.getByTestId('decline-row')).toHaveCount(1);
+    await expect(
+      page.getByRole('button', { name: '1 pending invitation, 1 decline' })
+    ).toHaveText('✉ 2');
+    // The acknowledgement went out under the stable ids, and App was told.
+    const call = await page.evaluate(() =>
+      (window as any).__harness.calls.find((c: { cmd: string }) => c.cmd === 'dismiss_decline_notice')?.args);
+    expect(call).toEqual({ calendarId: 1, gid: 'weekly-ops', email: 'victor@x.com' });
+    await expect.poll(() => page.evaluate(() => (window as any).__inviteAnswers)).toBe(1);
+  });
+
   test('a failed answer stays on its row instead of vanishing', async ({ page }) => {
     await page.goto(show('Header', 'with-invites'));
     await page.evaluate(() =>

@@ -240,6 +240,80 @@ pub(crate) async fn pending_invites(
         .map_err(|e| crate::errors::user_facing(&e))
 }
 
+/// One guest who declined one of the user's own meetings — the organizer's
+/// side of the tray, in-app only by request (2026-08-18): no toast, no
+/// widget, just the row and its ×. Shape mirrors [`PendingInvite`], plus the
+/// stable ids the dismissal is recorded under.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub(crate) struct DeclineNotice {
+    pub calendar_id: i64,
+    pub gid: String,
+    pub email: String,
+    pub display_name: Option<String>,
+    pub title: Option<String>,
+    pub start_ms: i64,
+    pub end_ms: i64,
+    pub is_all_day: bool,
+    pub start_date: Option<String>,
+    pub end_date: Option<String>,
+    pub color: Option<String>,
+}
+
+pub(crate) async fn declined_guests_impl(
+    pool: &SqlitePool,
+    now_ms: i64,
+) -> anyhow::Result<Vec<DeclineNotice>> {
+    Ok(omacal_store::declined_guests(pool, now_ms)
+        .await?
+        .into_iter()
+        .map(|d| {
+            let (start_date, end_date) = if d.is_all_day {
+                let (s, e) =
+                    crate::write::all_day_span_dates(d.start_utc, d.end_utc, &d.calendar_timezone);
+                (Some(s), Some(e))
+            } else {
+                (None, None)
+            };
+            DeclineNotice {
+                calendar_id: d.calendar_id,
+                gid: d.gid,
+                email: d.email,
+                display_name: d.display_name,
+                title: d.summary,
+                start_ms: d.start_utc,
+                end_ms: d.end_utc,
+                is_all_day: d.is_all_day,
+                start_date,
+                end_date,
+                color: d.color_hex,
+            }
+        })
+        .collect())
+}
+
+/// What the tray's "declined" section renders — see [`DeclineNotice`].
+#[tauri::command]
+pub(crate) async fn declined_guests(
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<Vec<DeclineNotice>, String> {
+    declined_guests_impl(&state.pool, crate::now_ms())
+        .await
+        .map_err(|e| crate::errors::user_facing(&e))
+}
+
+/// The ×: acknowledges one guest's decline of one meeting.
+#[tauri::command]
+pub(crate) async fn dismiss_decline_notice(
+    state: tauri::State<'_, crate::AppState>,
+    calendar_id: i64,
+    gid: String,
+    email: String,
+) -> Result<(), String> {
+    omacal_store::dismiss_decline(&state.pool, calendar_id, &gid, &email, crate::now_ms())
+        .await
+        .map_err(|e| crate::errors::user_facing(&e))
+}
+
 /// Runs the invite pass with the app's own state, after a sync. Failures are
 /// logged and dropped — an announcement is never worth failing a sync over.
 pub(crate) async fn after_sync(app: &tauri::AppHandle) {

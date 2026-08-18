@@ -29,3 +29,30 @@ export type PendingInvite = {
 };
 
 export const pendingInvites = () => invoke<PendingInvite[]>('pending_invites');
+
+/**
+ * One guest who declined one of the user's own meetings — the organizer's
+ * side of the tray, requested in-app only (no toast, no widget). Same date
+ * conventions as `PendingInvite`; `calendar_id`/`gid`/`email` are the stable
+ * ids the × records its acknowledgement under.
+ */
+export type DeclineNotice = {
+  calendar_id: number;
+  gid: string;
+  email: string;
+  display_name: string | null;
+  title: string | null;
+  start_ms: number;
+  end_ms: number;
+  is_all_day: boolean;
+  start_date: string | null;
+  end_date: string | null;
+  color: string | null;
+};
+
+export const declinedGuests = () => invoke<DeclineNotice[]>('declined_guests');
+
+export const dismissDeclineNotice = (n: DeclineNotice) =>
+  invoke<void>('dismiss_decline_notice', {
+    calendarId: n.calendar_id, gid: n.gid, email: n.email,
+  });

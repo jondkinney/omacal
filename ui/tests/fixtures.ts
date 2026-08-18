@@ -1879,6 +1879,37 @@ export const FIXTURES: Record<string, Record<string, any>> = {
         },
       ],
     },
+    /** One invitation *and* two declines — the tray's mixed state, which is
+     *  the only one that renders the section label between the kinds. The
+     *  timed decline and the all-day one cover both "when" shapes on the
+     *  organizer's side too. */
+    'with-declines': {
+      ...header({
+        accounts: ['me@x.com'], last_sync_ms: FIVE_MIN_AGO, demo: false, overlay_titlebar: false,
+      }),
+      invites: [
+        {
+          id: 901, title: 'NVP sync meeting',
+          start_ms: MON + 34 * 3_600_000, end_ms: MON + 35 * 3_600_000,
+          is_all_day: false, start_date: null, end_date: null,
+          organizer_email: 'ana@x.com', color: '#5b8def', can_respond: true,
+        },
+      ],
+      declines: [
+        {
+          calendar_id: 1, gid: 'weekly-ops', email: 'victor@x.com',
+          display_name: 'Victor', title: 'Weekly ops',
+          start_ms: MON + 58 * 3_600_000, end_ms: MON + 59 * 3_600_000,
+          is_all_day: false, start_date: null, end_date: null, color: '#e2a03f',
+        },
+        {
+          calendar_id: 1, gid: 'offsite', email: 'iskren@x.com',
+          display_name: null, title: 'Team offsite',
+          start_ms: MON + 24 * 3_600_000, end_ms: MON + 48 * 3_600_000,
+          is_all_day: true, start_date: '2024-01-30', end_date: '2024-01-30', color: '#5b8def',
+        },
+      ],
+    },
     // A **connected** account with a recent successful sync *and* an error.
     // Both halves are load bearing: `last_sync_ms` is still set after a sync
     // fails — it records the last one that worked — so a light reading it

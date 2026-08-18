@@ -4,15 +4,19 @@
   import { clockFormat } from './clock.svelte';
   import { formatClock } from './timefmt';
   import { escapeCloses } from './dismiss.svelte';
-  import type { PendingInvite } from './invites';
+  import { dismissDeclineNotice, type DeclineNotice, type PendingInvite } from './invites';
 
-  let { invites, onanswered }: {
+  let { invites, declines = [], onanswered }: {
     /** `App`'s list — this component never mutates it. An answered row
      *  disappears because `onanswered` makes `App` refetch, not because
      *  anything here spliced. */
     invites: PendingInvite[];
-    /** One invitation was answered and the write landed. `App` refetches the
-     *  list and reloads the grid so the block's ring catches up. */
+    /** Guests who declined the user's own meetings, unacknowledged — the
+     *  organizer's side of the same tray (2026-08-18, by request: in the
+     *  app only, no toast). */
+    declines?: DeclineNotice[];
+    /** One invitation was answered (or a decline acknowledged) and the write
+     *  landed. `App` refetches the lists and reloads the grid. */
     onanswered: () => void;
   } = $props();
 
@@ -39,13 +43,32 @@
     });
   }
 
-  function when(inv: PendingInvite): string {
+  type Dated = Pick<PendingInvite, 'is_all_day' | 'start_date' | 'end_date' | 'start_ms' | 'end_ms'>;
+  function when(inv: Dated): string {
     if (inv.is_all_day && inv.start_date && inv.end_date) {
       return inv.start_date === inv.end_date
         ? `${dateWords(inv.start_date)} · All day`
         : `${dateWords(inv.start_date)} – ${dateWords(inv.end_date)} · All day`;
     }
     return `${day(inv.start_ms)} · ${hhmm(inv.start_ms)} – ${hhmm(inv.end_ms)}`;
+  }
+
+  /** Declines already ×-ed this session, hidden immediately — the write is
+   *  idempotent and `App`'s refetch confirms, but the row must not wait for
+   *  the round trip under the finger that dismissed it. */
+  let acked = $state<string[]>([]);
+  const ackKey = (d: DeclineNotice) => `${d.calendar_id}:${d.gid}:${d.email}`;
+  const shownDeclines = $derived(declines.filter((d) => !acked.includes(ackKey(d))));
+
+  async function acknowledge(d: DeclineNotice) {
+    acked = [...acked, ackKey(d)];
+    try {
+      await dismissDeclineNotice(d);
+      onanswered();
+    } catch {
+      // The write failed; the row comes back rather than lying about it.
+      acked = acked.filter((k) => k !== ackKey(d));
+    }
   }
 
   async function answer(inv: PendingInvite, response: 'accepted' | 'tentative' | 'declined') {
@@ -69,24 +92,30 @@
   escapeCloses(() => open, () => (open = false));
 </script>
 
-{#if invites.length > 0}
+{#if invites.length + shownDeclines.length > 0}
   <div class="wrap">
-    <!-- The badge: present exactly while something awaits an answer, so its
+    <!-- The badge: present exactly while something awaits attention, so its
          absence means inbox-zero rather than "feature off". A count, not a
-         dot — one invitation and four ask for different amounts of your
-         attention. -->
+         dot — one item and four ask for different amounts of your attention.
+         The label says what kinds, because an invitation asks for an answer
+         and a decline only asks to be seen. -->
     <button
       class="badge"
-      aria-label="{invites.length} pending {invites.length === 1 ? 'invitation' : 'invitations'}"
+      aria-label={[
+        invites.length > 0
+          ? `${invites.length} pending ${invites.length === 1 ? 'invitation' : 'invitations'}` : '',
+        shownDeclines.length > 0
+          ? `${shownDeclines.length} ${shownDeclines.length === 1 ? 'decline' : 'declines'}` : '',
+      ].filter(Boolean).join(', ')}
       aria-expanded={open}
-      title="Pending invitations"
+      title="Invitations and replies"
       onclick={(e) => {
         open = !open;
         // WebKit does not focus a <button> on click — the same line
         // Header's burger carries, for the same Escape-needs-a-focus reason.
         if (open) (e.currentTarget as HTMLElement).focus();
       }}
-    >✉ {invites.length}</button>
+    >✉ {invites.length + shownDeclines.length}</button>
 
     {#if open}
       <button class="scrim" aria-label="Close invitations" onclick={() => (open = false)}></button>
@@ -116,6 +145,26 @@
                    buttons that could only fail. -->
               <span class="meta">answer at your provider</span>
             {/if}
+          </div>
+        {/each}
+
+        {#if invites.length > 0 && shownDeclines.length > 0}
+          <p class="sect">Declined your meeting</p>
+        {/if}
+        {#each shownDeclines as d (ackKey(d))}
+          <div class="row" data-testid="decline-row">
+            <span class="tick" style:background={d.color ?? 'var(--muted)'}></span>
+            <div class="text">
+              <span class="title">{d.display_name ?? d.email} declined</span>
+              <span class="meta">{d.title ?? '(no title)'}</span>
+              <span class="meta">{when(d)}</span>
+            </div>
+            <button
+              class="ack"
+              aria-label="Dismiss decline by {d.display_name ?? d.email}"
+              title="Got it"
+              onclick={() => acknowledge(d)}
+            >×</button>
           </div>
         {/each}
       </div>
@@ -155,4 +204,15 @@
                  background: color-mix(in srgb, var(--text) 6%, transparent); }
   .rsvp button:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 22%, transparent); }
   .rsvp button:disabled { opacity: .5; cursor: default; }
+  /* The section label between the two kinds of row, shown only when both
+     are present — one kind alone needs no explaining. */
+  .sect { font-size: 10.5px; color: var(--muted); letter-spacing: .05em;
+          margin: 4px 0 0; padding: 2px 8px 0;
+          border-top: 1px solid var(--hairline); }
+  /* The ×: acknowledgement, not deletion — quiet until hovered. */
+  .ack { font: inherit; font-size: 14px; line-height: 1; cursor: pointer;
+         border: 0; border-radius: 6px; padding: 4px 8px; flex: none;
+         color: var(--muted); background: none; }
+  .ack:hover { color: var(--text);
+               background: color-mix(in srgb, var(--text) 8%, transparent); }
 </style>

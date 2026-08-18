@@ -7,7 +7,7 @@
     type WeekPayload, type MonthPayload, type YearPayload, type BigYearPayload, type UiEvent,
   } from './lib/api';
   import { getStatus, openLatestRelease, signIn, syncNow, type AppStatus } from './lib/status';
-  import { pendingInvites } from './lib/invites';
+  import { declinedGuests, pendingInvites } from './lib/invites';
   import { getCalendars, offerableCalendarId, type Calendar } from './lib/calendars';
   import {
     createEvent, deleteEvent, getEventDetail, updateEvent,
@@ -121,8 +121,12 @@
    *  rather than raising a banner — the tray is a convenience surface, and
    *  the next sync retries it anyway. */
   let invites = $state<import('./lib/invites').PendingInvite[]>([]);
+  /** The tray's other section: guests who declined the user's own meetings.
+   *  Same lifecycle, same failure policy. */
+  let declines = $state<import('./lib/invites').DeclineNotice[]>([]);
   async function refreshInvites() {
     try { invites = await pendingInvites(); } catch { /* keep the last list */ }
+    try { declines = await declinedGuests(); } catch { /* keep the last list */ }
   }
 
   // Calendars ride along with status on startup: both describe what's
@@ -1054,6 +1058,7 @@
     onSync={handleSync}
     oncalendarchange={handleCalendarChange}
     {invites}
+    {declines}
     oninvitesanswered={() => { void refreshInvites(); void reload(); }}
     onpick={pick}
     bind:open={pickerOpen}

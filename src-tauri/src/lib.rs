@@ -1065,6 +1065,8 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             invites::pending_invites,
+            invites::declined_guests,
+            invites::dismiss_decline_notice,
             get_palette,
             get_week,
             get_day,
