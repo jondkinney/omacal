@@ -3,9 +3,11 @@
 A minimal desktop calendar client. Five views, live background sync, and
 full create/edit/delete against your real calendar — **Google Calendar,
 iCloud, or any CalDAV server**, including CalDAV **task lists** (VTODO)
-with tasks fully manageable (complete, add, delete) from the app. Built with
-Tauri v2, Rust and Svelte 5, primarily for Omarchy Linux — it also runs on
-macOS, which is where day-to-day development happens.
+with tasks fully manageable (complete, add, delete) from the app. Meeting
+**invitations announce themselves** and can be accepted with one click, and
+the header's tray keeps score of everything that changed around your
+meetings: who declined, what moved, what was cancelled. Built with Tauri v2,
+Rust and Svelte 5, for Omarchy Linux first — it also runs on macOS.
 
 iCloud connects with an app-specific password from appleid.apple.com — no
 OAuth dance. Edits on CalDAV events are etag-guarded (a change that raced
@@ -116,6 +118,24 @@ used an earlier build: correcting a typo in an address no longer notifies
 everyone. The organizer cannot be removed, and removing *yourself* is offered
 but is not the same as declining — that is what the RSVP buttons are for.
 
+**Invitations** — a new invitation posts a desktop notification the moment
+sync sees it, and the notification **stays on screen until you deal with it**:
+on Omarchy, clicking it accepts the whole series (right-click dismisses
+without answering). The header shows an envelope badge while anything awaits
+you, opening a tray with Yes / Maybe / No on every unanswered invitation —
+so a missed notification is never a missed invitation. The same tray carries
+the rest of a meeting's news: **who declined** a meeting you organize, and
+meetings you attend that were **rescheduled** ("Tue 15:30 → Wed 15:30") or
+**cancelled** — each with an acknowledge ×, each section with Dismiss all.
+Deliberately quiet: only the invitation itself notifies; everything else is
+news in the app, not an interruption.
+
+**The Omarchy bar widget** — installing omacal on Omarchy 4 also installs
+(and keeps updated) an `omacal.upcoming` bar widget: a popup with what is
+running now, today's remaining meetings, all-day spans, and due tasks, plus
+Sync and Quit. Click its Open button and you land on the app wherever it
+lives, workspaces notwithstanding.
+
 **Search** — `/`, or the magnifier in the header. Titles only, results as you
 type, nearest to today first in either direction. A recurring event is one
 result rather than one per occurrence, resolved to the occurrence nearest today.
@@ -128,9 +148,10 @@ events land on, and whether times read as `13:30` or `1:30 PM` (the hour ruler
 down the side of Day and Week follows the same choice). **Calendars** holds the same rows as the header's
 picker, each with a **colour** you choose from a curated set — *local to
 omacal*, never written to Google, so your phone, the web UI and anyone sharing
-the calendar are untouched. **Accounts** lists what is connected.
-**Notifications** turns reminders on and off, and holds the fallback reminders
-described below.
+the calendar are untouched. **Accounts** lists what is connected, each with a
+**Sign out** that removes the account's local data and, for Google, revokes
+omacal's own access server-side. **Notifications** turns reminders on and off,
+and holds the fallback reminders described below.
 
 **Sync** runs every five minutes, on window focus, and after every write. Its
 state is a small dot in the header rather than a sentence: quiet when everything
@@ -155,11 +176,9 @@ work, over D-Bus.
 
 **Offline writes** — a save needs the network, and says so rather than queueing.
 
-**Signing an account out**, which means revoking a token, clearing the Keychain
-entry and deleting that account's calendars and their events. A button that did
-half of it would leave rows nothing can reach.
-
 **Reliable notifications on macOS**, which needs a signed bundle; see above.
+Click-to-accept on invitation notifications is likewise Omarchy's — macOS
+still gets the tray.
 
 All three residuals recorded in §7 of
 [`docs/superpowers/specs/2026-08-08-omacal-form-time-boundary-design.md`](docs/superpowers/specs/2026-08-08-omacal-form-time-boundary-design.md)
