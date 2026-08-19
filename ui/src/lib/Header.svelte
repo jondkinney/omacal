@@ -430,10 +430,12 @@
   .primary { background: var(--accent); color: var(--on-accent); font-weight: 600; }
   .demo { font-size: 11.5px; }
 
-  /* Spec §2. Eight pixels, no label, and **the healthy state must not draw the
-     eye** — `--sync-ok` is a neutral at 30%/28% rather than a hue, so a synced
-     calendar reads as present and unremarkable. The two states worth noticing
-     borrow the variables that already mean those things. */
+  /* Spec §2, amended in the field. Eight pixels, no label. Healthy is a
+     *muted* green now rather than the original neutral: neutral read as
+     indistinguishable from idle, and a status light whose OK state cannot
+     be told from its nothing state answers no question (2026-08-19). The
+     two states worth acting on still borrow the variables that already
+     mean those things. */
   .light { width: 8px; height: 8px; border-radius: 50%; flex: none; display: block;
            background: var(--sync-idle); }
   .light.synced { background: var(--sync-ok); }

@@ -98,11 +98,14 @@ export function setPalette(p: Palette): void {
   // Neutral, and branching on `is_dark` like `--hairline` and its neighbours
   // three blocks up, because unlike the ink pair these sit on the app's own
   // background rather than on a calendar's colour.
-  /** Synced, and recently. **The normal case, and it must be quiet enough to
-   *  ignore**: present at a glance, never something the eye is drawn to. A
-   *  healthy state that announces itself is a status light that has to be
-   *  looked past all day. */
-  r.setProperty('--sync-ok', p.is_dark ? 'rgba(255,255,255,.30)' : 'rgba(0,0,0,.28)');
+  /** Synced, and recently. Quiet enough to ignore, but **unmistakably
+   *  alive**: this was a neutral at 30%/28%, and in the field that proved
+   *  indistinguishable from `--sync-idle` at a glance — "is it actually
+   *  working?" asked about a working sync (2026-08-19). A muted green says
+   *  "fine" the way every status light users already know does, without
+   *  the saturation that would make a healthy state something the eye has
+   *  to look past all day. */
+  r.setProperty('--sync-ok', p.is_dark ? '#79b98c' : '#35855b');
   /** Nothing to be stale — signed out, or signed in and nothing fetched yet.
    *  Dimmer than `--sync-ok` rather than a different hue: the difference
    *  between "fine" and "nothing yet" is not worth a colour, and both are
