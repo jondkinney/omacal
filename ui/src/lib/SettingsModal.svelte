@@ -110,8 +110,8 @@
       listTimezones().then((z) => (timezones = z)).catch(() => {});
     }
   });
-  /** What the select currently shows — '' is "System default". Seeded from
-   *  the stored setting once it arrives; a change enables Apply. */
+  /** The zone box's text — '' is "System default". Seeded from the stored
+   *  setting once it arrives; a change to a *valid* value enables Apply. */
   let tzChoice = $state('');
   let tzSeeded = false;
   $effect(() => {
@@ -120,8 +120,21 @@
       tzChoice = settings.displayTimezone ?? '';
     }
   });
+  /** Only exactly a known zone (or blank) may be applied — the backend
+   *  refuses garbage too, but a live Restart button over a half-typed name
+   *  is an invitation to find that out the loud way. */
+  const tzValid = $derived(tzChoice === '' || timezones.includes(tzChoice));
   const tzChanged = $derived(
-    settings !== null && tzChoice !== (settings.displayTimezone ?? ''));
+    settings !== null && tzValid && tzChoice !== (settings.displayTimezone ?? ''));
+  /** Substring search over the whole zone id, because typing a capital —
+   *  "sofia" — must find "Europe/Sofia"; a native 600-option select only
+   *  jumps on leading letters (reported live, minutes after it shipped).
+   *  Empty once the text IS a zone, so a picked value has no list under it. */
+  const tzMatches = $derived.by(() => {
+    const q = tzChoice.trim().toLowerCase();
+    if (q === '' || timezones.includes(tzChoice)) return [];
+    return timezones.filter((z) => z.toLowerCase().includes(q)).slice(0, 8);
+  });
   /** Applying restarts omacal — this is the one settings write with a
    *  deliberate confirmation step (the button), and the note is the last
    *  thing painted before the window goes. */
@@ -527,16 +540,13 @@
       <div class="row">
         <label class="lab" for="display-tz">Time zone</label>
         <div class="inline">
-          <select
+          <input
             id="display-tz"
+            type="text"
+            placeholder="System default"
             disabled={!settings || tzRestarting}
             bind:value={tzChoice}
-          >
-            <option value="">System default</option>
-            {#each timezones as z (z)}
-              <option value={z}>{z}</option>
-            {/each}
-          </select>
+          />
           <button
             type="button"
             disabled={!tzChanged || tzRestarting}
@@ -546,6 +556,14 @@
             <span class="rownote" data-testid="tz-note">Restarting…</span>
           {/if}
         </div>
+        {#if tzMatches.length > 0}
+          <div class="tzlist" role="listbox" aria-label="Matching time zones">
+            {#each tzMatches as z (z)}
+              <button type="button" role="option" aria-selected="false"
+                      onclick={() => (tzChoice = z)}>{z}</button>
+            {/each}
+          </div>
+        {/if}
       </div>
       <p class="hint">
         Every time omacal shows reads in this zone — the grid, reminders, the
@@ -849,6 +867,17 @@
   input:focus, select:focus { outline: 1px solid var(--accent); outline-offset: -1px; }
 
   .caldot { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+
+  /* The zone search results: plain rows under the box, in the flow rather
+     than floating — the modal scrolls, and a floating list inside a
+     scrolling body clips. Eight rows at most (the derivation caps it). */
+  .tzlist { display: flex; flex-direction: column; gap: 1px; margin-top: 2px;
+            border: 1px solid var(--hairline); border-radius: 6px; padding: 3px;
+            max-width: 320px; }
+  .tzlist button { font: inherit; font-size: 12px; color: var(--text); cursor: pointer;
+                   background: none; border: 0; border-radius: 4px;
+                   padding: 4px 8px; text-align: left; }
+  .tzlist button:hover { background: color-mix(in srgb, var(--text) 7%, transparent); }
 
   .check { display: flex; align-items: center; gap: 7px; font-size: 12.5px; cursor: pointer; }
 
