@@ -54,8 +54,6 @@
   // rule works for a 7-column week and a 1-column day.
   const dayName = (ms: number) => DOW[new Date(ms).getDay()];
 
-  const todayStart = (() => { const d = new Date(); d.setHours(0,0,0,0); return d.getTime(); })();
-
   // Where wall-clock hour `h` falls in a column, as a fraction of that column's
   // *true* span. Both halves matter on a DST day: the span is 23 or 25 hours,
   // and the elapsed time to 09:00 is not 9 hours if the clocks moved overnight.
@@ -76,10 +74,29 @@
 
   // Current-time line, recomputed each minute. Held as an instant and divided by
   // the column it lands in, rather than assuming a 1440-minute day.
+  //
+  // The focus listener is the suspend story: a laptop that sleeps past
+  // midnight wakes with the interval up to a minute out, and the first thing
+  // the user does is focus the window — snapping the clock then is what
+  // makes "today" already right when they look.
   let nowMs = $state(Date.now());
   $effect(() => {
     const id = setInterval(() => { nowMs = Date.now(); }, 60_000);
-    return () => clearInterval(id);
+    const snap = () => { nowMs = Date.now(); };
+    window.addEventListener('focus', snap);
+    return () => { clearInterval(id); window.removeEventListener('focus', snap); };
+  });
+
+  // **Derived from the ticking clock, never computed once.** This was a
+  // plain `const` evaluated at mount, and an app left running overnight —
+  // or through a suspend — kept yesterday ringed as today while the
+  // current-time line, whose column is chosen by this value, ran off the
+  // bottom of yesterday and vanished (seen live, 2026-08-19, after a night
+  // of sleep with the app open).
+  const todayStart = $derived.by(() => {
+    const d = new Date(nowMs);
+    d.setHours(0, 0, 0, 0);
+    return d.getTime();
   });
 
   // Opening at midnight puts the working day off-screen. Scroll once on mount so

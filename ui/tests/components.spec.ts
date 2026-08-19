@@ -10,6 +10,33 @@ import { CALENDAR_SYNC_REMOVED } from './harness/tauri';
 const show = (c: string, f: string) => `/tests/harness/index.html?c=${c}&f=${f}`;
 
 test.describe('WeekGrid', () => {
+  test('midnight and a wake move today off yesterday', async ({ page }) => {
+    // `todayStart` was a const computed at mount, so an app left running
+    // overnight kept yesterday ringed while the now-line — whose column that
+    // const chooses — ran off the bottom of yesterday and vanished (seen
+    // live, 2026-08-19, after a night of suspend with the app open). The
+    // premise that makes this assertable at all: the suite runs in UTC and
+    // the fixture's days are UTC midnights, so a fake clock inside the week
+    // really is "today" to the component.
+    const DAY = 24 * 3_600_000;
+    await page.clock.install({ time: MON + DAY + 14 * 3_600_000 }); // Tue 14:00
+    await page.goto(show('WeekGrid', 'empty'));
+
+    const ringed = page.locator('.head.today');
+    await expect(ringed).toHaveCount(1);
+    await expect(ringed).toContainText('TUE');
+    await expect(page.locator('.col.today .now')).toBeVisible();
+
+    // The laptop sleeps past midnight; the first thing after waking is the
+    // window taking focus — the snap the fix listens for.
+    await page.clock.setSystemTime(MON + 2 * DAY + 9 * 3_600_000); // Wed 09:00
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+
+    await expect(page.locator('.head.today')).toHaveCount(1);
+    await expect(page.locator('.head.today')).toContainText('WED');
+    await expect(page.locator('.col.today .now')).toBeVisible();
+  });
+
   // `WeekGrid` reads the real clock three times — `todayStart` at mount (the
   // accent day-number pill and the `.col.today` tint), `nowMs` for the
   // current-time line, and `Date.now()` again for where the grid opens

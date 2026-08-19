@@ -42,7 +42,22 @@
   const MONDAY_FIRST = ['MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT', 'SUN'];
   const DOW = $derived(rotate(MONDAY_FIRST, weekStartDay()));
 
-  const todayStart = (() => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); })();
+  // Derived from a ticking clock, never computed once — WeekGrid records
+  // why: an app left running overnight kept yesterday ringed as today
+  // (2026-08-19, live). The focus snap makes a wake-from-suspend right the
+  // moment the user looks.
+  let nowMs = $state(Date.now());
+  $effect(() => {
+    const id = setInterval(() => { nowMs = Date.now(); }, 60_000);
+    const snap = () => { nowMs = Date.now(); };
+    window.addEventListener('focus', snap);
+    return () => { clearInterval(id); window.removeEventListener('focus', snap); };
+  });
+  const todayStart = $derived.by(() => {
+    const d = new Date(nowMs);
+    d.setHours(0, 0, 0, 0);
+    return d.getTime();
+  });
 
   // Shared by `.bar` and `.timed`: both hand `onopen` the same
   // `{ event, rect }` shape an `EventBlock`/`AllDayBand` chip does.
