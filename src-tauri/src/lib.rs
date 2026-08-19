@@ -900,12 +900,47 @@ pub fn apply_display_tz_early() {
     let dir: Option<std::path::PathBuf> = None;
 
     let Some(dir) = dir else { return };
-    let Ok(tz) = std::fs::read_to_string(dir.join(settings::DISPLAY_TZ_SIDECAR)) else {
-        return; // no sidecar: the system zone, which needs no exporting
-    };
-    let tz = tz.trim();
-    if !tz.is_empty() {
-        std::env::set_var("TZ", tz);
+    let sidecar = std::fs::read_to_string(dir.join(settings::DISPLAY_TZ_SIDECAR))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    match tz_action(sidecar.as_deref(), std::env::var_os(TZ_MARKER).is_some()) {
+        TzAction::Set(tz) => {
+            std::env::set_var("TZ", tz);
+            std::env::set_var(TZ_MARKER, "1");
+        }
+        TzAction::Clear => {
+            std::env::remove_var("TZ");
+            std::env::remove_var(TZ_MARKER);
+        }
+        TzAction::Leave => {}
+    }
+}
+
+/// The marker that says *omacal* exported `TZ`, as opposed to the user's own
+/// shell. It exists for the restart path: `app.restart()` re-execs with the
+/// current environment inherited, `TZ` included — so returning to "System
+/// default" found no sidecar, did nothing, and the inherited zone silently
+/// survived (caught in the very first field test, 2026-08-19). Clearing must
+/// undo our export and only ours; a `TZ` the user launched us under is
+/// theirs to keep.
+const TZ_MARKER: &str = "OMACAL_SET_TZ";
+
+#[derive(Debug, PartialEq)]
+enum TzAction {
+    Set(String),
+    Clear,
+    Leave,
+}
+
+/// The whole decision, pure so it is testable without mutating the test
+/// process's real environment.
+fn tz_action(sidecar: Option<&str>, we_set_it: bool) -> TzAction {
+    match (sidecar, we_set_it) {
+        (Some(tz), _) => TzAction::Set(tz.to_string()),
+        (None, true) => TzAction::Clear,
+        (None, false) => TzAction::Leave,
     }
 }
 
@@ -1169,6 +1204,26 @@ mod tests {
     use super::*;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// The restart-inheritance table, pinned. `app.restart()` re-execs with
+    /// the environment inherited, so "System default" must *clear* a TZ this
+    /// app exported — the first field test proved that leg (choose Sofia,
+    /// return to system, stay in Sofia) — while a TZ the user launched us
+    /// under, marker absent, is theirs and stays.
+    #[test]
+    fn the_tz_decision_sets_clears_ours_and_leaves_theirs() {
+        assert_eq!(
+            tz_action(Some("Europe/Sofia"), false),
+            TzAction::Set("Europe/Sofia".into())
+        );
+        assert_eq!(
+            tz_action(Some("Asia/Kolkata"), true),
+            TzAction::Set("Asia/Kolkata".into()),
+            "changing zones overwrites the inherited export"
+        );
+        assert_eq!(tz_action(None, true), TzAction::Clear, "back to system undoes OUR export");
+        assert_eq!(tz_action(None, false), TzAction::Leave, "the user's own TZ is not ours to touch");
+    }
 
     /// `sync_now` and `sign_in` both call this before doing anything else, so
     /// proving the guard itself never performs I/O — it is a pure function of
