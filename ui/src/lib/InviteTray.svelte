@@ -28,6 +28,9 @@
   } = $props();
 
   let open = $state(false);
+  /** Whether the panel hangs from the badge's left edge instead of its
+   *  right — decided from real geometry at each open; see the onclick. */
+  let alignLeft = $state(false);
   /** Rows with an RSVP in flight — theirs lock, their neighbours stay live.
    *  Reassigned, never mutated: a `$state` array notifies on assignment. */
   let busyIds = $state<number[]>([]);
@@ -172,13 +175,23 @@
         open = !open;
         // WebKit does not focus a <button> on click — the same line
         // Header's burger carries, for the same Escape-needs-a-focus reason.
-        if (open) (e.currentTarget as HTMLElement).focus();
+        if (open) {
+          const el = e.currentTarget as HTMLElement;
+          // The panel hangs from whichever side of the badge has room. It
+          // used to hang right unconditionally, which assumed the badge
+          // lives near the window's right edge — in a tiled window the
+          // header wraps, the badge lands left, and the panel walked off
+          // the screen (seen live, 2026-08-19). 428 = the panel's max
+          // width plus its margin.
+          alignLeft = el.getBoundingClientRect().right < 428;
+          el.focus();
+        }
       }}
     >✉ {invites.length + shownDeclines.length + shownMoved.length + shownCancelled.length}</button>
 
     {#if open}
       <button class="scrim" aria-label="Close invitations" onclick={() => (open = false)}></button>
-      <div class="panel" role="group" aria-label="Pending invitations">
+      <div class="panel" class:alignleft={alignLeft} role="group" aria-label="Pending invitations">
         {#each invites as inv (inv.id)}
           <div class="row" data-testid="invite-row">
             <span class="tick" style:background={inv.color ?? 'var(--muted)'}></span>
@@ -305,11 +318,14 @@
   .badge:hover { background: color-mix(in srgb, var(--accent) 28%, transparent); }
   .scrim { position: fixed; inset: 0; background: none; border: 0; cursor: default; z-index: 40; }
   .panel { position: absolute; right: 0; top: calc(100% + 6px); z-index: 41;
-           min-width: 340px; max-width: 420px; max-height: 60vh; overflow-y: auto;
+           min-width: min(340px, calc(100vw - 16px));
+           max-width: min(420px, calc(100vw - 16px));
+           max-height: 60vh; overflow-y: auto;
            display: flex; flex-direction: column; gap: 2px;
            background: var(--surface); border: 1px solid var(--hairline);
            border-radius: 8px; padding: 6px;
            box-shadow: 0 8px 28px rgba(0, 0, 0, .45); }
+  .panel.alignleft { right: auto; left: 0; }
   .row { display: flex; align-items: center; gap: 10px; padding: 7px 8px;
          border-radius: 6px; }
   .row:hover { background: color-mix(in srgb, var(--text) 4%, transparent); }

@@ -3836,6 +3836,23 @@ test.describe('Header invitation tray', () => {
     ).toHaveText('✉ 3');
   });
 
+  test('the panel stays on screen when a tiled window wraps the header', async ({ page }) => {
+    // In a tiled (narrow) window the header wraps and the badge lands near
+    // the LEFT edge — and the panel, hard-anchored to hang right, walked
+    // off the screen (seen live, 2026-08-19). The panel now hangs from
+    // whichever side has room, and is capped to the viewport.
+    await page.setViewportSize({ width: 420, height: 700 });
+    await page.goto(show('Header', 'with-invites'));
+    await page.getByRole('button', { name: '2 pending invitations' }).click();
+
+    const box = await page.getByRole('group', { name: 'Pending invitations' }).boundingBox();
+    if (!box) throw new Error('panel not rendered');
+    expect(box.x).toBeGreaterThanOrEqual(0);
+    expect(box.x + box.width).toBeLessThanOrEqual(421);
+    // And its rows are actually readable, not a sliver.
+    expect(box.width).toBeGreaterThan(300);
+  });
+
   test('a failed answer stays on its row instead of vanishing', async ({ page }) => {
     await page.goto(show('Header', 'with-invites'));
     await page.evaluate(() =>
