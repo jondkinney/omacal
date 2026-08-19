@@ -10,8 +10,9 @@
   import { connectCaldav } from './tasks';
   import { listAccounts, signOut, type Account } from './accounts';
   import {
-    getSettings, minutesOf, msOfMinutes, setDefaultCalendar, setFallbackReminders,
-    setNotificationsEnabled, setSyncInterval, setTimeFormat, setTrayIcon, setWeekStart,
+    getSettings, listTimezones, minutesOf, msOfMinutes, setDefaultCalendar,
+    setDisplayTimezone, setFallbackReminders, setNotificationsEnabled,
+    setSyncInterval, setTimeFormat, setTrayIcon, setWeekStart,
     type AppSettings,
   } from './settings';
   import { formatClock, type TimeFormat } from './timefmt';
@@ -100,6 +101,41 @@
   /** Stores the first day of the week. Same shape as `saveTimeFormat`: the
    *  backend's answer replaces `settings`, and `onsettingschange` is what
    *  repaints the calendar behind the modal. */
+  /** The zone picker's option list, fetched once when General first shows a
+   *  settings object — ~600 rows, not worth loading for a modal opened to
+   *  toggle a reminder. */
+  let timezones = $state<string[]>([]);
+  $effect(() => {
+    if (settings && timezones.length === 0) {
+      listTimezones().then((z) => (timezones = z)).catch(() => {});
+    }
+  });
+  /** What the select currently shows — '' is "System default". Seeded from
+   *  the stored setting once it arrives; a change enables Apply. */
+  let tzChoice = $state('');
+  let tzSeeded = false;
+  $effect(() => {
+    if (settings && !tzSeeded) {
+      tzSeeded = true;
+      tzChoice = settings.displayTimezone ?? '';
+    }
+  });
+  const tzChanged = $derived(
+    settings !== null && tzChoice !== (settings.displayTimezone ?? ''));
+  /** Applying restarts omacal — this is the one settings write with a
+   *  deliberate confirmation step (the button), and the note is the last
+   *  thing painted before the window goes. */
+  let tzRestarting = $state(false);
+  async function applyTimezone() {
+    tzRestarting = true;
+    try {
+      await setDisplayTimezone(tzChoice === '' ? null : tzChoice);
+    } catch (e) {
+      tzRestarting = false;
+      note = { text: String(e), kind: 'error' };
+    }
+  }
+
   async function saveWeekStart(start: WeekStartDay) {
     try {
       settings = await setWeekStart(start);
@@ -486,6 +522,35 @@
       </div>
       <p class="hint">
         Week, Month, Year and Big Year all start their rows on this day.
+      </p>
+
+      <div class="row">
+        <label class="lab" for="display-tz">Time zone</label>
+        <div class="inline">
+          <select
+            id="display-tz"
+            disabled={!settings || tzRestarting}
+            bind:value={tzChoice}
+          >
+            <option value="">System default</option>
+            {#each timezones as z (z)}
+              <option value={z}>{z}</option>
+            {/each}
+          </select>
+          <button
+            type="button"
+            disabled={!tzChanged || tzRestarting}
+            onclick={applyTimezone}
+          >Apply &amp; restart</button>
+          {#if tzRestarting}
+            <span class="rownote" data-testid="tz-note">Restarting…</span>
+          {/if}
+        </div>
+      </div>
+      <p class="hint">
+        Every time omacal shows reads in this zone — the grid, reminders, the
+        bar widget's feed. Applying restarts omacal, which is what makes all
+        of them agree.
       </p>
 
       <label class="check">

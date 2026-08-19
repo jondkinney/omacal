@@ -513,6 +513,7 @@ type StubSettings = {
   defaultCalendarId: number | null;
   timeFormat: TimeFormat;
   weekStart: WeekStartDay;
+  displayTimezone: string | null;
 };
 
 const SETTINGS_KEY = 'omacal-stub-settings';
@@ -530,6 +531,7 @@ const DEFAULT_SETTINGS: StubSettings = {
   timeFormat: '24h',
   // The week omacal has always drawn, so every golden holds.
   weekStart: 'monday',
+  displayTimezone: null,
 };
 
 function loadSettings(): StubSettings {
@@ -711,6 +713,16 @@ export function installTauriStub(scenario: string): Harness {
         settings = saveSettings({ ...settings, syncIntervalMs: args.ms as number });
         return { ...settings };
       }
+      // A short list, not the real ~600: the spec's premise is that choosing
+      // one and applying sends it, not that jiff's database is complete.
+      case 'list_timezones':
+        return ['Asia/Kolkata', 'Europe/Sofia', 'UTC'];
+      case 'set_display_timezone':
+        settings = saveSettings({ ...settings, displayTimezone: (args.tz as string | null) ?? null });
+        // The real command restarts the app after replying; the stub only
+        // replies, which is exactly what lets a spec see the "Restarting…"
+        // state the window would otherwise take with it.
+        return null;
       case 'set_notifications_enabled':
         settings = saveSettings({ ...settings, notificationsEnabled: args.on as boolean });
         return { ...settings };

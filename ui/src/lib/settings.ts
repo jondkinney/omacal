@@ -45,6 +45,11 @@ export type AppSettings = {
    *  Quit lives. Turning it off is for setups where something else carries
    *  those actions, like Omarchy 4's bar widget. */
   trayIcon: boolean;
+  /** The IANA zone every time in the app reads in, or `null` for the
+   *  system's. Applied by exporting `TZ` before the webview starts, which is
+   *  why changing it restarts omacal — the JS engine and libc both capture
+   *  the zone at process start and offer no runtime swap. */
+  displayTimezone: string | null;
 };
 
 export const getSettings = () => invoke<AppSettings>('get_settings');
@@ -91,6 +96,18 @@ export const setFallbackReminders = (minutes: number[]) =>
   invoke<AppSettings>('set_fallback_reminders', { minutes });
 
 /** Stores the default calendar for new events; `null` clears the choice. */
+/** Every zone the picker may offer — jiff's copy of the IANA database, the
+ *  same authority the setter validates against. */
+export const listTimezones = () => invoke<string[]>('list_timezones');
+
+/**
+ * Stores the display zone and **restarts omacal** to apply it; `null`
+ * returns to the system zone. The reply arrives just before the restart, so
+ * the form has one breath to say what is about to happen.
+ */
+export const setDisplayTimezone = (tz: string | null) =>
+  invoke<void>('set_display_timezone', { tz });
+
 export const setDefaultCalendar = (id: number | null) =>
   invoke<AppSettings>('set_default_calendar', { id });
 

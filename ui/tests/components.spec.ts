@@ -1062,6 +1062,39 @@ test.describe('Header', () => {
     await expect(again.getByLabel('Sync every')).toHaveValue('5');
   });
 
+  test('the time zone picker applies with an explicit restart', async ({ page }) => {
+    await page.goto(show('Header', 'connected'));
+    const modal = await openSettings(page);
+
+    // Defaults to the system zone; Apply is dead until something changes —
+    // a restart button that is live with nothing to apply invites misclicks.
+    const select = modal.getByLabel('Time zone');
+    await expect(select).toHaveValue('');
+    const apply = modal.getByRole('button', { name: 'Apply & restart' });
+    await expect(apply).toBeDisabled();
+
+    await select.selectOption('Europe/Sofia');
+    await expect(apply).toBeEnabled();
+    await apply.click();
+
+    // The zone went out under the command's own name, and the form says
+    // what happens next — the real app's window is gone a breath later.
+    await expect(page.getByTestId('tz-note')).toHaveText('Restarting…');
+    const call = await page.evaluate(() =>
+      (window as any).__harness.calls.find((c: { cmd: string }) => c.cmd === 'set_display_timezone')?.args);
+    expect(call).toEqual({ tz: 'Europe/Sofia' });
+
+    // Selecting System default sends null, not '' — the backend's vocabulary.
+    await page.keyboard.press('Escape');
+    const again = await openSettings(page);
+    await expect(again.getByLabel('Time zone')).toHaveValue('Europe/Sofia');
+    await again.getByLabel('Time zone').selectOption('');
+    await again.getByRole('button', { name: 'Apply & restart' }).click();
+    const second = await page.evaluate(() =>
+      (window as any).__harness.calls.filter((c: { cmd: string }) => c.cmd === 'set_display_timezone').pop()?.args);
+    expect(second).toEqual({ tz: null });
+  });
+
   test('the floor is stated before anybody trips over it', async ({ page }) => {
     // Said up front, not only on refusal. A rule you can only discover by
     // breaking it is a rule the form kept to itself.

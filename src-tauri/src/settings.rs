@@ -19,6 +19,30 @@ const DEFAULT_CALENDAR_KEY: &str = "default_calendar_id";
 const TIME_FORMAT_KEY: &str = "time_format";
 const WEEK_START_KEY: &str = "week_start";
 const TRAY_ICON_KEY: &str = "tray_icon";
+const DISPLAY_TZ_KEY: &str = "display_timezone";
+
+/// The boot fast-path beside the database: `main()` must export `TZ` before
+/// GTK and the webview initialise — both capture the zone at process start —
+/// and at that moment there is no Tauri handle to resolve the data dir with,
+/// let alone an async pool. So the setter writes the zone to this one-line
+/// sidecar too, and `apply_display_tz_early` (lib.rs) reads it with plain
+/// std::fs. The database row stays the source of truth for the settings UI;
+/// `setup` re-syncs the sidecar from it on every launch, so a divergence
+/// (a crash between the two writes) heals itself one restart later.
+pub(crate) const DISPLAY_TZ_SIDECAR: &str = "display-tz";
+
+/// Writes (or removes, for "system default") the sidecar. Split out and
+/// handed a directory so a test can drive it against a tempdir.
+pub(crate) fn write_tz_sidecar(dir: &std::path::Path, tz: Option<&str>) -> std::io::Result<()> {
+    let path = dir.join(DISPLAY_TZ_SIDECAR);
+    match tz {
+        Some(tz) => std::fs::write(path, tz),
+        None => match std::fs::remove_file(path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            other => other,
+        },
+    }
+}
 
 /// Whether a clock is drawn as `13:30` or as `1:30 PM`.
 ///
@@ -177,6 +201,14 @@ pub struct AppSettings {
     /// month grid's leading blanks, the Year view's twelve small grids, and
     /// Big Year's 392-day ribbon.
     pub week_start: WeekStart,
+    /// The IANA zone every time in the app is read in, or `None` for the
+    /// system's. Applied by exporting `TZ` before the webview starts — the
+    /// one mechanism that keeps the browser, Rust, notifications and the
+    /// widget feed coherent without threading a zone through every date
+    /// computation — which is also why changing it restarts the app: both
+    /// the JS engine and libc capture the zone at process start and offer
+    /// no runtime swap.
+    pub display_timezone: Option<String>,
 }
 
 pub(crate) async fn read(pool: &SqlitePool, key: &str) -> Option<String> {
@@ -238,6 +270,11 @@ pub async fn read_settings(pool: &SqlitePool) -> AppSettings {
             .await
             .and_then(|v| serde_json::from_str(&v).ok())
             .unwrap_or_else(|| vec![60, 10]),
+        // Empty and absent both mean "system": the row is written as "" to
+        // clear, and a blank zone name is nothing anyone chose.
+        display_timezone: read(pool, DISPLAY_TZ_KEY)
+            .await
+            .filter(|v| !v.trim().is_empty()),
         // Absent, cleared ("" — see `set_default_calendar`) and garbage all
         // read as `None`: the old rule, never an error.
         default_calendar_id: read(pool, DEFAULT_CALENDAR_KEY)
@@ -305,6 +342,58 @@ async fn set_sync_interval_impl(pool: &SqlitePool, ms: i64) -> anyhow::Result<Ap
     }
     write(pool, SYNC_INTERVAL_KEY, &ms.to_string()).await?;
     Ok(read_settings(pool).await)
+}
+
+/// Every zone the picker may offer, straight from jiff's copy of the IANA
+/// database — the same authority `TimeZone::get` validates against, so the
+/// list and the validator cannot disagree.
+#[tauri::command]
+pub fn list_timezones() -> Vec<String> {
+    let mut zones: Vec<String> =
+        jiff::tz::db().available().map(|name| name.to_string()).collect();
+    zones.sort();
+    zones
+}
+
+/// Stores the display zone and restarts the app to apply it — see
+/// [`AppSettings::display_timezone`] for why a restart is the mechanism.
+/// `None` returns to the system zone.
+///
+/// The restart is spawned on a short delay so this command's reply reaches
+/// the webview first and the form can say "restarting" instead of dying
+/// mid-await. Validation refuses rather than stores: a zone jiff does not
+/// know would come back at next launch as a `TZ` nothing honours, which is
+/// the system zone wearing the wrong label.
+#[tauri::command]
+pub async fn set_display_timezone(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    tz: Option<String>,
+) -> Result<(), String> {
+    let tz = tz.map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+    if let Some(name) = tz.as_deref() {
+        jiff::tz::TimeZone::get(name)
+            .map_err(|_| format!("omacal does not know the time zone \"{name}\""))?;
+    }
+
+    write(&state.pool, DISPLAY_TZ_KEY, tz.as_deref().unwrap_or(""))
+        .await
+        .map_err(|e| crate::errors::user_facing(&e))?;
+
+    use tauri::Manager;
+    if let Ok(dir) = app.path().app_data_dir() {
+        if let Err(e) = write_tz_sidecar(&dir, tz.as_deref()) {
+            // The DB row is stored; setup's re-sync writes the sidecar on
+            // the next launch, so this costs one restart of staleness.
+            tracing::warn!(%e, "could not write the display-tz sidecar");
+        }
+    }
+
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        app.restart();
+    });
+    Ok(())
 }
 
 #[tauri::command]
@@ -735,5 +824,55 @@ mod tests {
         let p = pool().await;
         write(&p, LIST_MODE_KEY, "yes").await.unwrap();
         assert!(!read_settings(&p).await.list_mode);
+    }
+
+    /// Absent and empty both read as "system" — "" is how the setter clears
+    /// the row, and a blank zone name is nothing anyone chose.
+    #[tokio::test]
+    async fn the_display_zone_defaults_to_system_and_round_trips() {
+        let p = pool().await;
+        assert_eq!(read_settings(&p).await.display_timezone, None);
+
+        write(&p, DISPLAY_TZ_KEY, "Europe/Sofia").await.unwrap();
+        assert_eq!(read_settings(&p).await.display_timezone.as_deref(), Some("Europe/Sofia"));
+
+        write(&p, DISPLAY_TZ_KEY, "").await.unwrap();
+        assert_eq!(read_settings(&p).await.display_timezone, None);
+    }
+
+    /// The sidecar is what `main()` reads before Tauri exists; writing Some
+    /// creates it, None removes it, and removing what is absent is not an
+    /// error (a fresh install clears to system).
+    #[test]
+    fn the_tz_sidecar_writes_and_clears() {
+        let dir = std::env::temp_dir().join(format!("omacal-tz-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        write_tz_sidecar(&dir, None).unwrap(); // absent: still fine
+        write_tz_sidecar(&dir, Some("Europe/Sofia")).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join(DISPLAY_TZ_SIDECAR)).unwrap(),
+            "Europe/Sofia"
+        );
+        write_tz_sidecar(&dir, None).unwrap();
+        assert!(!dir.join(DISPLAY_TZ_SIDECAR).exists());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// The picker's list comes from the same database the validator asks, so
+    /// everything offered is acceptable — spot-checked on the two zones this
+    /// project lives between.
+    #[test]
+    fn the_zone_list_is_sorted_and_knows_the_real_world() {
+        let zones = list_timezones();
+        assert!(zones.iter().any(|z| z == "Europe/Sofia"));
+        assert!(zones.iter().any(|z| z == "Asia/Kolkata"));
+        let mut sorted = zones.clone();
+        sorted.sort();
+        assert_eq!(zones, sorted);
+        for z in ["Europe/Sofia", "Asia/Kolkata"] {
+            assert!(jiff::tz::TimeZone::get(z).is_ok(), "the validator must accept {z}");
+        }
     }
 }

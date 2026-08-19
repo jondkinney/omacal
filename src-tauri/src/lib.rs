@@ -874,6 +874,41 @@ async fn sync_now(
     Ok(n)
 }
 
+/// Exports `TZ` from the display-tz sidecar, and **must run first thing in
+/// `main`** — before GTK, the webview, or anything else resolves the local
+/// zone, because they all capture it at process start and never ask again.
+/// That constraint is also why this cannot use Tauri's path resolver or the
+/// database: neither exists yet. The directory below is `app_data_dir` for
+/// identifier `com.omacal.app`, spelled by hand; if the two ever diverge the
+/// failure is the soft one — the setting silently stays on the system zone —
+/// and `setup`'s sidecar re-sync writes to the real dir every launch, so a
+/// divergence would also heal itself there.
+pub fn apply_display_tz_early() {
+    #[cfg(target_os = "linux")]
+    let dir = std::env::var_os("XDG_DATA_HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| {
+            std::env::var_os("HOME")
+                .map(|h| std::path::PathBuf::from(h).join(".local/share"))
+        })
+        .map(|d| d.join("com.omacal.app"));
+    #[cfg(target_os = "macos")]
+    let dir = std::env::var_os("HOME")
+        .map(|h| std::path::PathBuf::from(h).join("Library/Application Support/com.omacal.app"));
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let dir: Option<std::path::PathBuf> = None;
+
+    let Some(dir) = dir else { return };
+    let Ok(tz) = std::fs::read_to_string(dir.join(settings::DISPLAY_TZ_SIDECAR)) else {
+        return; // no sidecar: the system zone, which needs no exporting
+    };
+    let tz = tz.trim();
+    if !tz.is_empty() {
+        std::env::set_var("TZ", tz);
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tracing_subscriber::fmt::init();
@@ -942,6 +977,19 @@ pub fn run() {
 
             // Block once at startup: nothing can render before migrations run.
             let pool = tauri::async_runtime::block_on(omacal_store::connect(&url))?;
+
+            // Re-sync the display-tz sidecar from the database row — the row
+            // is the truth the settings UI edits, the sidecar is what
+            // `apply_display_tz_early` could reach before Tauri existed, and
+            // a crash between the setter's two writes must cost one stale
+            // restart, not a permanent disagreement.
+            {
+                let tz = tauri::async_runtime::block_on(settings::read_settings(&pool))
+                    .display_timezone;
+                if let Err(e) = settings::write_tz_sidecar(&dir, tz.as_deref()) {
+                    tracing::warn!(%e, "could not re-sync the display-tz sidecar");
+                }
+            }
 
             if demo {
                 let now = now_ms();
@@ -1090,6 +1138,8 @@ pub fn run() {
             settings::set_sync_interval,
             settings::set_notifications_enabled,
             settings::set_tray_icon,
+            settings::set_display_timezone,
+            settings::list_timezones,
             caldav_account::connect_caldav,
             accounts::list_accounts,
             accounts::sign_out,
