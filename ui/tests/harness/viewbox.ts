@@ -25,7 +25,7 @@
  * the app gives it". If `Header` grows a row, that spec fails and this number
  * is what to change.
  */
-export const APP_CHROME_PX = 63;
+export const APP_CHROME_PX = 64;
 
 /** `APP_CHROME_PX` as the height a standalone view should be mounted at. */
 export const VIEW_BOX_CSS = `calc(100vh - ${APP_CHROME_PX}px)`;

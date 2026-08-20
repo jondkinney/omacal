@@ -309,22 +309,24 @@
      Fourteen rows reserving three lanes need 825px of `.rows`. A row is 58px —
      14px of date band plus a 44px lane strip (3 × 14px and two 1px gaps) — with
      a 1px top border on all but the first: 13 × 59 + 58 = 825. Around that sit
-     the legend at 19px, this element's 8px of gap and padding, and App's 63px:
-     63 + 4 + 825 + 8 + 19 + 4 = 923. Measured by stepping the viewport a pixel
-     at a time against `.rows`'s own overflow: 923 is the first height that
+     the legend at 19px, this element's 8px of gap and padding, and App's 64px:
+     64 + 4 + 825 + 8 + 19 + 4 = 924. Measured by stepping the viewport a pixel
+     at a time against `.rows`'s own overflow: 924 is the first height that
      fits, in both engines, and the arithmetic lands on the same number. Two
-     lanes fit from 713px, and at 720p three lanes overflow by 205px — which is
-     why the reservation below 923 is still two.
+     lanes fit from 714px, and at 720p three lanes overflow by 206px — which is
+     why the reservation below 924 is still two. (Every number in this chain
+     moved up by one on 2026-08-20, when a font update grew the header from
+     63px to 64px — the chrome term is the only term that changed.)
 
      The 14px lanes are the 2026-08-14 readability pass (11px before it, and
      8px pill text read as decoration). What that spent: §4's one-screen
-     promise at 720p now survives on 5px — two-lane rows need 615px of the
-     620 the default viewport leaves `.rows` — so any future lane growth must
+     promise at 720p now survives on 4px — two-lane rows need 615px of the
+     619 the default viewport leaves `.rows` — so any future lane growth must
      re-check "all fourteen rows fit on one screen" before anything else.
 
      Do not read the 19px legend as a constant. It is one line of legend, which
      is what a handful of calendars comes to; a wrapped second line costs about
-     as much again, and at 923 exactly that scrolls. No fixed threshold can
+     as much again, and at 924 exactly that scrolls. No fixed threshold can
      prevent that — a third line would cost the same again — so the measured
      one-line height is what this uses, and a taller legend does what it
      already does today: `.rows` scrolls, which is what its `overflow-y` is
@@ -360,7 +362,7 @@
               in a row with no pills at all would pass either way. */
            pointer-events: none; }
   .pill, .more { pointer-events: auto; }
-  @media (min-height: 923px) { .pills { --lanes: 3; } }
+  @media (min-height: 924px) { .pills { --lanes: 3; } }
 
   /* Solid, not a 16% wash. Fourteen rows of pastel smudge is what the ribbon
      read as; a bar of the calendar's actual colour is what makes the year
