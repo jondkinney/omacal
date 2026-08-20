@@ -2,8 +2,8 @@ import { test, expect } from '@playwright/test';
 import { offerableCalendarId, type Calendar } from '../src/lib/calendars';
 import type { EventDetail } from '../src/lib/eventdetail';
 import {
-  addGuest, blankValue, blankValueAt, endAfterStart, isAddress, mailableGuests, removableGuest,
-  removeGuest, ruleInWords, sameGuests, shiftedEndDate, toEventInput,
+  addGuest, blankValue, blankValueAt, endAfterStart, isAddress, mailableGuests, previewSpan,
+  removableGuest, removeGuest, ruleInWords, sameGuests, shiftedEndDate, toEventInput,
   toggledGuestOptional, valueFromDetail, whenOf, type EventFormValue,
 } from '../src/lib/eventform';
 
@@ -162,6 +162,35 @@ test.describe('ruleInWords', () => {
   test('no rule at all is not a rule to describe', () => {
     expect(ruleInWords(null)).toBe('');
     expect(ruleInWords('   ')).toBe('');
+  });
+});
+
+test.describe('previewSpan', () => {
+  const at = (y: number, mo: number, d: number, h = 0, mi = 0) =>
+    new Date(y, mo - 1, d, h, mi).getTime();
+
+  test('a timed value describes its span, across dates included', () => {
+    const v = blankValue(at(2026, 8, 5, 10, 0), 1);
+    const span = previewSpan(v)!;
+    // The premise from the value itself, not retyped instants.
+    expect(span.startMs).toBe(at(2026, 8, 5, Number(v.start.slice(0, 2)), Number(v.start.slice(3))));
+    expect(span.endMs).toBeGreaterThan(span.startMs);
+
+    // An end date after the start date draws through midnight, exactly as
+    // whenOf sends it.
+    const crossing = { ...v, date: '2026-08-05', start: '23:00', endDate: '2026-08-06', end: '01:00' };
+    expect(previewSpan(crossing)).toEqual({
+      startMs: at(2026, 8, 5, 23, 0),
+      endMs: at(2026, 8, 6, 1, 0),
+    });
+  });
+
+  test('what cannot be drawn is null, never a guess', () => {
+    const v = blankValue(at(2026, 8, 5, 10, 0), 1);
+    expect(previewSpan({ ...v, isAllDay: true })).toBeNull();
+    expect(previewSpan({ ...v, start: '' })).toBeNull();
+    expect(previewSpan({ ...v, start: '11:00', endDate: v.date, end: '10:00' })).toBeNull();
+    expect(previewSpan({ ...v, end: v.start, endDate: v.date })).toBeNull();
   });
 });
 

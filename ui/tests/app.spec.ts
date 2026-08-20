@@ -1050,6 +1050,34 @@ test.describe('App', () => {
     await expect(newForm(page).getByLabel('End', { exact: true })).toHaveValue('10:30');
   });
 
+  test('the open form draws its event on the grid, live', async ({ page }) => {
+    // A click opens the form on 10:00–10:30 — and the grid must show that
+    // block already, not after Save: the whole point is watching the event
+    // land while its times are still being typed (2026-08-20, by request).
+    await writable(page);
+    const col = page.locator('.col').first();
+    const box = (await col.boundingBox())!;
+    await col.click({ position: { x: box.width / 2, y: box.height * (10.25 / 24) } });
+    await expect(newForm(page)).toBeVisible();
+
+    const ghost = page.getByTestId('form-preview');
+    await expect(ghost).toBeVisible();
+    const before = (await ghost.boundingBox())!;
+
+    // Stretch the end to 12:30: the ghost must follow the keystrokes. Four
+    // times taller, within rendering slack — the premise (30min → 2h) is in
+    // the same fields the click spec above pins.
+    await newForm(page).getByLabel('End', { exact: true }).fill('12:30');
+    await expect
+      .poll(async () => (await ghost.boundingBox())!.height / before.height)
+      .toBeGreaterThan(3.5);
+
+    // Cancel takes the draft with it — a ghost that outlives its form is a
+    // phantom meeting.
+    await page.keyboard.press('Escape');
+    await expect(ghost).toHaveCount(0);
+  });
+
   /**
    * Task 6, at the top of the stack: **sweeping empty grid opens the form on
    * the span that was swept**, rather than creating anything silently.

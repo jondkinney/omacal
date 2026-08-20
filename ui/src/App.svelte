@@ -14,7 +14,7 @@
     type EventDetail, type Occurrence, type SendUpdates,
   } from './lib/eventdetail';
   import {
-    blankValue, blankValueAt, dateOf, timeOf, toEventInput, valueFromDetail,
+    blankValue, blankValueAt, dateOf, previewSpan, timeOf, toEventInput, valueFromDetail,
     type EventFormResult, type EventFormValue, type Scope,
   } from './lib/eventform';
   import type { Rect } from './lib/position';
@@ -617,6 +617,14 @@
     | { mode: 'edit'; anchor: Rect; initial: EventFormValue; id: number; occurrenceStartMs: number };
 
   let form = $state<FormRequest | null>(null);
+  /** The span the open form currently describes, for the grid's live ghost —
+   *  the block that appears where the event will land and follows the times
+   *  as they are typed (2026-08-20, by request). Null when no form is open,
+   *  or when its value describes nothing timed. */
+  let formPreview = $state<{ startMs: number; endMs: number } | null>(null);
+  $effect(() => {
+    if (!form) formPreview = null;
+  });
   let pendingDelete = $state<{ occurrence: Occurrence; anchor: Rect } | null>(null);
 
   /** A rect for a form nothing was clicked to open — `n`. Zero-sized, a quarter
@@ -1110,7 +1118,7 @@
     {#if listMode}
       <Filmstrip days={daysFromWeek(week)} onopen={openGridEvent} />
     {:else}
-      <WeekGrid {week} oncreate={newEventAt} onedit={openEdit} ondelete={askDelete}
+      <WeekGrid {week} {formPreview} oncreate={newEventAt} onedit={openEdit} ondelete={askDelete}
         onmove={moveOccurrence} onresponded={refreshAfterWrite} />
     {/if}
   {/if}
@@ -1175,6 +1183,7 @@
     {calendars}
     onsave={saveForm}
     oncancel={() => (form = null)}
+    onvaluechange={(v) => (formPreview = previewSpan(v))}
   />
 {/if}
 

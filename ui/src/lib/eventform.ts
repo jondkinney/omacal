@@ -397,6 +397,26 @@ export function toMs(date: string, time: string): number {
   return new Date(y, m - 1, d, hh, mm, 0, 0).getTime();
 }
 
+/**
+ * The span the form's working value describes, for the grid's live preview —
+ * the block that appears where the event will land and moves as the times
+ * are typed. `null` when there is nothing timed to draw: an all-day value
+ * (the band is not previewed), a half-typed time, or an end at or before its
+ * start. Display only; `whenOf` remains the save path's sole authority, and
+ * in particular the `source*Ms` passthrough that preserves untouched seconds
+ * is deliberately not reproduced here — a preview is not off by anything a
+ * pixel can show.
+ */
+export function previewSpan(
+  value: EventFormValue,
+): { startMs: number; endMs: number } | null {
+  if (value.isAllDay) return null;
+  const startMs = toMs(value.date, value.start);
+  const endMs = toMs(value.endDate || value.date, value.end);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return null;
+  return { startMs, endMs };
+}
+
 // --- Date arithmetic on dates, not on instants ----------------------------
 //
 // The three below work on `yyyy-mm-dd` through `Date.UTC`, which has no

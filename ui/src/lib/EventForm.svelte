@@ -20,6 +20,7 @@
     calendars,
     onsave,
     oncancel,
+    onvaluechange,
   }: {
     /** The rect to sit beside: the clicked block, or the clicked grid cell. */
     anchor: Rect;
@@ -32,6 +33,11 @@
     calendars: Calendar[];
     onsave: (result: EventFormResult) => void;
     oncancel: () => void;
+    /** Fired with a snapshot of the working value on every edit, so the grid
+     *  behind this form can draw the event being described — the block that
+     *  moves as the times are typed (2026-08-20, by request). Optional and
+     *  advisory: nothing here waits on it, and the save path never reads it. */
+    onvaluechange?: (v: EventFormValue) => void;
   } = $props();
 
   // A working copy. Every field the user can change lives here; the facts they
@@ -70,6 +76,15 @@
     guests: [...initial.guests],
   });
   let scope = $state<Scope>('this');
+
+  // The grid's live preview rides on this: a snapshot per change, so the
+  // block behind the form tracks the times as they are typed. An effect
+  // rather than per-input calls, because `value` is edited from a dozen
+  // controls and a callback each of them must remember is a callback one of
+  // them will forget.
+  $effect(() => {
+    onvaluechange?.($state.snapshot(value) as EventFormValue);
+  });
   /** Set by a refused save, cleared by the next edit. Deliberately not derived
    *  from `value`: a form that reddens while you are still typing the end time
    *  is telling you off for a sentence you have not finished. */

@@ -13,8 +13,12 @@
     SNAP_MS, beganDrag, colsMoved, edgeAt, spanForMove, spanForResize, spanForSweep,
   } from './drag';
 
-  let { week, oncreate, onedit, ondelete, onmove, onresponded }: {
+  let { week, formPreview = null, oncreate, onedit, ondelete, onmove, onresponded }: {
     week: WeekPayload;
+    /** The span the open event form currently describes, drawn as a dashed
+     *  ghost so the user watches the event land while typing its times —
+     *  create and edit alike. Null draws nothing. */
+    formPreview?: { startMs: number; endMs: number } | null;
     /** A click on empty space in a day column, at the half hour it landed in,
      *  or a **sweep** across it, which names an `endMs` as well.
      *  `rect` is the anchor to put the form beside — the column at the height
@@ -679,6 +683,18 @@
    * never watched being chosen. Percentages of the column, like every other
    * position in this grid, so it lands wherever the column happens to be sized.
    */
+  /** The form ghost's geometry in this day's column, clamped to it — a span
+   *  that crosses midnight draws its slice in each column it touches, the
+   *  same rule real events follow. */
+  function formPreviewStyle(day: { start_ms: number; end_ms: number }): string | null {
+    if (!formPreview) return null;
+    const s = Math.max(formPreview.startMs, day.start_ms);
+    const e = Math.min(formPreview.endMs, day.end_ms);
+    if (e <= s) return null;
+    const span = day.end_ms - day.start_ms;
+    return `top:${((s - day.start_ms) / span) * 100}%;height:${((e - s) / span) * 100}%`;
+  }
+
   function sweepStyle(day: { start_ms: number; end_ms: number }): string | null {
     if (!sweep?.span || sweep.dayStartMs !== day.start_ms) return null;
     const span = day.end_ms - day.start_ms;
@@ -831,6 +847,13 @@
         <div class="sweep" style={ghost}></div>
       {/if}
 
+      <!-- The open form's live ghost: above the blocks (a draft usually
+           overlaps something) but translucent and dashed so it reads as
+           not-yet-real, and transparent to the pointer like the sweep. -->
+      {#if formPreviewStyle(day)}
+        <div class="formghost" data-testid="form-preview" style={formPreviewStyle(day)}></div>
+      {/if}
+
       {#each day.placed as p}
         <EventBlock
           event={day.events[p.idx]}
@@ -952,6 +975,14 @@
            background: color-mix(in srgb, var(--accent) 14%, var(--bg));
            box-shadow: inset 2px 0 0 0 var(--accent);
            pointer-events: none; z-index: 4; }
+
+  /* The form's draft, dressed as not-yet-real: dashed where every real
+     block is solid, tinted rather than filled so whatever it covers still
+     reads through. */
+  .formghost { position: absolute; left: 3px; right: 3px; border-radius: 6px;
+               background: color-mix(in srgb, var(--accent) 18%, transparent);
+               border: 1.5px dashed var(--accent);
+               pointer-events: none; z-index: 6; }
 
   /* The loudest thing on screen, deliberately. */
   .now { position: absolute; left: 0; right: 0; border-top: 1.5px solid var(--now); z-index: 5;
