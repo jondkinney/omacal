@@ -3142,7 +3142,7 @@ test.describe('EventForm', () => {
     // 09:30 on 12 Aug 2026, UTC — the project's `timezoneId`.
     expect(saved.fields.when.kind).toBe('timed');
     expect(saved.fields.when.startMs).toBe(Date.UTC(2026, 7, 12, 9, 30));
-    expect(saved.fields.when.endMs).toBe(Date.UTC(2026, 7, 12, 10, 0));
+    expect(saved.fields.when.endMs).toBe(Date.UTC(2026, 7, 12, 10, 30));
   });
 
   test('save is refused when the end is before the start', async ({ page }) => {
@@ -3266,7 +3266,7 @@ test.describe('EventForm', () => {
     await open(page, 'create');
     await expect(page.getByLabel('Date', { exact: true })).toHaveValue('2026-08-05');
     await expect(page.getByLabel('Start', { exact: true })).toHaveValue('09:30');
-    await expect(page.getByLabel('End', { exact: true })).toHaveValue('10:00');
+    await expect(page.getByLabel('End', { exact: true })).toHaveValue('10:30');
   });
 
   test('a recurring edit offers three scopes and says what All events does', async ({ page }) => {

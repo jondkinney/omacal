@@ -1047,11 +1047,11 @@ test.describe('App', () => {
     await expect(newForm(page)).toBeVisible();
     await expect(newForm(page).getByLabel('Date', { exact: true })).toHaveValue('2024-01-29');
     await expect(newForm(page).getByLabel('Start', { exact: true })).toHaveValue('10:00');
-    await expect(newForm(page).getByLabel('End', { exact: true })).toHaveValue('10:30');
+    await expect(newForm(page).getByLabel('End', { exact: true })).toHaveValue('11:00');
   });
 
   test('the open form draws its event on the grid, live', async ({ page }) => {
-    // A click opens the form on 10:00–10:30 — and the grid must show that
+    // A click opens the form on 10:00–11:00 — and the grid must show that
     // block already, not after Save: the whole point is watching the event
     // land while its times are still being typed (2026-08-20, by request).
     await writable(page);
@@ -1064,13 +1064,13 @@ test.describe('App', () => {
     await expect(ghost).toBeVisible();
     const before = (await ghost.boundingBox())!;
 
-    // Stretch the end to 12:30: the ghost must follow the keystrokes. Four
-    // times taller, within rendering slack — the premise (30min → 2h) is in
-    // the same fields the click spec above pins.
+    // Stretch the end to 12:30: the ghost must follow the keystrokes. Two
+    // and a half times taller, within rendering slack — the premise (an hour
+    // → 2h30) is in the same fields the click spec above pins.
     await newForm(page).getByLabel('End', { exact: true }).fill('12:30');
     await expect
       .poll(async () => (await ghost.boundingBox())!.height / before.height)
-      .toBeGreaterThan(3.5);
+      .toBeGreaterThan(2.2);
 
     // Cancel takes the draft with it — a ghost that outlives its form is a
     // phantom meeting.

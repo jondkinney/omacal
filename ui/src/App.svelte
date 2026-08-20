@@ -717,7 +717,7 @@
    *
    * `endMs` arrives only from a **sweep** — a drag across empty grid, which
    * names both ends. A click names only the moment it landed on, and leaves the
-   * duration to `blankValueAt`'s own half hour; passing one there would move
+   * duration to `blankValueAt`'s own hour; passing one there would move
    * the decision out of the form module and into the grid.
    *
    * Nothing is created here either way. The form does the creating, through the

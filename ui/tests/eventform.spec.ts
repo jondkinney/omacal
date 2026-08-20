@@ -305,12 +305,13 @@ test.describe('blankValue', () => {
     // the day, whose end is midnight *tomorrow*; the version that assigned both
     // dates the start's own day made that an end twenty-three and a half hours
     // before the start, so the form opened already refusing to save and no
-    // field on it looked wrong. Reachable for half an hour every evening.
+    // field on it looked wrong. Reachable for an hour every evening now
+    // that the default span is one.
     const v = blankValue(at(2026, 8, 5, 23, 15), 1);
     expect(v.date).toBe('2026-08-05');
     expect(v.endDate).toBe('2026-08-06');
     expect(endAfterStart(v)).toBe(true);
-    expect(spanOf(v)).toBe(30 * MINUTES);
+    expect(spanOf(v)).toBe(60 * MINUTES);
   });
 
   test('a chosen day keeps the time and takes the end date with it', async () => {
@@ -321,7 +322,7 @@ test.describe('blankValue', () => {
     expect(v.date).toBe('2026-08-12');
     expect(v.endDate).toBe('2026-08-13');
     expect(endAfterStart(v)).toBe(true);
-    expect(spanOf(v)).toBe(30 * MINUTES);
+    expect(spanOf(v)).toBe(60 * MINUTES);
   });
 
   test('an ordinary daytime create keeps both dates on the same day', async () => {
@@ -334,7 +335,7 @@ test.describe('blankValue', () => {
     const v = blankValue(at(2026, 8, 5, 9, 12), 1);
     expect(v.date).toBe('2026-08-05');
     expect(v.endDate).toBe('2026-08-05');
-    expect(spanOf(v)).toBe(30 * MINUTES);
+    expect(spanOf(v)).toBe(60 * MINUTES);
   });
 });
 
@@ -382,7 +383,7 @@ test.describe('blankValueAt', () => {
     const v = blankValueAt(at(2026, 8, 5, 10, 0), 1);
     expect(v.date).toBe('2026-08-05');
     expect(v.start).toBe('10:00');
-    expect(v.end).toBe('10:30');
+    expect(v.end).toBe('11:00');
     expect(v.endDate).toBe('2026-08-05');
     expect(v.isEdit).toBe(false);
     expect(v.calendarId).toBe(1);
@@ -485,7 +486,7 @@ test.describe('a timed value is sent as the instants it was read off', () => {
    *  04:00 — as `App.createDayMs` hands it to `blankValue`. */
   const THAT_DAY = Date.parse('2026-10-25T00:00:00+03:00');
 
-  test('a new event asked for inside the repeated hour is half an hour long, and savable', async ({ page }) => {
+  test('a new event asked for inside the repeated hour is an hour long, and savable', async ({ page }) => {
     await page.goto(PURE);
     const v = await page.evaluate(([firstPass, thatDay]) => {
       const ef = (window as any).__eventform;
@@ -519,26 +520,29 @@ test.describe('a timed value is sent as the instants it was read off', () => {
     // Fixture premise. Without an hour between two instants that read the same,
     // this zone has no repeated hour and nothing below discriminates.
     expect(SECOND_PASS - FIRST_PASS).toBe(3_600_000);
-    expect(v.reparsedEnd).toBe(FIRST_PASS);
 
     expect(v.start).toBe('03:30');
-    // Not a typo, and not the wrong value: the end instant is half an hour
-    // later, and by then the clocks have gone back, so its wall clock reads
-    // earlier on the same date. What the form shows is what a Sofia clock says.
-    expect(v.end).toBe('03:00');
+    // Not a typo, and not the wrong value: the end instant is an hour later,
+    // and by then the clocks have gone back, so its wall clock reads **the
+    // same 03:30** on the same date. What the form shows is what a Sofia
+    // clock says — and re-parsing that pair lands both ends on the *first*
+    // pass, a span of zero.
+    expect(v.end).toBe('03:30');
+    expect(v.reparsedEnd).toBe(v.startMs);
 
-    // The claim. This span used to be **minus** thirty minutes and `saveable`
+    // The claim. This span used to re-derive to **zero** and `saveable`
     // used to be `false`: a form that opened already refusing to save, with no
     // field on it visibly wrong. `endAfterStart` asks `whenOf`, which is why
     // the pass-through has to live there rather than in `toEventInput` — a
     // guard that re-derived while the wire passed through would go on refusing
     // this exact form.
-    expect(v.span).toBe(30 * 60_000);
+    expect(v.span).toBe(60 * 60_000);
     expect(v.saveable).toBe(true);
     // And the instants are the ones the clock named, not a re-parse of what
-    // they happen to look like on a wall clock. The end *is* the second pass.
+    // they happen to look like on a wall clock. The end is half past the
+    // second pass.
     expect(v.startMs).toBe(FIRST_PASS + 30 * 60_000);
-    expect(v.endMs).toBe(SECOND_PASS);
+    expect(v.endMs).toBe(SECOND_PASS + 30 * 60_000);
   });
 
   test('editing only the title of an event in a repeated hour sends no times', async ({ page }) => {
@@ -758,8 +762,8 @@ test.describe('a create on a day whose midnight is skipped', () => {
     expect(v.date).toBe('2026-09-06');
     expect(v.start).toBe('01:30');
     expect(v.endDate).toBe('2026-09-06');
-    expect(v.end).toBe('02:00');
-    expect(v.span).toBe(30 * 60_000);
+    expect(v.end).toBe('02:30');
+    expect(v.span).toBe(60 * 60_000);
     expect(v.saveable).toBe(true);
 
     // The other half of re-anchoring, and the half a `start`/`end` assertion
@@ -770,7 +774,7 @@ test.describe('a create on a day whose midnight is skipped', () => {
     // forward — rather than by arithmetic on a local `Date`, which could not
     // disagree with the reading under test.
     expect(v.sourceStartMs).toBe(Date.parse('2026-09-06T01:30:00-03:00'));
-    expect(v.sourceEndMs).toBe(Date.parse('2026-09-06T02:00:00-03:00'));
+    expect(v.sourceEndMs).toBe(Date.parse('2026-09-06T02:30:00-03:00'));
     expect(v.startMs).toBe(v.sourceStartMs);
     expect(v.endMs).toBe(v.sourceEndMs);
   });
@@ -1619,7 +1623,7 @@ test.describe('the All day switch never lands on a value Save refuses', () => {
     // The same pair as the UTC-calendar case above: what a toggle produces
     // cannot depend on which zone the calendar happens to be in.
     expect(off.start).toBe('09:00');
-    expect(off.end).toBe('09:30');
+    expect(off.end).toBe('10:00');
   });
 
   /**

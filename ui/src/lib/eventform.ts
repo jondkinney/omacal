@@ -203,6 +203,12 @@ export type Guest = {
 
 const MIN_MS = 60_000;
 const HALF_HOUR_MS = 30 * MIN_MS;
+/** How long a brand-new event is until somebody says otherwise (an hour —
+ *  30 minutes until 2026-08-20, by request). The *snap* stays the half hour:
+ *  a new event still starts on the next half-hour boundary, it just runs an
+ *  hour from there. `ALL_DAY_START`/`ALL_DAY_END` below must keep describing
+ *  this same duration — their comment says why. */
+const DEFAULT_EVENT_MS = 60 * MIN_MS;
 
 /**
  * The civil times an **all-day** value carries in its (hidden) time fields.
@@ -220,12 +226,12 @@ const HALF_HOUR_MS = 30 * MIN_MS;
  * day, because `end_date` is the inclusive last day: the span came out zero and
  * Save refused a form with nothing on it visibly wrong.
  *
- * Half an hour apart, matching the duration `blankValueAt` gives a new event,
- * so a day becoming timed and a fresh event created on it agree about how long
- * "an event" is by default.
+ * An hour apart (`DEFAULT_EVENT_MS`), matching the duration `blankValueAt`
+ * gives a new event, so a day becoming timed and a fresh event created on it
+ * agree about how long "an event" is by default.
  */
 const ALL_DAY_START = '09:00';
-const ALL_DAY_END = '09:30';
+const ALL_DAY_END = '10:00';
 const DAY_MS = 24 * 3_600_000;
 
 // --- The guest list -------------------------------------------------------
@@ -469,7 +475,7 @@ export const nextHalfHour = (nowMs: number): number =>
 
 /**
  * A form value for a brand-new event starting at `startMs`, on `calendarId`,
- * running until `endMs` — or half an hour, when nothing names an end.
+ * running until `endMs` — or an hour, when nothing names an end.
  *
  * The counterpart to `blankValue`: there the *clock* names the time, here the
  * *grid* does. A click on empty space in Day or Week view already knows which
@@ -479,7 +485,7 @@ export const nextHalfHour = (nowMs: number): number =>
  * **`endMs` is optional because a click genuinely does not name one.** A click
  * names a moment and the duration is this module's default; a sweep names both
  * ends and the grid's answer is the one that must survive. Defaulting here
- * rather than at each call site keeps "an event is half an hour" in the one
+ * rather than at each call site keeps "an event is an hour" in the one
  * file that also decides what an all-day event's times become when it is
  * untoggled (see `ALL_DAY_START`), so the two cannot drift apart.
  *
@@ -490,15 +496,15 @@ export const nextHalfHour = (nowMs: number): number =>
  * wrong.
  *
  * Both instants are kept as well as read, because a create has the same
- * boundary as an edit: half an hour from 03:30 lands on a 03:00 that is *later*
+ * boundary as an edit: an hour from 02:30 lands on a 02:30 that is *later*
  * across a fall-back, and re-parsing the pair `dateOf`/`timeOf` just produced
- * puts the end half an hour before the start — a form that opens already
+ * puts the end at or before the start — a form that opens already
  * refusing to save with no field on it visibly wrong. See `sourceStartMs`.
  */
 export function blankValueAt(
   startMs: number,
   calendarId: number | null,
-  endMs: number = startMs + HALF_HOUR_MS,
+  endMs: number = startMs + DEFAULT_EVENT_MS,
 ): EventFormValue {
   return {
     title: '',
@@ -531,7 +537,7 @@ export function blankValueAt(
 }
 
 /**
- * A form value for a brand-new event: the next half hour, half an hour long,
+ * A form value for a brand-new event: the next half hour, an hour long,
  * on `calendarId`.
  *
  * `dayStartMs` is the day the user was looking at when they asked for a new
@@ -548,11 +554,11 @@ export function blankValueAt(
  *
  *   - a pair naming **no instant** on the chosen day. Where a zone's midnight is
  *     skipped — America/Santiago 6 Sep 2026, Africa/Cairo 24 Apr 2026 — asking
- *     for a new event just after midnight offered 00:30–01:00, and 00:30 does
+ *     for a new event just after midnight offered 00:30–01:30, and 00:30 does
  *     not exist that day. Re-parsing normalised the *start* forward to 01:30
- *     while the end stayed at 01:00: a form that opened already refusing to
- *     save, half an hour backwards, and no field on it visibly wrong. Rebuilding
- *     from `toMs(date, start)` gives 01:30–02:00 instead — half an hour, forward,
+ *     while the end stayed at 01:30: a form that opened on a zero span,
+ *     refused by Save, and no field on it visibly wrong. Rebuilding
+ *     from `toMs(date, start)` gives 01:30–02:30 instead — an hour, forward,
  *     saveable — because the end is derived from the start's own instant rather
  *     than left where a separate string put it.
  *   - the two source instants going stale. Nothing had to *clear* them, because
@@ -564,11 +570,11 @@ export function blankValueAt(
  *
  * The day the end lands on is preserved by construction, which is what the
  * `shiftedEndDate` call here used to be for. The version before that wrote
- * `endDate: date` and was wrong for half an hour every evening: asked for a new
- * event between 23:00 and 23:30 it offered 23:30–00:00 with both dates on today,
- * which `endAfterStart` reads as an end twenty-three and a half hours *before*
+ * `endDate: date` and was wrong for an hour every evening: asked for a new
+ * event between 23:00 and 23:30 it offered 23:30–00:30 with both dates on today,
+ * which `endAfterStart` reads as an end twenty-three hours *before*
  * the start. `blankValueAt` reads the end date off the end instant, so that
- * case — and the fall-back case where the half hour after 23:30 is a *different*
+ * case — and the fall-back case where the hour after 23:30 is a *different*
  * civil hour — come out right without a second rule.
  *
  * Passing today's own day moves nothing, and re-anchoring then returns exactly
