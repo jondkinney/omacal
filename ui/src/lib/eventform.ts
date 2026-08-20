@@ -410,7 +410,10 @@ export function toMs(date: string, time: string): number {
 export function previewSpan(
   value: EventFormValue,
 ): { startMs: number; endMs: number } | null {
-  if (value.isAllDay) return null;
+  // Empty times checked here, not left to `toMs`: its `'' → 00:00` fallback
+  // is right for its other callers and wrong for a preview, where a
+  // mid-edit cleared field would snap the ghost to the top of the day.
+  if (value.isAllDay || !value.start || !value.end) return null;
   const startMs = toMs(value.date, value.start);
   const endMs = toMs(value.endDate || value.date, value.end);
   if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return null;
