@@ -20,6 +20,7 @@
     onresponded,
     onedit,
     ondelete,
+    oncopy,
   }: {
     detail: EventDetail;
     anchor: Rect;
@@ -64,6 +65,14 @@
      *  by clicking this: the caller owns the confirmation, which has three
      *  scopes, a guest count and no undo behind it. */
     ondelete: () => void;
+    /** Ctrl+C (⌘C) landed while this popover was open: the caller should
+     *  remember this occurrence as what Ctrl+V will paste. Living here rather
+     *  than in `App`'s key handler because *here* is the only place that
+     *  knows a popover is open at all for Day and Week — `WeekGrid` owns that
+     *  popover end-to-end, and `App` never sees its occurrence. One listener
+     *  in the shared component covers every view. Required, like `onedit`: a
+     *  caller that omitted it would swallow the chord and copy nothing. */
+    oncopy: () => void;
   } = $props();
 
   const segments = $derived(descriptionSegments(detail.description));
@@ -302,7 +311,35 @@
   // failure `CalendarPopover`'s own comment documents — nothing short of
   // `window` hears Escape from there.
   escapeCloses(() => true, () => onclose());
+
+  /** What Ctrl+C puts on the OS clipboard, so a copy is also a copy in the
+   *  ordinary sense — pasteable into a chat as text. The same formatters the
+   *  panel renders with, so the text says what the screen says. */
+  const clipboardLine = () => {
+    const when = detail.is_all_day ? day : `${day} ${hhmm(occurrenceStartMs)}–${hhmm(occurrenceEndMs)}`;
+    return [detail.title ?? '(no title)', when, detail.location ?? ''].filter(Boolean).join('\n');
+  };
+
+  // Ctrl+C — ⌘C on a Mac — copies the event this popover is about. On
+  // `window` for the same reason Escape is, and with one yield: a real text
+  // selection in the panel (an address, a line of the description) keeps
+  // native copy, because taking the chord away from selected text would break
+  // the older meaning of the key to serve the newer one. Shift and Alt
+  // variants pass through untouched — Ctrl+Shift+C is a devtools chord in the
+  // webview this ships in.
+  function onCopyKey(e: KeyboardEvent) {
+    if (e.key.toLowerCase() !== 'c' || !(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+    if (document.getSelection()?.toString()) return;
+    e.preventDefault();
+    // Fire-and-forget: the buffer `oncopy` fills is what paste reads, and a
+    // webview denying clipboard access must not turn the copy into an error.
+    try { navigator.clipboard?.writeText(clipboardLine()).catch(() => {}); } catch { /* no clipboard here */ }
+    note = { text: 'Copied — Ctrl+V pastes it as a new event', kind: 'info' };
+    oncopy();
+  }
 </script>
+
+<svelte:window onkeydown={onCopyKey} />
 
 <!-- A sibling of `.pop`, not a wrapper around it, so a click inside the
      panel — the guest list included — never reaches this button. -->

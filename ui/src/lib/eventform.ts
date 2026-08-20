@@ -755,6 +755,45 @@ export function valueFromDetail(
   };
 }
 
+/**
+ * A copied event, landed on the day a paste is aimed at — the create-form
+ * value Ctrl+V opens.
+ *
+ * `copied` is `valueFromDetail`'s reading of the source occurrence; `blank`
+ * is the value a plain `n` would have opened on the target day, and it is
+ * the base on purpose: everything a paste should *not* carry is whatever a
+ * new event gets. The repeat stays `'never'` and the recurrence `null` — a
+ * paste is one event, not a second series — the reminder rows stay empty so
+ * the target calendar's own defaults apply, and `isEdit`/`isRecurring`,
+ * organizer and self are a create's. What crosses over is what the user
+ * copied *for*: title, place, notes, the guest list (everyone on it,
+ * original organizer included — pasting a meeting is how you re-invite the
+ * same room), whether it is all-day, and its shape in time — the clocks and
+ * the day-span, moved onto `blank`'s day by the same `shiftedEndDate` a
+ * date edit in the form uses.
+ *
+ * The source instants are dropped, not carried: the pair here is assembled
+ * from two places — `blank`'s day, `copied`'s clock — which is precisely the
+ * "read off no instant" case `sourceStartMs`'s own comment names. A clock
+ * that does not exist on the target day (a spring-forward) is the form's
+ * §7.3 to refuse and name, same as if it had been typed.
+ */
+export function pastedValue(copied: EventFormValue, blank: EventFormValue): EventFormValue {
+  return {
+    ...blank,
+    title: copied.title,
+    location: copied.location,
+    description: copied.description,
+    guests: copied.guests.map((g) => ({ ...g })),
+    isAllDay: copied.isAllDay,
+    start: copied.start,
+    end: copied.end,
+    endDate: shiftedEndDate(copied.date, blank.date, copied.endDate),
+    sourceStartMs: null,
+    sourceEndMs: null,
+  };
+}
+
 /** The rows the event actually runs on — its overrides, or the calendar's
  *  defaults when `use_default` (reminders spec §3). */
 function effectiveReminders(detail: EventDetail): { method: string; minutes: number }[] {

@@ -94,6 +94,34 @@ export const SHORTCUT_TEXT: Record<ShortcutId, string> = {
   help: 'This list',
 };
 
+/**
+ * The two modifier chords, beside the table rather than in it.
+ *
+ * Not rows of `SHORTCUTS`, and the reason is the invariant that table
+ * exists for: every row there is dispatched from `App`'s one bare-key
+ * handler through `SHORTCUT_ACTIONS`, and the exhaustive `Record` is what
+ * proves each documented key does something. These two are genuinely not
+ * dispatched there — copy lives in `EventPopover`, the only component that
+ * knows a popover is open in every view, and paste is a chord `App` handles
+ * before its bare-key path. Forcing them into the table would mean either a
+ * lying no-op handler or teaching the dispatcher about scopes it does not
+ * have; a second export in the same file keeps them one screen away from
+ * the keys they must not drift from, which is the practical half of the
+ * invariant.
+ *
+ * `MOD` follows the platform so the sheet shows the key the reader will
+ * actually press — the handlers themselves accept Ctrl and ⌘ alike.
+ */
+export const MOD_LABEL =
+  typeof navigator !== 'undefined' && /Mac/.test(navigator.platform) ? '⌘' : 'Ctrl';
+
+export const CHORDS: { label: string; text: string; hint?: string }[] = [
+  { label: `${MOD_LABEL} C`, text: 'Copy the event',
+    hint: 'with its popover open — click the event first' },
+  { label: `${MOD_LABEL} V`, text: 'Paste as a new event',
+    hint: 'opens the form on the day you are looking at, to fine-tune first' },
+];
+
 /** The table in the order the sheet draws it. A group with no shortcuts is
  *  dropped rather than drawn empty, so `SHORTCUT_GROUPS` can name a heading
  *  before anything is filed under it. */

@@ -14,8 +14,8 @@
     type EventDetail, type Occurrence, type SendUpdates,
   } from './lib/eventdetail';
   import {
-    blankValue, blankValueAt, dateOf, previewSpan, timeOf, toEventInput, valueFromDetail,
-    type EventFormResult, type EventFormValue, type Scope,
+    blankValue, blankValueAt, dateOf, pastedValue, previewSpan, timeOf, toEventInput,
+    valueFromDetail, type EventFormResult, type EventFormValue, type Scope,
   } from './lib/eventform';
   import type { Rect } from './lib/position';
   import { daysFromMonth, daysFromWeek, listable } from './lib/filmstrip';
@@ -627,6 +627,45 @@
   });
   let pendingDelete = $state<{ occurrence: Occurrence; anchor: Rect } | null>(null);
 
+  /**
+   * What Ctrl+V pastes: the last event Ctrl+C copied, held as the form value
+   * `valueFromDetail` read off its occurrence (2026-08-20, by request). A
+   * value rather than the occurrence, because the detail behind an occurrence
+   * can be edited or deleted after the copy — the buffer must keep saying
+   * what was copied, not what became of it. Survives popover closes and view
+   * changes, replaced by the next copy, and deliberately not the OS
+   * clipboard: what lands *there* is a text summary for other apps
+   * (`EventPopover` writes it), and paste inside omacal reads this.
+   */
+  let copiedEvent = $state<EventFormValue | null>(null);
+
+  function copyOccurrence(occurrence: Occurrence) {
+    copiedEvent = valueFromDetail(
+      occurrence.detail, occurrence.startMs, occurrence.endMs,
+    );
+  }
+
+  /**
+   * Ctrl+V: the copied event as a **new** event on the day being looked at —
+   * `createDayMs`, the same answer `n` gives — opened in the form rather than
+   * created outright, so guests, notes and the exact times are fine-tuned
+   * before anything is written or anybody is mailed. `pastedValue` decides
+   * what crosses over and what a create keeps; the calendar is the copied
+   * event's own when a create can land on it, repaired exactly as
+   * `createCalendarId` repairs the stored choice.
+   */
+  function pasteCopied() {
+    if (!copiedEvent) return;
+    const calendarId = offerableCalendarId(
+      copiedEvent.calendarId ?? defaultCalendarId ?? null, calendars,
+    );
+    form = {
+      mode: 'create',
+      anchor: keyboardAnchor(),
+      initial: pastedValue(copiedEvent, blankValue(Date.now(), calendarId, createDayMs())),
+    };
+  }
+
   /** A rect for a form nothing was clicked to open — `n`. Zero-sized, a quarter
    *  of the way down and half the panel's width left of centre, which is where
    *  `placePopover`'s prefer-the-right rule then lands the panel: roughly
@@ -1005,6 +1044,20 @@
 
   function handleKeydown(e: KeyboardEvent) {
     if (isTypingTarget(e)) return;
+    // The one modifier chord omacal claims: Ctrl+V (⌘V), paste the copied
+    // event. Ahead of the modifier bail-out below, and narrower than it
+    // looks — an empty buffer passes the chord through untouched, so V means
+    // nothing new until a copy has meant something first. Copy's half lives
+    // in `EventPopover`, the only place that knows a popover is open in
+    // every view; the same guard set as the bare keys keeps a paste from
+    // opening a second form over one already up.
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'v') {
+      if (copiedEvent && !form && !pendingDelete && !searchOpen && !helpOpen) {
+        e.preventDefault();
+        pasteCopied();
+      }
+      return;
+    }
     // A modifier means the key belongs to the browser or the OS, not to
     // omacal: ⌘N opens a window and ⌘L focuses a location bar. Every shortcut
     // below is a bare key, so this turns nothing off that ever worked — and it
@@ -1119,6 +1172,7 @@
       <Filmstrip days={daysFromWeek(week)} onopen={openGridEvent} />
     {:else}
       <WeekGrid {week} {formPreview} oncreate={newEventAt} onedit={openEdit} ondelete={askDelete}
+                oncopy={copyOccurrence}
         onmove={moveOccurrence} onresponded={refreshAfterWrite} />
     {/if}
   {/if}
@@ -1173,6 +1227,7 @@
     onresponded={refreshAfterWrite}
     onedit={() => openEdit(occurrence, rect)}
     ondelete={() => askDelete(occurrence, rect)}
+    oncopy={() => copyOccurrence(occurrence)}
   />
 {/if}
 

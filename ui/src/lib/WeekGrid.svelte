@@ -13,7 +13,7 @@
     SNAP_MS, beganDrag, colsMoved, edgeAt, spanForMove, spanForResize, spanForSweep,
   } from './drag';
 
-  let { week, formPreview = null, oncreate, onedit, ondelete, onmove, onresponded }: {
+  let { week, formPreview = null, oncreate, onedit, ondelete, oncopy, onmove, onresponded }: {
     week: WeekPayload;
     /** The span the open event form currently describes, drawn as a dashed
      *  ghost so the user watches the event land while typing its times —
@@ -37,6 +37,10 @@
     /** Delete was clicked there, carrying the same `Occurrence` for the same
      *  reason. Nothing is deleted by this: the caller confirms first. */
     ondelete: (occurrence: Occurrence, rect: Rect) => void;
+    /** Ctrl+C landed in that popover: `App` should hold this occurrence as
+     *  what Ctrl+V pastes. Not through `relay` — a copy leaves the popover
+     *  open, the way every selection survives being copied. */
+    oncopy: (occurrence: Occurrence) => void;
     /** A completed drag, handed up rather than written here: the grid decides
      *  *which occurrence* moved and *where to*, and `App` owns every write —
      *  the same split `oncreate`/`onedit`/`ondelete` already use. `WeekGrid`
@@ -903,6 +907,7 @@
     onresponded={(r) => handleResponded(id, startMs, r)}
     onedit={() => relay(onedit, occurrence, rect)}
     ondelete={() => relay(ondelete, occurrence, rect)}
+    oncopy={() => oncopy(occurrence)}
   />
 {/if}
 

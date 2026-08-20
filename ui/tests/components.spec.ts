@@ -286,6 +286,43 @@ test.describe('WeekGrid popover flow', () => {
     expect(del.occurrence.startMs).not.toBe(seriesStart);
   });
 
+  test('Ctrl+C hands up the clicked block and leaves the popover open', async ({ page }) => {
+    const seriesStart = POPOVER_DETAILS[42].start_ms;
+    const blockStart = seriesStart + 3 * 24 * 3_600_000;
+
+    await page.goto(show('popover'));
+    await page.getByRole('button', { name: 'Standup' }).click();
+    await expect(page.locator('.pop')).toBeVisible();
+    await page.keyboard.press('Control+c');
+    // The same occurrence discipline as Edit and Delete: the clicked block's
+    // own start, never the series DTSTART.
+    const copy = await page.evaluate(() => (window as any).__lastCopy);
+    expect(copy.occurrence.startMs).toBe(blockStart);
+    expect(copy.occurrence.startMs).not.toBe(seriesStart);
+    // A copy is not a dismissal — the popover stays, and says what happened.
+    await expect(page.locator('.pop')).toBeVisible();
+    await expect(page.locator('.pop .note')).toContainText('Copied');
+  });
+
+  test('Ctrl+C over selected text stays native copy, not an event copy', async ({ page }) => {
+    await page.goto(show('popover'));
+    await page.getByRole('button', { name: 'Standup' }).click();
+    await expect(page.locator('.pop')).toBeVisible();
+    // A real selection inside the panel — the chord must keep its older
+    // meaning for it.
+    await page.evaluate(() => {
+      const h = document.querySelector('.pop h2, .pop h3, .pop [class*=title]') ??
+        document.querySelector('.pop');
+      const range = document.createRange();
+      range.selectNodeContents(h!);
+      const sel = window.getSelection()!;
+      sel.removeAllRanges();
+      sel.addRange(range);
+    });
+    await page.keyboard.press('Control+c');
+    expect(await page.evaluate(() => (window as any).__lastCopy)).toBeNull();
+  });
+
   test('a successful response restyles the clicked block without a refetch', async ({ page }) => {
     await page.goto(show('popover'));
     const block = page.getByRole('button', { name: 'Standup' });

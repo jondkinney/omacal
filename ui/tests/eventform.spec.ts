@@ -2,9 +2,9 @@ import { test, expect } from '@playwright/test';
 import { offerableCalendarId, type Calendar } from '../src/lib/calendars';
 import type { EventDetail } from '../src/lib/eventdetail';
 import {
-  addGuest, blankValue, blankValueAt, endAfterStart, isAddress, mailableGuests, previewSpan,
-  removableGuest, removeGuest, ruleInWords, sameGuests, shiftedEndDate, toEventInput,
-  toggledGuestOptional, valueFromDetail, whenOf, type EventFormValue,
+  addGuest, blankValue, blankValueAt, endAfterStart, isAddress, mailableGuests, pastedValue,
+  previewSpan, removableGuest, removeGuest, ruleInWords, sameGuests, shiftedEndDate,
+  toEventInput, toggledGuestOptional, valueFromDetail, whenOf, type EventFormValue,
 } from '../src/lib/eventform';
 
 /** How long a **timed** value is, in ms.
@@ -191,6 +191,73 @@ test.describe('previewSpan', () => {
     expect(previewSpan({ ...v, start: '' })).toBeNull();
     expect(previewSpan({ ...v, start: '11:00', endDate: v.date, end: '10:00' })).toBeNull();
     expect(previewSpan({ ...v, end: v.start, endDate: v.date })).toBeNull();
+  });
+});
+
+test.describe('pastedValue', () => {
+  const at = (y: number, mo: number, d: number, h = 0, mi = 0) =>
+    new Date(y, mo - 1, d, h, mi).getTime();
+
+  /** A copied meeting with everything a paste must decide about: identity
+   *  fields worth carrying, series and reminder state worth dropping. */
+  const copied = (): EventFormValue => ({
+    ...blankValueAt(at(2026, 8, 5, 11, 0), 7, at(2026, 8, 5, 12, 30)),
+    title: 'Ops review',
+    location: 'HQ',
+    description: 'bring the numbers',
+    guests: [{ email: 'a@excitel.com', optional: false }, { email: 'b@excitel.com', optional: true }],
+    repeat: 'weekly',
+    recurrence: 'RRULE:FREQ=WEEKLY',
+    isRecurring: true,
+    isEdit: true,
+    popupReminders: [30],
+    emailReminders: [{ method: 'email', minutes: 60 }],
+  });
+  const blank = () => blankValueAt(at(2026, 9, 10, 9, 30), 3);
+
+  test('what the user copied for crosses over; the clock lands on the target day', () => {
+    const r = pastedValue(copied(), blank());
+    expect(r.title).toBe('Ops review');
+    expect(r.location).toBe('HQ');
+    expect(r.description).toBe('bring the numbers');
+    expect(r.guests).toEqual(copied().guests);
+    // The target's day, the source's clock and duration.
+    expect(r.date).toBe('2026-09-10');
+    expect(r.start).toBe('11:00');
+    expect(r.end).toBe('12:30');
+    expect(r.endDate).toBe('2026-09-10');
+    // Assembled from two sources — the documented "read off no instant" case.
+    expect(r.sourceStartMs).toBeNull();
+    expect(r.sourceEndMs).toBeNull();
+  });
+
+  test('a paste is one new event on the target calendar, never a second series', () => {
+    const r = pastedValue(copied(), blank());
+    expect(r.repeat).toBe('never');
+    expect(r.recurrence).toBeNull();
+    expect(r.isRecurring).toBe(false);
+    expect(r.isEdit).toBe(false);
+    expect(r.calendarId).toBe(3);
+    // Empty rows mean the target calendar's own defaults, same as any create.
+    expect(r.popupReminders).toEqual([]);
+    expect(r.emailReminders).toEqual([]);
+  });
+
+  test('a span keeps its length in days — timed across midnight, and all-day', () => {
+    const overnight = {
+      ...copied(), date: '2026-08-05', start: '23:00', endDate: '2026-08-07', end: '01:00',
+    };
+    const t = pastedValue(overnight, blank());
+    expect(t.date).toBe('2026-09-10');
+    expect(t.endDate).toBe('2026-09-12');
+    expect(t.start).toBe('23:00');
+    expect(t.end).toBe('01:00');
+
+    const allDay = { ...copied(), isAllDay: true, date: '2026-08-05', endDate: '2026-08-06' };
+    const a = pastedValue(allDay, blank());
+    expect(a.isAllDay).toBe(true);
+    expect(a.date).toBe('2026-09-10');
+    expect(a.endDate).toBe('2026-09-11');
   });
 });
 

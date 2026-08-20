@@ -179,6 +179,7 @@ if (name === 'App') {
       (window as any).__lastEdit = null;
       (window as any).__lastDelete = null;
       (window as any).__lastMove = null;
+      (window as any).__lastCopy = null;
       // Spread first, then shadow `week` with the live getter — naming only
       // `week` here would silently drop any second prop a fixture grows.
       mount(WeekGrid, {
@@ -198,6 +199,10 @@ if (name === 'App') {
           },
           ondelete: (occurrence: unknown, rect: unknown) => {
             (window as any).__lastDelete = { occurrence, rect };
+          },
+          // Ctrl+C in the popover. No rect — a copy points at nothing.
+          oncopy: (occurrence: unknown) => {
+            (window as any).__lastCopy = { occurrence };
           },
           // A completed drag, for the same reason as the three above: the grid
           // hands the write up rather than making it, so a spec reads exactly
@@ -301,8 +306,18 @@ if (name === 'App') {
       // `onclose` has to actually remove the component itself or "Escape
       // closes it" would have nothing to observe: the fixture's own
       // `onclose` is a no-op, since it can't know about this harness.
+      (window as any).__lastCopy = null;
       let app: object;
-      app = mount(EventPopover, { target, props: { ...props, onclose: () => unmount(app) } });
+      app = mount(EventPopover, {
+        target,
+        props: {
+          ...props,
+          onclose: () => unmount(app),
+          oncopy: () => {
+            (window as any).__lastCopy = { copied: true };
+          },
+        },
+      });
     } else if (name === 'EventForm') {
       // `onsave`/`oncancel` are callback props, not Tauri commands — the form
       // itself never calls `invoke`, since which write command a save becomes

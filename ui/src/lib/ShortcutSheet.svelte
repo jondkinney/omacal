@@ -1,7 +1,7 @@
 <!-- ui/src/lib/ShortcutSheet.svelte -->
 <script lang="ts">
   import { escapeCloses } from './dismiss.svelte';
-  import { groupedShortcuts, SHORTCUT_TEXT } from './shortcuts';
+  import { CHORDS, groupedShortcuts, SHORTCUT_TEXT } from './shortcuts';
 
   let { onclose }: { onclose: () => void } = $props();
 
@@ -39,6 +39,18 @@
           {#if s.hint}<em>{s.hint}</em>{/if}
         </dd>
       {/each}
+      <!-- The two chords, filed under "Doing things" where a reader hunting
+           for copy/paste will look — see `CHORDS`'s comment for why they are
+           not rows of the table above. -->
+      {#if g.group === 'Doing things'}
+        {#each CHORDS as c (c.label)}
+          <dt><kbd>{c.label}</kbd></dt>
+          <dd>
+            <span class="what">{c.text}</span>
+            {#if c.hint}<em>{c.hint}</em>{/if}
+          </dd>
+        {/each}
+      {/if}
     </dl>
   {/each}
 

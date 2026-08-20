@@ -1078,6 +1078,34 @@ test.describe('App', () => {
     await expect(ghost).toHaveCount(0);
   });
 
+  test('Ctrl+C on an event, Ctrl+V opens the form pre-filled with it', async ({ page }) => {
+    // The whole chain through App, not the halves the component specs pin:
+    // the popover's chord fills a buffer that outlives the popover, and the
+    // paste opens a *create* on it — a draft to fine-tune, never a write.
+    await writable(page);
+    await block(page, 'Standup').click();
+    await expect(page.getByRole('dialog', { name: 'Standup' })).toBeVisible();
+    await page.keyboard.press('Control+c');
+    await expect(page.locator('.pop .note')).toContainText('Copied');
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.pop')).toHaveCount(0);
+
+    await page.keyboard.press('Control+v');
+    await expect(newForm(page)).toBeVisible();
+    await expect(newForm(page).getByLabel('Title', { exact: true })).toHaveValue('Standup');
+    // A draft like any other: the live ghost draws it, and Escape takes it
+    // away having created nothing.
+    await expect(page.getByTestId('form-preview')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(newForm(page)).toHaveCount(0);
+  });
+
+  test('Ctrl+V with nothing copied is not a key omacal answers to', async ({ page }) => {
+    await writable(page);
+    await page.keyboard.press('Control+v');
+    await expect(newForm(page)).toHaveCount(0);
+  });
+
   /**
    * Task 6, at the top of the stack: **sweeping empty grid opens the form on
    * the span that was swept**, rather than creating anything silently.
