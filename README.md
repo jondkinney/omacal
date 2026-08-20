@@ -38,42 +38,17 @@ needed, dependencies resolved by apt:
 
 The `.rpm` on the same page covers Fedora-family the same way.
 
-Then run `omacal` and click **Connect Google Calendar**. No config file, no
-Google Cloud project: release builds carry their own client credentials, and
-the app is Google-verified — sign-in is the ordinary consent screen, no
-warnings to click through. One thing worth knowing on first sign-in: the
-token lands in your keyring, so a minimal Hyprland session needs
-gnome-keyring, KeePassXC or kwallet running.
+Then run `omacal` and click **Connect Google Calendar** — and that is the
+whole setup. **You do not need your own Google credentials, an API key, or a
+Google Cloud project. Nothing to create, nothing to configure.** Installed
+builds ship with omacal's own Google-verified sign-in, so connecting is the
+ordinary Google consent screen and nothing else. (There is an optional
+power-user section near the bottom about using your own credentials — if
+you're wondering whether it applies to you, it doesn't.)
 
-## Bring your own Google credentials
-
-You don't have to use our OAuth client at all. Create a free Google Cloud
-project with the Calendar API and a Desktop OAuth client, and put the pair in
-`~/.config/omacal/config.toml`:
-
-    client_id = "YOUR_ID.apps.googleusercontent.com"
-    client_secret = "..."
-
-A present config file **always wins** over the shipped credentials — the
-precedence is pinned by tests — so sign-in then runs under your own client,
-on your own quota, with us entirely out of the loop. Either way the token
-only ever lands in your keyring and your calendar data stays in a local
-database: there are no servers behind this app. Setup walkthrough:
-[`docs/running-on-macos.md`](docs/running-on-macos.md) (the Cloud-project
-steps are the same on Linux).
-
-## Building from source
-
-    npm --prefix ui install               # once, after cloning
-    OMACAL_SEED_DEMO=1 cargo tauri dev   # look at it now, with synthetic data
-    cargo tauri dev                       # your real calendar (needs setup — see the guides)
-    cargo test --workspace                # Rust suite
-    npm --prefix ui run test:ui           # UI suite
-
-A source build signs in with your own Google Cloud credentials via
-`~/.config/omacal/config.toml`, which always wins over anything embedded.
-Setup: [`docs/running-on-macos.md`](docs/running-on-macos.md) ·
-[`docs/running-on-omarchy.md`](docs/running-on-omarchy.md)
+One thing worth knowing on first sign-in: the token lands in your keyring,
+so a minimal Hyprland session needs gnome-keyring, KeePassXC or kwallet
+running.
 
 ## What it does
 
@@ -189,6 +164,42 @@ UTC offset (§7.2). A time typed into an hour that does not exist — a
 daylight-saving spring-forward — is still refused, which is correct, but the
 form now names it and says why instead of leaving Save dead with no field
 looking wrong (§7.3).
+
+## Building from source
+
+    npm --prefix ui install               # once, after cloning
+    OMACAL_SEED_DEMO=1 cargo tauri dev   # look at it now, with synthetic data
+    cargo tauri dev                       # your real calendar (needs setup — see the guides)
+    cargo test --workspace                # Rust suite
+    npm --prefix ui run test:ui           # UI suite
+
+A source build signs in with your own Google Cloud credentials via
+`~/.config/omacal/config.toml`, which always wins over anything embedded.
+Setup: [`docs/running-on-macos.md`](docs/running-on-macos.md) ·
+[`docs/running-on-omarchy.md`](docs/running-on-omarchy.md)
+
+## Optional: your own Google credentials
+
+**Most people should skip this section — the installed app needs nothing
+from it.** Sign-in works out of the box with omacal's own verified client,
+as the Install section says. This exists for exactly two audiences: people
+**building from source** (a source build carries no embedded client, so it
+needs yours — see above), and power users who *prefer* their sign-in to run
+under their own Google Cloud project, on their own quota, with us entirely
+out of the loop. If neither is you, there is nothing to do here.
+
+For those two: create a free Google Cloud project with the Calendar API and
+a Desktop OAuth client, and put the pair in `~/.config/omacal/config.toml`:
+
+    client_id = "YOUR_ID.apps.googleusercontent.com"
+    client_secret = "..."
+
+A present config file **always wins** over the shipped credentials — the
+precedence is pinned by tests. Either way the token only ever lands in your
+keyring and your calendar data stays in a local database: there are no
+servers behind this app. Setup walkthrough:
+[`docs/running-on-macos.md`](docs/running-on-macos.md) (the Cloud-project
+steps are the same on Linux).
 
 ## Design and history
 
