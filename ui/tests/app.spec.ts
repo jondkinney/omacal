@@ -1135,6 +1135,32 @@ test.describe('App', () => {
     await page.keyboard.press('Escape');
   });
 
+  test('a pasted event is created with the copied invitees', async ({ page }) => {
+    // The boundary that matters, same as the notify pair above: the pasted
+    // form *showing* the guest list is one thing, the list reaching
+    // `create_event` is another — and the unchanged-means-absent diff read a
+    // pre-filled list as nothing to say, so pasted events arrived guestless
+    // (2026-08-20, reported the day paste shipped).
+    await writable(page);
+    await block(page, 'Client call').click();
+    await expect(page.getByRole('dialog', { name: 'Client call' })).toBeVisible();
+    await page.keyboard.press('Control+c');
+    await page.keyboard.press('Escape');
+
+    await page.keyboard.press('Control+v');
+    await expect(newForm(page)).toBeVisible();
+    await newForm(page).getByRole('button', { name: 'Create', exact: true }).click();
+    // Guests on board means Create asks who to tell, same as a typed list.
+    await page.getByRole('button', { name: 'Create without notifying', exact: true }).click();
+    await expect(newForm(page)).toHaveCount(0);
+
+    const [args] = await callsTo(page, 'create_event');
+    expect(args.fields.guests).toEqual([
+      { email: 'ana@x.com', optional: false },
+      { email: 'me@x.com', optional: false },
+    ]);
+  });
+
   test('Ctrl+V with nothing copied is not a key omacal answers to', async ({ page }) => {
     await writable(page);
     await page.keyboard.press('Control+v');

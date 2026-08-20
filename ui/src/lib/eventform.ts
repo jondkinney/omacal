@@ -1067,17 +1067,29 @@ export function toEventInput(value: EventFormValue, initial: EventFormValue): Ev
     tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
     ...(value.repeat === initial.repeat ? {} : { repeat: value.repeat }),
     // **Unchanged means absent**, the same three-state `repeat` runs on, and
-    // here it is load bearing rather than tidy: `attendees` is a whole-list
-    // replace on Google's side, so a payload that carried the list on every
-    // save would rewrite every attendee of every event this form touched, from
-    // whatever omacal last read — quietly un-inviting anyone added elsewhere
-    // since. Absent is a PATCH saying "leave the list alone".
+    // on an edit it is load bearing rather than tidy: `attendees` is a
+    // whole-list replace on Google's side, so a payload that carried the list
+    // on every save would rewrite every attendee of every event this form
+    // touched, from whatever omacal last read — quietly un-inviting anyone
+    // added elsewhere since. Absent is a PATCH saying "leave the list alone".
     //
     // It is also what makes a **drag** structurally unable to change a guest
     // list. A drag builds its input from this same value with only the times
     // moved, so the two lists compare equal and no `guests` key is sent at all
     // — the same shape as `sendUpdates: 'none'`, one field along.
-    ...(sameGuests(value.guests, initial.guests) ? {} : { guests: value.guests }),
+    //
+    // A **create** does not get that rule, because it has no server-side list
+    // to leave alone: there, "absent" does not mean "unchanged", it means
+    // *nobody*. The difference went unseen while the only way guests reached
+    // a create's `initial` was typing them in — typed guests differ from the
+    // blank list and were sent either way — and it surfaced the day paste
+    // arrived (2026-08-20): a pasted form opens with the copied invitees
+    // already in `initial`, the two lists compare equal, and the diff rule
+    // read a full guest list as nothing to say. Everyone on the list of a
+    // new event is being invited by definition.
+    ...(value.isEdit
+      ? (sameGuests(value.guests, initial.guests) ? {} : { guests: value.guests })
+      : (value.guests.length > 0 ? { guests: value.guests } : {})),
     // The same rule a third time, and here the object is a whole replace too:
     // absent leaves the event's reminders exactly as they are, which is the
     // only safe thing for rows nobody touched (reminders spec §2). A change

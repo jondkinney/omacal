@@ -2142,6 +2142,27 @@ test.describe('what a save sends about guests', () => {
     value.guests = [];
     expect(toEventInput(value, initial()).guests).toEqual([]);
   });
+
+  test('a create sends the guests it opened with — the paste shape', () => {
+    // The diff rule reads "unchanged" as "leave the list alone", which is a
+    // sentence only an edit can say: a create has no server-side list, so an
+    // absent field means *nobody*. Invisible while the only route for guests
+    // into a create's `initial` was typing them (typed guests differ from the
+    // blank list either way), and found the day paste shipped (2026-08-20):
+    // a pasted form opens with the copied invitees already in `initial`,
+    // untouched, and every pasted event arrived guestless.
+    const pasted = pastedValue(initial(), blankValueAt(Date.UTC(2026, 8, 10, 9, 0), 1));
+    expect(pasted.isEdit).toBe(false);
+    expect(toEventInput(pasted, pasted).guests).toEqual([
+      { email: 'ana@x.com', optional: false },
+      { email: 'me@x.com', optional: false },
+    ]);
+
+    // An untouched empty list on a create still sends nothing — absent and
+    // "nobody" coincide there, and no key is the smaller payload.
+    const blank = blankValueAt(Date.UTC(2026, 8, 10, 9, 0), 1);
+    expect(toEventInput(blank, blank).guests).toBeUndefined();
+  });
 });
 
 // --- Reminders (reminders spec §§1–3) --------------------------------------
