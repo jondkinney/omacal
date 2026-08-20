@@ -231,6 +231,24 @@ test.describe('pastedValue', () => {
     expect(r.sourceEndMs).toBeNull();
   });
 
+  test('the copier is the new organizer, never a pasted guest', () => {
+    // Copying a meeting you organize used to invite you to the copy: your
+    // own attendee row rode along, Google filed you as unanswered on your
+    // own event, and the invite pass rang for it (2026-08-20, live). The
+    // self row is identified by the source's `selfEmail`; everyone else —
+    // the source's organizer included, when that is somebody else — stays.
+    const withSelf = {
+      ...copied(),
+      selfEmail: 'b@excitel.com',
+      organizerEmail: 'a@excitel.com',
+    };
+    expect(pastedValue(withSelf, blank()).guests).toEqual([
+      { email: 'a@excitel.com', optional: false },
+    ]);
+    // No self to recognise — nothing is dropped.
+    expect(pastedValue(copied(), blank()).guests).toEqual(copied().guests);
+  });
+
   test('a paste is one new event on the target calendar, never a second series', () => {
     const r = pastedValue(copied(), blank());
     expect(r.repeat).toBe('never');
@@ -2153,9 +2171,10 @@ test.describe('what a save sends about guests', () => {
     // untouched, and every pasted event arrived guestless.
     const pasted = pastedValue(initial(), blankValueAt(Date.UTC(2026, 8, 10, 9, 0), 1));
     expect(pasted.isEdit).toBe(false);
+    // Ana only: the copier's own row is dropped by `pastedValue` — the
+    // organizer of the new event is not a guest of it.
     expect(toEventInput(pasted, pasted).guests).toEqual([
       { email: 'ana@x.com', optional: false },
-      { email: 'me@x.com', optional: false },
     ]);
 
     // An untouched empty list on a create still sends nothing — absent and

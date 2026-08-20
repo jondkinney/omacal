@@ -64,6 +64,14 @@ async fn invites_where(
             AND e.recurring_event_id IS NULL
             AND (e.end_utc > ?1 OR e.recurrence IS NOT NULL)
             AND c.sync_enabled = 1
+            -- Never a meeting the user organizes, whatever their own
+            -- attendee row says: an event created with the creator in its
+            -- guest list (a paste did this, 2026-08-20) comes back from
+            -- Google with a needsAction self row, and announcing it invites
+            -- the user to their own meeting. Same identity rule as
+            -- `declines.rs`: the organizer's copy lives on the organizer's
+            -- calendar, whose google_id is the address that organizes it.
+            AND (e.organizer_email IS NULL OR e.organizer_email != c.google_id)
             {extra_clause}
           ORDER BY e.start_utc, e.id",
     );
@@ -248,6 +256,31 @@ mod tests {
         record_invite_notice(&pool, id, true, NOW).await.unwrap();
         assert!(unanswered_invites(&pool, NOW).await.unwrap().is_empty(),
                 "a noticed invitation must never come back");
+    }
+
+    #[tokio::test]
+    async fn a_meeting_the_user_organizes_is_never_an_invitation() {
+        // Whatever the self row says: an event created with its creator in
+        // the guest list (a paste did this, 2026-08-20) comes back from
+        // Google carrying a needsAction self row on a meeting the user
+        // organizes, and the pass rang for it — an invitation to their own
+        // copy. The organizer's copy lives on the organizer's calendar, so
+        // `organizer_email = c.google_id` is the identity, the same rule
+        // `declines.rs` reads "my meeting" by.
+        let pool = seeded_pool().await;
+        sqlx::query("UPDATE calendars SET google_id = 'me@x.com' WHERE id = 1")
+            .execute(&pool).await.unwrap();
+
+        let mut own = event("own-1", NOW + HOUR);
+        own.organizer_email = Some("me@x.com".into());
+        upsert_event(&pool, &own).await.unwrap();
+        assert!(unanswered_invites(&pool, NOW).await.unwrap().is_empty(),
+                "an event the user organizes must never ring as an invitation");
+
+        // The control, or the clause proves nothing: the same shape with
+        // somebody else's name on it is still a candidate.
+        upsert_event(&pool, &event("inv-2", NOW + HOUR)).await.unwrap();
+        assert_eq!(unanswered_invites(&pool, NOW).await.unwrap().len(), 1);
     }
 
     #[tokio::test]

@@ -1155,9 +1155,11 @@ test.describe('App', () => {
     await expect(newForm(page)).toHaveCount(0);
 
     const [args] = await callsTo(page, 'create_event');
+    // Ana alone: `me@x.com` is the copier's own row (`is_self` on the
+    // source), and the copier is the new event's organizer, not its guest —
+    // sending it invited the user to their own copy.
     expect(args.fields.guests).toEqual([
       { email: 'ana@x.com', optional: false },
-      { email: 'me@x.com', optional: false },
     ]);
   });
 

@@ -772,9 +772,10 @@ export function valueFromDetail(
  * paste is one event, not a second series — the reminder rows stay empty so
  * the target calendar's own defaults apply, and `isEdit`/`isRecurring`,
  * organizer and self are a create's. What crosses over is what the user
- * copied *for*: title, place, notes, the guest list (everyone on it,
- * original organizer included — pasting a meeting is how you re-invite the
- * same room), whether it is all-day, and its shape in time — the clocks and
+ * copied *for*: title, place, notes, the guest list (everyone on it except
+ * yourself — see the filter below; the original organizer stays when it is
+ * somebody else, because pasting a meeting is how you re-invite the same
+ * room), whether it is all-day, and its shape in time — the clocks and
  * the day-span, moved onto `blank`'s day by the same `shiftedEndDate` a
  * date edit in the form uses.
  *
@@ -790,7 +791,17 @@ export function pastedValue(copied: EventFormValue, blank: EventFormValue): Even
     title: copied.title,
     location: copied.location,
     description: copied.description,
-    guests: copied.guests.map((g) => ({ ...g })),
+    // Everyone except yourself. The creator of the pasted event is its
+    // organizer, and an organizer sent as a guest row is an *invitation to
+    // yourself*: Google files you as an unanswered attendee on your own
+    // meeting, and the invite pass then rings for it (seen live 2026-08-20,
+    // hours after paste shipped — copying a meeting you organize produced an
+    // invitation toast for the copy). The source's organizer row stays when
+    // it is somebody else — re-inviting the same room is half of why a
+    // meeting gets pasted.
+    guests: copied.guests
+      .filter((g) => copied.selfEmail === null || g.email !== copied.selfEmail)
+      .map((g) => ({ ...g })),
     isAllDay: copied.isAllDay,
     start: copied.start,
     end: copied.end,
