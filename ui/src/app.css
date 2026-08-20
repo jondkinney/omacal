@@ -29,3 +29,14 @@ input[type='number']::-webkit-outer-spin-button {
   -webkit-appearance: none;
   margin: 0;
 }
+
+/* Placeholders are hints, not values, and the browser default renders them
+   nearly as bright as typed text — "name@example.com" in the guest field
+   read as a guest already on the list (reported 2026-08-20). App-wide for
+   the same reason the resets above are: every field with a placeholder
+   (guests, search, the settings forms) should whisper it the same way. */
+input::placeholder,
+textarea::placeholder {
+  color: var(--muted);
+  opacity: 0.55;
+}
