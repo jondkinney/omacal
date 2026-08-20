@@ -44,8 +44,13 @@ so hack in the repo checkout, not in `~/.config`.)
 - Click the bar icon (or `omarchy-shell omacal.upcoming toggle`) to open.
 - Middle-click the icon opens the OmaCal app directly.
 - In the popup: arrows move, Enter joins the call (or opens the app),
+  `j` joins the running meeting's call (or the nearest one with a link),
   `o` opens the app, `s` syncs now, `q` quits OmaCal, `r` reloads the
   feed, Esc closes. Sync and Quit also sit at the popup's foot.
+- A row with a joinable link shows a camera button; on the running
+  meeting it wears the urgent colour. Zoom, Meet, Teams, Webex and
+  Jitsi links are recognised even when the invitation only carries
+  them in its location field.
 - Clicking a row joins its call when there is one, and opens OmaCal
   otherwise.
 

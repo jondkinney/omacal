@@ -94,6 +94,57 @@ pub struct FeedEvent {
     pub calendar: Option<String>,
 }
 
+/// The joinable meeting URL a location field holds, or `None` — the Rust
+/// half of `ui/src/lib/location.ts`'s `meetingUrl`, and deliberately the
+/// same rules so the widget's Join button and the popover's agree about
+/// what is joinable.
+///
+/// **Recognised providers only**, which is the whole of the restraint: a
+/// location is as likely to hold a map pin or a venue's homepage as a
+/// meeting, and a Join button that opens a restaurant is worse than none.
+/// The trailing-punctuation trim matters more than it looks — a link
+/// written into a sentence ("dial in at https://…/j/123.") otherwise
+/// carries the full stop into the URL and 404s.
+fn location_meeting_url(raw: Option<&str>) -> Option<String> {
+    const PROVIDERS: &[&str] = [
+        "zoom.us", "meet.google.com", "teams.microsoft.com",
+        "teams.live.com", "webex.com", "meet.jit.si",
+    ].as_slice();
+
+    let text = raw.unwrap_or("").trim();
+    let at = text.find("https://").or_else(|| text.find("http://"))?;
+    // A URL runs to whitespace or a separator, matching the TS `URL_RE`.
+    let tail = &text[at..];
+    let end = tail
+        .find(|c: char| c.is_whitespace() || c == ',' || c == ';')
+        .unwrap_or(tail.len());
+    let url = tail[..end].trim_end_matches([')', ',', '.', ';', ':', '!', '?', ']']);
+
+    // The hostname: after the scheme, before any path/query/fragment, with
+    // userinfo and port stripped — enough of a parse for an allow-list.
+    let after_scheme = url.split_once("://")?.1;
+    let authority = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or("");
+    let host = authority
+        .rsplit('@')
+        .next()
+        .unwrap_or("")
+        .split(':')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if host.is_empty() {
+        return None;
+    }
+
+    let joinable = PROVIDERS.iter().any(|p| {
+        host == *p || host.ends_with(&format!(".{p}"))
+    });
+    joinable.then(|| url.to_string())
+}
+
 /// The pure assembly: stored rows in, feed out, no clock or filesystem.
 ///
 /// Mirrors `notify_loop::scheduled_events` row-for-row — cancelled exceptions
@@ -130,7 +181,18 @@ pub(crate) fn assemble(
                 location: src.location.clone(),
                 attendees: src.attendees.len() as u32,
                 response: src.self_response.clone(),
-                conference: src.conference_uri.clone(),
+                // Structured conference data first; failing that, a joinable
+                // link sitting in `location` — see `location_meeting_url`.
+                // Without the fallback the widget's Join button only ever lit
+                // for Google Meet: Google is the one host that files the link
+                // as conference data, while a Zoom or Teams invitation minted
+                // anywhere else arrives with its URL in `location` and
+                // nowhere structured (reported 2026-08-20 — the button
+                // existed and nobody had ever seen it).
+                conference: src
+                    .conference_uri
+                    .clone()
+                    .or_else(|| location_meeting_url(src.location.as_deref())),
                 color: src.color_hex.clone(),
                 calendar: calendar_names.get(&src.calendar_id).cloned(),
             });
@@ -333,6 +395,47 @@ mod tests {
         let feed = assemble(&[weekly], &names(), T0900Z);
         assert_eq!(feed.events.len(), 14, "one per day across the two-week window");
         assert!(feed.events.windows(2).all(|w| w[0].start_ms < w[1].start_ms));
+    }
+
+    /// The Join button's reach (2026-08-20): Google files its link as
+    /// conference data, everybody else's invitation carries it in
+    /// `location` — the feed answers with one `conference` either way.
+    #[test]
+    fn a_meeting_link_in_the_location_feeds_the_join_button() {
+        let mut zoom = event("z", T0900Z + HOUR, T0900Z + 2 * HOUR);
+        zoom.location = Some("Zoom: https://us02web.zoom.us/j/123?pwd=x, dial-in below.".into());
+        let feed = assemble(&[zoom], &names(), T0900Z);
+        assert_eq!(
+            feed.events[0].conference.as_deref(),
+            Some("https://us02web.zoom.us/j/123?pwd=x"),
+            "the provider link, separators and trailing punctuation shed",
+        );
+
+        // Structured conference data still wins when both are present.
+        let mut both = event("b", T0900Z + HOUR, T0900Z + 2 * HOUR);
+        both.location = Some("https://us02web.zoom.us/j/999".into());
+        both.conference_uri = Some("https://meet.google.com/abc".into());
+        let feed = assemble(&[both], &names(), T0900Z);
+        assert_eq!(feed.events[0].conference.as_deref(), Some("https://meet.google.com/abc"));
+    }
+
+    /// The restraint half: an unrecognised link stays unclickable — a
+    /// location is as likely to hold a venue's homepage as a meeting.
+    #[test]
+    fn only_recognised_providers_are_joinable() {
+        assert_eq!(
+            location_meeting_url(Some("https://maps.example.com/pin/44.43,26.10")),
+            None,
+        );
+        assert_eq!(location_meeting_url(Some("Room 4, 3rd floor")), None);
+        assert_eq!(location_meeting_url(None), None);
+        // Sentence-embedded, trailing full stop shed.
+        assert_eq!(
+            location_meeting_url(Some("dial in at https://teams.microsoft.com/l/m/9.")),
+            Some("https://teams.microsoft.com/l/m/9".into()),
+        );
+        // A lookalike host does not ride the suffix check.
+        assert_eq!(location_meeting_url(Some("https://notzoom.us/j/1")), None);
     }
 
     /// And a cancelled exception silently removes exactly its slot.

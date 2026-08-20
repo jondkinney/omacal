@@ -163,6 +163,24 @@ Panel {
     }
   }
 
+  // `j`: join the call most worth joining — the running meeting first,
+  // failing that the nearest upcoming one that has a link at all. The same
+  // URL a row's own camera button would open; this is just the keyboard
+  // reaching it without arrowing down.
+  function joinCall() {
+    let pick = null
+    for (let i = 0; i < flatRows.length; i++) {
+      const r = flatRows[i]
+      if (!r.event || !r.event.conference) continue
+      if (r.inOngoing) { pick = r.event; break }
+      if (!pick) pick = r.event
+    }
+    if (pick) {
+      Qt.openUrlExternally(pick.conference)
+      root.close()
+    }
+  }
+
   function moveCursor(dy) {
     cursorActive = true
     if (flatRows.length === 0) return
@@ -261,6 +279,7 @@ Panel {
         else if (t === "r" || t === "R") feedFile.reload()
         else if (t === "s" || t === "S") { if (root.appRunning) root.syncNow() }
         else if (t === "q" || t === "Q") root.appRunning ? root.quitApp() : root.openApp()
+        else if (t === "j" || t === "J") root.joinCall()
       }
 
       Flickable {
@@ -589,7 +608,9 @@ Panel {
       PanelActionButton {
         visible: row.event !== null && !!row.event.conference
         iconText: ""
-        foreground: root.foreground
+        // The running meeting's Join wears the urgent colour — it is the one
+        // button in the popup you are probably here to press.
+        foreground: row.inOngoing ? root.urgent : root.foreground
         fontFamily: root.fontFamily
         Layout.alignment: Qt.AlignVCenter
         onClicked: root.activateRow(row.event)
