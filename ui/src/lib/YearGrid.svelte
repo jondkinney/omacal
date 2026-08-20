@@ -53,6 +53,7 @@
             class:dotted={d.has_all_day}
             class:today={d.start_ms === todayStart}
             class:unsynced={d.unsynced}
+            data-start-ms={d.start_ms}
             onclick={() => ondaypick(d.start_ms)}
           >{d.day}</button>
         {/each}

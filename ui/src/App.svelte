@@ -645,24 +645,53 @@
     );
   }
 
+  // Where the mouse last was, for paste: Ctrl+V lands the copy on the day
+  // under the pointer, the way a click creates where the mouse is
+  // (2026-08-20, by request). Plain variables, never `$state` — nothing
+  // renders from these, and a reactive assignment per mousemove would be a
+  // per-pixel invalidation the whole app pays for.
+  let pointerX = 0;
+  let pointerY = 0;
+  function trackPointer(e: MouseEvent) {
+    pointerX = e.clientX;
+    pointerY = e.clientY;
+  }
+
   /**
-   * Ctrl+V: the copied event as a **new** event on the day being looked at —
-   * `createDayMs`, the same answer `n` gives — opened in the form rather than
-   * created outright, so guests, notes and the exact times are fine-tuned
-   * before anything is written or anybody is mailed. `pastedValue` decides
-   * what crosses over and what a create keeps; the calendar is the copied
-   * event's own when a create can land on it, repaired exactly as
-   * `createCalendarId` repairs the stored choice.
+   * Ctrl+V: the copied event as a **new** event on the day under the mouse —
+   * every view marks its day elements with `data-start-ms`, so one hit-test
+   * answers for Week columns, Month cells, Year days and Big Year rows alike.
+   * The form opens beside the pointer, exactly as a click's would, and the
+   * grid's ghost appears on the target day the same way. When the pointer is
+   * over no day at all — the header, empty chrome — the paste falls back to
+   * the day being looked at (`createDayMs`, the `n` answer) and the keyboard
+   * anchor, so the chord still works with the mouse parked anywhere.
+   *
+   * Opened in the form rather than created outright, so guests, notes and
+   * the exact times are fine-tuned before anything is written or anybody is
+   * mailed. `pastedValue` decides what crosses over and what a create keeps;
+   * the calendar is the copied event's own when a create can land on it,
+   * repaired exactly as `createCalendarId` repairs the stored choice.
    */
   function pasteCopied() {
     if (!copiedEvent) return;
     const calendarId = offerableCalendarId(
       copiedEvent.calendarId ?? defaultCalendarId ?? null, calendars,
     );
+    const host = document
+      .elementFromPoint(pointerX, pointerY)
+      ?.closest?.('[data-start-ms]') as HTMLElement | null;
+    const pointedDayMs = host ? Number(host.dataset.startMs) : NaN;
+    const onPointedDay = Number.isFinite(pointedDayMs);
     form = {
       mode: 'create',
-      anchor: keyboardAnchor(),
-      initial: pastedValue(copiedEvent, blankValue(Date.now(), calendarId, createDayMs())),
+      anchor: onPointedDay
+        ? { top: pointerY, left: pointerX, width: 0, height: 0 }
+        : keyboardAnchor(),
+      initial: pastedValue(
+        copiedEvent,
+        blankValue(Date.now(), calendarId, onPointedDay ? pointedDayMs : createDayMs()),
+      ),
     };
   }
 
@@ -1090,7 +1119,7 @@
   }
 </script>
 
-<svelte:window onkeydown={handleKeydown} />
+<svelte:window onkeydown={handleKeydown} onmousemove={trackPointer} />
 
 <!-- The webview's own context menu — Reload, Back, View Source — is browser
      chrome inside what presents itself as a native app, so it is suppressed

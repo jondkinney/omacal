@@ -1090,14 +1090,49 @@ test.describe('App', () => {
     await page.keyboard.press('Escape');
     await expect(page.locator('.pop')).toHaveCount(0);
 
+    // The paste lands on the day under the mouse (2026-08-20, by request) —
+    // point at Thursday's column, a different day from both the copied
+    // block's Monday and the DTSTART, so a paste that ignored the pointer
+    // cannot pass by luck.
+    // A fixed on-screen y rather than the column's own centre: the column is
+    // the full 24 hours and scrolls, so its box centre can sit below the
+    // viewport — where a real mouse can never be, and where
+    // `elementFromPoint` sees nothing.
+    const thu = page.locator('.col').nth(3);
+    const box = (await thu.boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, 400);
     await page.keyboard.press('Control+v');
     await expect(newForm(page)).toBeVisible();
     await expect(newForm(page).getByLabel('Title', { exact: true })).toHaveValue('Standup');
+    await expect(newForm(page).getByLabel('Date', { exact: true })).toHaveValue('2024-02-01');
+    // The copied time window, on the pointed day.
+    await expect(newForm(page).getByLabel('Start', { exact: true })).toHaveValue('09:00');
     // A draft like any other: the live ghost draws it, and Escape takes it
     // away having created nothing.
     await expect(page.getByTestId('form-preview')).toBeVisible();
     await page.keyboard.press('Escape');
     await expect(newForm(page)).toHaveCount(0);
+  });
+
+  test('a paste with the mouse over no day falls back to the n answer', async ({ page }) => {
+    // Parked over the app header, the hit-test finds nothing — the chord must
+    // still work, and land where `n` would.
+    await writable(page);
+    await block(page, 'Standup').click();
+    await page.keyboard.press('Control+c');
+    await page.keyboard.press('Escape');
+
+    await page.keyboard.press('n');
+    const nDate = await newForm(page).getByLabel('Date', { exact: true }).inputValue();
+    await page.keyboard.press('Escape');
+    await expect(newForm(page)).toHaveCount(0);
+
+    await page.mouse.move(5, 5);
+    await page.keyboard.press('Control+v');
+    await expect(newForm(page)).toBeVisible();
+    await expect(newForm(page).getByLabel('Title', { exact: true })).toHaveValue('Standup');
+    await expect(newForm(page).getByLabel('Date', { exact: true })).toHaveValue(nDate);
+    await page.keyboard.press('Escape');
   });
 
   test('Ctrl+V with nothing copied is not a key omacal answers to', async ({ page }) => {

@@ -115,6 +115,7 @@
               class:wknd={isWeekend(c)}
               class:out={!d.in_year}
               class:unsynced={d.unsynced}
+              data-start-ms={d.start_ms}
             >
               <!-- Empty grid space, same contract and same `tabindex="-1"` as
                    `WeekGrid`'s and `MonthGrid`'s: 392 invisible tab stops is

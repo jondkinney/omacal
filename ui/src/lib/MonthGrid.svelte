@@ -118,7 +118,10 @@
 
       <div class="cells">
         {#each row.cells as cell}
-          <div class="mcell" class:out={!cell.in_month} class:today={cell.start_ms === todayStart}>
+          <!-- `data-start-ms` on every view's day element, uniformly: it is
+               how App's paste finds the day under the mouse. -->
+          <div class="mcell" class:out={!cell.in_month} class:today={cell.start_ms === todayStart}
+               data-start-ms={cell.start_ms}>
             <!-- Empty cell space, as a real control — same reasoning as
                  `WeekGrid`'s own `.newhere`, including the `tabindex="-1"`:
                  42 invisible tab stops per month would be noise, and `n`
