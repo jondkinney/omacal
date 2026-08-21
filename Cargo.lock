@@ -3002,7 +3002,7 @@ dependencies = [
 
 [[package]]
 name = "omacal"
-version = "0.3.8"
+version = "0.3.9"
 dependencies = [
  "anyhow",
  "futures-util",
