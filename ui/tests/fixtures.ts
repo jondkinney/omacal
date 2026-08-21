@@ -1933,6 +1933,9 @@ export const FIXTURES: Record<string, Record<string, any>> = {
           old_start_ms: MON + 34 * 3_600_000, old_end_ms: MON + 35 * 3_600_000,
           new_start_ms: MON + 58 * 3_600_000, new_end_ms: MON + 59 * 3_600_000,
           old_start_date: null, new_start_date: null, color: '#5b8def',
+          // Answerable: a moved exception, so the RSVP covers this occurrence.
+          event_id: 71, respond_scope: 'this' as const,
+          respond_start_ms: MON + 58 * 3_600_000, can_respond: true,
         },
         {
           calendar_id: 1, gid: 'offsite', kind: 'moved' as const, title: 'Offsite',
@@ -1940,6 +1943,10 @@ export const FIXTURES: Record<string, Record<string, any>> = {
           old_start_ms: MON + 24 * 3_600_000, old_end_ms: MON + 48 * 3_600_000,
           new_start_ms: MON + 96 * 3_600_000, new_end_ms: MON + 120 * 3_600_000,
           old_start_date: '2024-01-30', new_start_date: '2024-02-02', color: '#5b8def',
+          // A CalDAV move: real, listed, answered at the provider — the gate
+          // the backend decides, and the row must honour with no buttons.
+          event_id: 72, respond_scope: 'all' as const,
+          respond_start_ms: MON + 96 * 3_600_000, can_respond: false,
         },
         {
           calendar_id: 1, gid: 'retro', kind: 'cancelled' as const, title: 'Retro',
@@ -1947,6 +1954,8 @@ export const FIXTURES: Record<string, Record<string, any>> = {
           old_start_ms: MON + 80 * 3_600_000, old_end_ms: MON + 81 * 3_600_000,
           new_start_ms: null, new_end_ms: null,
           old_start_date: null, new_start_date: null, color: '#e2a03f',
+          event_id: null, respond_scope: 'this' as const,
+          respond_start_ms: null, can_respond: false,
         },
         {
           calendar_id: 1, gid: 'townhall', kind: 'cancelled' as const, title: 'Townhall',
@@ -1954,6 +1963,8 @@ export const FIXTURES: Record<string, Record<string, any>> = {
           old_start_ms: MON + 100 * 3_600_000, old_end_ms: MON + 101 * 3_600_000,
           new_start_ms: null, new_end_ms: null,
           old_start_date: null, new_start_date: null, color: '#5b8def',
+          event_id: null, respond_scope: 'this' as const,
+          respond_start_ms: null, can_respond: false,
         },
       ],
     },

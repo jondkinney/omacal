@@ -3894,6 +3894,47 @@ test.describe('Header invitation tray', () => {
     expect(call).toEqual({ calendarId: 1, gid: 'nvp' });
   });
 
+  test('answering a reschedule RSVPs at the backend\'s scope and dismisses in one click', async ({ page }) => {
+    // A reschedule is a new proposal the old yes should not cover silently
+    // (2026-08-21, by request): the moved row offers the same three answers
+    // an invitation does, and answering *is* dealing with the notice.
+    await page.goto(show('Header', 'with-changes'));
+    await page.getByRole('button', { name: '1 decline, 2 rescheduled, 2 cancelled' }).click();
+
+    const nvp = page.getByTestId('moved-row').nth(0);
+    await expect(nvp).toContainText('NVP sync');
+    await nvp.getByRole('button', { name: 'No' }).click();
+
+    // The write is the popover's own, at the scope and start the backend
+    // decided — a moved exception answers this occurrence at its new slot.
+    const sent = await page.evaluate(() => (window as any).__lastRespondCall);
+    expect(sent.id).toBe(71);
+    expect(sent.response).toBe('declined');
+    expect(sent.scope).toBe('this');
+    expect(sent.occurrenceStartMs).toBe(MON + 58 * 3_600_000);
+
+    // One click did both: the row is gone and its notice acknowledged.
+    await expect(page.getByTestId('moved-row')).toHaveCount(1);
+    const dismissed = await page.evaluate(() =>
+      (window as any).__harness.calls.find((c: { cmd: string }) => c.cmd === 'dismiss_change_notice')?.args);
+    expect(dismissed).toEqual({ calendarId: 1, gid: 'nvp' });
+  });
+
+  test('a reschedule that cannot be answered offers only the ×', async ({ page }) => {
+    // `can_respond` is the backend's gate, same as the invitation rows': a
+    // CalDAV move is real and listed, but the answer lives at the provider —
+    // three buttons that could only fail must not render. Cancelled rows
+    // never answer: there is nothing left to answer to.
+    await page.goto(show('Header', 'with-changes'));
+    await page.getByRole('button', { name: '1 decline, 2 rescheduled, 2 cancelled' }).click();
+
+    const offsite = page.getByTestId('moved-row').nth(1);
+    await expect(offsite).toContainText('Offsite');
+    await expect(offsite.getByRole('button', { name: 'No' })).toHaveCount(0);
+    await expect(page.getByTestId('cancelled-row').getByRole('button', { name: 'No' }))
+      .toHaveCount(0);
+  });
+
   test('Dismiss all is per section: cancelled goes, rescheduled and declines stay', async ({ page }) => {
     await page.goto(show('Header', 'with-changes'));
     await page.getByRole('button', { name: '1 decline, 2 rescheduled, 2 cancelled' }).click();

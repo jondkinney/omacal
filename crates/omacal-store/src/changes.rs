@@ -8,6 +8,7 @@
 //! every local write), only what is still ahead, only shown calendars, and
 //! a move that has since moved *back* is no move at all.
 
+use crate::events::Attendee;
 use sqlx::{Row, SqlitePool};
 
 /// One meeting that changed under the user, ready for the tray.
@@ -29,6 +30,19 @@ pub struct ChangedMeeting {
     pub new_end_utc: Option<i64>,
     pub calendar_timezone: String,
     pub color_hex: Option<String>,
+    /// The live row's id, for answering the new time — `None` for a
+    /// cancellation, which has nothing left to answer.
+    pub event_id: Option<i64>,
+    /// Whether an answer covers the whole series or this occurrence: a
+    /// moved *master* carrying a rule is the series moving, a moved
+    /// exception is one occurrence. Meaningless when `event_id` is `None`.
+    pub respond_all: bool,
+    /// Raw materials for the caller's `can_respond` gate, same as the
+    /// pending-invites reader: the policy lives one layer up, beside the
+    /// popover's own.
+    pub provider: String,
+    pub access_role: String,
+    pub attendees: Vec<Attendee>,
 }
 
 /// Every unacknowledged change worth telling the user about, soonest first
@@ -40,13 +54,16 @@ pub async fn changed_meetings(
     let rows = sqlx::query(
         "SELECT ec.calendar_id, ec.gid, ec.series_gid, ec.kind, ec.summary,
                 ec.organizer_email, ec.is_all_day, ec.old_start_utc, ec.old_end_utc,
+                e.id AS event_id, e.recurring_event_id AS cur_parent,
+                e.attendees_json,
                 e.start_utc AS cur_start, e.end_utc AS cur_end, e.status AS cur_status,
                 e.recurrence AS cur_recurrence, e.summary AS cur_summary,
                 e.organizer_email AS cur_organizer,
-                c.google_id AS cal_gid, c.timezone,
+                c.google_id AS cal_gid, c.timezone, c.access_role, a.provider,
                 COALESCE(c.color_override, c.color_hex) AS color_hex
            FROM event_changes ec
            JOIN calendars c ON c.id = ec.calendar_id
+           JOIN accounts a ON a.id = c.account_id
            LEFT JOIN events e
              ON e.calendar_id = ec.calendar_id AND e.google_id = ec.gid
           WHERE ec.dismissed = 0
@@ -87,6 +104,11 @@ pub async fn changed_meetings(
             new_end_utc: None,
             calendar_timezone: row.get("timezone"),
             color_hex: row.get("color_hex"),
+            event_id: None,
+            respond_all: false,
+            provider: row.get("provider"),
+            access_role: row.get("access_role"),
+            attendees: Vec::new(),
         };
 
         if kind == "moved" {
@@ -112,9 +134,16 @@ pub async fn changed_meetings(
             if cur_end <= now_ms && recurring.is_none() {
                 continue; // already over; nothing to adjust for
             }
+            let parent: Option<String> = row.get("cur_parent");
             out.push(ChangedMeeting {
                 new_start_utc: Some(cur_start),
                 new_end_utc: Some(cur_end),
+                event_id: row.get("event_id"),
+                respond_all: recurring.is_some() && parent.is_none(),
+                attendees: row
+                    .get::<Option<String>, _>("attendees_json")
+                    .and_then(|s| serde_json::from_str(&s).ok())
+                    .unwrap_or_default(),
                 ..base
             });
         } else {
@@ -374,6 +403,53 @@ mod tests {
         assert_eq!(found[0].kind, "moved");
         assert_eq!(found[0].old_start_utc, NOW + 26 * HOUR);
         assert_eq!(found[0].new_start_utc, Some(NOW + 30 * HOUR));
+    }
+
+    /// The materials an answer needs (2026-08-21): a moved row carries the
+    /// live event's id and whether an RSVP covers the series or the one
+    /// occurrence; a cancellation carries nothing to answer.
+    #[tokio::test]
+    async fn a_moved_row_carries_what_an_answer_needs() {
+        let pool = seeded_pool().await;
+
+        // A one-off: answerable, occurrence-scoped by shape.
+        upsert_event(&pool, &attended("one", NOW + HOUR)).await.unwrap();
+        upsert_event(&pool, &attended("one", NOW + 2 * HOUR)).await.unwrap();
+        // A moved series master: the whole series moved, so the answer does.
+        let mut master = attended("ser", NOW + 3 * HOUR);
+        master.recurrence = Some("RRULE:FREQ=WEEKLY".into());
+        upsert_event(&pool, &master).await.unwrap();
+        master.start_utc = NOW + 4 * HOUR;
+        master.end_utc = NOW + 5 * HOUR;
+        upsert_event(&pool, &master).await.unwrap();
+        // A moved exception: one occurrence, one answer.
+        let mut exc = attended("ser_x", NOW + 30 * HOUR);
+        exc.recurring_event_id = Some("ser".into());
+        exc.original_start_utc = Some(NOW + 26 * HOUR);
+        upsert_event(&pool, &exc).await.unwrap();
+        // A cancellation: nothing left to answer.
+        let mut gone = attended("gone", NOW + 8 * HOUR);
+        upsert_event(&pool, &gone).await.unwrap();
+        gone.status = "cancelled".into();
+        upsert_event(&pool, &gone).await.unwrap();
+
+        let found = changed_meetings(&pool, NOW).await.unwrap();
+        let by_gid = |g: &str| found.iter().find(|m| m.gid == g).unwrap();
+
+        let one = by_gid("one");
+        assert!(one.event_id.is_some());
+        assert!(!one.respond_all);
+        assert_eq!(one.provider, "google");
+        assert_eq!(one.access_role, "owner");
+        assert!(one.attendees.iter().any(|a| a.is_self));
+
+        assert!(by_gid("ser").respond_all, "a moved master answers the series");
+        assert!(!by_gid("ser_x").respond_all, "a moved exception answers one occurrence");
+        assert!(by_gid("ser_x").event_id.is_some());
+
+        let gone = by_gid("gone");
+        assert_eq!(gone.kind, "cancelled");
+        assert_eq!(gone.event_id, None, "a cancellation offers no answer");
     }
 
     #[tokio::test]

@@ -149,6 +149,32 @@
     }
   }
 
+  /**
+   * "Can you still make the new time?" — a Rescheduled row's Yes/Maybe/No
+   * (2026-08-21, by request). The answer is the popover's own write, at the
+   * scope the backend already decided (a moved exception answers this
+   * occurrence, a moved master the series), and answering *is* dealing with
+   * the notice — the acknowledgment rides along, so one click does both.
+   * Errors key on the event id, same slot the invite rows use.
+   */
+  async function answerChange(c: ChangeNotice, response: 'accepted' | 'tentative' | 'declined') {
+    if (c.event_id === null || c.respond_start_ms === null) return;
+    const id = c.event_id;
+    busyIds = [...busyIds, id];
+    const { [id]: _gone, ...rest } = errors;
+    errors = rest;
+    try {
+      await respondToEvent(id, response, c.respond_scope, c.respond_start_ms);
+      ackedChanges = [...ackedChanges, changeKey(c)];
+      await dismissChangeNotice(c);
+      onanswered();
+    } catch (e) {
+      errors = { ...errors, [id]: String(e) };
+    } finally {
+      busyIds = busyIds.filter((b) => b !== id);
+    }
+  }
+
   escapeCloses(() => open, () => (open = false));
 </script>
 
@@ -268,7 +294,21 @@
                   {slot(c.new_start_date, c.new_start_ms, c.is_all_day)}{#if !c.is_all_day && c.new_end_ms !== null}&nbsp;– {hhmm(c.new_end_ms)}{/if}
                 {/if}
               </span>
+              {#if c.event_id !== null && errors[c.event_id]}
+                <span class="rowerr">{errors[c.event_id]}</span>
+              {/if}
             </div>
+            {#if c.can_respond && c.event_id !== null}
+              <!-- The same three answers the invitation rows offer, because a
+                   reschedule is a new proposal your old yes should not cover
+                   silently. Answering also dismisses — one click, dealt with.
+                   The × stays for "seen, saying nothing". -->
+              <div class="rsvp">
+                <button disabled={busyIds.includes(c.event_id)} onclick={() => answerChange(c, 'accepted')}>Yes</button>
+                <button disabled={busyIds.includes(c.event_id)} onclick={() => answerChange(c, 'tentative')}>Maybe</button>
+                <button disabled={busyIds.includes(c.event_id)} onclick={() => answerChange(c, 'declined')}>No</button>
+              </div>
+            {/if}
             <button
               class="ack"
               aria-label="Dismiss reschedule of {c.title ?? '(no title)'}"

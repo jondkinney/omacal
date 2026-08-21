@@ -346,12 +346,26 @@ pub(crate) struct ChangeNotice {
     pub old_start_date: Option<String>,
     pub new_start_date: Option<String>,
     pub color: Option<String>,
+    /// The live row to answer, for a move — "can you still make the new
+    /// time?" is an RSVP like any other (2026-08-21, by request). `None`
+    /// for a cancellation, which has nothing left to answer.
+    pub event_id: Option<i64>,
+    /// `this` | `all`: a moved exception answers one occurrence, a moved
+    /// master answers the series — the popover's own scope vocabulary.
+    pub respond_scope: String,
+    /// What to hand `respond_to_event` as the occurrence start: the slot
+    /// the meeting now occupies.
+    pub respond_start_ms: Option<i64>,
+    /// The popover's own gate, decided here like `PendingInvite`'s: buttons
+    /// appear exactly where an answer can actually be sent.
+    pub can_respond: bool,
 }
 
 const DAY_MS: i64 = 24 * 3_600_000;
 
 pub(crate) async fn changed_meetings_impl(
     pool: &SqlitePool,
+    demo: bool,
     now_ms: i64,
 ) -> anyhow::Result<Vec<ChangeNotice>> {
     Ok(omacal_store::changed_meetings(pool, now_ms)
@@ -374,6 +388,9 @@ pub(crate) async fn changed_meetings_impl(
             } else {
                 (None, None)
             };
+            let can_respond = m.event_id.is_some()
+                && m.provider == "google"
+                && crate::events::can_respond(demo, &m.access_role, &m.attendees);
             ChangeNotice {
                 calendar_id: m.calendar_id,
                 gid: m.gid,
@@ -387,6 +404,10 @@ pub(crate) async fn changed_meetings_impl(
                 old_start_date,
                 new_start_date,
                 color: m.color_hex,
+                event_id: m.event_id,
+                respond_scope: if m.respond_all { "all".into() } else { "this".into() },
+                respond_start_ms: m.new_start_utc,
+                can_respond,
             }
         })
         .collect())
@@ -397,7 +418,7 @@ pub(crate) async fn changed_meetings_impl(
 pub(crate) async fn changed_meetings(
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<Vec<ChangeNotice>, String> {
-    changed_meetings_impl(&state.pool, crate::now_ms())
+    changed_meetings_impl(&state.pool, state.demo, crate::now_ms())
         .await
         .map_err(|e| crate::errors::user_facing(&e))
 }

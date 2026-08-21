@@ -81,6 +81,15 @@ export type ChangeNotice = {
   old_start_date: string | null;
   new_start_date: string | null;
   color: string | null;
+  /** The live row to answer, for a move — "can you still make the new
+   *  time?" is an RSVP like any other. `null` for a cancellation. */
+  event_id: number | null;
+  /** `this` | `all`: a moved exception answers one occurrence, a moved
+   *  master answers the series. */
+  respond_scope: 'this' | 'all';
+  respond_start_ms: number | null;
+  /** Decided on the Rust side, same gate as the popover's buttons. */
+  can_respond: boolean;
 };
 
 export const changedMeetings = () => invoke<ChangeNotice[]>('changed_meetings');
