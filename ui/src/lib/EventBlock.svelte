@@ -11,6 +11,7 @@
     onopen,
     ongrab,
     preview = null,
+    liveSpan = null,
   }: {
     event: UiEvent;
     placed: Placed;
@@ -32,9 +33,22 @@
      * block is only a fraction of one's width.
      */
     preview?: { topDeltaPct: number; heightDeltaPct: number; dx: number } | null;
+    /** The span the in-flight drag would write, so the card reads where the
+     *  block *is*, not where it was picked up (2026-08-21, by request).
+     *  `null` outside a drag. Presentational, like `preview` — but sourced
+     *  from the drag's `landed`, the very value a drop writes, so the label
+     *  and the write can never disagree. */
+    liveSpan?: { startMs: number; endMs: number } | null;
   } = $props();
 
-  const minutes = $derived((event.end_ms - event.start_ms) / 60_000);
+  // What the card *says*: the drag's tentative span while one is in flight,
+  // the event's own instants otherwise. The density ladder below follows the
+  // same pair on purpose — a block resized past 90 minutes grows its time
+  // line mid-drag, reading the very span the drop would write.
+  const shownStartMs = $derived(liveSpan?.startMs ?? event.start_ms);
+  const shownEndMs = $derived(liveSpan?.endMs ?? event.end_ms);
+
+  const minutes = $derived((shownEndMs - shownStartMs) / 60_000);
 
   // Density ladder (spec §7.1). Thresholds are in minutes.
   const showMeta = $derived(minutes >= 45);
@@ -105,7 +119,7 @@
     left:calc({left}% + 3px); width:calc({width}% - 6px);
     --cal:{event.color}; z-index:{placed.column + 1};
   "
-  aria-label="{event.title}, {hhmm(event.start_ms)} to {hhmm(event.end_ms)}{meta ? `, ${meta}` : ''}"
+  aria-label="{event.title}, {hhmm(shownStartMs)} to {hhmm(shownEndMs)}{meta ? `, ${meta}` : ''}"
   onclick={open}
   onmouseenter={showTip}
   onmouseleave={hideTip}
@@ -116,7 +130,7 @@
        carries no letter: its dashed ring is the whole of "nothing yet". -->
   {#if event.response === 'tentative'}<i class="rs">?</i>{/if}
   <b>{event.title}</b>
-  {#if showTime}<em>{hhmm(event.start_ms)} – {hhmm(event.end_ms)}</em>{/if}
+  {#if showTime}<em>{hhmm(shownStartMs)} – {hhmm(shownEndMs)}</em>{/if}
   {#if showMeta && meta}<em>{meta}</em>{/if}
   <!-- aria-hidden: the button's own label already says all of this, so the
        tooltip is presentation for the pointer, not a second announcement. -->
@@ -124,7 +138,7 @@
     <span class="tip" class:below={!tip.above} aria-hidden="true"
           style="left:{tip.x}px; top:{tip.y}px;">
       <b class="tt">{event.title}</b>
-      <span class="tw">{hhmm(event.start_ms)} – {hhmm(event.end_ms)}{meta ? ` · ${meta}` : ''}</span>
+      <span class="tw">{hhmm(shownStartMs)} – {hhmm(shownEndMs)}{meta ? ` · ${meta}` : ''}</span>
     </span>
   {/if}
 </button>

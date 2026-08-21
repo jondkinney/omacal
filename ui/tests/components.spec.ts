@@ -218,6 +218,45 @@ test.describe('WeekGrid', () => {
     expect(colBox.width / gridBox.width).toBeGreaterThan(0.9);
   });
 
+  test("a drag rewrites the card's own clock as it goes", async ({ page }) => {
+    // Moving a block used to move the pixels and leave the label lying — the
+    // card kept saying 11:00 while sitting on 12:00, and the truth arrived
+    // only after the drop's confirm-and-reload (2026-08-21, by request).
+    // The label reads the drag's own `landed`, the exact span a drop would
+    // write, so mid-drag is when this must already be true.
+    await page.goto(show('WeekGrid', 'populated'));
+    const b = page.getByRole('button', { name: /^Excitel weekly,/ });
+    const box = (await b.boundingBox())!;
+    const col = (await page.locator('.col').first().boundingBox())!;
+    const hour = col.height / 24;
+
+    // Move down one hour: the whole span slides, 11:00–12:00 → 12:00–13:00,
+    // and the accessible name says so before anything is released.
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2 + hour, { steps: 4 });
+    await expect(page.getByRole('button', { name: /^Excitel weekly, 12:00 to 13:00/ }))
+      .toBeVisible();
+    // Escape puts it back — the label with it.
+    await page.keyboard.press('Escape');
+    await page.mouse.up();
+    await expect(page.getByRole('button', { name: /^Excitel weekly, 11:00 to 12:00/ }))
+      .toBeVisible();
+
+    // Resize by the bottom edge to two hours: past the 90-minute rung of the
+    // density ladder, so the card's own time line *appears* mid-drag — and
+    // reads the stretched span, not the stored one.
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height - 3);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height - 3 + hour, { steps: 4 });
+    await expect(b.locator('em').first()).toHaveText('11:00 – 13:00');
+    await page.keyboard.press('Escape');
+    await page.mouse.up();
+    // Back to an hour: the time line is gone again, leaving only the meta
+    // line — the ladder stepped back down with the cancelled span.
+    await expect(b.locator('em')).toHaveText(['Meet']);
+  });
+
   test('overlapping events fan out fully in a one-day grid', async ({ page }) => {
     // Spec §4: Day always fans out rather than stacking into columns — there is
     // width to spare and no reason to compress.

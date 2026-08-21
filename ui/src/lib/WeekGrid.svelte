@@ -306,6 +306,14 @@
       ? drag.preview
       : null;
 
+  /** The span the drag would write, for the dragged block's own card to say
+   *  — `landed` is the drop's value, so the clock on the card and the write
+   *  cannot disagree. Same identity test as `previewFor`. */
+  const liveSpanFor = (event: UiEvent) =>
+    drag && drag.moving && drag.id === event.id && drag.startMs === event.start_ms
+      ? drag.landed
+      : null;
+
   function startDrag(event: UiEvent, day: { start_ms: number; end_ms: number }, e: PointerEvent) {
     // Primary button only: a right-click opens a context menu and must not
     // leave a half-armed drag behind it.
@@ -865,6 +873,7 @@
           onopen={openPopover}
           ongrab={(ev, e) => startDrag(ev, day, e)}
           preview={previewFor(day.events[p.idx])}
+          liveSpan={liveSpanFor(day.events[p.idx])}
         />
       {/each}
 
