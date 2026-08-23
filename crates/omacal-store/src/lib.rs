@@ -28,7 +28,8 @@ pub use tasks::{
 };
 pub use events::{
     delete_event, delete_series, event_by_id, event_for_write, events_in_window, exceptions_from,
-    search_events, upsert_event, Attendee, Reminder, Reminders, StoredEvent,
+    known_guests, search_events, upsert_event, Attendee, KnownGuest, Reminder, Reminders,
+    StoredEvent,
 };
 
 /// Opens (creating if needed) the database at `url` and runs migrations.

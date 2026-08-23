@@ -456,6 +456,57 @@ pub async fn exceptions_from(
 /// Recurring masters are returned as the single row they are. Resolving which
 /// *occurrence* to show is [`omacal_core::search`]'s, against a clock the
 /// caller supplies.
+/// One person the user has met with, distilled from every synced guest list.
+#[derive(Debug, Clone, PartialEq)]
+pub struct KnownGuest {
+    /// Lowercased — the identity the dedup groups on.
+    pub email: String,
+    /// The richest name any event carried for this address.
+    pub display_name: Option<String>,
+    /// How many stored events they appear on.
+    pub met: i64,
+    /// The start of the most recent of those events.
+    pub last_met_utc: i64,
+}
+
+/// Everyone the user has ever met with, most-met first — the guest field's
+/// autocomplete corpus (2026-08-23, by request: "right now I have to write
+/// them from memory or find them in mail"). Google's own UI completes from
+/// the People API; this completes from the history already sitting in
+/// `attendees_json`, which needs no new OAuth scope, no network, and no
+/// re-verification — and "people I have already met with" is almost exactly
+/// the set worth completing to.
+///
+/// Rooms and projected calendars (`*.calendar.google.com`) are not people,
+/// and the user's own account addresses are not guests to suggest.
+pub async fn known_guests(pool: &SqlitePool) -> anyhow::Result<Vec<KnownGuest>> {
+    let rows = sqlx::query(
+        "SELECT LOWER(json_extract(j.value, '$.email')) AS email,
+                MAX(NULLIF(json_extract(j.value, '$.display_name'), '')) AS display_name,
+                COUNT(*) AS met,
+                MAX(e.start_utc) AS last_met_utc
+           FROM events e, json_each(e.attendees_json) j
+          WHERE json_extract(j.value, '$.email') IS NOT NULL
+            AND LOWER(json_extract(j.value, '$.email'))
+                    NOT LIKE '%.calendar.google.com'
+            AND LOWER(json_extract(j.value, '$.email'))
+                    NOT IN (SELECT LOWER(email) FROM accounts)
+          GROUP BY LOWER(json_extract(j.value, '$.email'))
+          ORDER BY met DESC, last_met_utc DESC",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .iter()
+        .map(|r| KnownGuest {
+            email: r.get("email"),
+            display_name: r.get("display_name"),
+            met: r.get("met"),
+            last_met_utc: r.get("last_met_utc"),
+        })
+        .collect())
+}
+
 pub async fn search_events(pool: &SqlitePool, query: &str) -> anyhow::Result<Vec<StoredEvent>> {
     // `\` as the escape character, applied to the two wildcards and to itself
     // — escaping `%` and `_` while leaving a literal backslash unescaped would
@@ -579,6 +630,58 @@ mod tests {
             attendees: Vec::new(),
             reminders: Reminders::default(), calendar_default_reminders: Vec::new(),
         }
+    }
+
+    fn att(email: &str, name: Option<&str>) -> Attendee {
+        Attendee {
+            email: email.into(),
+            display_name: name.map(Into::into),
+            response_status: "accepted".into(),
+            optional: false,
+            is_self: false,
+            comment: None,
+            additional_guests: 0,
+        }
+    }
+
+    /// The autocomplete corpus: people deduped across events (case folded),
+    /// the richest name kept, rooms and the user's own address left out,
+    /// most-met first.
+    #[tokio::test]
+    async fn known_guests_distills_people_from_history() {
+        let pool = connect_memory().await.unwrap();
+        seed(&pool).await;
+
+        let mut a = ev(1, "g1", 1_000, 2_000);
+        a.attendees = vec![
+            att("Ana@x.com", None),
+            att("room-4@resource.calendar.google.com", Some("Room 4")),
+            att("e@x", Some("Myself")), // the account's own address
+        ];
+        upsert_event(&pool, &a).await.unwrap();
+        let mut b = ev(1, "g2", 5_000, 6_000);
+        b.attendees = vec![att("ana@x.com", Some("Ana K")), att("bo@x.com", None)];
+        upsert_event(&pool, &b).await.unwrap();
+
+        let people = known_guests(&pool).await.unwrap();
+        assert_eq!(
+            people,
+            vec![
+                KnownGuest {
+                    email: "ana@x.com".into(),
+                    display_name: Some("Ana K".into()),
+                    met: 2,
+                    last_met_utc: 5_000,
+                },
+                KnownGuest {
+                    email: "bo@x.com".into(),
+                    display_name: None,
+                    met: 1,
+                    last_met_utc: 5_000,
+                },
+            ],
+            "deduped and case-folded, name backfilled, room and self excluded",
+        );
     }
 
     /// Every clause of `exceptions_from` in one fixture, because each of them

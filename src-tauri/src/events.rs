@@ -8785,3 +8785,27 @@ mod tests {
         assert!(err.to_string().contains("not available yet"), "got: {err}");
     }
 }
+
+
+/// One row of the guest field's autocomplete (2026-08-23): a person from
+/// the user's own meeting history, serialized as the UI reads it. The
+/// corpus is `omacal_store::known_guests`'s — no People API, no new OAuth
+/// scope; see that function's comment for the reasoning.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub(crate) struct KnownGuestRow {
+    pub email: String,
+    pub display_name: Option<String>,
+    pub met: i64,
+}
+
+#[tauri::command]
+pub(crate) async fn known_guests(
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<Vec<KnownGuestRow>, String> {
+    Ok(omacal_store::known_guests(&state.pool)
+        .await
+        .map_err(|e| crate::errors::user_facing(&e))?
+        .into_iter()
+        .map(|g| KnownGuestRow { email: g.email, display_name: g.display_name, met: g.met })
+        .collect())
+}

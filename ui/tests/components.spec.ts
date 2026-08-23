@@ -3123,6 +3123,48 @@ test.describe('EventForm', () => {
   const saves = (page: import('@playwright/test').Page) =>
     page.evaluate(() => (window as any).__saves as any[]);
 
+  test('typing a fragment offers people from meeting history', async ({ page }) => {
+    // "Right now I have to write them from memory or find them in mail"
+    // (2026-08-23): the corpus is the store's own attendee history — the
+    // harness stub plays that role — matched on name or address, exactly the
+    // timezone picker's rule. Clicking a row adds the guest whole.
+    await open(page, 'create');
+    await page.getByLabel('Add guest').fill('isk');
+    const list = page.getByRole('listbox', { name: 'People you have met with' });
+    await expect(list).toBeVisible();
+    await list.getByRole('option', { name: /Iskren Hadzhinedev/ }).click();
+    await expect(page.locator('.guests')).toContainText('iskren.h@x3me.net');
+    await expect(page.getByLabel('Add guest')).toHaveValue('');
+    await expect(list).toHaveCount(0);
+
+    // Someone already aboard is not offered again.
+    await page.getByLabel('Add guest').fill('isk');
+    await expect(list).toHaveCount(0);
+  });
+
+  test('the list answers to the keyboard, and Escape closes it, not the form', async ({ page }) => {
+    await open(page, 'create');
+    const input = page.getByLabel('Add guest');
+    await input.fill('x3me');
+    const list = page.getByRole('listbox', { name: 'People you have met with' });
+    await expect(list).toBeVisible();
+
+    // Escape with the list open is the list's alone — the form survives.
+    await input.press('Escape');
+    await expect(list).toHaveCount(0);
+    await expect(page.locator('.pop')).toBeVisible();
+
+    // Typing again re-opens; arrows walk it; Return takes the second row.
+    await input.press('Backspace');
+    await expect(list).toBeVisible();
+    await input.press('ArrowDown');
+    await input.press('ArrowDown');
+    await input.press('Enter');
+    await expect(page.locator('.guests')).toContainText('eva.m@x3me.net');
+    // And nothing was saved by that Return — the form is still open.
+    expect(await saves(page)).toEqual([]);
+  });
+
   test('only writable calendars are offered', async ({ page }) => {
     // A subscribed holiday calendar is a `reader` and a room is a
     // `freeBusyReader`; `create_impl` refuses both server-side, so offering

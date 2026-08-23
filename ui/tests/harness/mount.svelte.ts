@@ -319,10 +319,12 @@ if (name === 'App') {
         },
       });
     } else if (name === 'EventForm') {
-      // `onsave`/`oncancel` are callback props, not Tauri commands — the form
-      // itself never calls `invoke`, since which write command a save becomes
-      // (create or update, and at which scope) is the caller's decision, not
-      // its own. Captured on the window exactly as `MonthGrid`'s `onopen` is.
+      // `onsave`/`oncancel` are callback props, not Tauri commands — which
+      // write command a save becomes (create or update, and at which scope)
+      // is the caller's decision, not the form's. The form does make one
+      // read of its own now — `known_guests`, the autocomplete corpus — so
+      // the stub is installed. Captured on the window exactly as
+      // `MonthGrid`'s `onopen` is.
       //
       // `__saves` is an array rather than a single value: half of what these
       // specs assert is that a *refused* save called nothing at all, and a
@@ -335,6 +337,7 @@ if (name === 'App') {
       // `dismiss.svelte.ts` — the listener lives on `window`, so a missing
       // teardown leaves it firing into a closure whose component is gone.
       (window as any).__cancels = 0;
+      installTauriStub(fixture);
       let app: object;
       app = mount(EventForm, {
         target,

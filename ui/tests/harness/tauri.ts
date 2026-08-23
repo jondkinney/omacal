@@ -772,6 +772,15 @@ export function installTauriStub(scenario: string): Harness {
         return 0;
       case 'changed_meetings':
         return [];
+      // The guest field's autocomplete corpus. A small fixed cast, present in
+      // every scenario: the addresses are chosen to collide with nothing any
+      // other spec types, so the dropdown only ever appears when a spec asks
+      // for it by typing a matching fragment.
+      case 'known_guests':
+        return [
+          { email: 'iskren.h@x3me.net', display_name: 'Iskren Hadzhinedev', met: 12 },
+          { email: 'eva.m@x3me.net', display_name: null, met: 5 },
+        ];
       case 'dismiss_change_notice':
         return null;
       case 'dismiss_all_change_notices':

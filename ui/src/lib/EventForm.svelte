@@ -1,6 +1,7 @@
 <!-- ui/src/lib/EventForm.svelte -->
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { knownGuests, type KnownGuest } from './people';
   import { escapeCloses } from './dismiss.svelte';
   import { placePopover, type Rect } from './position';
   import { REMINDER_UNITS, reminderAmountOf, reminderMax, reminderUnitOf } from './reminders';
@@ -98,6 +99,44 @@
    *  invite whoever is half-typed there. */
   let draft = $state('');
 
+  // --- Autocomplete over the user's own meeting history (2026-08-23) -----
+  //
+  // Loaded once per form open; the corpus is local and the query is one
+  // SELECT, so there is nothing to debounce or cache beyond this.
+  let people = $state<KnownGuest[]>([]);
+  /** Escape closed the list without closing the form; typing re-opens it. */
+  let listDismissed = $state(false);
+  /** The keyboard's row in the list, `-1` when the pointer owns it. */
+  let hi = $state(-1);
+
+  /**
+   * Who to offer for what is typed so far: substring match on address or
+   * name, the same rule the timezone picker settled on ("typing a capital
+   * must find Europe/Sofia"). Two characters before anything shows — one
+   * letter of an address matches half the corpus and reads as noise.
+   * People already on the guest list are not offered again, and a fully
+   * typed known address gets no list under it — the same "a picked value
+   * has no list" rule, so Enter lands on `addTyped` unambiguously.
+   */
+  const guestMatches = $derived.by(() => {
+    const q = draft.trim().toLowerCase();
+    if (listDismissed || q.length < 2) return [];
+    if (people.some((p) => p.email === q)) return [];
+    const taken = new Set(value.guests.map((g) => g.email.toLowerCase()));
+    return people
+      .filter((p) => !taken.has(p.email))
+      .filter((p) => p.email.includes(q) || (p.display_name ?? '').toLowerCase().includes(q))
+      .slice(0, 6);
+  });
+
+  function pickGuest(p: KnownGuest) {
+    value.guests = addGuest(value.guests, p.email);
+    draft = '';
+    hi = -1;
+    error = null;
+    invalidField = null;
+  }
+
   /** One row rewritten from its two controls. A number the input cannot parse
    *  (`valueAsNumber` is `NaN` for an emptied field) leaves the row alone
    *  rather than writing garbage into a value a save would send. */
@@ -168,6 +207,9 @@
 
   onMount(() => {
     place();
+    // Fire-and-forget: a form with no corpus is yesterday's form, not an
+    // error — and the harness's stub answers instantly either way.
+    knownGuests().then((p) => (people = p)).catch(() => {});
     // Re-clamp whenever the panel's box changes — `placePopover` is pure and
     // already prefers the anchor, so a form that fits stays put and only a
     // form that grew slides up enough to keep its buttons reachable.
@@ -562,18 +604,57 @@
           placeholder="name@example.com"
           bind:value={draft}
           aria-invalid={invalidField === 'guest' ? 'true' : undefined}
+          oninput={() => {
+            listDismissed = false;
+            hi = -1;
+          }}
           onkeydown={(e) => {
+            // The list's keys first, so arrows walk it and Escape closes it
+            // rather than the whole form (`stopPropagation` is what keeps
+            // the window-level `escapeCloses` from hearing the same press).
+            if (e.key === 'ArrowDown' && guestMatches.length > 0) {
+              e.preventDefault();
+              hi = (hi + 1) % guestMatches.length;
+              return;
+            }
+            if (e.key === 'ArrowUp' && guestMatches.length > 0) {
+              e.preventDefault();
+              hi = (hi - 1 + guestMatches.length) % guestMatches.length;
+              return;
+            }
+            if (e.key === 'Escape' && guestMatches.length > 0) {
+              e.stopPropagation();
+              listDismissed = true;
+              hi = -1;
+              return;
+            }
             // This field is inside the `<form>`, so an unhandled Return
             // submits it — saving an event with a half-typed guest list, and
             // on an event with guests opening the notify choice for a change
-            // nobody had finished making.
+            // nobody had finished making. With a row highlighted, Return is
+            // that row; otherwise it is whatever was typed, as ever.
             if (e.key === 'Enter') {
               e.preventDefault();
-              addTyped();
+              const picked = hi >= 0 ? guestMatches[hi] : undefined;
+              if (picked) pickGuest(picked);
+              else addTyped();
             }
           }}
         />
         <button type="button" onclick={addTyped}>Add</button>
+        {#if guestMatches.length > 0}
+          <!-- The same shape as Settings' timezone list, for the same job:
+               what is typed, completed from what is known — here, the
+               people this calendar has already met. -->
+          <div class="gsuggest" role="listbox" aria-label="People you have met with">
+            {#each guestMatches as p, i (p.email)}
+              <button type="button" role="option" aria-selected={i === hi}
+                      class:hi={i === hi} onclick={() => pickGuest(p)}>
+                {#if p.display_name}<b>{p.display_name}</b> <span class="gmail">{p.email}</span>{:else}{p.email}{/if}
+              </button>
+            {/each}
+          </div>
+        {/if}
       </div>
       {#if selfOnEvent}
         <!-- §5. Removing yourself takes you off the event; declining keeps
@@ -702,7 +783,21 @@
        background: none; border: 0; color: var(--muted); padding: 0 2px; }
   .x:hover { color: var(--text); }
 
-  .addguest { display: flex; gap: 6px; }
+  .addguest { display: flex; gap: 6px; position: relative; }
+  /* The timezone list's clothes (see SettingsModal's .tzlist), floated:
+     inside a popover the list must overlay the rows beneath it rather than
+     push the footer's buttons out of reach. */
+  .gsuggest { position: absolute; top: calc(100% + 2px); left: 0; right: 0;
+              z-index: 5; display: flex; flex-direction: column; gap: 1px;
+              padding: 3px; border: 1px solid var(--hairline); border-radius: 6px;
+              background: var(--surface); box-shadow: 0 8px 24px rgba(0, 0, 0, .35); }
+  .gsuggest button { font: inherit; font-size: 12px; color: var(--text); cursor: pointer;
+                     background: none; border: 0; border-radius: 4px;
+                     padding: 4px 8px; text-align: left; }
+  .gsuggest button:hover, .gsuggest button.hi {
+    background: color-mix(in srgb, var(--text) 7%, transparent); }
+  .gsuggest b { font-weight: 600; }
+  .gsuggest .gmail { color: var(--muted); margin-left: 4px; }
   .addguest button { flex: none; font: inherit; font-size: 11px; cursor: pointer;
                      border-radius: 5px; padding: 4px 10px;
                      border: 1px solid var(--hairline); background: none; color: var(--muted); }
