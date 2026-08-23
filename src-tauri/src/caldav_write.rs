@@ -23,6 +23,13 @@
 //! project, the form hides the editor on these calendars, and the rewrite
 //! passes `ATTENDEE` lines through untouched — nothing a payload carries can
 //! erase somebody's RSVP.
+//!
+//! [`respond`] is the one measured exception to that rule: it rewrites
+//! exactly one thing on exactly one `ATTENDEE` line — the account's own
+//! `PARTSTAT` — and only when the resource already carries that line.
+//! Answering an invitation is the attendee's own field by definition, and
+//! the iTIP REPLY to the organizer is the server's job (RFC 6638), not
+//! omacal's.
 
 use omacal_caldav::{CalDavError, EventWrite, WriteTime};
 use omacal_store::StoredEvent;
@@ -376,6 +383,80 @@ pub(crate) async fn update(
     crate::events::event_detail_impl(state, row).await
 }
 
+/// Google's response vocabulary rendered as `PARTSTAT` — two spellings of
+/// one answer. `None` for anything else, refused before any bytes move: an
+/// unknown word PUT into a resource would be a corrupt `PARTSTAT` on a
+/// server that may or may not validate it.
+fn partstat_of(response: &str) -> Option<&'static str> {
+    match response {
+        "accepted" => Some("ACCEPTED"),
+        "declined" => Some("DECLINED"),
+        "tentative" => Some("TENTATIVE"),
+        _ => None,
+    }
+}
+
+/// Answers an invitation on a CalDAV event: the account's own `ATTENDEE`
+/// line's `PARTSTAT`, rewritten inside the resource and PUT back behind its
+/// etag — see the module doc for why this is the one attendee write that
+/// exists. Scope maps onto structure exactly as [`update`]'s does: "all"
+/// answers every component of the uid, "this" answers one occurrence's
+/// exception, materialising it from the master if the server holds none.
+///
+/// The occurrence's identity is `original_start_utc` when the viewed row is
+/// an already-moved exception — its `RECURRENCE-ID` names the slot it left,
+/// not the slot it sits in — and the clicked start otherwise.
+pub(crate) async fn respond(
+    state: &AppState,
+    id: i64,
+    response: &str,
+    scope: &str,
+    occurrence_start_ms: i64,
+    self_email: &str,
+) -> anyhow::Result<crate::events::EventDetail> {
+    let partstat = partstat_of(response)
+        .ok_or_else(|| anyhow::anyhow!("\"{response}\" is not an answer omacal knows"))?;
+    let (viewed, _, _) = omacal_store::event_by_id(&state.pool, id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("that event is no longer here"))?;
+    let master = master_of(state, &viewed).await?;
+    let (client, _) = crate::caldav_account::client_for_calendar(state, master.calendar_id).await?;
+    let (href, raw) = resource_of(state, master.id).await?;
+    let uid = master.google_id.clone();
+    let is_series = master.recurrence.is_some();
+
+    let (new_raw, detail_uid) = if !is_series || scope == "all" {
+        (omacal_caldav::respond_all(&raw, &uid, self_email, partstat), uid.clone())
+    } else {
+        let rid_ms = viewed.original_start_utc.unwrap_or(occurrence_start_ms);
+        let rid = occurrence_time(&master, rid_ms)?;
+        // The viewed row's own span: for a materialised exception the end is
+        // unused (its block is answered in place), and for a bare occurrence
+        // the viewed row is the master, whose duration is the occurrence's.
+        let end = occurrence_time(&master, rid_ms + (viewed.end_utc - viewed.start_utc))?;
+        (
+            omacal_caldav::respond_occurrence(
+                &raw, &uid, self_email, partstat, &rid, &end, now_ts(),
+            ),
+            format!("{uid}#{rid_ms}"),
+        )
+    };
+    let new_raw = new_raw.ok_or_else(|| {
+        anyhow::anyhow!(
+            "this event's copy on the server does not list you as a guest, \
+             so there is no invitation here to answer"
+        )
+    })?;
+
+    client.put(&href, &new_raw, master.etag.as_deref()).await.map_err(friendly)?;
+    resync(state, master.calendar_id).await?;
+    let row = match row_id_by_uid(state, master.calendar_id, &detail_uid).await {
+        Ok(r) => r,
+        Err(_) => row_id_by_uid(state, master.calendar_id, &uid).await?,
+    };
+    crate::events::event_detail_impl(state, row).await
+}
+
 /// Deletes an event, one occurrence, or the rest of a series.
 pub(crate) async fn delete(
     state: &AppState,
@@ -453,6 +534,19 @@ mod tests {
             },
             calendar_default_reminders: Vec::new(),
         }
+    }
+
+    /// The answer vocabulary, both directions: the three words the popover
+    /// can send map to their PARTSTAT spellings, and anything else — a typo,
+    /// a future word, `needsAction` itself — is refused before a byte moves.
+    #[test]
+    fn only_the_three_answers_render_as_partstat() {
+        assert_eq!(partstat_of("accepted"), Some("ACCEPTED"));
+        assert_eq!(partstat_of("declined"), Some("DECLINED"));
+        assert_eq!(partstat_of("tentative"), Some("TENTATIVE"));
+        assert_eq!(partstat_of("needsAction"), None, "un-answering is not an answer");
+        assert_eq!(partstat_of("ACCEPTED"), None, "the wire vocabulary is lowercase");
+        assert_eq!(partstat_of(""), None);
     }
 
     #[test]

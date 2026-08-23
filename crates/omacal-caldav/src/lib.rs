@@ -18,9 +18,9 @@ pub mod ics;
 pub use client::{CalDavClient, CalDavError, DiscoveredCalendar, Resource};
 pub use ics::{
     escape, events_in, exclude_occurrence, new_event_ics, new_todo_ics, parse, parse_time,
-    patch_todo_status, resolve, rewrite_master, todos_in, truncate_series, unescape,
-    upsert_exception, CalAttendee, CalEvent, CalTodo, Component, EventWrite, IcsTime, Property,
-    WriteTime,
+    patch_todo_status, resolve, respond_all, respond_occurrence, rewrite_master, todos_in,
+    truncate_series, unescape, upsert_exception, CalAttendee, CalEvent, CalTodo, Component,
+    EventWrite, IcsTime, Property, WriteTime,
 };
 
 /// The fixed discovery address that makes "iCloud" a one-field sign-in.

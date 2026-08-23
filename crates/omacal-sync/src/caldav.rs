@@ -60,11 +60,20 @@ fn resolve_end(
 /// this lands on the app's own fallback-reminders setting — which exists
 /// precisely for calendars that arrive silent. A VALARM present is the
 /// author's word and maps to overrides.
+///
+/// `self_email` is the account's own address, and it is what stands in for
+/// Google's `self` flag: CalDAV has no such marker, so the ATTENDEE whose
+/// mailbox matches it (case-insensitively — mailboxes are compared, not
+/// spelled) is the user's row, `is_self` and `self_response` both. An
+/// invitation delivered to an alias the account was not connected under
+/// finds no match and stays unanswerable — the same guard the write side
+/// applies, made visible at read time.
 pub fn caldav_to_stored(
     ev: &CalEvent,
     calendar_id: i64,
     cal_tz: &str,
     resource_etag: Option<&str>,
+    self_email: &str,
 ) -> Option<StoredEvent> {
     let (start_utc, start_tz, is_all_day) = omacal_caldav::resolve(&ev.start, cal_tz)?;
     let (end_utc, end_tz) = resolve_end(ev, start_utc, is_all_day, cal_tz);
@@ -108,7 +117,13 @@ pub fn caldav_to_stored(
         recurring_event_id,
         original_start_utc,
         status: ev.status.clone(),
-        self_response: None,
+        // Derived from the self attendee the same way `merge_patched` does
+        // for Google — one derivation rule, whoever the provider is.
+        self_response: ev
+            .attendees
+            .iter()
+            .find(|a| a.email.eq_ignore_ascii_case(self_email))
+            .map(|a| a.response_status.clone()),
         conference_uri: ev.conference_uri.clone(),
         color_hex: None,
         calendar_timezone: cal_tz.to_string(),
@@ -124,7 +139,7 @@ pub fn caldav_to_stored(
                 display_name: a.display_name.clone(),
                 response_status: a.response_status.clone(),
                 optional: a.optional,
-                is_self: false,
+                is_self: a.email.eq_ignore_ascii_case(self_email),
                 comment: None,
                 additional_guests: 0,
             })
@@ -192,6 +207,16 @@ pub async fn sync_caldav_calendar(
         .await
         .map_err(anyhow::Error::from)?;
 
+    // The account's own address, which is what identifies the user's row on
+    // an ATTENDEE list — see `caldav_to_stored`'s own comment.
+    let self_email: String = sqlx::query_scalar(
+        "SELECT a.email FROM accounts a JOIN calendars c ON c.account_id = a.id WHERE c.id = ?1",
+    )
+    .bind(calendar_id)
+    .fetch_one(pool)
+    .await
+    .map_err(anyhow::Error::from)?;
+
     let stored_ctag: Option<String> =
         sqlx::query_scalar("SELECT sync_token FROM sync_state WHERE calendar_id = ?1")
             .bind(calendar_id)
@@ -219,7 +244,8 @@ pub async fn sync_caldav_calendar(
                 continue;
             };
             for (i, ev) in omacal_caldav::events_in(&root).into_iter().enumerate() {
-                let Some(stored) = caldav_to_stored(&ev, calendar_id, &cal_tz, res.etag.as_deref())
+                let Some(stored) =
+                    caldav_to_stored(&ev, calendar_id, &cal_tz, res.etag.as_deref(), &self_email)
                 else {
                     tracing::warn!(url = %res.url, "VEVENT with unusable times; skipping");
                     continue;
@@ -373,9 +399,43 @@ mod tests {
         }
     }
 
+    /// The self mark, which is what `can_respond` gates the RSVP strip on:
+    /// the account's own mailbox — however either side spells its case — is
+    /// `is_self`, and it names `self_response` too. The empty address every
+    /// other test passes marks nobody, so a fixture cannot conjure an
+    /// answerable invitation by accident.
+    #[test]
+    fn the_accounts_own_attendee_is_marked_self_and_names_the_response() {
+        let mut ev = sample("u1");
+        ev.attendees = vec![
+            omacal_caldav::CalAttendee {
+                email: "P@X.COM".into(),
+                display_name: None,
+                response_status: "tentative".into(),
+                optional: false,
+            },
+            omacal_caldav::CalAttendee {
+                email: "ana@x.com".into(),
+                display_name: None,
+                response_status: "accepted".into(),
+                optional: false,
+            },
+        ];
+
+        let s = caldav_to_stored(&ev, 7, "Europe/Sofia", None, "p@x.com").unwrap();
+        let mine = s.attendees.iter().find(|a| a.email == "P@X.COM").unwrap();
+        assert!(mine.is_self, "mailboxes compare case-insensitively");
+        assert!(!s.attendees.iter().find(|a| a.email == "ana@x.com").unwrap().is_self);
+        assert_eq!(s.self_response.as_deref(), Some("tentative"));
+
+        let nobody = caldav_to_stored(&ev, 7, "Europe/Sofia", None, "").unwrap();
+        assert!(nobody.attendees.iter().all(|a| !a.is_self));
+        assert!(nobody.self_response.is_none());
+    }
+
     #[test]
     fn a_master_maps_with_duration_and_verbatim_recurrence() {
-        let s = caldav_to_stored(&sample("u1"), 7, "Europe/Sofia", Some("\"e\"")).unwrap();
+        let s = caldav_to_stored(&sample("u1"), 7, "Europe/Sofia", Some("\"e\""), "").unwrap();
         assert_eq!(s.google_id, "u1");
         assert_eq!(s.calendar_id, 7);
         assert_eq!(s.end_utc - s.start_utc, 45 * 60_000, "DURATION resolved");
@@ -393,7 +453,7 @@ mod tests {
             dt: jiff::civil::date(2026, 8, 24).at(9, 30, 0, 0),
             tzid: "Europe/Sofia".into(),
         });
-        let s = caldav_to_stored(&ev, 7, "Europe/Sofia", None).unwrap();
+        let s = caldav_to_stored(&ev, 7, "Europe/Sofia", None, "").unwrap();
         let orig = s.original_start_utc.unwrap();
         assert_eq!(s.google_id, format!("u1#{orig}"));
         assert_eq!(s.recurring_event_id.as_deref(), Some("u1"));
@@ -403,7 +463,7 @@ mod tests {
     fn no_alarms_means_follow_the_fallback() {
         let mut ev = sample("u2");
         ev.alarms = Vec::new();
-        let s = caldav_to_stored(&ev, 1, "UTC", None).unwrap();
+        let s = caldav_to_stored(&ev, 1, "UTC", None, "").unwrap();
         assert!(s.reminders.use_default);
         assert!(s.reminders.overrides.is_empty());
     }
@@ -414,7 +474,7 @@ mod tests {
         ev.start = IcsTime::Date(jiff::civil::date(2026, 8, 20));
         ev.end = None;
         ev.duration_ms = None;
-        let s = caldav_to_stored(&ev, 1, "Europe/Sofia", None).unwrap();
+        let s = caldav_to_stored(&ev, 1, "Europe/Sofia", None, "").unwrap();
         assert!(s.is_all_day);
         assert_eq!(s.end_utc - s.start_utc, DAY_MS);
     }

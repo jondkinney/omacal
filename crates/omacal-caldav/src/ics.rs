@@ -347,7 +347,14 @@ pub struct CalAttendee {
 
 fn read_attendee(p: &Property) -> Option<CalAttendee> {
     let v = p.value.trim();
-    let email = v.strip_prefix("mailto:").unwrap_or(v).to_string();
+    // The scheme case-insensitively, like `is_attendee_of`: `MAILTO:` is
+    // legal and real, and a scheme left on the mailbox poisons every
+    // comparison downstream — the RSVP self-match most of all.
+    let email = match v.get(..7) {
+        Some(scheme) if scheme.eq_ignore_ascii_case("mailto:") => &v[7..],
+        _ => v,
+    }
+    .to_string();
     if email.is_empty() {
         return None;
     }
@@ -962,6 +969,190 @@ pub fn truncate_series(raw: &str, uid: &str, until_render: &str, cut: &WriteTime
     Some(out.join("\r\n"))
 }
 
+/// Whether an unfolded content line is this attendee's own `ATTENDEE`
+/// property. The mailbox is compared case-insensitively and so is the
+/// `mailto:` scheme — servers spell both however they feel like.
+fn is_attendee_of(line: &str, email: &str) -> bool {
+    let Some(p) = parse_line(line) else { return false };
+    if p.name != "ATTENDEE" {
+        return false;
+    }
+    let v = p.value.trim();
+    let v = match v.get(..7) {
+        Some(scheme) if scheme.eq_ignore_ascii_case("mailto:") => &v[7..],
+        _ => v,
+    };
+    v.eq_ignore_ascii_case(email)
+}
+
+/// The line with its `PARTSTAT` replaced (or added) and every other byte
+/// kept. Its own scanner rather than a `parse_line` round trip, because a
+/// reparse would strip parameter quotes — and a quoted `CN` may legally
+/// contain the `;` and `:` this splits on, so both splits honour quotes.
+/// Only called on lines [`is_attendee_of`] already parsed, so the colon is
+/// known to exist.
+fn with_partstat(line: &str, partstat: &str) -> String {
+    let mut in_quotes = false;
+    let mut colon = line.len();
+    for (i, ch) in line.char_indices() {
+        match ch {
+            '"' => in_quotes = !in_quotes,
+            ':' if !in_quotes => {
+                colon = i;
+                break;
+            }
+            _ => {}
+        }
+    }
+    let (head, value) = line.split_at(colon);
+
+    let mut segs: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut q = false;
+    for ch in head.chars() {
+        match ch {
+            '"' => {
+                q = !q;
+                cur.push(ch);
+            }
+            ';' if !q => segs.push(std::mem::take(&mut cur)),
+            _ => cur.push(ch),
+        }
+    }
+    segs.push(cur);
+
+    let mut replaced = false;
+    for s in segs.iter_mut().skip(1) {
+        if s.trim().to_ascii_uppercase().starts_with("PARTSTAT=") {
+            *s = format!("PARTSTAT={partstat}");
+            replaced = true;
+        }
+    }
+    if !replaced {
+        segs.push(format!("PARTSTAT={partstat}"));
+    }
+    format!("{}{value}", segs.join(";"))
+}
+
+/// Sets `email`'s `PARTSTAT` across every VEVENT of `uid` — master and
+/// exceptions alike, which is what answering "all of them" means: an
+/// exception carries its own `ATTENDEE` lines, and a master-only rewrite
+/// would leave last week's moved occurrence still saying needs-action.
+///
+/// The input is unfolded first — folded `ATTENDEE` lines are how iCloud
+/// actually ships a long `CN` + mailto pair, and the fold can land inside
+/// the mailbox itself — so the output is the same resource on single lines:
+/// a byte change, never a data change, and the liberty `new_event_ics`
+/// already takes with long lines.
+///
+/// `None` when no VEVENT of `uid` exposes this attendee. That is the guard,
+/// not a shrug: a resource that does not carry your invitation cannot be
+/// answered, and inventing an `ATTENDEE` line would fabricate one the
+/// organizer never sent.
+pub fn respond_all(raw: &str, uid: &str, email: &str, partstat: &str) -> Option<String> {
+    let lines = unfold(raw);
+    let blocks = event_blocks(&lines);
+    let mut out = lines.clone();
+    let mut touched = false;
+    for b in blocks.iter().filter(|b| b.uid.as_deref() == Some(uid)) {
+        for i in b.start..=b.end {
+            if is_attendee_of(&lines[i], email) {
+                out[i] = with_partstat(&lines[i], partstat);
+                touched = true;
+            }
+        }
+    }
+    touched.then(|| out.join("\r\n"))
+}
+
+/// Sets `email`'s `PARTSTAT` for one occurrence of a series — scope "this".
+/// An exception already materialised for the occurrence is answered in
+/// place; otherwise one is cloned from the master — unmodeled lines
+/// verbatim, the series machinery (`RRULE`/`RDATE`/`EXDATE`) dropped, the
+/// occurrence's own `RECURRENCE-ID`/`DTSTART`/`DTEND` and a fresh `DTSTAMP`
+/// added — and answered there. The master's own `ATTENDEE` lines stay as
+/// they were: that is the entire difference between "this one" and "all of
+/// them". Unfolds like [`respond_all`], refuses like it too.
+pub fn respond_occurrence(
+    raw: &str,
+    uid: &str,
+    email: &str,
+    partstat: &str,
+    rid: &WriteTime,
+    dtend: &WriteTime,
+    now: Timestamp,
+) -> Option<String> {
+    let lines = unfold(raw);
+    let blocks = event_blocks(&lines);
+    let rid_line = rid.prop("RECURRENCE-ID");
+    let rid_tail = rid_line.rsplit(':').next();
+
+    let existing = blocks.iter().find(|b| {
+        b.is_exception
+            && b.uid.as_deref() == Some(uid)
+            && lines[b.start..=b.end].iter().any(|l| {
+                l.to_ascii_uppercase().starts_with("RECURRENCE-ID")
+                    && l.rsplit(':').next() == rid_tail
+            })
+    });
+    if let Some(b) = existing {
+        let mut out = lines.clone();
+        let mut touched = false;
+        for i in b.start..=b.end {
+            if is_attendee_of(&lines[i], email) {
+                out[i] = with_partstat(&lines[i], partstat);
+                touched = true;
+            }
+        }
+        return touched.then(|| out.join("\r\n"));
+    }
+
+    let master = blocks.iter().find(|b| !b.is_exception && b.uid.as_deref() == Some(uid))?;
+    let dropped = |l: &str| {
+        let u = l.to_ascii_uppercase();
+        u.starts_with("RRULE")
+            || u.starts_with("RDATE")
+            || u.starts_with("EXDATE")
+            || u.starts_with("DTSTART")
+            || u.starts_with("DTEND")
+            || u.starts_with("DURATION")
+            || u.starts_with("DTSTAMP")
+    };
+    let mut clone: Vec<String> = Vec::new();
+    let mut touched = false;
+    for l in &lines[master.start..=master.end] {
+        if dropped(l) {
+            continue;
+        }
+        let line = if is_attendee_of(l, email) {
+            touched = true;
+            with_partstat(l, partstat)
+        } else {
+            l.clone()
+        };
+        clone.push(line);
+        if l.eq_ignore_ascii_case("BEGIN:VEVENT") {
+            clone.push(rid_line.clone());
+            clone.push(rid.prop("DTSTART"));
+            clone.push(dtend.prop("DTEND"));
+            clone.push(format!("DTSTAMP:{}", fmt_utc(now)));
+        }
+    }
+    if !touched {
+        return None;
+    }
+
+    let close = lines.iter().rposition(|l| l.eq_ignore_ascii_case("END:VCALENDAR"))?;
+    let mut out: Vec<String> = Vec::new();
+    for (i, l) in lines.iter().enumerate() {
+        if i == close {
+            out.extend(clone.iter().cloned());
+        }
+        out.push(l.clone());
+    }
+    Some(out.join("\r\n"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1224,5 +1415,122 @@ mod tests {
         assert_eq!(t.uid, "new-1");
         assert_eq!(t.summary.as_deref(), Some("Fix; the, thing"), "escaping round-trips");
         assert!(matches!(t.due, Some(IcsTime::Date(_))));
+    }
+
+    /// An invitation resource the way iCloud actually ships one: the user's
+    /// own ATTENDEE folded mid-mailbox, a quoted CN carrying the `;` and `:`
+    /// both rewrites split on, the scheme in caps, and a second guest whose
+    /// answer must survive anything done to ours.
+    const INVITE_RAW: &str = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:inv-1\r\nSUMMARY:Quarterly review\r\nDTSTART;TZID=Europe/Sofia:20260901T100000\r\nDTEND;TZID=Europe/Sofia:20260901T110000\r\nORGANIZER;CN=Boss:mailto:boss@x.com\r\nATTENDEE;CN=\"Petkov; who: asks\";RSVP=TRUE;PARTSTAT=NEEDS-ACTION:MAILTO\r\n :P@X.COM\r\nATTENDEE;CN=Ana;PARTSTAT=ACCEPTED:mailto:ana@x.com\r\nEND:VEVENT\r\nEND:VCALENDAR";
+
+    /// The whole rewrite in one place: the fold is crossed, the quoted CN
+    /// and the RSVP param survive byte-for-byte, the old PARTSTAT is
+    /// replaced rather than joined by a second one, the other guest's answer
+    /// and the ORGANIZER line are untouched — and the result still parses,
+    /// with the store-side vocabulary agreeing.
+    #[test]
+    fn answering_rewrites_your_partstat_and_nothing_else() {
+        let out = respond_all(INVITE_RAW, "inv-1", "p@x.com", "ACCEPTED").unwrap();
+        assert!(
+            out.contains("ATTENDEE;CN=\"Petkov; who: asks\";RSVP=TRUE;PARTSTAT=ACCEPTED:MAILTO:P@X.COM"),
+            "params kept, PARTSTAT swapped, folded mailbox rejoined: {out}"
+        );
+        assert_eq!(out.matches("PARTSTAT=NEEDS-ACTION").count(), 0, "the old answer is gone");
+        assert!(out.contains("ATTENDEE;CN=Ana;PARTSTAT=ACCEPTED:mailto:ana@x.com"));
+        assert!(out.contains("ORGANIZER;CN=Boss:mailto:boss@x.com"));
+
+        let ev = &events_in(&parse(&out).unwrap())[0];
+        let mine = ev.attendees.iter().find(|a| a.email.eq_ignore_ascii_case("p@x.com")).unwrap();
+        assert_eq!(mine.response_status, "accepted");
+    }
+
+    /// The guard: a resource that does not carry your invitation cannot be
+    /// answered. Inventing an ATTENDEE line would fabricate an invitation
+    /// the organizer never sent — `None`, not a quiet no-op PUT.
+    #[test]
+    fn a_resource_without_your_invitation_refuses_the_answer() {
+        assert!(respond_all(INVITE_RAW, "inv-1", "stranger@x.com", "ACCEPTED").is_none());
+        // The organizer's own mailbox is on ORGANIZER, not ATTENDEE — being
+        // the organizer is not an invitation either.
+        assert!(respond_all(INVITE_RAW, "inv-1", "boss@x.com", "ACCEPTED").is_none());
+        // A matching attendee on a *different* uid in the file helps nothing.
+        assert!(respond_all(INVITE_RAW, "other-uid", "p@x.com", "ACCEPTED").is_none());
+    }
+
+    /// A series answered whole: the exception carries its own ATTENDEE line,
+    /// and "all of them" that skipped it would leave the moved occurrence
+    /// still saying needs-action.
+    const SERIES_INVITE: &str = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:s2\r\nSUMMARY:Standup\r\nDTSTART;TZID=Europe/Sofia:20260817T091500\r\nDTEND;TZID=Europe/Sofia:20260817T093000\r\nRRULE:FREQ=DAILY;COUNT=10\r\nX-PRIVATE:survives\r\nATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:p@x.com\r\nEND:VEVENT\r\nBEGIN:VEVENT\r\nUID:s2\r\nRECURRENCE-ID;TZID=Europe/Sofia:20260819T091500\r\nSUMMARY:Standup (moved)\r\nDTSTART;TZID=Europe/Sofia:20260819T140000\r\nDTEND;TZID=Europe/Sofia:20260819T141500\r\nATTENDEE;PARTSTAT=NEEDS-ACTION:mailto:p@x.com\r\nEND:VEVENT\r\nEND:VCALENDAR";
+
+    #[test]
+    fn answering_all_reaches_the_exception_too() {
+        let out = respond_all(SERIES_INVITE, "s2", "p@x.com", "DECLINED").unwrap();
+        assert_eq!(out.matches("PARTSTAT=DECLINED").count(), 2, "master and exception both");
+        assert_eq!(out.matches("PARTSTAT=NEEDS-ACTION").count(), 0);
+    }
+
+    /// Scope "this" on an occurrence that already has its exception: that
+    /// one component is answered, and the master's own line — the whole
+    /// series' answer — stays exactly as it was.
+    #[test]
+    fn answering_one_materialised_occurrence_leaves_the_series_alone() {
+        let rid = WriteTime::Zoned {
+            dt: jiff::civil::date(2026, 8, 19).at(9, 15, 0, 0),
+            tzid: "Europe/Sofia".into(),
+        };
+        let end = WriteTime::Zoned {
+            dt: jiff::civil::date(2026, 8, 19).at(9, 30, 0, 0),
+            tzid: "Europe/Sofia".into(),
+        };
+        let now = Timestamp::from_millisecond(NOW).unwrap();
+        let out =
+            respond_occurrence(SERIES_INVITE, "s2", "p@x.com", "ACCEPTED", &rid, &end, now)
+                .unwrap();
+        assert_eq!(out.matches("PARTSTAT=ACCEPTED").count(), 1, "one occurrence, one answer");
+        assert_eq!(out.matches("PARTSTAT=NEEDS-ACTION").count(), 1, "the master still asks");
+        assert_eq!(out.matches("BEGIN:VEVENT").count(), 2, "no third component appeared");
+        let accepted_at = out.find("PARTSTAT=ACCEPTED").unwrap();
+        assert!(
+            accepted_at > out.find("RECURRENCE-ID").unwrap(),
+            "the answer landed in the exception, not the master"
+        );
+    }
+
+    /// Scope "this" on an occurrence with no exception yet: one is cloned
+    /// from the master — unmodeled lines verbatim, the series machinery and
+    /// the master's own times dropped for the occurrence's — and the answer
+    /// lives only there.
+    #[test]
+    fn answering_an_unmaterialised_occurrence_clones_the_master() {
+        let rid = WriteTime::Zoned {
+            dt: jiff::civil::date(2026, 8, 18).at(9, 15, 0, 0),
+            tzid: "Europe/Sofia".into(),
+        };
+        let end = WriteTime::Zoned {
+            dt: jiff::civil::date(2026, 8, 18).at(9, 30, 0, 0),
+            tzid: "Europe/Sofia".into(),
+        };
+        let now = Timestamp::from_millisecond(NOW).unwrap();
+        let out =
+            respond_occurrence(SERIES_INVITE, "s2", "p@x.com", "TENTATIVE", &rid, &end, now)
+                .unwrap();
+        assert_eq!(out.matches("BEGIN:VEVENT").count(), 3, "a fresh exception appeared");
+        assert_eq!(out.matches("RRULE").count(), 1, "the clone did not become a second series");
+        assert_eq!(out.matches("X-PRIVATE:survives").count(), 2, "unmodeled lines cloned whole");
+        assert!(out.contains("RECURRENCE-ID;TZID=Europe/Sofia:20260818T091500"));
+        assert_eq!(out.matches("PARTSTAT=TENTATIVE").count(), 1);
+
+        // And the round trip agrees: three components, exactly one of which
+        // answers tentative, anchored on the cloned occurrence.
+        let evs = events_in(&parse(&out).unwrap());
+        assert_eq!(evs.len(), 3);
+        let cloned = evs
+            .iter()
+            .find(|e| e.attendees.iter().any(|a| a.response_status == "tentative"))
+            .unwrap();
+        let (ms, _, _) = resolve(&cloned.start, "UTC").unwrap();
+        let (rid_ms, _, _) =
+            resolve(cloned.recurrence_id.as_ref().unwrap(), "UTC").unwrap();
+        assert_eq!(ms, rid_ms, "the clone's DTSTART is the occurrence it overrides");
     }
 }

@@ -8,9 +8,13 @@
 //!
 //! What is different is honest, not hidden: no OAuth (an app-specific
 //! password over Basic), no tombstones (`omacal_sync::caldav` infers
-//! deletions), and no guest management (`can_respond` never sees a `self`
-//! attendee on a CalDAV row, so the RSVP strip simply never renders — the
-//! capability gate falling out of data the provider genuinely lacks).
+//! deletions), and no guest *management* — inviting and uninviting is iTIP,
+//! its own project. Answering an invitation does work: sync marks the
+//! attendee matching the account's email as `self`
+//! (`omacal_sync::caldav_to_stored`), which is what lets `can_respond` show
+//! the RSVP strip, and `caldav_write::respond` writes the `PARTSTAT` back.
+//! A resource that exposes no matching attendee stays unanswerable — the
+//! capability gate falling out of data the server actually holds.
 
 use omacal_caldav::{CalDavClient, CalDavError};
 use sqlx::SqlitePool;

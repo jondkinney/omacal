@@ -295,4 +295,41 @@ async fn the_whole_loop_against_a_real_server() {
     let rule = master.recurrence.as_deref().unwrap();
     assert!(rule.contains("UNTIL=20260821T061459Z"), "UNTIL round-tripped: {rule}");
     assert!(!rule.contains("COUNT="), "COUNT did not survive: {rule}");
+
+    // --- phase 4: answering an invitation, against real etags --------------
+
+    // The account's mailbox in caps and folded mid-scheme — the shapes iCloud
+    // actually ships — plus a second guest whose answer must survive ours.
+    const INVITE: &str = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VEVENT\r\nUID:e2e-invite\r\nDTSTAMP:20260815T080000Z\r\nSUMMARY:Quarterly review\r\nDTSTART;TZID=Europe/Sofia:20260824T100000\r\nDTEND;TZID=Europe/Sofia:20260824T110000\r\nORGANIZER;CN=Boss:mailto:boss@x.com\r\nATTENDEE;CN=\"E2E; user\";RSVP=TRUE;PARTSTAT=NEEDS-ACTION:MAILTO\r\n :E2E@TEST\r\nATTENDEE;CN=Ana;PARTSTAT=ACCEPTED:mailto:ana@x.com\r\nEND:VEVENT\r\nEND:VCALENDAR";
+    client
+        .put(&format!("{base}/{user}/work/e2e-invite.ics"), INVITE, None)
+        .await
+        .expect("invite PUT");
+    omacal_sync::caldav::sync_caldav_calendar(
+        &pool, &client, work_id, &work_url, true, false, WINDOW_START, WINDOW_END, 8,
+    )
+    .await
+    .expect("invite sync");
+    let events = omacal_store::events_in_window(&pool, WINDOW_START, WINDOW_END).await.unwrap();
+    let invite = events.iter().find(|e| e.google_id == "e2e-invite").expect("invite synced");
+    let mine = invite.attendees.iter().find(|a| a.is_self).expect("the account's row is self");
+    assert_eq!(mine.response_status, "needsAction");
+    assert_eq!(invite.self_response.as_deref(), Some("needsAction"));
+
+    // Answer it the way `caldav_write::respond` does: PARTSTAT surgery on
+    // the stored bytes, PUT behind the real etag, truth read back by sync.
+    let (href, raw, etag) = resource(&pool, "e2e-invite").await;
+    let answered = omacal_caldav::respond_all(&raw, "e2e-invite", "e2e@test", "ACCEPTED")
+        .expect("the resource carries our invitation");
+    client.put(&href, &answered, etag.as_deref()).await.expect("RSVP PUT with real etag");
+    omacal_sync::caldav::sync_caldav_calendar(
+        &pool, &client, work_id, &work_url, true, false, WINDOW_START, WINDOW_END, 9,
+    )
+    .await
+    .expect("resync after RSVP");
+    let events = omacal_store::events_in_window(&pool, WINDOW_START, WINDOW_END).await.unwrap();
+    let invite = events.iter().find(|e| e.google_id == "e2e-invite").unwrap();
+    assert_eq!(invite.self_response.as_deref(), Some("accepted"), "the answer round-tripped");
+    let ana = invite.attendees.iter().find(|a| a.email == "ana@x.com").unwrap();
+    assert_eq!((ana.response_status.as_str(), ana.is_self), ("accepted", false), "hers, untouched");
 }

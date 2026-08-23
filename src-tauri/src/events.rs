@@ -517,6 +517,17 @@ async fn respond_impl(
     if !can_respond(state.demo, &access_role, &ev.attendees) {
         anyhow::bail!("this calendar cannot be answered from omacal");
     }
+
+    // The same answer on a CalDAV account is a PARTSTAT rewrite inside the
+    // event's own resource — no Google client, no attendee body. The write
+    // path owns everything from here, guards included.
+    if crate::caldav_write::is_caldav_calendar(&state.pool, ev.calendar_id).await? {
+        return crate::caldav_write::respond(
+            state, id, response, scope, occurrence_start_ms, &account_email,
+        )
+        .await;
+    }
+
     let body_attendees = attendees_with_self_response(&ev.attendees, response)
         .ok_or_else(|| anyhow::anyhow!("you are not a guest on this event"))?;
 
