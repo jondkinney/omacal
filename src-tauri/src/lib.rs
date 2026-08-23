@@ -15,6 +15,8 @@ mod golden;
 mod invites;
 mod notify;
 mod notify_loop;
+#[cfg(target_os = "linux")]
+mod nvidia;
 mod resume;
 mod search;
 mod settings;
@@ -947,6 +949,11 @@ fn tz_action(sidecar: Option<&str>, we_set_it: bool) -> TzAction {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tracing_subscriber::fmt::init();
+
+    // Before the builder is even assembled: GTK and WebKit read the
+    // environment when they initialise, and this may need to change it.
+    #[cfg(target_os = "linux")]
+    nvidia::apply_if_needed();
 
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default()
