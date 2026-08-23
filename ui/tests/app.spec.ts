@@ -7,6 +7,7 @@ import { test, expect, type Page } from '@playwright/test';
 import { SHORTCUT_LIST, SHORTCUT_TEXT } from '../src/lib/shortcuts';
 import {
   APP_MON, APP_NOW, weekLabel,
+  APP_SOLO_SERIES_ID,
   APP_PRIMARY_CALENDAR_ID, APP_READER_CALENDAR_ID,
   APP_SERIES_DTSTART, APP_SERIES_OCCURRENCE,
   APP_ALLDAY_OCCURRENCE, APP_ALLDAY_SERIES_DTSTART,
@@ -47,6 +48,39 @@ test.describe('App', () => {
     await page.getByRole('button', { name: 'Next week' }).click();
     await expect(page.locator('h1')).toHaveText('February 2024');
     await expect(page.locator('.ev b')).toHaveText(weekLabel(W2));
+  });
+
+  /** The `open-date` entrance — `omacal 2024-03-14` against a running app.
+   *  The backend has already shown the window; the event alone moves the
+   *  calendar, in whatever view is already on screen. */
+  test('an open-date event moves the calendar to that day', async ({ page }) => {
+    await page.goto(app());
+    await expect(page.locator('h1')).toHaveText('January 2024');
+    await page.evaluate(() => window.__harness.emit('open-date', '2024-03-14'));
+    await expect(page.locator('h1')).toHaveText('March 2024');
+  });
+
+  /** The `open-event` entrance — a clicked reminder: land on the day *and*
+   *  open the popover on the occurrence, the same arrival a chosen search
+   *  hit gets. The occurrence sits 45 days out for the reason the Dentist
+   *  search fixture does: in the app's own January, a version that never
+   *  moved the anchor would pass. */
+  test('a clicked reminder lands on the occurrence and opens it', async ({ page }) => {
+    await page.goto(app());
+    await expect(page.locator('h1')).toHaveText('January 2024');
+    await page.evaluate(([id, start]) => window.__harness.emit('open-event', {
+      id, startMs: start, endMs: (start as number) + 3_600_000,
+    }), [APP_SOLO_SERIES_ID, APP_NOW + 45 * 24 * 3_600_000]);
+    await expect(page.locator('h1')).toHaveText('March 2024');
+    await expect(page.getByRole('dialog', { name: 'Gym' })).toBeVisible();
+  });
+
+  /** The fresh-launch half of the same entrance: the date was parked on the
+   *  backend before the webview existed, and mount collects it — so the app
+   *  opens on that day instead of on today. */
+  test('a dated fresh launch opens on that date', async ({ page }) => {
+    await page.goto(app('launched-with-date'));
+    await expect(page.locator('h1')).toHaveText('March 2024');
   });
 
   // D3. A background reload is issued for the week on screen, the user moves

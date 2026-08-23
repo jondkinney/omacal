@@ -18,9 +18,14 @@ pub(crate) const MENU: [(&str, &str); 3] =
     [("open", "Open omacal"), ("sync", "Sync now"), ("quit", "Quit")];
 
 /// What a tray menu id means.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TrayAction {
     Open,
+    /// Show the window anchored on one date — `omacal 2026-09-01`. Carries
+    /// the ISO date re-spelled by the parser, so downstream never re-reads
+    /// argv. This is what makes the bar widget's rows, a keybinding, or a
+    /// script able to land the calendar *somewhere*, not merely open it.
+    OpenAt(String),
     SyncNow,
     Quit,
 }
@@ -32,18 +37,36 @@ pub(crate) enum TrayAction {
 /// its argv. This is the tray menu's vocabulary arriving over the
 /// single-instance channel — it exists so a surface that is not this process
 /// (the Omarchy bar widget, a script, a keybinding) can drive the app:
-/// `omacal --quit`, `omacal --sync-now`, and a bare `omacal` meaning what
-/// launching an already-running app has always meant, show the window.
+/// `omacal --quit`, `omacal --sync-now`, `omacal 2026-09-01` opening the
+/// window on that date, and a bare `omacal` meaning what launching an
+/// already-running app has always meant, show the window.
 /// Unknown flags fall through to Open rather than erroring — a second
-/// instance has no stderr anyone will ever read.
+/// instance has no stderr anyone will ever read. The flags outrank a date:
+/// `--quit` alongside one is still the stronger ask.
 pub(crate) fn instance_action(argv: &[String]) -> TrayAction {
     if argv.iter().any(|a| a == "--quit") {
         TrayAction::Quit
     } else if argv.iter().any(|a| a == "--sync-now") {
         TrayAction::SyncNow
+    } else if let Some(ymd) = argv.iter().skip(1).find_map(|a| parse_date(a)) {
+        TrayAction::OpenAt(ymd)
     } else {
         TrayAction::Open
     }
+}
+
+/// A positional date argument: `YYYY-MM-DD`, one spelling, deliberately.
+/// The shape gate in front of jiff is what makes the contract testable as
+/// stated — whatever looser ISO forms jiff happens to accept, `2026-9-1`
+/// must read as an unknown argument (and so as Open, per the rule above),
+/// not as a date that works on some builds. jiff then rejects the shapes
+/// that look right but name no day, `2026-13-40` and friends.
+fn parse_date(arg: &str) -> Option<String> {
+    let b = arg.as_bytes();
+    if b.len() != 10 || b[4] != b'-' || b[7] != b'-' {
+        return None;
+    }
+    arg.parse::<jiff::civil::Date>().ok().map(|d| d.to_string())
 }
 
 pub(crate) fn action_for(id: &str) -> Option<TrayAction> {
@@ -116,6 +139,11 @@ pub(crate) fn build(app: &AppHandle) -> tauri::Result<()> {
         .icon(tauri::include_image!("icons/tray.png"))
         .on_menu_event(|app, event| match action_for(event.id.as_ref()) {
             Some(TrayAction::Open) => show_main_window(app),
+            // Unreachable from a menu — `action_for` never returns it, the
+            // menu has no dated entry — but honoured rather than ignored,
+            // because a match arm that discards an action is how a future
+            // menu entry would click and do nothing.
+            Some(TrayAction::OpenAt(ymd)) => open_at(app, &ymd),
             Some(TrayAction::SyncNow) => crate::sync_loop::request_now(app),
             Some(TrayAction::Quit) => app.exit(0),
             // An id the menu did not put there. Nothing to do, and nothing
@@ -135,6 +163,20 @@ pub(crate) fn show_main_window(app: &AppHandle) {
         let _ = w.unminimize();
         let _ = w.set_focus();
     }
+}
+
+/// What a dated invocation emits once the window is up, carrying the ISO
+/// date. The webview owns every date computation in its own zone, so the
+/// string crosses whole rather than as a timestamp somebody here would have
+/// to pick a zone for.
+pub(crate) const OPEN_DATE_EVENT: &str = "open-date";
+
+/// [`show_main_window`], then tell the webview where to land. Untested like
+/// its first half; everything it decides was decided by `parse_date`.
+pub(crate) fn open_at(app: &AppHandle, ymd: &str) {
+    use tauri::Emitter;
+    show_main_window(app);
+    let _ = app.emit(OPEN_DATE_EVENT, ymd.to_string());
 }
 
 #[cfg(test)]
@@ -205,6 +247,32 @@ mod tests {
             TrayAction::Quit
         );
         assert_eq!(action_for("nonsense"), None);
+    }
+
+    /// The dated invocation: one spelling in, the same spelling out, and
+    /// everything that is not exactly a date falling back to the rule above —
+    /// Open, never an error, because a second instance has no stderr.
+    #[test]
+    fn a_positional_date_opens_the_window_on_that_date() {
+        assert_eq!(
+            instance_action(&argv(&["omacal", "2026-09-01"])),
+            TrayAction::OpenAt("2026-09-01".into())
+        );
+        // The shape gate: a date jiff might tolerate is still not the one
+        // spelling this contract admits.
+        assert_eq!(instance_action(&argv(&["omacal", "2026-9-1"])), TrayAction::Open);
+        // The right shape naming no day at all.
+        assert_eq!(instance_action(&argv(&["omacal", "2026-13-40"])), TrayAction::Open);
+        // The flags outrank a date — `--quit` alongside one is the stronger
+        // ask, and a quitting app has nowhere to land.
+        assert_eq!(
+            instance_action(&argv(&["omacal", "2026-09-01", "--quit"])),
+            TrayAction::Quit
+        );
+        assert_eq!(
+            instance_action(&argv(&["omacal", "2026-09-01", "--sync-now"])),
+            TrayAction::SyncNow
+        );
     }
 
     /// The other half of the demo promise. Demo mode never writes the real

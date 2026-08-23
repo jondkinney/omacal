@@ -47,6 +47,10 @@ export const openLatestRelease = () => invoke<void>('open_latest_release');
  *  the re-exec long enough for this call to resolve, so the button can say
  *  "Restarting…" instead of dying mid-await. */
 export const restartApp = () => invoke<void>('restart_app');
+/** The date a fresh `omacal 2026-09-01` launch was asked to open on, if any.
+ *  Taking is the read — the backend clears it — so a remount can never replay
+ *  a date the user has already navigated away from. */
+export const takeOpenDate = () => invoke<string | null>('take_open_date');
 
 /**
  * What the header's status light is showing.

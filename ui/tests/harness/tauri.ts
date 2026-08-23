@@ -593,6 +593,10 @@ export function installTauriStub(scenario: string): Harness {
   // must reflect it too, not just `get_calendars`.
   let status = statusFor(scenario);
   let signedIn = false;
+  /** Whether `take_open_date` has answered — the real command clears on
+   *  read, and a stub that kept answering would hide a remount replaying
+   *  the date, which is exactly the defect `take` semantics exist to stop. */
+  let openDateTaken = false;
   /** The settings modal's preferences, per page. Mutable for the reason the
    *  `get_settings` case gives: a stub answering the same thing forever cannot
    *  tell a saved setting from an ignored one. Five minutes and a one-minute
@@ -623,6 +627,15 @@ export function installTauriStub(scenario: string): Harness {
         return null;
       case 'get_status':
         return status;
+      // The date a dated fresh launch parked on the backend. One scenario
+      // carries one; everything else launched bare.
+      case 'take_open_date': {
+        if (scenario === 'launched-with-date' && !openDateTaken) {
+          openDateTaken = true;
+          return '2024-03-14';
+        }
+        return null;
+      }
       case 'list_accounts':
         // The richer per-account shape the Accounts tab fetches: the same
         // emails the scenario's status carries, as Google accounts.

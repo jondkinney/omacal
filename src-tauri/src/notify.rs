@@ -61,7 +61,22 @@ pub(crate) enum Action {
     /// re-read; scope `all` never resolves an instance, so any occurrence
     /// anchor satisfies `respond_to_event_impl`.
     AcceptInvite { event_id: i64, start_ms: i64 },
+    /// Show the app on this occurrence — a reminder's `default`, the click
+    /// itself. Until this existed, left-clicking a plain reminder on
+    /// Omarchy did nothing at all: the shell invokes only `default`, and
+    /// reminders registered Join and Snooze on keys it never sends. The
+    /// click means "show me", never anything with side effects — a reminder
+    /// is not a question the way an invitation is, so its click must not
+    /// answer one. Carries the occurrence whole (id, start, end) for the
+    /// same reason `Due` does: nothing downstream searches its way back.
+    OpenEvent { event_id: i64, start_ms: i64, end_ms: i64 },
 }
+
+/// What a clicked reminder emits, carrying the occurrence (`id`, `startMs`,
+/// `endMs`) for the webview to land on and open — the same three numbers a
+/// chosen search hit navigates by.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) const OPEN_EVENT_EVENT: &str = "open-event";
 
 /// The D-Bus action key a clicked notification comes back with, resolved to
 /// the [`Action`] it stood for — `None` for a dismissal (`__closed`) or a key
@@ -77,6 +92,7 @@ pub(crate) fn action_for_key(actions: &[Action], key: &str) -> Option<Action> {
                 (Action::Join(_), "join")
                     | (Action::Snooze5m, "snooze")
                     | (Action::AcceptInvite { .. }, "default")
+                    | (Action::OpenEvent { .. }, "default")
             )
         })
         .cloned()
@@ -145,6 +161,14 @@ pub(crate) fn notification_for(d: &Due, tz: &str) -> Notification {
         }
     }
     actions.push(Action::Snooze5m);
+    // The click itself, on every reminder: land the calendar on the
+    // occurrence. Join keeps its own button where a daemon renders buttons —
+    // a click must never join a meeting on the user's behalf.
+    actions.push(Action::OpenEvent {
+        event_id: d.key.event_id,
+        start_ms: d.key.occurrence_ms,
+        end_ms: d.occurrence_end_ms,
+    });
 
     Notification {
         title: d.title.clone().filter(|t| !t.is_empty()).unwrap_or_else(|| NO_TITLE.into()),
@@ -249,6 +273,7 @@ impl Notifier for DbusNotifier {
                 Action::Join(_) => builder.action("join", "Join"),
                 Action::Snooze5m => builder.action("snooze", "Snooze 5m"),
                 Action::AcceptInvite { .. } => builder.action("default", "Accept"),
+                Action::OpenEvent { .. } => builder.action("default", "Open"),
             };
         }
 
@@ -442,13 +467,36 @@ mod tests {
         assert_eq!(action_for_key(&offered, "__closed"), None, "dismissal is not consent");
         assert_eq!(action_for_key(&offered, "join"), None, "never offered here");
 
-        let reminder = vec![Action::Join("https://meet/x".into()), Action::Snooze5m];
+        // A real reminder's own action list, not a hand-built one, so the
+        // claim below is about what `notification_for` actually registers.
+        let reminder =
+            notification_for(&due(Some("Standup"), None, Some("https://meet/x")), SOFIA).actions;
         assert_eq!(action_for_key(&reminder, "join"), Some(Action::Join("https://meet/x".into())));
         assert_eq!(action_for_key(&reminder, "snooze"), Some(Action::Snooze5m));
+        // The click lands on the event — never on the meeting. Joining is a
+        // side effect a click must not have; Join stays on its own button.
         assert_eq!(
             action_for_key(&reminder, "default"),
-            None,
-            "a reminder registers no default — clicking one must not join a meeting"
+            Some(Action::OpenEvent { event_id: 1, start_ms: T0900Z, end_ms: T0900Z + HOUR }),
+            "clicking a reminder opens the app on the occurrence"
+        );
+    }
+
+    /// The click's payload is the `Due`'s own occurrence — id, anchor, end —
+    /// so the webview lands on the instance that fired, not the master or a
+    /// neighbour. All three numbers asserted, because a wrong `end_ms` opens
+    /// the popover on a span the grid does not show.
+    #[test]
+    fn every_reminder_carries_its_occurrence_behind_the_click() {
+        let n = notification_for(&due(Some("Coffee"), None, None), SOFIA);
+        assert_eq!(
+            n.actions.iter().filter_map(|a| match a {
+                Action::OpenEvent { event_id, start_ms, end_ms } =>
+                    Some((*event_id, *start_ms, *end_ms)),
+                _ => None,
+            }).collect::<Vec<_>>(),
+            vec![(1, T0900Z, T0900Z + HOUR)],
+            "one OpenEvent, carrying the Due's own numbers"
         );
     }
 

@@ -86,6 +86,14 @@ pub struct AppState {
     /// zone is fixed at launch, so nothing short of the restart the banner
     /// offers can make the fact stop being true.
     pub system_tz_change: std::sync::Mutex<Option<String>>,
+    /// The date a *fresh* launch was asked to open on (`omacal 2026-09-01`
+    /// with no instance yet running — the running-instance case never lands
+    /// here, it arrives over the single-instance channel while a webview
+    /// already listens). Parked because the webview does not exist yet, and
+    /// collected exactly once by `take_open_date`: a date is an instruction,
+    /// not a state, and a later reader replaying it would yank the calendar
+    /// back to a day the user has already navigated away from.
+    pub open_date: std::sync::Mutex<Option<String>>,
 }
 
 /// The notification transport, managed on its own rather than inside
@@ -131,6 +139,13 @@ async fn get_status(
 #[tauri::command]
 fn get_palette() -> theme::Palette {
     theme::resolve(theme::omarchy_theme_dir().as_deref())
+}
+
+/// The date this process was launched to show, if any — and taking it *is*
+/// the read, so a remount can never replay it. See `AppState::open_date`.
+#[tauri::command]
+fn take_open_date(state: tauri::State<'_, AppState>) -> Option<String> {
+    state.open_date.lock().expect("open date poisoned").take()
 }
 
 /// The display zone: the user's setting if present, otherwise the system zone.
@@ -979,6 +994,7 @@ pub fn run() {
             match tray::instance_action(&argv) {
                 tray::TrayAction::Quit => app.exit(0),
                 tray::TrayAction::SyncNow => sync_loop::request_now(app),
+                tray::TrayAction::OpenAt(ymd) => tray::open_at(app, &ymd),
                 tray::TrayAction::Open => tray::show_main_window(app),
             }
         }))
@@ -1073,12 +1089,22 @@ pub fn run() {
                 let _ = w.set_decorations(false);
             }
 
+            // A dated fresh launch (`omacal 2026-09-01` with nothing running)
+            // reaches setup rather than the single-instance channel. Read off
+            // the same vocabulary that channel uses, so the two entrances
+            // cannot drift.
+            let open_date = match tray::instance_action(&std::env::args().collect::<Vec<_>>()) {
+                tray::TrayAction::OpenAt(ymd) => Some(ymd),
+                _ => None,
+            };
+
             app.manage(AppState {
                 pool, demo,
                 tokens: Default::default(),
                 reauth: Default::default(),
                 update: Default::default(),
                 system_tz_change: Default::default(),
+                open_date: std::sync::Mutex::new(open_date),
             });
             sync_loop::spawn(app.handle().clone());
             theme_watch::spawn(app.handle().clone());
@@ -1149,6 +1175,16 @@ pub fn run() {
                         }
                         // Still display-only; re-queueing is §2.5's future.
                         notify::Action::Snooze5m => {}
+                        // The click itself: bring the window up, then hand
+                        // the webview the occurrence — it lands and opens
+                        // the popover exactly as a chosen search hit does.
+                        notify::Action::OpenEvent { event_id, start_ms, end_ms } => {
+                            use tauri::Emitter;
+                            tray::show_main_window(&handle);
+                            let _ = handle.emit(notify::OPEN_EVENT_EVENT, serde_json::json!({
+                                "id": event_id, "startMs": start_ms, "endMs": end_ms,
+                            }));
+                        }
                     }));
                     dbus
                 };
@@ -1191,6 +1227,7 @@ pub fn run() {
             get_year,
             get_big_year,
             get_status,
+            take_open_date,
             sign_in,
             sync_now,
             update::open_latest_release,

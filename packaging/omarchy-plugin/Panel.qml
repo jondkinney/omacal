@@ -109,7 +109,9 @@ Panel {
     return ""
   }
 
-  function openApp() {
+  // `ymd` optional: with it, the app lands on that day (a row's own date);
+  // without, this is the plain "bring up the calendar" it always was.
+  function openApp(ymd) {
     if (root.appRunning) {
       // A running app answers the messenger with show()+set_focus(), and on
       // Hyprland an app-side focus request cannot pull the user to a window
@@ -128,15 +130,30 @@ Panel {
       // floating omacal covered by another float takes keyboard focus while
       // staying hidden, which reads as a dead button with keystrokes going
       // to the wrong window.
+      // The optional date rides the same invocation (OmaCal ≥ 0.3.14 parses
+      // a positional YYYY-MM-DD): against a running app it crosses the
+      // single-instance channel and moves the calendar; on a fresh launch
+      // the app collects it at startup. Interpolated into the shell line
+      // only as the fixed shape ymdOf produces — never free text.
       Quickshell.execDetached(["sh", "-c",
-        "(omacal >/dev/null 2>&1 &); sleep 0.4; " +
+        "(omacal " + (ymd || "") + " >/dev/null 2>&1 &); sleep 0.4; " +
         "hyprctl dispatch 'hl.dsp.focus({ window = \"class:omacal\" })'; " +
         "exec hyprctl dispatch 'hl.dsp.window.bring_to_top({ window = \"class:omacal\" })'"])
     } else {
-      Quickshell.execDetached(["omacal"])
+      Quickshell.execDetached(ymd ? ["omacal", ymd] : ["omacal"])
     }
     root.appRunning = true // optimistic; the next check corrects if not
     root.close()
+  }
+
+  // The local calendar date of an instant, spelled the one way the app's
+  // argv parser admits. Local deliberately: the bar and the calendar sit in
+  // the same session, so the row's day and the day the app lands on agree.
+  function ymdOf(ms) {
+    var d = new Date(ms)
+    var mm = ("0" + (d.getMonth() + 1)).slice(-2)
+    var dd = ("0" + d.getDate()).slice(-2)
+    return d.getFullYear() + "-" + mm + "-" + dd
   }
 
   // The tray menu's other two actions, carried over the app's
@@ -159,7 +176,9 @@ Panel {
       Qt.openUrlExternally(ev.conference)
       root.close()
     } else {
-      openApp()
+      // Not just up — *there*: the app opens anchored on the row's own day,
+      // so a glance at Friday's meeting continues as Friday on the grid.
+      openApp(ymdOf(ev.start_ms))
     }
   }
 

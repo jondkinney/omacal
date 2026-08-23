@@ -6,7 +6,7 @@
     getWeek, getDay, getMonth, getYear, getBigYear, weekStart,
     type WeekPayload, type MonthPayload, type YearPayload, type BigYearPayload, type UiEvent,
   } from './lib/api';
-  import { getStatus, openLatestRelease, restartApp, signIn, syncNow, type AppStatus } from './lib/status';
+  import { getStatus, openLatestRelease, restartApp, signIn, syncNow, takeOpenDate, type AppStatus } from './lib/status';
   import { changedMeetings, declinedGuests, pendingInvites } from './lib/invites';
   import { getCalendars, offerableCalendarId, type Calendar } from './lib/calendars';
   import {
@@ -43,6 +43,16 @@
     const d = new Date(ms);
     d.setHours(0, 0, 0, 0);
     return d.getTime();
+  }
+
+  /** Midnight local on an ISO `YYYY-MM-DD` — the shape the backend's date
+   *  parser guarantees (`tray::parse_date`), which is why this needs no
+   *  validation of its own: nothing else ever sends one. Split by hand
+   *  rather than `new Date(ymd)`, because the string form parses as UTC
+   *  midnight and lands on the previous day for every zone east of nowhere. */
+  function ymdMs(ymd: string): number {
+    const [y, m, d] = ymd.split('-').map(Number);
+    return new Date(y, m - 1, d).getTime();
   }
 
   // The single date every view reads against. Switching views never touches
@@ -113,6 +123,33 @@
   $effect(() => {
     const un = listen('system-tz-changed', () => { void refreshStatus(); });
     return () => { un.then((f) => f()); };
+  });
+
+  // The two external entrances (`omacal 2026-09-01`, a clicked reminder).
+  // Anchor-only for a date: the view the user last used is the view they
+  // get, exactly as `T` behaves. A clicked reminder also opens the popover
+  // on its occurrence — the same landing a chosen search hit gets, down to
+  // the keyboard rect, because a notification click has no pointer position
+  // either.
+  $effect(() => {
+    const un = listen<string>('open-date', (e) => { anchorMs = ymdMs(e.payload); });
+    return () => { un.then((f) => f()); };
+  });
+  $effect(() => {
+    const un = listen<{ id: number; startMs: number; endMs: number }>('open-event', (e) => {
+      anchorMs = dayStart(e.payload.startMs);
+      void openOccurrence(e.payload.id, e.payload.startMs, e.payload.endMs, keyboardAnchor());
+    });
+    return () => { un.then((f) => f()); };
+  });
+
+  // A dated *fresh* launch parks its date on the backend (the webview did
+  // not exist to hear an event); collect it once on mount. `take` semantics
+  // backend-side, so a hot-reload remount cannot replay it.
+  $effect(() => {
+    void takeOpenDate().then((ymd) => {
+      if (ymd) anchorMs = ymdMs(ymd);
+    });
   });
 
   async function refreshStatus() {
