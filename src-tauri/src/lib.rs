@@ -1010,6 +1010,17 @@ pub fn run() {
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
 
+            // Owner-only on the whole directory, every launch: the store
+            // tightens the database files themselves, but WebKit drops its
+            // caches here too, and 0700 on the directory covers every file
+            // anything adds later. Best-effort for the store's reason — a
+            // filesystem without POSIX modes is no reason to refuse to start.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+            }
+
             // Demo mode writes to its own database file, never the real one, so
             // a user exploring the demo can never end up with synthetic events
             // mixed into their actual calendar store.

@@ -40,8 +40,47 @@ pub async fn connect(url: &str) -> anyhow::Result<SqlitePool> {
         // WAL keeps the UI's reads from blocking the sync task's writes.
         .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal);
     let pool = SqlitePoolOptions::new().max_connections(5).connect_with(opts).await?;
+    // Between connect and migrate, deliberately: the file exists now, and
+    // SQLite creates `-wal`/`-shm` with the main file's permissions — so a
+    // database tightened *before* the first write bears sidecars that are
+    // born tight, and the explicit sweep below catches whatever an earlier
+    // release already left at the umask default.
+    harden_permissions(url);
     sqlx::migrate!("./migrations").run(&pool).await?;
     Ok(pool)
+}
+
+/// Owner-only permissions on the database and both its sidecars — all three
+/// in one place, deliberately: these are cached calendars, readable by every
+/// local account until now (0644 under the usual umask), and hardening the
+/// database while forgetting the WAL leaves the same rows readable in the
+/// log. Calix shipped exactly that split — db in one release, `-wal`/`-shm`
+/// as a security fix the day after — and this sweep exists so nobody has to
+/// re-learn it here.
+///
+/// Best-effort and silent: the files may sit on a filesystem without POSIX
+/// modes, and refusing to open someone's calendar over a failed chmod would
+/// cost more than it protects.
+#[cfg(unix)]
+fn harden_permissions(url: &str) {
+    use std::os::unix::fs::PermissionsExt;
+    let Some(db) = db_file_of(url) else { return };
+    for suffix in ["", "-wal", "-shm"] {
+        let path = format!("{db}{suffix}");
+        if std::path::Path::new(&path).exists() {
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn harden_permissions(_url: &str) {}
+
+/// The filesystem path inside a `sqlite://…` URL, `None` for every other
+/// shape — `:memory:` most of all, which has no file to chmod.
+#[cfg(unix)]
+fn db_file_of(url: &str) -> Option<&str> {
+    url.strip_prefix("sqlite://").filter(|p| !p.is_empty() && !p.contains(":memory:"))
 }
 
 /// An isolated in-memory database for tests. `max_connections(1)` is required:
@@ -71,6 +110,72 @@ mod tests {
                          "mutations", "settings", "sync_state"] {
             assert!(names.contains(&expected.to_string()), "missing table {expected}");
         }
+    }
+
+    /// A fresh database comes up owner-only, and so do the WAL and shm files
+    /// SQLite creates for it — the inheritance half of `harden_permissions`.
+    /// The WAL's existence is asserted, not assumed: a test that shrugged at
+    /// a missing sidecar could not witness the claim it is here to make.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_fresh_database_and_its_sidecars_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("omacal-store-fresh-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("t.db");
+
+        let pool = connect(&format!("sqlite://{}", db.display())).await.unwrap();
+        let mode = |p: &std::path::Path| {
+            std::fs::metadata(p).map(|m| m.permissions().mode() & 0o777)
+        };
+        assert_eq!(mode(&db).unwrap(), 0o600, "the database itself");
+        let wal = dir.join("t.db-wal");
+        assert_eq!(
+            mode(&wal).expect("the WAL must exist after migrations, or this test is blind"),
+            0o600,
+            "the write-ahead log carries the same rows as the database"
+        );
+
+        drop(pool);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The retroactive half: files an earlier release created at the umask
+    /// default (0644 — world-readable) are tightened on the next open, the
+    /// sidecar included.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn an_existing_world_readable_database_is_tightened_on_open() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("omacal-store-old-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("t.db");
+        // Zero bytes is a valid fresh database to SQLite, which makes it a
+        // faithful stand-in for any pre-hardening install.
+        for path in [&db, &dir.join("t.db-wal")] {
+            std::fs::write(path, b"").unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        }
+
+        let pool = connect(&format!("sqlite://{}", db.display())).await.unwrap();
+        for suffix in ["", "-wal"] {
+            let path = dir.join(format!("t.db{suffix}"));
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "t.db{suffix} was left readable by other accounts");
+        }
+
+        drop(pool);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The URL parser feeding the chmod: real files in, every other shape out.
+    #[cfg(unix)]
+    #[test]
+    fn only_file_backed_urls_are_hardened() {
+        assert_eq!(db_file_of("sqlite:///home/x/omacal.db"), Some("/home/x/omacal.db"));
+        assert_eq!(db_file_of("sqlite::memory:"), None);
+        assert_eq!(db_file_of("sqlite://"), None);
+        assert_eq!(db_file_of("postgres://elsewhere/db"), None);
     }
 
     #[tokio::test]
