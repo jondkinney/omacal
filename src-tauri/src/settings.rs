@@ -396,6 +396,20 @@ pub async fn set_display_timezone(
     Ok(())
 }
 
+/// Restarts the app because the user asked to — the system-tz banner's one
+/// action. The same delayed shape as [`set_display_timezone`]'s restart and
+/// for the same reason: the reply has to reach the webview before the
+/// process re-execs, so the button can say "restarting" instead of dying
+/// mid-await. No state to write first: the restart *is* the fix, because the
+/// fresh process reads the zone the system already moved to.
+#[tauri::command]
+pub fn restart_app(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        app.restart();
+    });
+}
+
 #[tauri::command]
 pub async fn set_notifications_enabled(
     state: tauri::State<'_, AppState>,

@@ -26,6 +26,7 @@ mod tasks;
 mod theme;
 mod theme_watch;
 mod tray;
+mod tz_watch;
 #[cfg(target_os = "linux")]
 mod omarchy_plugin;
 mod upcoming;
@@ -78,6 +79,13 @@ pub struct AppState {
     /// open. In memory only: on relaunch the first check re-learns it in one
     /// request, same reasoning as `reauth`.
     pub update: std::sync::Mutex<Option<update::UpdateNotice>>,
+    /// The system zone's new IANA name, once `tz_watch` has seen it move out
+    /// from under this process — `None` until then. Carried to the UI on
+    /// `get_status`, where it becomes the restart banner. In memory only,
+    /// and deliberately never cleared while the process lives: the process
+    /// zone is fixed at launch, so nothing short of the restart the banner
+    /// offers can make the fact stop being true.
+    pub system_tz_change: std::sync::Mutex<Option<String>>,
 }
 
 /// The notification transport, managed on its own rather than inside
@@ -113,8 +121,9 @@ async fn get_status(
     let needs_reauth: Vec<String> =
         state.reauth.lock().expect("reauth mark poisoned").iter().cloned().collect();
     let update = state.update.lock().expect("update notice poisoned").clone();
+    let tz_change = state.system_tz_change.lock().expect("tz change poisoned").clone();
     let version = app.package_info().version.to_string();
-    status::read_status(&state.pool, state.demo, overlay, needs_reauth, update, version)
+    status::read_status(&state.pool, state.demo, overlay, needs_reauth, update, tz_change, version)
         .await
         .map_err(|e| e.to_string())
 }
@@ -1069,9 +1078,12 @@ pub fn run() {
                 tokens: Default::default(),
                 reauth: Default::default(),
                 update: Default::default(),
+                system_tz_change: Default::default(),
             });
             sync_loop::spawn(app.handle().clone());
             theme_watch::spawn(app.handle().clone());
+            #[cfg(target_os = "linux")]
+            tz_watch::spawn(app.handle().clone());
             // Seed the upcoming feed from whatever is already in the store,
             // so a bar widget has an answer before the first sync completes.
             {
@@ -1194,6 +1206,7 @@ pub fn run() {
             settings::set_tray_icon,
             settings::set_display_timezone,
             settings::list_timezones,
+            settings::restart_app,
             caldav_account::connect_caldav,
             accounts::list_accounts,
             accounts::sign_out,

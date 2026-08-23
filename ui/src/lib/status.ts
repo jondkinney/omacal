@@ -14,6 +14,12 @@ export type AppStatus = {
   /** The running build's own version, shown in Settings. Same source the
    *  update check compares against, so the two can never disagree. */
   version: string;
+  /** The system time zone's new IANA name, when it moved out from under this
+   *  process — whose own zone (the one every time on screen is drawn in) is
+   *  fixed at launch. Null means nothing moved, or the display zone is
+   *  pinned by setting and cannot go stale. The header turns this into the
+   *  banner whose one action is the restart that catches the app up. */
+  system_tz_change: string | null;
   last_sync_ms: number | null;
   demo: boolean;
   /** True when the window's controls are drawn over the webview instead of in
@@ -37,6 +43,10 @@ export const syncNow = () => invoke<number>('sync_now');
  *  purpose: the backend opens the URL *it* fetched, so the webview never
  *  chooses what the browser is pointed at. */
 export const openLatestRelease = () => invoke<void>('open_latest_release');
+/** Restarts the app — the moved-zone banner's one action. The backend delays
+ *  the re-exec long enough for this call to resolve, so the button can say
+ *  "Restarting…" instead of dying mid-await. */
+export const restartApp = () => invoke<void>('restart_app');
 
 /**
  * What the header's status light is showing.
@@ -123,6 +133,18 @@ export function syncLight(
  */
 export function reauthMessage(emails: string[]): string {
   return `Google sign-in for ${emails.join(', ')} is no longer valid. Reconnect to resume syncing.`;
+}
+
+/**
+ * The moved-zone banner's sentence. Both zones by name, because the damage
+ * is the *difference*: "your time zone changed" on a machine whose clock
+ * looks fine reads as a riddle, while naming the zone still on screen says
+ * exactly what every hour on the grid currently means. `shownZone` is the
+ * webview's own frozen zone — the header already knows it — so the sentence
+ * cannot drift from what the grid is actually drawing.
+ */
+export function tzChangeMessage(newZone: string, shownZone: string): string {
+  return `This machine moved to ${newZone}, but times are still shown in ${shownZone}. Restart OmaCal to catch up.`;
 }
 
 /** "just now" / "4 min ago" / "2 h ago" — deliberately coarse. */

@@ -6,7 +6,7 @@
     getWeek, getDay, getMonth, getYear, getBigYear, weekStart,
     type WeekPayload, type MonthPayload, type YearPayload, type BigYearPayload, type UiEvent,
   } from './lib/api';
-  import { getStatus, openLatestRelease, signIn, syncNow, type AppStatus } from './lib/status';
+  import { getStatus, openLatestRelease, restartApp, signIn, syncNow, type AppStatus } from './lib/status';
   import { changedMeetings, declinedGuests, pendingInvites } from './lib/invites';
   import { getCalendars, offerableCalendarId, type Calendar } from './lib/calendars';
   import {
@@ -104,6 +104,14 @@
   // the watcher itself never emits there.
   $effect(() => {
     const un = listen<Palette>('theme-changed', (e) => setPalette(e.payload));
+    return () => { un.then((f) => f()); };
+  });
+
+  // The system zone moved out from under the process (tz_watch). The fact
+  // itself rides on `get_status`, so a refetch is the whole reaction — the
+  // header grows its banner from the same field a fresh mount would read.
+  $effect(() => {
+    const un = listen('system-tz-changed', () => { void refreshStatus(); });
     return () => { un.then((f) => f()); };
   });
 
@@ -1148,6 +1156,7 @@
     }}
     onSignIn={handleSignIn}
     onWhatsNew={() => { void openLatestRelease(); }}
+    onRestart={() => { void restartApp(); }}
     onSync={handleSync}
     oncalendarchange={handleCalendarChange}
     {invites}

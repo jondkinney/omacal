@@ -852,6 +852,29 @@ test.describe('Header', () => {
     await expect(page.getByTestId('update-banner')).toHaveCount(0);
   });
 
+  /** The moved-zone banner: present when status says the system zone left
+   *  this process behind, absent over the same account healthy (the field is
+   *  the gate), red unlike the update notice (every hour on the grid is
+   *  currently wrong data, not a pending option), naming where the machine
+   *  went, and carrying the restart that is its only real fix — which
+   *  acknowledges the click, because the re-exec takes a beat to arrive. */
+  test('a system zone that moved is named, offered a restart, dismissible', async ({ page }) => {
+    await page.goto(show('Header', 'tzchange'));
+    const banner = page.getByTestId('tz-banner');
+    await expect(banner).toContainText('This machine moved to Asia/Kolkata');
+    await expect(banner).toHaveClass(/\berr\b/);
+
+    const restart = banner.getByRole('button', { name: 'Restart' });
+    await restart.click();
+    await expect(banner.getByRole('button', { name: 'Restarting…' })).toBeDisabled();
+
+    await banner.getByRole('button', { name: 'Dismiss time zone notice' }).click();
+    await expect(page.getByTestId('tz-banner')).toHaveCount(0);
+
+    await page.goto(show('Header', 'connected'));
+    await expect(page.getByTestId('tz-banner')).toHaveCount(0);
+  });
+
   /** The Settings colophon: the one place the app says what version it is —
    *  which a bug report needs findable, and the update notice's "0.2.0 is
    *  available" needs comparable against. '9.9.9' is the fixture default,

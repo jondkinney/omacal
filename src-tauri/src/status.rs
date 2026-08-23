@@ -22,6 +22,13 @@ pub struct AppStatus {
     /// source the update check compares against (`package_info`), so the app
     /// can never claim one version and check another.
     pub version: String,
+    /// The system zone's new IANA name, when `tz_watch` has seen it move out
+    /// from under this process — whose own zone is fixed at launch, so every
+    /// time on screen is still drawn in the old one. The UI turns this into
+    /// a banner whose one action is the restart that catches the app up.
+    /// `None` means the system zone is (still) the one this process started
+    /// in, or the display zone is pinned by setting and cannot go stale.
+    pub system_tz_change: Option<String>,
     pub last_sync_ms: Option<i64>,
     /// True when the app is running on synthetic data, so the UI can say so.
     pub demo: bool,
@@ -58,6 +65,7 @@ pub async fn read_status(
     overlay_titlebar: bool,
     needs_reauth: Vec<String>,
     update: Option<crate::update::UpdateNotice>,
+    system_tz_change: Option<String>,
     version: String,
 ) -> anyhow::Result<AppStatus> {
     let accounts: Vec<String> =
@@ -70,6 +78,7 @@ pub async fn read_status(
         needs_reauth,
         update,
         version,
+        system_tz_change,
         last_sync_ms: last_sync_ms(pool).await?,
         demo,
         overlay_titlebar,
@@ -120,7 +129,7 @@ mod tests {
     #[tokio::test]
     async fn status_reports_no_accounts_on_a_fresh_database() {
         let pool = omacal_store::connect_memory().await.unwrap();
-        let s = read_status(&pool, false, false, vec![], None, "1.2.3".into()).await.unwrap();
+        let s = read_status(&pool, false, false, vec![], None, None, "1.2.3".into()).await.unwrap();
         assert!(s.accounts.is_empty());
         assert_eq!(s.last_sync_ms, None);
         assert!(!s.demo);
@@ -129,7 +138,7 @@ mod tests {
     #[tokio::test]
     async fn status_lists_connected_accounts_by_email() {
         let pool = pool_with_account().await;
-        let s = read_status(&pool, false, false, vec![], None, "1.2.3".into()).await.unwrap();
+        let s = read_status(&pool, false, false, vec![], None, None, "1.2.3".into()).await.unwrap();
         assert_eq!(s.accounts, vec!["me@x.com".to_string()]);
     }
 
@@ -137,7 +146,7 @@ mod tests {
     async fn recording_a_sync_round_trips() {
         let pool = pool_with_account().await;
         record_sync(&pool, 1_785_715_200_000).await.unwrap();
-        let s = read_status(&pool, false, false, vec![], None, "1.2.3".into()).await.unwrap();
+        let s = read_status(&pool, false, false, vec![], None, None, "1.2.3".into()).await.unwrap();
         assert_eq!(s.last_sync_ms, Some(1_785_715_200_000));
     }
 
@@ -146,7 +155,7 @@ mod tests {
         let pool = pool_with_account().await;
         record_sync(&pool, 1_000).await.unwrap();
         record_sync(&pool, 2_000).await.unwrap();
-        let s = read_status(&pool, false, false, vec![], None, "1.2.3".into()).await.unwrap();
+        let s = read_status(&pool, false, false, vec![], None, None, "1.2.3".into()).await.unwrap();
         assert_eq!(s.last_sync_ms, Some(2_000));
     }
 
@@ -157,10 +166,10 @@ mod tests {
     async fn status_surfaces_the_accounts_needing_reconnection() {
         let pool = pool_with_account().await;
 
-        let s = read_status(&pool, false, false, vec!["me@x.com".into()], None, "1.2.3".into()).await.unwrap();
+        let s = read_status(&pool, false, false, vec!["me@x.com".into()], None, None, "1.2.3".into()).await.unwrap();
         assert_eq!(s.needs_reauth, vec!["me@x.com".to_string()]);
 
-        let none = read_status(&pool, false, false, vec![], None, "1.2.3".into()).await.unwrap();
+        let none = read_status(&pool, false, false, vec![], None, None, "1.2.3".into()).await.unwrap();
         assert!(none.needs_reauth.is_empty(), "a healthy account was told to reconnect");
     }
 
@@ -170,7 +179,7 @@ mod tests {
     #[tokio::test]
     async fn status_carries_the_running_version() {
         let pool = pool_with_account().await;
-        let s = read_status(&pool, false, false, vec![], None, "1.2.3".into()).await.unwrap();
+        let s = read_status(&pool, false, false, vec![], None, None, "1.2.3".into()).await.unwrap();
         assert_eq!(s.version, "1.2.3");
     }
 
@@ -184,13 +193,30 @@ mod tests {
             version: "0.2.0".into(),
             url: "https://github.com/x3me/omacal/releases/tag/v0.2.0".into(),
         };
-        let s = read_status(&pool, false, false, vec![], Some(n), "1.2.3".into()).await.unwrap();
+        let s = read_status(&pool, false, false, vec![], Some(n), None, "1.2.3".into()).await.unwrap();
         let got = s.update.expect("the notice was dropped on the way to the UI");
         assert_eq!(got.version, "0.2.0");
         assert!(got.url.ends_with("v0.2.0"));
 
-        let current = read_status(&pool, false, false, vec![], None, "1.2.3".into()).await.unwrap();
+        let current = read_status(&pool, false, false, vec![], None, None, "1.2.3".into()).await.unwrap();
         assert!(current.update.is_none(), "a current install was told to update");
+    }
+
+    /// The moved-zone notice rides through as the zone's own name: the banner
+    /// has to say where the system went, or "your time zone changed" reads as
+    /// a riddle on a machine whose clock looks fine.
+    #[tokio::test]
+    async fn status_surfaces_a_system_zone_that_moved() {
+        let pool = pool_with_account().await;
+
+        let s = read_status(
+            &pool, false, false, vec![], None, Some("Asia/Kolkata".into()), "1.2.3".into(),
+        ).await.unwrap();
+        assert_eq!(s.system_tz_change.as_deref(), Some("Asia/Kolkata"));
+
+        let still = read_status(&pool, false, false, vec![], None, None, "1.2.3".into())
+            .await.unwrap();
+        assert!(still.system_tz_change.is_none(), "a zone that never moved grew a banner");
     }
 
     /// Both flags at once, and crossed: `demo` and `overlay_titlebar` are
@@ -201,11 +227,11 @@ mod tests {
     async fn the_demo_and_overlay_flags_are_surfaced_independently() {
         let pool = omacal_store::connect_memory().await.unwrap();
 
-        let demo_only = read_status(&pool, true, false, vec![], None, "1.2.3".into()).await.unwrap();
+        let demo_only = read_status(&pool, true, false, vec![], None, None, "1.2.3".into()).await.unwrap();
         assert!(demo_only.demo, "the demo badge would never appear");
         assert!(!demo_only.overlay_titlebar, "demo leaked into the titlebar flag");
 
-        let overlay_only = read_status(&pool, false, true, vec![], None, "1.2.3".into()).await.unwrap();
+        let overlay_only = read_status(&pool, false, true, vec![], None, None, "1.2.3".into()).await.unwrap();
         assert!(overlay_only.overlay_titlebar, "the header would never clear the traffic lights");
         assert!(!overlay_only.demo, "the titlebar flag leaked into the demo badge");
     }

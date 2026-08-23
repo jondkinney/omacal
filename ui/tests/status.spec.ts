@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { syncLight, relativeTime, type SyncState } from '../src/lib/status';
+import { syncLight, relativeTime, tzChangeMessage, type SyncState } from '../src/lib/status';
 
 /**
  * The status light's whole answer, as a function.
@@ -136,5 +136,16 @@ test.describe('relativeTime', () => {
     expect(relativeTime(NOW - 5 * 60_000, NOW)).toBe('5 min ago');
     expect(relativeTime(NOW - 3 * 3_600_000, NOW)).toBe('3 h ago');
     expect(relativeTime(NOW - 2 * 86_400_000, NOW)).toBe('2 d ago');
+  });
+});
+
+test.describe('tzChangeMessage', () => {
+  // Both zones by name: the difference is the damage, and the sentence has to
+  // say what every hour on the grid currently means, not just where the
+  // machine went.
+  test('names where the machine went and what is still on screen', () => {
+    expect(tzChangeMessage('Asia/Kolkata', 'Europe/Sofia')).toBe(
+      'This machine moved to Asia/Kolkata, but times are still shown in Europe/Sofia. Restart OmaCal to catch up.'
+    );
   });
 });

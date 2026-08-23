@@ -1,6 +1,6 @@
 <!-- ui/src/lib/Header.svelte -->
 <script lang="ts">
-  import { reauthMessage, syncLight, type AppStatus } from './status';
+  import { reauthMessage, syncLight, tzChangeMessage, type AppStatus } from './status';
   import type { Calendar } from './calendars';
   import { escapeCloses } from './dismiss.svelte';
   import { listable } from './filmstrip';
@@ -16,7 +16,7 @@
     onsettingschange,
     listMode, onToggleList,
     onPrev, onNext, onToday, onSearch, onSignIn, onSync, oncalendarchange,
-    onWhatsNew,
+    onWhatsNew, onRestart,
     invites = [], declines = [], changes = [], oninvitesanswered = () => {},
     open = $bindable(false),
   }: {
@@ -64,6 +64,9 @@
      *  Passed in like every other invoke, so this component stays free of
      *  Tauri imports. */
     onWhatsNew: () => void;
+    /** Restarts the app — the moved-zone banner's one action, passed in for
+     *  the same reason as `onWhatsNew`. */
+    onRestart: () => void;
     /** Bound through to `CalendarPopover` — lets `App` open the picker
      *  straight after a sign-in, from outside the popover's own trigger. */
     open?: boolean;
@@ -101,6 +104,16 @@
   /** Dismissal is session-local on purpose: the notice returns on the next
    *  launch, which is the gentlest cadence that still eventually lands. */
   let updateDismissed = $state(false);
+  /** Where the system zone went, when it moved out from under this process. */
+  const tzChange = $derived(status?.system_tz_change ?? null);
+  /** Session-local like `updateDismissed` — living with the old zone until a
+   *  restart that suits is a legitimate choice, and the state that caused the
+   *  banner cannot recur harder than it already has. */
+  let tzChangeDismissed = $state(false);
+  /** Restart was clicked; the process is about to re-exec. Never unset —
+   *  either the window dies, or something went wrong beyond this button's
+   *  power to fix. */
+  let restarting = $state(false);
 
   // "Synced 4 min ago" is a function of the clock, so it has to be told the
   // clock moved. Without this it only ever recomputes when `status` changes —
@@ -373,6 +386,28 @@
     <button class="primary" onclick={onSignIn} disabled={busy}>
       {busy ? 'Connecting…' : 'Reconnect'}
     </button>
+  </p>
+{/if}
+
+<!-- The moved-zone banner, and why it wears `.err` while the update notice
+     below does not: every hour on the grid is currently drawn in a zone this
+     machine has left, which is wrong *data*, not a pending option. Below
+     reauth (a broken sign-in still outranks everything) and above the update
+     notice. Dismissible where reauth is not: living with the old zone until
+     a restart that suits is a legitimate choice, and the banner returns on
+     the next launch only if the zones still disagree — which they cannot,
+     because the next launch reads the new zone. -->
+{#if tzChange && !tzChangeDismissed}
+  <p class="err reauth" data-testid="tz-banner">
+    <span>{tzChangeMessage(tzChange, zone)}</span>
+    <span class="notice-actions">
+      <button class="primary" disabled={restarting}
+              onclick={() => { restarting = true; onRestart(); }}>
+        {restarting ? 'Restarting…' : 'Restart'}
+      </button>
+      <button aria-label="Dismiss time zone notice" title="Dismiss"
+              onclick={() => (tzChangeDismissed = true)}>×</button>
+    </span>
   </p>
 {/if}
 

@@ -299,21 +299,24 @@ const noop = () => {};
 // needing re-consent or a pending update is one fixture's story each, not
 // thirty fixtures' boilerplate.
 const header = (
-  status: Omit<AppStatus, 'needs_reauth' | 'update' | 'version'> & {
+  status: Omit<AppStatus, 'needs_reauth' | 'update' | 'version' | 'system_tz_change'> & {
     needs_reauth?: string[];
     update?: AppStatus['update'];
     version?: string;
+    system_tz_change?: string | null;
   },
   busy = false,
 ) => ({
   // '9.9.9' rather than the real version: a spec asserting the footer must
   // fail when the wiring breaks, not ride along on a hardcoded string that
   // happens to match the build.
-  status: { needs_reauth: [], update: null, version: '9.9.9', ...status } as AppStatus,
+  status: {
+    needs_reauth: [], update: null, version: '9.9.9', system_tz_change: null, ...status,
+  } as AppStatus,
   anchorMs: MON, weekStartMs: MON, busy, error: null as string | null, calendars: [] as Calendar[],
   view: 'week' as View, onpick: noop, listMode: false, onToggleList: noop,
   onPrev: noop, onNext: noop, onToday: noop, onSearch: noop, onSignIn: noop, onSync: noop,
-  oncalendarchange: noop, onWhatsNew: noop,
+  oncalendarchange: noop, onWhatsNew: noop, onRestart: noop,
 });
 
 /** Exactly five minutes before `FIXED_NOW`, so a frozen clock always reads "5 min ago". */
@@ -1825,6 +1828,13 @@ export const FIXTURES: Record<string, Record<string, any>> = {
     update: header({
       accounts: ['me@x.com'], last_sync_ms: FIVE_MIN_AGO, demo: false, overlay_titlebar: false,
       update: { version: '0.2.0', url: 'https://github.com/x3me/omacal/releases/tag/v0.2.0' },
+    }),
+    // The system zone moved out from under the process — the machine is in
+    // Kolkata, the grid still draws whatever zone the webview froze at
+    // launch. Healthy account otherwise, so the banner is the one difference.
+    tzchange: header({
+      accounts: ['me@x.com'], last_sync_ms: FIVE_MIN_AGO, demo: false, overlay_titlebar: false,
+      system_tz_change: 'Asia/Kolkata',
     }),
     // An account the backend has stopped syncing: still in `accounts` (it is
     // connected; its data is just going stale), also in `needs_reauth`.
