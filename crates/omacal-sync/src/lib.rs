@@ -137,6 +137,65 @@ async fn apply(
 
     let mut outcome = SyncOutcome { did_full_resync, ..Default::default() };
 
+    // On a full resync the fetched set is the whole truth for the window, and
+    // it has to be *applied* as the whole truth: an event deleted upstream
+    // while the token was stale is in nobody's diff — a time-bounded full
+    // fetch cannot return its tombstone (a cancelled one-off carries no times
+    // to bound by), and the fresh token starts counting *after* the deletion.
+    // Upsert-only application therefore left such a row behind as a permanent
+    // ghost the user could see but never remove (found live, 2026-08-23: a
+    // meeting deleted during a gap survived every sync since). So: any stored
+    // row this full fetch did not return, and which the fetch *would* have
+    // returned were it still alive — a master with a rule, or anything ending
+    // inside the window — no longer exists.
+    //
+    // Rows ending before the window are left alone even though absent from
+    // the response: the fetch never asked about them, so their absence says
+    // nothing. A rule-carrying master is fair game regardless of its own
+    // (possibly ancient) end: an alive series with any occurrence in the
+    // window is always in the response, so a missing one is dead either way —
+    // ended before the window, invisible; or deleted, the ghost this exists
+    // to remove.
+    if did_full_resync {
+        let fetched: Vec<&str> = changes
+            .iter()
+            .map(|c| match c {
+                Change::Upsert(row) => row.google_id.as_str(),
+                Change::Delete(google_id) => google_id.as_str(),
+            })
+            .collect();
+        // One statement bound to the full set — chunking a NOT IN would
+        // over-delete ids living in a later chunk. SQLite's parameter
+        // ceiling is 32766; `maxResults` pages cap a window far below it.
+        // Bare `?` throughout — never mixed with `?N`: sqlx binds by call
+        // order against the numbering SQLite infers, and the mixture bound
+        // the id list one slot off (caught by this feature's own test: the
+        // sweep deleted the row it had just been told to keep).
+        let placeholders = vec!["?"; fetched.len()].join(", ");
+        let sql = if fetched.is_empty() {
+            "DELETE FROM events
+              WHERE calendar_id = ?
+                AND (recurrence IS NOT NULL OR end_utc >= ?)"
+                .to_string()
+        } else {
+            format!(
+                "DELETE FROM events
+                  WHERE calendar_id = ?
+                    AND (recurrence IS NOT NULL OR end_utc >= ?)
+                    AND google_id NOT IN ({placeholders})"
+            )
+        };
+        let mut q = sqlx::query(&sql).bind(calendar_id).bind(window_start_ms);
+        for id in &fetched {
+            q = q.bind(*id);
+        }
+        let swept = q.execute(&mut *tx).await?.rows_affected() as usize;
+        outcome.deleted += swept;
+        if swept > 0 {
+            tracing::info!(calendar_id, swept, "full resync removed rows the refetch no longer returned");
+        }
+    }
+
     for change in changes {
         match change {
             Change::Upsert(row) => {
@@ -347,6 +406,84 @@ mod tests {
             "SELECT sync_token FROM sync_state WHERE calendar_id = 1")
             .fetch_one(&pool).await.unwrap();
         assert_eq!(tok.as_deref(), Some("tok-fresh"));
+    }
+
+    /// The other half of a full resync, and the half that was missing
+    /// (found live, 2026-08-23): the fetched set is the whole truth for the
+    /// window, so a stored row the refetch no longer returned — an event
+    /// deleted upstream while the token was stale, whose tombstone no
+    /// time-bounded fetch can carry and no fresh token will ever mention —
+    /// must go. A row *ending before the window* stays: the fetch never
+    /// asked about it, so its absence says nothing.
+    #[tokio::test]
+    async fn a_full_resync_sweeps_rows_the_refetch_no_longer_returned() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/calendars/primary/events"))
+            .and(query_param("syncToken", "stale"))
+            .respond_with(ResponseTemplate::new(410))
+            .mount(&server).await;
+        // The full fetch returns only e1.
+        Mock::given(method("GET")).and(path("/calendars/primary/events"))
+            .and(query_param("singleEvents", "false"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(one_event_body("tok-fresh")))
+            .mount(&server).await;
+
+        let pool = seeded_pool().await;
+        sqlx::query(
+            "INSERT INTO sync_state (calendar_id, sync_token, window_start, window_end)
+             VALUES (1, 'stale', 0, 0)")
+            .execute(&pool).await.unwrap();
+        let window_start = 1_000_000_i64;
+        // e1: refetched, survives. ghost: in-window, absent from the refetch
+        // — the deleted-during-the-gap shape — must be swept. relic: ended
+        // before the window, absent because the fetch never covered it —
+        // must survive. dead-series: a rule-carrying master the refetch did
+        // not return; a live series with any occurrence in the window is
+        // always returned, so an absent one is gone either way.
+        omacal_store::upsert_event(&pool, &stored("e1", 2_000_000, 2_100_000)).await.unwrap();
+        omacal_store::upsert_event(&pool, &stored("ghost", 3_000_000, 3_100_000)).await.unwrap();
+        omacal_store::upsert_event(&pool, &stored("relic", 100, 200)).await.unwrap();
+        let mut dead = stored("dead-series", 100, 200);
+        dead.recurrence = Some("RRULE:FREQ=WEEKLY;UNTIL=19700101T000000Z".into());
+        omacal_store::upsert_event(&pool, &dead).await.unwrap();
+
+        let client = CalendarClient::new(server.uri(), "at-1");
+        let out = sync_calendar(&pool, &client, 1, "primary", window_start, 9_999_999_999_999)
+            .await.unwrap();
+        assert!(out.did_full_resync);
+        assert_eq!(out.deleted, 2, "the ghost and the dead series");
+
+        let left: Vec<String> = sqlx::query_scalar(
+            "SELECT google_id FROM events WHERE calendar_id = 1 ORDER BY google_id")
+            .fetch_all(&pool).await.unwrap();
+        assert_eq!(left, vec!["e1".to_string(), "relic".to_string()]);
+    }
+
+    /// And an *incremental* pass sweeps nothing: absence from a diff is the
+    /// normal case for every unchanged event, not evidence of deletion.
+    #[tokio::test]
+    async fn an_incremental_sync_never_sweeps_absent_rows() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/calendars/primary/events"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(one_event_body("tok-2")))
+            .mount(&server).await;
+
+        let pool = seeded_pool().await;
+        sqlx::query(
+            "INSERT INTO sync_state (calendar_id, sync_token, window_start, window_end)
+             VALUES (1, 'tok-1', 0, 0)")
+            .execute(&pool).await.unwrap();
+        omacal_store::upsert_event(&pool, &stored("untouched", 3_000_000, 3_100_000))
+            .await.unwrap();
+
+        let client = CalendarClient::new(server.uri(), "at-1");
+        let out = sync_calendar(&pool, &client, 1, "primary", 0, 9_999_999_999_999)
+            .await.unwrap();
+        assert_eq!(out.deleted, 0);
+        let n: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM events WHERE google_id = 'untouched'")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(n, 1, "an event missing from a diff is merely unchanged");
     }
 
     /// Page 1: an event plus `nextPageToken`, no `nextSyncToken` (Google never

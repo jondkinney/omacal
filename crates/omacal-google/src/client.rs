@@ -348,7 +348,16 @@ impl CalendarClient {
         if resp.status() == reqwest::StatusCode::PRECONDITION_FAILED {
             return Err(ApiError::PreconditionFailed);
         }
-        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+        // 410 alongside 404, and 410 is the one Google actually answers for
+        // an event that was deleted by somebody else: 404 means "no such
+        // resource", 410 means "there was, and it is gone" — which is still
+        // exactly what this caller asked for. Learned from a live ghost
+        // (2026-08-23): an event deleted upstream during a stale-token gap
+        // could not be deleted locally either, because its Google-side
+        // delete answered 410 and this arm was missing.
+        if resp.status() == reqwest::StatusCode::NOT_FOUND
+            || resp.status() == reqwest::StatusCode::GONE
+        {
             return Ok(());
         }
         if !resp.status().is_success() {
@@ -693,6 +702,23 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("DELETE"))
             .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let c = CalendarClient::new(server.uri(), "tok");
+        c.delete_event("c", "gone", None).await.unwrap();
+    }
+
+    /// The sibling that reality actually sends: Google answers **410 Gone**,
+    /// not 404, for an event somebody already deleted — the case a user hits
+    /// when they try to remove a ghost of a meeting deleted elsewhere
+    /// (2026-08-23, live). Same rule as 404: already gone is the desired end
+    /// state.
+    #[tokio::test]
+    async fn delete_treats_410_as_success() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .respond_with(ResponseTemplate::new(410))
             .mount(&server)
             .await;
 
