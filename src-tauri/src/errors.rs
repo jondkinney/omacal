@@ -62,6 +62,13 @@ const SAFE_EXACT: &[&str] = &[
     // reads as "the create failed", and the natural response to that mails
     // every guest a second invitation.
     crate::events::CREATED_NOT_STORED,
+    // src-tauri/src/lib.rs — `BROWSER_FAILED`, raised where `sign_in` asks
+    // the OS to open the consent page and the launcher fails or exits
+    // non-zero. Fixed literal built by `anyhow!(BROWSER_FAILED)` with no
+    // interpolation; the launcher's own detail goes to `tracing`, never
+    // here. Withheld, this failure is indistinguishable from an OAuth
+    // problem — which is issue #1's diagnosis story in one line.
+    crate::BROWSER_FAILED,
     // crates/omacal-google/src/auth.rs:171 (the `TIMED_OUT` constant), raised
     // at auth.rs:206 with no interpolation and propagated to `sign_in_impl`
     // via a bare `?` with no `.context(..)` added along the way.
@@ -335,6 +342,11 @@ mod tests {
             // only after Google's insert succeeded, no interpolation, and
             // `create_event`'s `.map_err(user_facing)` adds no context.
             crate::events::CREATED_NOT_STORED,
+            // Fixed literal raised by `anyhow!(BROWSER_FAILED)` where sign-in
+            // asks the OS for a browser; the launcher's own error goes to
+            // `tracing`, never into this string, and no `.context(..)` wraps
+            // it on the way to `sign_in_impl`'s `map_err`.
+            crate::BROWSER_FAILED,
         ];
         for expected in EXPECTED {
             assert!(

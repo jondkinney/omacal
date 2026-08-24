@@ -203,7 +203,12 @@ pub(crate) fn open_latest_release(state: tauri::State<'_, crate::AppState>) -> R
         .as_ref()
         .map(|n| n.url.clone());
     if let Some(url) = url {
-        open::that(&url).map_err(|e| e.to_string())?;
+        // `browser`, not `open::that`: inside an AppImage the raw spawn
+        // hands the browser an environment that crashes it (issue #1).
+        crate::browser::open_external(&url).map_err(|e| {
+            tracing::warn!(%e, "could not open the release page");
+            crate::BROWSER_FAILED.to_string()
+        })?;
     }
     Ok(())
 }

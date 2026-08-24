@@ -629,6 +629,11 @@ export function installTauriStub(scenario: string): Harness {
       // AppImage and restarts, which a test can only assert was *asked for*.
       case 'install_update':
         return null;
+      // The browser-open again, one more remove: the backend resolves the
+      // URL from its own store by id and spawns sanitized. The test's fact
+      // is the call and its id, in `harness.calls`.
+      case 'open_conference':
+        return null;
       case 'get_status':
         return status;
       // The date a dated fresh launch parked on the backend. One scenario

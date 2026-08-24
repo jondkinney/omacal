@@ -1,6 +1,7 @@
 <!-- ui/src/lib/EventPopover.svelte -->
 <script lang="ts">
   import { meetingUrl } from './location';
+  import { openConference } from './api';
   import { clockFormat } from './clock.svelte';
   import { formatClock } from './timefmt';
   import { onMount, tick } from 'svelte';
@@ -376,7 +377,14 @@
 
   {#if locationShown}<p class="loc">{locationShown}</p>{/if}
   {#if joinUrl}
-    <a class="conf" href={joinUrl} target="_blank" rel="noopener noreferrer">Join video call</a>
+    <!-- The `href` stays for what an anchor gives away free — copy-link,
+         middle-click, the status-bar preview — but a plain left click is
+         taken over and sent backend-side: the webview's own `target="_blank"`
+         spawn hands the browser this process's AppImage environment and
+         crashes it (issue #1, `browser::open_external`). The backend
+         re-derives the URL from its store rather than trusting this one. -->
+    <a class="conf" href={joinUrl} target="_blank" rel="noopener noreferrer"
+       onclick={(e) => { e.preventDefault(); void openConference(detail.id); }}>Join video call</a>
   {/if}
   <!-- Suppressed for the addresses Google mints for shared calendars and
        meeting rooms: "Organized by" followed by forty hex characters is worse

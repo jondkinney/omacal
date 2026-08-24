@@ -80,6 +80,13 @@ jobs:
           image=$(ls *.AppImage)
           ./"$image" --appimage-extract >/dev/null
           rm -v squashfs-root/usr/lib/libwayland-*
+          # The bundled Debian xdg-open shadows the host's own launcher (the
+          # AppImage prepends its usr/bin to PATH) and execs the browser
+          # handler directly, re-sanitising nothing — half of issue #1. The
+          # host's xdg-open is the one that knows how the host opens things;
+          # `browser::open_external` also filters the child's PATH, for every
+          # image shipped before this line existed.
+          rm -v squashfs-root/usr/bin/xdg-open
           # The GTK hook forces GDK_BACKEND=x11, guarding a WebKit-on-Wayland
           # crash (tauri#8541) that in this AppImage was the bundled libwayland
           # removed one line up. XWayland is not free either: under Hyprland's

@@ -1,6 +1,7 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 
 mod accounts;
+mod browser;
 mod caldav_account;
 mod caldav_write;
 mod calendars;
@@ -412,6 +413,13 @@ fn forget_stale_credentials(
     reauth.remove(email);
 }
 
+/// What the user reads when no browser could be started. Fixed literal, in
+/// `errors::SAFE_EXACT`: a launcher failure carries no secret, and the
+/// opaque fallback is what cost issue #1's reporter their afternoon — the
+/// one fact that pointed at the cause was the one thing withheld.
+pub(crate) const BROWSER_FAILED: &str =
+    "Could not open a browser. Open your browser once and try again.";
+
 /// The body of `sign_in`, minus the Tauri `State` wrapper so it is reachable
 /// from a test. The demo gate is the first statement for the same reason it is
 /// in `sync_now`: everything below it reads the config file, the keyring and
@@ -428,7 +436,15 @@ async fn sign_in_impl(pool: &SqlitePool, demo: bool) -> Result<String, String> {
         let url = omacal_google::auth::authorize_url(
             &cfg.client_id, &redirect_uri, &pkce.challenge, &csrf,
         );
-        open::that(&url)?;
+        // Through `browser`, not `open::that`: an AppImage's environment
+        // crashes the browser it spawns (issue #1). And loudly on failure —
+        // this exact spot failed silently on Arch for three releases, with
+        // nothing logged and the message withheld by `errors::user_facing`.
+        tracing::info!("sign-in: opening the consent page");
+        crate::browser::open_external(&url).map_err(|e| {
+            tracing::warn!(%e, "sign-in: could not open a browser");
+            anyhow::anyhow!(BROWSER_FAILED)
+        })?;
 
         // Deadline on the listener, not on this future: a `tokio::time::timeout`
         // here would return while the blocking thread stayed parked in
@@ -1261,6 +1277,7 @@ pub fn run() {
             sync_now,
             update::open_latest_release,
             update::install_update,
+            commands::open_conference,
             calendars::get_calendars,
             calendars::set_calendar_selected,
             calendars::set_calendar_sync,

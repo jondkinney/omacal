@@ -93,3 +93,11 @@ export type BigYearPayload = { year: number; rows: RibbonRow[]; legend: LegendEn
 
 export const getBigYear = (year: number) =>
   invoke<BigYearPayload>('get_big_year', { year });
+
+/** Opens an event's meeting link in the system browser, backend-side. The
+ *  webview sends only the event's id — never the URL — for
+ *  `open_latest_release`'s reason: the backend resolves what the browser is
+ *  pointed at from its own store, so a compromised webview can only name an
+ *  event, not choose a destination. It is also what routes the click around
+ *  the AppImage environment that crashes a spawned browser (issue #1). */
+export const openConference = (id: number) => invoke<void>('open_conference', { id });
