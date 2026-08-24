@@ -8,3 +8,8 @@
 .superpowers/
 .DS_Store
 test-results/
+
+# flatpak-builder, when the README's build command is run from the repo root
+/build
+/.flatpak-builder
+/repo

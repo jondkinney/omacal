@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=omacal
+GenericName=Calendar
+Comment=A minimal desktop calendar for Google Calendar, iCloud and CalDAV
+Exec=omacal
+Icon=io.extremelabs.omacal
+Terminal=false
+Categories=Office;Calendar;
+Keywords=calendar;event;meeting;invitation;task;caldav;google;icloud;
+StartupNotify=true
+StartupWMClass=omacal

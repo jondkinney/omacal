@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Flathub requires this file and validates it in CI. Keep <releases> in
+     step with the .deb the manifest pins: the store shows whatever version
+     the newest entry names, not the one actually installed. -->
+<component type="desktop-application">
+  <id>io.extremelabs.omacal</id>
+
+  <name>omacal</name>
+  <summary>A minimal desktop calendar for Google, iCloud and CalDAV</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+
+  <developer id="io.extremelabs">
+    <name>Extreme Labs</name>
+  </developer>
+
+  <description>
+    <p>
+      A minimal desktop calendar client with five views, live background sync,
+      and full create, edit and delete against your real calendar — Google
+      Calendar, iCloud, or any CalDAV server, including CalDAV task lists.
+    </p>
+    <p>Five views, and the keys to move between them:</p>
+    <ul>
+      <li>Day, Week, Month, Year and Big Year — a fourteen-row ribbon of the whole year</li>
+      <li>List mode draws Day, Week and Month as a list of days and leaves out the empty ones, so a quiet month is four rows rather than thirty-one headers</li>
+      <li>Search finds a recurring event once, resolved to the occurrence nearest today, rather than once per occurrence</li>
+    </ul>
+    <p>Events, and the people in them:</p>
+    <ul>
+      <li>Drag to move an event, resize it by an edge, or sweep empty grid to start a new one</li>
+      <li>Recurring events edit at three scopes: this occurrence, this and following, all events</li>
+      <li>Guests can be added, removed or marked optional, and saving asks who to tell rather than always mailing the room</li>
+      <li>A new invitation posts a notification that stays on screen until it is answered, and the header keeps score of what changed around your meetings: who declined, what moved, what was cancelled</li>
+    </ul>
+    <p>
+      Sign-in tokens live in your keyring, never on disk, so a minimal session
+      needs a Secret Service provider running — gnome-keyring, KeePassXC or
+      kwallet. There is no telemetry and no server of ours in the path: your
+      calendar data moves between this machine and your calendar provider,
+      and nowhere else.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">io.extremelabs.omacal.desktop</launchable>
+
+  <screenshots>
+    <screenshot type="default">
+      <caption>The Week view, coloured by the desktop theme</caption>
+      <image>https://raw.githubusercontent.com/x3me/omacal/main/docs/images/omacal-week.webp</image>
+    </screenshot>
+    <screenshot>
+      <caption>The Month view</caption>
+      <image>https://raw.githubusercontent.com/x3me/omacal/main/docs/images/omacal-month.webp</image>
+    </screenshot>
+    <screenshot>
+      <caption>Big Year, the whole year in one ribbon</caption>
+      <image>https://raw.githubusercontent.com/x3me/omacal/main/docs/images/omacal-bigyear.webp</image>
+    </screenshot>
+  </screenshots>
+
+  <url type="homepage">https://extremelabs.io/omacal</url>
+  <url type="bugtracker">https://github.com/x3me/omacal/issues</url>
+  <url type="vcs-browser">https://github.com/x3me/omacal</url>
+
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+
+  <content_rating type="oars-1.1"/>
+
+  <releases>
+    <release version="0.3.14" date="2026-08-23"/>
+  </releases>
+</component>
