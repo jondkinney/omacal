@@ -850,6 +850,40 @@ test.describe('Header', () => {
 
     await page.goto(show('Header', 'connected'));
     await expect(page.getByTestId('update-banner')).toHaveCount(0);
+
+    // The packaged shape, pinned from the same fixture: no "Update" button
+    // where a package manager owns the files — the sentence is the action.
+    await page.goto(show('Header', 'update'));
+    await expect(page.getByTestId('update-banner')).toContainText('Re-run the install command');
+    await expect(page.getByTestId('update-banner').getByRole('button', { name: 'Update', exact: true })).toHaveCount(0);
+  });
+
+  /** The AppImage's shape of the same notice: `self_update` turns the
+   *  sentence into an "Update" button. Clicking it asks the backend once and
+   *  acknowledges in place — the process is about to restart out from under
+   *  the button, so "Updating…" is the last thing this window ever says. */
+  test('an AppImage offers Update, and the click is acknowledged', async ({ page }) => {
+    await page.goto(show('Header', 'updatable'));
+    const banner = page.getByTestId('update-banner');
+    await expect(banner).toContainText('OmaCal 0.2.0 is available');
+    await expect(banner).not.toContainText('Re-run the install command');
+
+    const button = banner.getByRole('button', { name: 'Update', exact: true });
+    await button.click();
+    await expect(banner.getByRole('button', { name: 'Updating…' })).toBeDisabled();
+  });
+
+  /** The failed attempt reports in place and the offer stands back up: the
+   *  running copy is untouched — the updater writes aside and renames — so
+   *  trying again is always legitimate, and a dead button would turn one
+   *  network hiccup into a permanently spent banner. */
+  test('a failed update says what happened and offers again', async ({ page }) => {
+    await page.goto(show('Header', 'updatefails'));
+    const banner = page.getByTestId('update-banner');
+
+    await banner.getByRole('button', { name: 'Update', exact: true }).click();
+    await expect(banner).toContainText('Could not reach the release server');
+    await expect(banner.getByRole('button', { name: 'Update', exact: true })).toBeEnabled();
   });
 
   /** The moved-zone banner: present when status says the system zone left

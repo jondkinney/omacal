@@ -6,7 +6,7 @@
     getWeek, getDay, getMonth, getYear, getBigYear, weekStart,
     type WeekPayload, type MonthPayload, type YearPayload, type BigYearPayload, type UiEvent,
   } from './lib/api';
-  import { getStatus, openLatestRelease, restartApp, signIn, syncNow, takeOpenDate, type AppStatus } from './lib/status';
+  import { getStatus, installUpdate, openLatestRelease, restartApp, signIn, syncNow, takeOpenDate, type AppStatus } from './lib/status';
   import { changedMeetings, declinedGuests, pendingInvites } from './lib/invites';
   import { getCalendars, offerableCalendarId, type Calendar } from './lib/calendars';
   import {
@@ -1194,6 +1194,7 @@
     onSignIn={handleSignIn}
     onWhatsNew={() => { void openLatestRelease(); }}
     onRestart={() => { void restartApp(); }}
+    onUpdate={installUpdate}
     onSync={handleSync}
     oncalendarchange={handleCalendarChange}
     {invites}

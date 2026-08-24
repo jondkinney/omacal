@@ -22,6 +22,10 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-opener = "2"
 tauri-plugin-single-instance = "2"
+# One-click update, offered only when the process is an AppImage (update.rs):
+# the one channel where the running binary is a single user-writable file.
+# Packaged installs (deb/rpm/AUR/flatpak) keep the notice-only banner.
+tauri-plugin-updater = "2"
 # Start on login (spec §2.6). Never enabled in demo mode — a synthetic-data
 # build launching itself on someone's machine is a nasty surprise.
 tauri-plugin-autostart = "2"

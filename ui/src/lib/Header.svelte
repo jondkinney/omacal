@@ -16,7 +16,7 @@
     onsettingschange,
     listMode, onToggleList,
     onPrev, onNext, onToday, onSearch, onSignIn, onSync, oncalendarchange,
-    onWhatsNew, onRestart,
+    onWhatsNew, onRestart, onUpdate,
     invites = [], declines = [], changes = [], oninvitesanswered = () => {},
     open = $bindable(false),
   }: {
@@ -67,6 +67,11 @@
     /** Restarts the app — the moved-zone banner's one action, passed in for
      *  the same reason as `onWhatsNew`. */
     onRestart: () => void;
+    /** Replaces the AppImage with the latest release and restarts — the
+     *  update banner's action where `status.self_update` allows one. A
+     *  promise, unlike its neighbours: failure comes back as the sentence
+     *  the banner shows, and the button has to know to stand back up. */
+    onUpdate: () => Promise<void>;
     /** Bound through to `CalendarPopover` — lets `App` open the picker
      *  straight after a sign-in, from outside the popover's own trigger. */
     open?: boolean;
@@ -104,6 +109,13 @@
   /** Dismissal is session-local on purpose: the notice returns on the next
    *  launch, which is the gentlest cadence that still eventually lands. */
   let updateDismissed = $state(false);
+  /** Update was clicked and the download is in flight. Unset only by
+   *  failure — on success the process restarts out from under the button,
+   *  the same one-way shape as `restarting` below. */
+  let updating = $state(false);
+  /** What went wrong, in the sentence the backend chose for showing. Shown
+   *  in the banner in place of the offer; cleared by trying again. */
+  let updateError = $state<string | null>(null);
   /** Where the system zone went, when it moved out from under this process. */
   const tzChange = $derived(status?.system_tz_change ?? null);
   /** Session-local like `updateDismissed` — living with the old zone until a
@@ -417,12 +429,35 @@
      available update in every sense a user cares about. -->
 {#if update && !updateDismissed}
   <p class="notice" data-testid="update-banner">
-    <span>OmaCal {update.version} is available. Re-run the install command to update.</span>
-    <span class="notice-actions">
-      <button onclick={onWhatsNew}>What's new</button>
-      <button aria-label="Dismiss update notice" title="Dismiss"
-              onclick={() => (updateDismissed = true)}>×</button>
-    </span>
+    <!-- Two shapes of the same notice. The AppImage gets a button because
+         there the update is one file write the app can do itself; every
+         packaged install keeps the sentence, because its files belong to a
+         package manager (see `update::may_self_update`). A failed attempt
+         reports in place and leaves the offer standing — the running copy
+         is untouched, so trying again is always legitimate. -->
+    {#if status?.self_update}
+      <span>{updateError ?? `OmaCal ${update.version} is available.`}</span>
+      <span class="notice-actions">
+        <button class="primary" disabled={updating}
+                onclick={async () => {
+                  updating = true; updateError = null;
+                  try { await onUpdate(); }
+                  catch (e) { updateError = String(e); updating = false; }
+                }}>
+          {updating ? 'Updating…' : 'Update'}
+        </button>
+        <button onclick={onWhatsNew}>What's new</button>
+        <button aria-label="Dismiss update notice" title="Dismiss"
+                onclick={() => (updateDismissed = true)}>×</button>
+      </span>
+    {:else}
+      <span>OmaCal {update.version} is available. Re-run the install command to update.</span>
+      <span class="notice-actions">
+        <button onclick={onWhatsNew}>What's new</button>
+        <button aria-label="Dismiss update notice" title="Dismiss"
+                onclick={() => (updateDismissed = true)}>×</button>
+      </span>
+    {/if}
   </p>
 {/if}
 

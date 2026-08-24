@@ -1,17 +1,26 @@
-//! The update notice: knowing a newer release exists, and saying so once.
+//! The update notice — knowing a newer release exists, saying so once — and,
+//! on exactly one channel, the button that acts on it.
 //!
-//! Nothing here updates anything. The app has no self-update machinery on
-//! purpose — the installer one-liner and the system package manager are the
-//! update mechanisms, and both are the user's own act. What this module adds
-//! is the missing fact: an installed copy otherwise runs unchanged forever
-//! with no way to learn that a newer version exists, which matters doubly
-//! here because a rotated OAuth secret strands old binaries (distribution
-//! runbook) and the only cure is the update the user never heard about.
+//! The notice is the foundation and it is universal: an installed copy
+//! otherwise runs unchanged forever with no way to learn that a newer
+//! version exists, which matters doubly here because a rotated OAuth secret
+//! strands old binaries (distribution runbook) and the only cure is the
+//! update the user never heard about.
+//!
+//! Acting on the notice is narrower. The AppImage — the installer
+//! one-liner's channel, and most installs — is one user-owned file, so
+//! [`install_update`] can replace it in place: a signed download, verified
+//! against the pubkey in `tauri.conf.json`, then the same restart the
+//! moved-zone banner uses. Every packaged install (.deb, .rpm, AUR,
+//! Flatpak) keeps the notice-only banner, because there the files belong to
+//! a package manager and the update mechanism is that manager, as the
+//! user's own act. [`may_self_update`] is that decision, stated once.
 //!
 //! Split the way `sync_loop` and `tray` are: the decisions — is a tag newer,
-//! does a response announce a notice, may demo mode check at all — are pure
-//! and tested; the ticker and the browser-open are OS integration and are
-//! the untested half.
+//! does a response announce a notice, may demo check at all, may this build
+//! replace itself — are pure and tested; the ticker, the browser-open and
+//! the plugin's download-and-install are OS integration and are the
+//! untested half.
 
 use tauri::{AppHandle, Manager};
 
@@ -50,6 +59,29 @@ pub struct UpdateNotice {
 /// [`crate::notify_loop::may_notify`].
 pub(crate) fn may_check(demo: bool) -> bool {
     !demo
+}
+
+/// Whether this process may replace itself — the gate on the banner's
+/// "Update" button and on [`install_update`], decided from two facts.
+///
+/// Only the AppImage qualifies: it is one file the user owns, so replacing
+/// it is an ordinary write. Everything else that runs this code is somebody
+/// else's property — dpkg's, rpm's, pacman's, flatpak's — and a binary that
+/// overwrites files a package manager believes it owns corrupts exactly the
+/// record that manager exists to keep. Those channels keep the notice-only
+/// banner. And demo stays out for `may_check`'s reason: a download is
+/// network traffic.
+pub(crate) fn may_self_update(is_appimage: bool, demo: bool) -> bool {
+    is_appimage && !demo
+}
+
+/// Whether this process is running out of an AppImage. The AppImage runtime
+/// exports `APPIMAGE` — the image's own path — before launching the payload,
+/// and nothing else sets it. The *filename* proves nothing: the installer
+/// lands the image at `~/.local/bin/omacal`, extensionless, indistinguishable
+/// by name from the .deb's binary.
+pub(crate) fn running_as_appimage() -> bool {
+    std::env::var_os("APPIMAGE").is_some()
 }
 
 /// `Some((major, minor, patch))` for `"0.1.2"` or `"v0.1.2"`, `None` for
@@ -176,6 +208,71 @@ pub(crate) fn open_latest_release(state: tauri::State<'_, crate::AppState>) -> R
     Ok(())
 }
 
+/// Replaces this AppImage with the latest release and restarts — the banner's
+/// "Update" button, on the one channel where that is an ordinary file write
+/// (see [`may_self_update`]).
+///
+/// The plugin re-checks the endpoint rather than trusting the daily notice:
+/// the notice is up to a day old, and what must never happen is installing a
+/// version other than the one whose signature was just verified. Verification
+/// is the plugin's, against the pubkey baked into `tauri.conf.json` — a
+/// mirror or a compromised release page cannot hand this function an
+/// arbitrary binary, only fail it.
+///
+/// Errors return as the sentence the banner shows, detail at `warn!` — the
+/// same split as everywhere else a command reports failure. Every failure
+/// leaves the running image untouched: the plugin writes a temp file and
+/// renames, so there is no half-updated state to fall into.
+///
+/// On success the restart is the delayed shape of
+/// [`crate::settings::restart_app`], for its reason: the reply must reach
+/// the webview first, so the button can say "Updating…" instead of dying
+/// mid-await.
+#[tauri::command]
+pub(crate) async fn install_update(
+    app: AppHandle,
+    state: tauri::State<'_, crate::AppState>,
+) -> Result<(), String> {
+    if !may_self_update(running_as_appimage(), state.demo) {
+        // Unreachable through the UI — the button only renders when
+        // `get_status` said yes — so this is the backend refusing to trust
+        // the webview's gating, same as `open_latest_release` refusing its
+        // URL.
+        return Err("This build updates through its package manager.".into());
+    }
+
+    use tauri_plugin_updater::UpdaterExt;
+    let update = app
+        .updater()
+        .map_err(|e| {
+            tracing::warn!(%e, "updater unavailable");
+            "The updater is not available in this build.".to_string()
+        })?
+        .check()
+        .await
+        .map_err(|e| {
+            tracing::warn!(%e, "update check failed");
+            "Could not reach the release server. Try again later.".to_string()
+        })?
+        .ok_or_else(|| "Already up to date.".to_string())?;
+
+    tracing::info!(version = %update.version, "downloading and installing an update");
+    update
+        .download_and_install(|_, _| {}, || {})
+        .await
+        .map_err(|e| {
+            tracing::warn!(%e, "self-update failed");
+            "The update could not be installed. Re-run the install command instead."
+                .to_string()
+        })?;
+
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+        app.restart();
+    });
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,6 +326,17 @@ mod tests {
     fn demo_mode_never_checks_for_updates() {
         assert!(!may_check(true));
         assert!(may_check(false));
+    }
+
+    /// The self-update gate, all four corners. The packaged cases are the
+    /// ones that matter: a .deb or AUR build offering to overwrite files its
+    /// package manager owns corrupts the manager's record of the system.
+    #[test]
+    fn only_a_non_demo_appimage_may_self_update() {
+        assert!(may_self_update(true, false));
+        assert!(!may_self_update(false, false), "a packaged build offered to replace itself");
+        assert!(!may_self_update(true, true), "demo offered to make network traffic");
+        assert!(!may_self_update(false, true));
     }
 
     /// Through the real fetch path, with the one header the whole feature

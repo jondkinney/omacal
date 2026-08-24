@@ -27,8 +27,11 @@ no restart.
     curl -fsSL https://extremelabs.io/omacal/install.sh | sh
 
 Linux, x86_64. The latest release AppImage lands in `~/.local/bin/omacal` with
-a desktop entry; run the same line again to update. The AppImage needs FUSE2 —
-stock Ubuntu 24.04+ doesn't ship it, and the installer offers to add it there.
+a desktop entry. When a newer release exists the app says so in its header,
+and on this install path the notice carries an **Update button** — one click
+downloads the signed release, verifies it, and restarts. (Re-running the line
+above still works too.) The AppImage needs FUSE2 — stock Ubuntu 24.04+
+doesn't ship it, and the installer offers to add it there.
 
 **On Debian/Ubuntu**, the `.deb` from the [releases
 page](https://github.com/x3me/omacal/releases) is the native path — no FUSE

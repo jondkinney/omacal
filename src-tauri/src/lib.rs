@@ -131,9 +131,12 @@ async fn get_status(
     let update = state.update.lock().expect("update notice poisoned").clone();
     let tz_change = state.system_tz_change.lock().expect("tz change poisoned").clone();
     let version = app.package_info().version.to_string();
-    status::read_status(&state.pool, state.demo, overlay, needs_reauth, update, tz_change, version)
-        .await
-        .map_err(|e| e.to_string())
+    let self_update = update::may_self_update(update::running_as_appimage(), state.demo);
+    status::read_status(
+        &state.pool, state.demo, overlay, self_update, needs_reauth, update, tz_change, version,
+    )
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -1019,6 +1022,12 @@ pub fn run() {
         // bar widget) drives the app. See `tray::instance_action`.
         .plugin(single_instance_plugin())
         .plugin(tauri_plugin_opener::init())
+        // The self-updater behind the banner's "Update" button. Registration
+        // is unconditional; whether the button exists at all is
+        // `update::may_self_update`'s decision — AppImage only, never demo —
+        // enforced again inside `update::install_update` for a webview that
+        // did not take no for an answer.
+        .plugin(tauri_plugin_updater::Builder::new().build())
         // Registered unconditionally; *enabling* it is what the demo guard
         // gates, in `setup` below. Registration alone adds no login item.
         .plugin(tauri_plugin_autostart::init(
@@ -1251,6 +1260,7 @@ pub fn run() {
             sign_in,
             sync_now,
             update::open_latest_release,
+            update::install_update,
             calendars::get_calendars,
             calendars::set_calendar_selected,
             calendars::set_calendar_sync,

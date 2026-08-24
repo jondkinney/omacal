@@ -105,6 +105,41 @@ jobs:
           fi
           rm -rf squashfs-root
 
+      # The updater's trust chain, and it must run HERE — after the repack.
+      # The strip step above rebuilds the AppImage with appimagetool, so any
+      # signature made during bundling describes bytes that no longer exist;
+      # signing is only honest about the file that actually ships. The .sig
+      # is what the updater plugin verifies against the pubkey baked into
+      # tauri.conf.json before it will touch the running image.
+      - name: Sign the AppImage for the in-app updater
+        if: startsWith(matrix.platform, 'ubuntu')
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          image=$(ls target/release/bundle/appimage/*.AppImage)
+          npx --yes @tauri-apps/cli@^2 signer sign "$image"
+          test -s "$image.sig" || { echo "no signature was produced" >&2; exit 1; }
+
+      # What the running app's update check reads (tauri.conf.json points at
+      # this file via the release's /latest redirect). Linux x86_64 only: the
+      # macOS build is unsigned by Apple and self-update there would trip
+      # Gatekeeper, and every other Linux channel updates through its package
+      # manager. Tag pushes only — the URL inside names the tag.
+      - name: Write latest.json for the updater
+        if: startsWith(matrix.platform, 'ubuntu') && startsWith(github.ref, 'refs/tags/')
+        run: |
+          image=$(ls target/release/bundle/appimage/*.AppImage)
+          jq -n \
+            --arg version "${GITHUB_REF_NAME#v}" \
+            --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg sig "$(cat "$image.sig")" \
+            --arg url "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/$(basename "$image")" \
+            '{version: $version, pub_date: $date,
+              platforms: {"linux-x86_64": {signature: $sig, url: $url}}}' \
+            > latest.json
+          cat latest.json
+
       # Tag push: attach the repaired bundles to a draft release for the tag.
       # Both matrix jobs race to create it; the loser just uploads.
       - name: Attach to draft release
@@ -118,8 +153,10 @@ jobs:
               --draft --title "omacal $tag" --notes "" || true
           if [ "$RUNNER_OS" = "Linux" ]; then
             files=$(ls target/release/bundle/appimage/*.AppImage \
+                       target/release/bundle/appimage/*.AppImage.sig \
                        target/release/bundle/deb/*.deb \
-                       target/release/bundle/rpm/*.rpm)
+                       target/release/bundle/rpm/*.rpm \
+                       latest.json)
           else
             files=$(ls target/release/bundle/dmg/*.dmg)
           fi

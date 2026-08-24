@@ -34,6 +34,12 @@ export type AppStatus = {
    *  `get_status` because that is already fetched on mount; the alternative
    *  was `@tauri-apps/plugin-os`, a dependency for one boolean. */
   overlay_titlebar: boolean;
+  /** True when the update banner may offer "Update" rather than the re-run
+   *  sentence: the backend decided this process is an AppImage — one
+   *  user-writable file the updater can replace — and not demo. Packaged
+   *  installs (.deb, AUR, flatpak) are false: their files belong to a
+   *  package manager, and the banner stays notice-only. */
+  self_update: boolean;
 };
 
 export const getStatus = () => invoke<AppStatus>('get_status');
@@ -43,6 +49,12 @@ export const syncNow = () => invoke<number>('sync_now');
  *  purpose: the backend opens the URL *it* fetched, so the webview never
  *  chooses what the browser is pointed at. */
 export const openLatestRelease = () => invoke<void>('open_latest_release');
+/** Downloads the signed newer AppImage, replaces this one, restarts — the
+ *  banner's "Update" button. Only meaningful where `self_update` said yes;
+ *  the backend enforces that again rather than trusting this call. Resolves
+ *  just before the restart lands, so the button gets to say "Updating…";
+ *  rejects with the sentence the banner should show. */
+export const installUpdate = () => invoke<void>('install_update');
 /** Restarts the app — the moved-zone banner's one action. The backend delays
  *  the re-exec long enough for this call to resolve, so the button can say
  *  "Restarting…" instead of dying mid-await. */
