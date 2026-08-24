@@ -970,6 +970,33 @@ fn tz_action(sidecar: Option<&str>, we_set_it: bool) -> TzAction {
     }
 }
 
+/// The single-instance plugin, with the one wrinkle a sandbox adds.
+///
+/// The bus name is `<dbus_id>.SingleInstance`, and `dbus_id` defaults to the
+/// Tauri identifier — `com.omacal.app`, which is fine everywhere the app
+/// owns its session bus outright. Inside a Flatpak it is not: the sandbox
+/// grants only names under the Flatpak app id, and Flathub's linter refuses
+/// `--own-name` for anything else as an exception it "never grants". So
+/// where `FLATPAK_ID` is set — which is only ever inside a Flatpak — the
+/// name becomes `<app id>.SingleInstance` and needs no permission at all.
+/// Every other build keeps the name it has always had.
+fn single_instance_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
+    let mut builder = tauri_plugin_single_instance::Builder::new().callback(
+        |app: &tauri::AppHandle, argv: Vec<String>, _cwd: String| {
+            match tray::instance_action(&argv) {
+                tray::TrayAction::Quit => app.exit(0),
+                tray::TrayAction::SyncNow => sync_loop::request_now(app),
+                tray::TrayAction::OpenAt(ymd) => tray::open_at(app, &ymd),
+                tray::TrayAction::Open => tray::show_main_window(app),
+            }
+        },
+    );
+    if let Ok(id) = std::env::var("FLATPAK_ID") {
+        builder = builder.dbus_id(id);
+    }
+    builder.build()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tracing_subscriber::fmt::init();
@@ -990,14 +1017,7 @@ pub fn run() {
         // launch, or the tray menu's other two actions via `--sync-now` and
         // `--quit`, which is how a surface outside this process (the Omarchy
         // bar widget) drives the app. See `tray::instance_action`.
-        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
-            match tray::instance_action(&argv) {
-                tray::TrayAction::Quit => app.exit(0),
-                tray::TrayAction::SyncNow => sync_loop::request_now(app),
-                tray::TrayAction::OpenAt(ymd) => tray::open_at(app, &ymd),
-                tray::TrayAction::Open => tray::show_main_window(app),
-            }
-        }))
+        .plugin(single_instance_plugin())
         .plugin(tauri_plugin_opener::init())
         // Registered unconditionally; *enabling* it is what the demo guard
         // gates, in `setup` below. Registration alone adds no login item.
