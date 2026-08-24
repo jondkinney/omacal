@@ -12,7 +12,7 @@
   import {
     getSettings, listTimezones, minutesOf, msOfMinutes, setDefaultCalendar,
     setDisplayTimezone, setFallbackReminders, setNotificationsEnabled,
-    setSyncInterval, setTimeFormat, setTrayIcon, setWeekStart,
+    setSyncInterval, setTimeFormat, setTrayIcon, setWeatherEnabled, setWeekStart,
     type AppSettings,
   } from './settings';
   import { formatClock, type TimeFormat } from './timefmt';
@@ -241,6 +241,18 @@
     const id = offerableCalendarId(settings?.defaultCalendarId ?? null, calendars);
     return calendars.find((c) => c.id === id)?.color_hex ?? 'var(--accent)';
   });
+
+  /** Same repair as `toggleNotifications` when the backend refuses. */
+  async function toggleWeather(on: boolean) {
+    note = null;
+    try {
+      settings = await setWeatherEnabled(on);
+      if (settings) onsettingschange?.(settings);
+    } catch (e) {
+      note = { text: String(e), kind: 'error' };
+      settings = settings ? { ...settings } : null;
+    }
+  }
 
   async function toggleNotifications(on: boolean) {
     note = null;
@@ -584,6 +596,23 @@
         The tray is where Quit lives — only turn this off when something else
         covers it, like the Omarchy bar widget, which can quit and sync the
         app itself.
+      </p>
+
+      <label class="check">
+        <input
+          type="checkbox"
+          checked={settings?.weatherEnabled ?? true}
+          disabled={!settings}
+          onchange={(e) => toggleWeather(e.currentTarget.checked)}
+        />
+        Weather in the day headers
+      </label>
+      <p class="hint">
+        A small forecast icon and the day's high, from Open-Meteo — the same
+        keyless service the Omarchy bar widget reads. The location comes from
+        that widget's setting when there is one, otherwise from your IP
+        address; turning this off ends the only network traffic omacal makes
+        beyond your calendar providers.
       </p>
 
     {:else if tab === 'Calendars'}

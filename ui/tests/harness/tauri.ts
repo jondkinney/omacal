@@ -514,6 +514,7 @@ type StubSettings = {
   timeFormat: TimeFormat;
   weekStart: WeekStartDay;
   displayTimezone: string | null;
+  weatherEnabled: boolean;
 };
 
 const SETTINGS_KEY = 'omacal-stub-settings';
@@ -532,6 +533,8 @@ const DEFAULT_SETTINGS: StubSettings = {
   // The week omacal has always drawn, so every golden holds.
   weekStart: 'monday',
   displayTimezone: null,
+  // The backend's default: on unless somebody turned it off.
+  weatherEnabled: true,
 };
 
 function loadSettings(): StubSettings {
@@ -745,6 +748,15 @@ export function installTauriStub(scenario: string): Harness {
         // replies, which is exactly what lets a spec see the "Restarting…"
         // state the window would otherwise take with it.
         return null;
+      // Empty on purpose: App-level scenarios stay weatherless, so no
+      // existing spec or screenshot grows a sky it never asked for. The
+      // rendering itself is proven component-side, where the fixture hands
+      // the map in as a prop.
+      case 'get_weather':
+        return { days: [], place: null };
+      case 'set_weather_enabled':
+        settings = saveSettings({ ...settings, weatherEnabled: args.on as boolean });
+        return { ...settings };
       case 'set_notifications_enabled':
         settings = saveSettings({ ...settings, notificationsEnabled: args.on as boolean });
         return { ...settings };

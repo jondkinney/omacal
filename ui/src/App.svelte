@@ -7,6 +7,7 @@
     type WeekPayload, type MonthPayload, type YearPayload, type BigYearPayload, type UiEvent,
   } from './lib/api';
   import { getStatus, installUpdate, openLatestRelease, restartApp, signIn, syncNow, takeOpenDate, type AppStatus } from './lib/status';
+  import { getWeather, weatherByDate, type DayWeather } from './lib/weather';
   import { changedMeetings, declinedGuests, pendingInvites } from './lib/invites';
   import { getCalendars, offerableCalendarId, type Calendar } from './lib/calendars';
   import {
@@ -156,6 +157,22 @@
     try { status = await getStatus(); } catch (e) { error = String(e); }
   }
 
+  /** The forecast for the day headers, by ISO date. Null until the first
+   *  answer; empty when the setting is off or nothing is cached — the
+   *  headers treat all three the same, as no sky. A failed fetch keeps the
+   *  last map for the tray's reason: weather is a convenience surface. */
+  let weather = $state<Map<string, DayWeather> | null>(null);
+  async function refreshWeather() {
+    try { weather = weatherByDate(await getWeather()); } catch { /* keep the last sky */ }
+  }
+  // Hourly, between the backend's own three-hour fetches — this only reads
+  // the cache, so the cost is a local IPC round trip. Refetched immediately
+  // when settings change (the toggle lives there) and at startup below.
+  $effect(() => {
+    const id = setInterval(() => { void refreshWeather(); }, 3_600_000);
+    return () => clearInterval(id);
+  });
+
   async function refreshCalendars() {
     try { calendars = await getCalendars(); } catch (e) { error = String(e); }
   }
@@ -179,7 +196,7 @@
 
   // Calendars ride along with status on startup: both describe what's
   // connected, and neither is meaningful before an account exists.
-  $effect(() => { refreshStatus(); refreshCalendars(); refreshInvites(); });
+  $effect(() => { refreshStatus(); refreshCalendars(); refreshInvites(); refreshWeather(); });
 
   /**
    * Whether Day, Week and Month draw as a list rather than a grid.
@@ -1190,6 +1207,10 @@
       defaultCalendarId = s.defaultCalendarId;
       setClockFormat(s.timeFormat);
       setWeekStartDay(s.weekStart);
+      // The weather toggle lives in the same modal; refetching on every
+      // settings change is one cache read, and it is what makes flipping
+      // the switch change the headers now rather than within the hour.
+      void refreshWeather();
     }}
     onSignIn={handleSignIn}
     onWhatsNew={() => { void openLatestRelease(); }}
@@ -1215,7 +1236,7 @@
   {#if view === 'month'}
     {#if month}
       {#if listMode}
-        <Filmstrip days={daysFromMonth(month)} onopen={openGridEvent} />
+        <Filmstrip days={daysFromMonth(month)} {weather} onopen={openGridEvent} />
       {:else}
         <MonthGrid {month} onopen={openGridEvent} ondaypick={handleDayPick} oncreate={newEventOnDay} />
       {/if}
@@ -1245,9 +1266,9 @@
     {/if}
   {:else if week}
     {#if listMode}
-      <Filmstrip days={daysFromWeek(week)} onopen={openGridEvent} />
+      <Filmstrip days={daysFromWeek(week)} {weather} onopen={openGridEvent} />
     {:else}
-      <WeekGrid {week} {formPreview} oncreate={newEventAt} onedit={openEdit} ondelete={askDelete}
+      <WeekGrid {week} {weather} {formPreview} oncreate={newEventAt} onedit={openEdit} ondelete={askDelete}
                 oncopy={copyOccurrence}
         onmove={moveOccurrence} onresponded={refreshAfterWrite} />
     {/if}

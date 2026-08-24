@@ -45,6 +45,11 @@ export type AppSettings = {
    *  Quit lives. Turning it off is for setups where something else carries
    *  those actions, like Omarchy 4's bar widget. */
   trayIcon: boolean;
+  /** Whether the day headers carry the forecast — an icon and the high. On
+   *  by default; the hint under the toggle names the sources (Open-Meteo,
+   *  the Omarchy widget's location or the IP), because this is the one
+   *  network destination beyond the calendar providers. */
+  weatherEnabled: boolean;
   /** The IANA zone every time in the app reads in, or `null` for the
    *  system's. Applied by exporting `TZ` before the webview starts, which is
    *  why changing it restarts omacal — the JS engine and libc both capture
@@ -72,6 +77,11 @@ export const setNotificationsEnabled = (on: boolean) =>
  *  running tray immediately, so the icon reacts to the click. */
 export const setTrayIcon = (on: boolean) =>
   invoke<AppSettings>('set_tray_icon', { on });
+
+/** Stores the weather preference; a turn-on also fetches now, backend-side,
+ *  so the headers change while the modal is still open. */
+export const setWeatherEnabled = (on: boolean) =>
+  invoke<AppSettings>('set_weather_enabled', { on });
 
 /** Stores the clock format. Nothing is refused: `settings::TimeFormat` has two
  *  variants and the select offers both, so there is no third value to turn

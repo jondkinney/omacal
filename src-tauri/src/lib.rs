@@ -32,6 +32,7 @@ mod tz_watch;
 mod omarchy_plugin;
 mod upcoming;
 mod update;
+mod weather;
 mod write;
 
 use sqlx::SqlitePool;
@@ -1166,6 +1167,9 @@ pub fn run() {
                 omarchy_plugin::spawn(state.pool.clone(), state.demo);
             }
             update::spawn(app.handle().clone());
+            // The forecast for the day headers — same demo gate as every
+            // other loop, applied inside.
+            weather::spawn(app.handle().clone());
             #[cfg(target_os = "linux")]
             resume::spawn(app.handle().clone());
 
@@ -1278,6 +1282,7 @@ pub fn run() {
             update::open_latest_release,
             update::install_update,
             commands::open_conference,
+            weather::get_weather,
             calendars::get_calendars,
             calendars::set_calendar_selected,
             calendars::set_calendar_sync,
@@ -1288,6 +1293,7 @@ pub fn run() {
             settings::set_sync_interval,
             settings::set_notifications_enabled,
             settings::set_tray_icon,
+            settings::set_weather_enabled,
             settings::set_display_timezone,
             settings::list_timezones,
             settings::restart_app,

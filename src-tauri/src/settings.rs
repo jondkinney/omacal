@@ -19,6 +19,7 @@ const DEFAULT_CALENDAR_KEY: &str = "default_calendar_id";
 const TIME_FORMAT_KEY: &str = "time_format";
 const WEEK_START_KEY: &str = "week_start";
 const TRAY_ICON_KEY: &str = "tray_icon";
+const WEATHER_KEY: &str = "weather_enabled";
 const DISPLAY_TZ_KEY: &str = "display_timezone";
 
 /// The boot fast-path beside the database: `main()` must export `TZ` before
@@ -191,6 +192,13 @@ pub struct AppSettings {
     /// the Omarchy 4 bar widget being the case this was built for, driving
     /// the app over the single-instance flags (`--sync-now`, `--quit`).
     pub tray_icon: bool,
+    /// Whether the day headers carry the forecast — an icon and the high,
+    /// from the same sources the Omarchy bar widget reads (`weather.rs`).
+    /// On by default: the data is decoration and the cost is one keyless
+    /// Open-Meteo call every three hours — but it *is* the one network
+    /// destination beyond the calendar providers, which is why the off
+    /// switch exists and the settings hint names where the data comes from.
+    pub weather_enabled: bool,
     /// Whether times are drawn as `13:30` or `1:30 PM`, everywhere the app
     /// prints one — event blocks, the filmstrip, the popover and the Week and
     /// Day hour gutter, which follows deliberately: a 12-hour reader given a
@@ -301,6 +309,9 @@ pub async fn read_settings(pool: &SqlitePool) -> AppSettings {
         // garbage both keep the icon — losing the quit affordance must take
         // an explicit "0", never a typo.
         tray_icon: read(pool, TRAY_ICON_KEY).await.map(|v| v != "0").unwrap_or(true),
+        // `notifications_enabled`'s polarity and reasoning: on unless
+        // somebody turned it off.
+        weather_enabled: weather_enabled(pool).await,
     }
 }
 
@@ -408,6 +419,30 @@ pub fn restart_app(app: tauri::AppHandle) {
         tokio::time::sleep(std::time::Duration::from_millis(400)).await;
         app.restart();
     });
+}
+
+/// The one settings read the weather loop repeats every tick, named so the
+/// loop and `read_settings` cannot disagree on default or polarity.
+pub(crate) async fn weather_enabled(pool: &SqlitePool) -> bool {
+    read(pool, WEATHER_KEY).await.map(|v| v != "0").unwrap_or(true)
+}
+
+/// Stores the weather preference — and on a turn-on, fetches now rather
+/// than at the loop's next three-hour tick: a toggle that answers with an
+/// unchanged header for an hour reads as broken, exactly like a tray icon
+/// that only appears at next launch would.
+#[tauri::command]
+pub async fn set_weather_enabled(
+    state: tauri::State<'_, AppState>,
+    on: bool,
+) -> Result<AppSettings, String> {
+    write(&state.pool, WEATHER_KEY, if on { "1" } else { "0" })
+        .await
+        .map_err(|e| crate::errors::user_facing(&e))?;
+    if on {
+        crate::weather::refresh_soon(state.pool.clone(), state.demo, true);
+    }
+    Ok(read_settings(&state.pool).await)
 }
 
 #[tauri::command]

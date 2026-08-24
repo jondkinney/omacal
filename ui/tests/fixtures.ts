@@ -3,6 +3,7 @@ import type {
   BigYearPayload, RibbonRow,
 } from '../src/lib/api';
 import type { AppStatus } from '../src/lib/status';
+import type { DayWeather } from '../src/lib/weather';
 import type { Calendar } from '../src/lib/calendars';
 import type { Attendee, EventDetail } from '../src/lib/eventdetail';
 import type { Rect } from '../src/lib/position';
@@ -214,6 +215,19 @@ const singleDayOverlapWeek = (): WeekPayload => {
  * the fixture sweep can recompute it: each takes the full width, and `idx` is
  * the position in `events` rather than the chronological order.
  */
+/** The forecast as `App` hands it down: a map keyed by ISO date. The
+ *  entries name three different buckets so a spec can pin that each day
+ *  draws its *own* sky rather than the first one repeated. Days without an
+ *  entry are the absence case — the forecast horizon's edge. */
+export const weatherMap = (entries: Array<[string, DayWeather]>): Map<string, DayWeather> =>
+  new Map(entries);
+
+export const WEEK_WEATHER = weatherMap([
+  ['2024-01-01', { date: '2024-01-01', bucket: 'clear', tmax: 31, tmin: 24 }],
+  ['2024-01-02', { date: '2024-01-02', bucket: 'thunder', tmax: 29, tmin: 23 }],
+  ['2024-01-03', { date: '2024-01-03', bucket: 'snow', tmax: 2, tmin: -3 }],
+]);
+
 /** One Monday exercising each piece of row meta on its own row, so a spec
  *  failure names the feature that broke rather than "the busy row changed".
  *  The plain row is the control: nothing in the meta cluster may appear on
@@ -1677,6 +1691,9 @@ export const crossZoneWeek = (): WeekPayload => structuredClone(XZONE_GOLDEN);
 export const FIXTURES: Record<string, Record<string, any>> = {
   WeekGrid: {
     empty: { week: emptyWeek() },
+    // The empty week under a three-day forecast: Mon/Tue/Wed carry distinct
+    // skies, Thu onward is past the horizon and must carry nothing.
+    weather: { week: emptyWeek(), weather: WEEK_WEATHER },
     populated: { week: populatedWeek() },
     popover: { week: popoverWeek() },
     'popover-two-occurrences': { week: popoverTwoOccurrencesWeek() },
@@ -1703,7 +1720,7 @@ export const FIXTURES: Record<string, Record<string, any>> = {
   // change to either reaches the rendering specs as well.
   Filmstrip: {
     week: { days: daysFromWeek(filmstripWeek()) },
-    meta: { days: daysFromWeek(filmstripMeta()) },
+    meta: { days: daysFromWeek(filmstripMeta()), weather: WEEK_WEATHER },
     month: { days: daysFromMonth(filmstripMonth()) },
     /** A period with nothing in it, which has to say so rather than render as
      *  blank (spec §3). `emptyWeek()` rather than a bare `[]`, so the empty

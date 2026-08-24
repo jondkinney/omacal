@@ -58,6 +58,25 @@ test.describe('WeekGrid', () => {
     await expect(page).toHaveScreenshot('weekgrid-empty.png');
   });
 
+  /** The forecast in the day headers: each covered day draws its *own* sky
+   *  and high — three distinct buckets, so a map read off by one would
+   *  redden — and a day past the horizon draws nothing rather than a guess.
+   *  Absence is the other half of the contract: without the prop (every
+   *  other fixture) no header ever grows a sky. */
+  test('a day header carries the forecast for its own day, and only then', async ({ page }) => {
+    await page.goto(show('WeekGrid', 'weather'));
+    const wx = page.locator('.head .wx');
+    await expect(wx).toHaveCount(3);
+    await expect(wx.nth(0)).toHaveText('31°');
+    await expect(wx.nth(0)).toHaveAttribute('title', '31° / 24°');
+    await expect(wx.nth(2)).toHaveText('2°');
+    // Thursday is past the horizon: same header, no sky.
+    await expect(page.locator('.head').nth(4).locator('.wx')).toHaveCount(0);
+
+    await page.goto(show('WeekGrid', 'empty'));
+    await expect(page.locator('.head .wx')).toHaveCount(0);
+  });
+
   // Without this, `WEEK_NOW` is unfalsifiable: a `WeekGrid` that had lost the
   // today-highlight and the current-time line entirely would satisfy every
   // other spec in this block and both baselines, because none of them ever
@@ -1075,6 +1094,22 @@ test.describe('Header', () => {
    * saves through the command, because a settings row nobody wrote survives
    * nothing.
    */
+  /** The weather knob (General): checked by default — the backend ships it
+   *  on — and unchecking is a write through the command, not a redraw. */
+  test('General carries the weather toggle, on by default and saved off', async ({ page }) => {
+    await page.goto(show('Header', 'connected'));
+    const modal = await openSettings(page);
+
+    const toggle = modal.getByRole('checkbox', { name: 'Weather in the day headers' });
+    await expect(toggle).toBeChecked();
+    await toggle.uncheck();
+    await expect(toggle).not.toBeChecked();
+
+    const calls = await page.evaluate(() => (window as any).__harness.calls);
+    const call = calls.find((c: any) => c.cmd === 'set_weather_enabled');
+    expect(call.args).toMatchObject({ on: false });
+  });
+
   test('Notifications shows the fallback rows in speakable units', async ({ page }) => {
     await page.goto(show('Header', 'connected'));
     const modal = await openSettings(page, 'Notifications');
@@ -3217,6 +3252,19 @@ test.describe('Filmstrip', () => {
     // own control most of all.
     const joinBox = (await items.nth(2).locator('.join').boundingBox())!;
     expect(joinBox.x).toBeLessThan(400);
+  });
+
+  /** The forecast beside the day heading — the same map `WeekGrid`'s headers
+   *  read, keyed the same way, so the list and the grid name one sky for one
+   *  day. The `meta` fixture covers Monday only; the absence on a section
+   *  past the horizon rides along free in every other fixture. */
+  test('a day heading carries its forecast', async ({ page }) => {
+    await page.goto(show('meta'));
+    const wx = page.locator('.sdate .wx');
+    await expect(wx).toHaveCount(1);
+    await expect(wx).toHaveText('31°');
+    await page.goto(show('week'));
+    await expect(page.locator('.sdate .wx')).toHaveCount(0);
   });
 
   /** The regression the redesign exists to fix: the location sits beside the

@@ -5,12 +5,17 @@
   import { openConference, type UiEvent } from './api';
   import type { Rect } from './position';
   import { locationLabel, meetingUrl } from './location';
+  import WeatherGlyph from './WeatherGlyph.svelte';
+  import { dateKey, type DayWeather } from './weather';
   import type { ListDay } from './filmstrip';
 
-  let { days, onopen }: {
+  let { days, weather = null, onopen }: {
     /** Already grouped, ordered and emptied of blank days by `filmstrip.ts`.
      *  This component draws a list; it does not decide what is in one. */
     days: ListDay[];
+    /** The forecast by ISO date, or null for none — same contract as
+     *  `WeekGrid`'s: a heading with no sky is just a heading. */
+    weather?: Map<string, DayWeather> | null;
     /** Same contract as `MonthGrid`'s and `BigYearRibbon`'s: the clicked event
      *  plus an anchor rect, handed straight up to `App.openGridEvent` and so to
      *  `openOccurrence`.
@@ -85,7 +90,15 @@
     {#each days as d (d.startMs)}
       {@const marker = markerIndex(d, nowMs)}
       <section class="sday" data-start-ms={d.startMs}>
-        <h2 class="sdate">{dateLabel(d.startMs)}</h2>
+        <h2 class="sdate">
+          {dateLabel(d.startMs)}
+          {#if weather?.get(dateKey(d.startMs))}
+            {@const wx = weather.get(dateKey(d.startMs))!}
+            <span class="wx" title="{wx.tmax}° / {wx.tmin}°">
+              <WeatherGlyph bucket={wx.bucket} size={12} />{wx.tmax}°
+            </span>
+          {/if}
+        </h2>
         <ul>
           {#each d.events as ev, i}
             {#if i === marker}
@@ -184,7 +197,12 @@
   .sdate { position: sticky; top: 0; z-index: 1; margin: 0 0 4px;
            font-size: 11px; font-weight: 600; color: var(--muted);
            letter-spacing: .05em; text-transform: uppercase;
-           background: var(--bg); padding: 2px 0; }
+           background: var(--bg); padding: 2px 0;
+           display: flex; align-items: center; gap: 8px; }
+  /* The sky beside the day it belongs to, in the heading's own voice. */
+  .sdate .wx { display: inline-flex; align-items: center; gap: 3px;
+               font-weight: 500; letter-spacing: 0;
+               font-variant-numeric: tabular-nums; }
 
   ul { list-style: none; margin: 0; padding: 0; }
 

@@ -1,6 +1,8 @@
 <!-- ui/src/lib/WeekGrid.svelte -->
 <script lang="ts">
   import { clockFormat } from './clock.svelte';
+  import WeatherGlyph from './WeatherGlyph.svelte';
+  import { dateKey, type DayWeather } from './weather';
   import { gutterLabel } from './timefmt';
   import { tick } from 'svelte';
   import type { WeekPayload, UiEvent } from './api';
@@ -13,8 +15,12 @@
     SNAP_MS, beganDrag, colsMoved, edgeAt, spanForMove, spanForResize, spanForSweep,
   } from './drag';
 
-  let { week, formPreview = null, oncreate, onedit, ondelete, oncopy, onmove, onresponded }: {
+  let { week, weather = null, formPreview = null, oncreate, onedit, ondelete, oncopy, onmove, onresponded }: {
     week: WeekPayload;
+    /** The forecast by ISO date (`weather.ts`), or null for none — off, not
+     *  yet fetched, or failed all look the same here: a header with no sky,
+     *  which is what this header looked like for its whole life until now. */
+    weather?: Map<string, DayWeather> | null;
     /** The span the open event form currently describes, drawn as a dashed
      *  ghost so the user watches the event land while typing its times —
      *  create and edit alike. Null draws nothing. */
@@ -783,6 +789,16 @@
     <div class="head" class:today={d.start_ms === todayStart}>
       <span>{dayName(d.start_ms)}</span>
       <b>{new Date(d.start_ms).getDate()}</b>
+      {#if weather?.get(dateKey(d.start_ms))}
+        {@const wx = weather.get(dateKey(d.start_ms))!}
+        <!-- Fantastical's idea at Omarchy's volume: a glyph and the high,
+             in the muted register the day name already uses. Absent for any
+             day the forecast does not cover — the past, the far future — so
+             the header never guesses. -->
+        <span class="wx" title="{wx.tmax}° / {wx.tmin}°">
+          <WeatherGlyph bucket={wx.bucket} size={13} />{wx.tmax}°
+        </span>
+      {/if}
     </div>
   {/each}
 </div>
@@ -934,6 +950,12 @@
 
   .head { text-align: center; font-size: 11px; color: var(--muted);
           letter-spacing: .05em; padding-bottom: 8px; }
+  /* The sky, in the day name's own muted voice. A flex row only to seat the
+     glyph on the text's midline; the ° digits stay tabular so a week of
+     temperatures forms a row the eye can run across. */
+  .wx { display: inline-flex; align-items: center; justify-content: center;
+        gap: 3px; margin-top: 2px; font-size: 10.5px; letter-spacing: 0;
+        font-variant-numeric: tabular-nums; }
   .head b { display: block; font-size: 15px; color: var(--text);
             font-weight: 500; letter-spacing: -.02em; margin-top: 2px; }
   .head.today b { background: var(--accent); color: var(--on-accent); width: 23px; height: 23px;
