@@ -143,10 +143,17 @@
               {#if joinable(ev)}
                 <!-- A sibling of the row button, never inside it — nested
                      interactive elements are where keyboards and readers go
-                     to die. Backend-side by id, like the popover's Join and
+                     to die. It still *reads* as part of the left cluster:
+                     the row button is content-sized (see `.srow`), so this
+                     sits directly after the meta rather than a screen-width
+                     away. The camera is the widget's own glyph for the same
+                     fact. Backend-side by id, like the popover's Join and
                      for its reasons (`api.openConference`). -->
-                <button class="join" title="Join video call"
-                        onclick={() => void openConference(ev.id)}>Join</button>
+                <button class="join" title="Join video call" aria-label="Join video call"
+                        onclick={() => void openConference(ev.id)}>
+                  <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"
+                    d="M2 4.75h7.5a.75.75 0 0 1 .75.75v5a.75.75 0 0 1-.75.75H2a.75.75 0 0 1-.75-.75v-5A.75.75 0 0 1 2 4.75Zm8.25 2.4 4.5-2.4v6.5l-4.5-2.4"/></svg>
+                </button>
               {/if}
             </li>
           {/each}
@@ -182,16 +189,20 @@
   ul { list-style: none; margin: 0; padding: 0; }
 
   /* The row is a flex pair — the opening button, then Join when there is one —
-     so Join can be a real control without nesting inside another one. */
-  .srow-li { display: flex; align-items: baseline; }
+     so Join can be a real control without nesting inside another one. The
+     hover wash lives on the li so it still sweeps the full row width; the
+     button itself is content-sized, which is what keeps Join in the left
+     cluster instead of flushed to the far edge by a stretching sibling. */
+  .srow-li { display: flex; align-items: baseline; border-radius: 4px; }
+  .srow-li:hover, .srow-li:focus-within {
+    background: color-mix(in srgb, var(--text) 6%, transparent); }
 
   .srow { appearance: none; -webkit-appearance: none; font: inherit;
           display: flex; align-items: baseline; gap: 10px;
-          flex: 1 1 auto; min-width: 0;
+          flex: 0 1 auto; min-width: 0;
           text-align: left; cursor: pointer; border: 0;
           border-left: 2px solid var(--cal); background: none;
           color: var(--text); border-radius: 4px; padding: 4px 8px; }
-  .srow:hover, .srow:focus-visible { background: color-mix(in srgb, var(--text) 6%, transparent); }
 
   /* Tabular figures so the times form a column the eye can run down, and a
      fixed width so a title never starts at a different x from the row above
@@ -220,11 +231,16 @@
                  and read high without a nudge. */
               transform: translateY(2px); }
 
+  /* The widget's camera, not a labelled chip: one glyph in the row's own
+     meta register, accent-inked so "there is a call to join" still reads at
+     a scan. No background — the row's hover wash is the affordance. */
   .join { appearance: none; -webkit-appearance: none; font: inherit;
-          flex: none; cursor: pointer; border: 0; border-radius: 5px;
-          margin-left: 6px; padding: 2px 9px; font-size: 11px; font-weight: 600;
-          color: var(--on-accent); background: var(--accent); }
-  .join:hover, .join:focus-visible { filter: brightness(1.1); }
+          flex: none; cursor: pointer; border: 0; border-radius: 4px;
+          padding: 2px 5px; background: none; color: var(--accent);
+          display: inline-flex; align-items: center; align-self: center; }
+  .join svg { width: 14px; height: 14px; display: block; }
+  .join:hover, .join:focus-visible {
+    background: color-mix(in srgb, var(--accent) 22%, transparent); }
 
   /* The marker: today's current minute, as a rule the accent colour owns.
      `aria-hidden` in the template — a decoration between rows, not a stop on

@@ -3211,6 +3211,12 @@ test.describe('Filmstrip', () => {
     const call = calls.find((c: any) => c.cmd === 'open_conference');
     expect(call.args).toMatchObject({ id: expect.any(Number) });
     expect(await page.evaluate(() => (window as any).__lastOpen)).toBeFalsy();
+
+    // In the left cluster with everything else, not flushed to the far edge
+    // of a 1280px row — the field note that reshaped this row applies to its
+    // own control most of all.
+    const joinBox = (await items.nth(2).locator('.join').boundingBox())!;
+    expect(joinBox.x).toBeLessThan(400);
   });
 
   /** The regression the redesign exists to fix: the location sits beside the
