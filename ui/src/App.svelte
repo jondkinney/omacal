@@ -126,6 +126,14 @@
     return () => { un.then((f) => f()); };
   });
 
+  // A newer release was just noticed (update::check_once) — the focus-driven
+  // check exists so the banner can appear while the window sits open, and
+  // this refetch is the half that actually draws it.
+  $effect(() => {
+    const un = listen('update-notice', () => { void refreshStatus(); });
+    return () => { un.then((f) => f()); };
+  });
+
   // The two external entrances (`omacal 2026-09-01`, a clicked reminder).
   // Anchor-only for a date: the view the user last used is the view they
   // get, exactly as `T` behaves. A clicked reminder also opens the popover

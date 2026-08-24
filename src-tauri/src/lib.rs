@@ -81,6 +81,11 @@ pub struct AppState {
     /// open. In memory only: on relaunch the first check re-learns it in one
     /// request, same reasoning as `reauth`.
     pub update: std::sync::Mutex<Option<update::UpdateNotice>>,
+    /// When the release endpoint was last asked, ms epoch; `0` for never.
+    /// What `update::check_on_focus` rates its floor against, so an
+    /// alt-tab is not a request to poll GitHub. Atomic rather than another
+    /// mutex: one stamp, written after each check, read on each focus.
+    pub update_checked_at: std::sync::atomic::AtomicI64,
     /// The system zone's new IANA name, once `tz_watch` has seen it move out
     /// from under this process — `None` until then. Carried to the UI on
     /// `get_status`, where it becomes the restart banner. In memory only,
@@ -1149,6 +1154,7 @@ pub fn run() {
                 tokens: Default::default(),
                 reauth: Default::default(),
                 update: Default::default(),
+                update_checked_at: Default::default(),
                 system_tz_change: Default::default(),
                 open_date: std::sync::Mutex::new(open_date),
             });
@@ -1250,7 +1256,14 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| match event {
-            tauri::WindowEvent::Focused(true) => sync_loop::request_now(window.app_handle()),
+            tauri::WindowEvent::Focused(true) => {
+                sync_loop::request_now(window.app_handle());
+                // The update notice rides the same "the user is back" signal,
+                // behind its own four-hour floor: an instance launched 45
+                // minutes before a release used to stay silent about it for
+                // a day — the exact day the Update button matters most.
+                update::check_on_focus(window.app_handle());
+            }
             // §2.6: closing hides. The scheduler is the whole point of the
             // app, and a closed window that silently stopped firing reminders
             // would be a bug rather than a feature. Quit is explicit, from the

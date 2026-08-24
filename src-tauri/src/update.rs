@@ -43,7 +43,7 @@ const FIRST_CHECK_DELAY: std::time::Duration = std::time::Duration::from_secs(30
 /// What the UI is told when a newer release exists. Rides on `get_status`
 /// beside `needs_reauth`, for the same reason: it is a fact about this
 /// running instance that the header renders differently for.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct UpdateNotice {
     /// The newer version, without the tag's `v` — it is displayed inside a
     /// sentence, and "v0.1.2 is available" reads like a git tag escaped.
@@ -153,13 +153,59 @@ pub(crate) async fn fetch_latest(endpoint: &str) -> anyhow::Result<(String, Stri
     Ok((r.tag_name, r.html_url))
 }
 
+/// How long a focus is answered from the last check rather than a new one.
+/// A release is a rare event; four hours means an instance that missed one
+/// by minutes — launched just before a publish, the exact case that
+/// otherwise stays silent all day — still hears within the afternoon,
+/// while an alt-tab is never a request to poll GitHub.
+const FOCUS_CHECK_FLOOR_MS: i64 = 4 * 3600 * 1000;
+
+/// Whether a focus at `now_ms` should re-ask, given the last check at
+/// `last_ms` (`0` for never). A window, not a comparison — a stamp from the
+/// future (a clock that jumped back) reads as "check", the same posture as
+/// `weather::cache_is_fresh`, because the alternative is a floor that never
+/// opens again.
+pub(crate) fn focus_should_check(last_ms: i64, now_ms: i64) -> bool {
+    last_ms == 0 || !(last_ms <= now_ms && now_ms - last_ms < FOCUS_CHECK_FLOOR_MS)
+}
+
+/// One check: ask, compare, store, and say so. The stamp is written on
+/// every attempt — success or not — so a failing endpoint is retried on the
+/// ticker's schedule, not hammered on every focus. A *new* notice also
+/// emits `update-notice`, which is what lets the banner appear while the
+/// window sits open: `get_status` is only re-read when something tells the
+/// webview to, and the daily ticker's discovery used to wait for whatever
+/// refetch happened along next.
+async fn check_once(app: &AppHandle, current: &str) {
+    app.state::<crate::AppState>()
+        .update_checked_at
+        .store(crate::now_ms(), std::sync::atomic::Ordering::Relaxed);
+    match fetch_latest(LATEST_RELEASE_ENDPOINT).await {
+        Ok((tag, url)) => {
+            if let Some(n) = notice_for(current, &tag, &url) {
+                tracing::info!(version = %n.version, "a newer release exists");
+                let state = app.state::<crate::AppState>();
+                let mut slot = state.update.lock().expect("update notice poisoned");
+                let is_news = slot.as_ref() != Some(&n);
+                *slot = Some(n);
+                drop(slot);
+                if is_news {
+                    use tauri::Emitter;
+                    let _ = app.emit("update-notice", ());
+                }
+            }
+        }
+        Err(e) => tracing::debug!(%e, "update check failed; retrying later"),
+    }
+}
+
 /// Starts the daily check. **Untested**, like `sync_loop::spawn`: everything
 /// it decides is decided by the pure functions above; what is left is a
 /// ticker and a mutex write.
 ///
 /// A failed check is `debug!`, not `warn!` — being offline is a normal state
 /// for a laptop and this is the one loop with nothing at stake; retrying
-/// tomorrow is the whole plan.
+/// later is the whole plan.
 pub(crate) fn spawn(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         let (demo, current) = {
@@ -174,19 +220,30 @@ pub(crate) fn spawn(app: AppHandle) {
         let mut ticker = tokio::time::interval(CHECK_INTERVAL);
         loop {
             ticker.tick().await; // the first tick resolves immediately
-            match fetch_latest(LATEST_RELEASE_ENDPOINT).await {
-                Ok((tag, url)) => {
-                    if let Some(n) = notice_for(&current, &tag, &url) {
-                        tracing::info!(version = %n.version, "a newer release exists");
-                        *app.state::<crate::AppState>()
-                            .update
-                            .lock()
-                            .expect("update notice poisoned") = Some(n);
-                    }
-                }
-                Err(e) => tracing::debug!(%e, "update check failed; retrying tomorrow"),
-            }
+            check_once(&app, &current).await;
         }
+    });
+}
+
+/// The focus edge: the user is back, and the notice may be a day stale —
+/// re-ask behind [`focus_should_check`]'s floor. Rides the same signal the
+/// focus-sync does (`lib.rs`'s `Focused(true)` handler), gated the same way
+/// demo gates everything.
+pub(crate) fn check_on_focus(app: &AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        let (demo, current, last) = {
+            let state = app.state::<crate::AppState>();
+            (
+                state.demo,
+                app.package_info().version.to_string(),
+                state.update_checked_at.load(std::sync::atomic::Ordering::Relaxed),
+            )
+        };
+        if !may_check(demo) || !focus_should_check(last, crate::now_ms()) {
+            return;
+        }
+        check_once(&app, &current).await;
     });
 }
 
@@ -323,6 +380,19 @@ mod tests {
         assert_eq!(n.version, "0.1.2");
         assert_eq!(n.url, "https://example.com/rel");
         assert!(notice_for("0.1.2", "v0.1.2", "u").is_none(), "equal announced an update");
+    }
+
+    /// The focus floor, all corners: never-checked asks, a recent check
+    /// answers from memory, an old one re-asks — and a stamp from the
+    /// future (a clock that jumped back) re-asks rather than sealing the
+    /// floor shut forever.
+    #[test]
+    fn a_focus_reasks_only_past_the_floor_and_a_future_stamp_reasks() {
+        assert!(focus_should_check(0, 1_000), "a fresh launch's focus never re-asked");
+        assert!(!focus_should_check(1_000, 1_000 + FOCUS_CHECK_FLOOR_MS - 1),
+                "an alt-tab polled GitHub");
+        assert!(focus_should_check(1_000, 1_000 + FOCUS_CHECK_FLOOR_MS));
+        assert!(focus_should_check(10_000, 1_000), "a future stamp sealed the floor shut");
     }
 
     /// Demo mode's promise is no network traffic at all, and the check is

@@ -69,6 +69,10 @@ async fn watch(app: tauri::AppHandle) -> anyhow::Result<()> {
         if is_resume(body) {
             tracing::info!("resumed from suspend; nudging sync");
             crate::sync_loop::request_now(&app);
+            // The overnight suspend is the update notice's worst case — a
+            // day-old check and the window already focused, so no focus
+            // edge will fire. Same floor as the focus path.
+            crate::update::check_on_focus(&app);
         }
     }
     Ok(())
