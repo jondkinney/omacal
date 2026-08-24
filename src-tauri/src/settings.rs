@@ -433,6 +433,7 @@ pub(crate) async fn weather_enabled(pool: &SqlitePool) -> bool {
 /// that only appears at next launch would.
 #[tauri::command]
 pub async fn set_weather_enabled(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     on: bool,
 ) -> Result<AppSettings, String> {
@@ -440,7 +441,7 @@ pub async fn set_weather_enabled(
         .await
         .map_err(|e| crate::errors::user_facing(&e))?;
     if on {
-        crate::weather::refresh_soon(state.pool.clone(), state.demo, true);
+        crate::weather::refresh_soon(app, state.pool.clone(), state.demo, true);
     }
     Ok(read_settings(&state.pool).await)
 }

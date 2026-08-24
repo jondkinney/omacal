@@ -68,7 +68,9 @@ test.describe('WeekGrid', () => {
     const wx = page.locator('.head .wx');
     await expect(wx).toHaveCount(3);
     await expect(wx.nth(0)).toHaveText('31°');
-    await expect(wx.nth(0)).toHaveAttribute('title', '31° / 24°');
+    // No `title=`: the native tooltip is unstylable and ghosts on
+    // translucent compositors (EventBlock's doctrine, applied here).
+    await expect(wx.nth(0)).not.toHaveAttribute('title', /./);
     await expect(wx.nth(2)).toHaveText('2°');
     // Thursday is past the horizon: same header, no sky.
     await expect(page.locator('.head').nth(4).locator('.wx')).toHaveCount(0);

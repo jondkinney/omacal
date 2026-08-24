@@ -180,6 +180,14 @@
     const id = setInterval(() => { void refreshWeather(); }, 3_600_000);
     return () => clearInterval(id);
   });
+  // A forecast just landed backend-side (weather::refresh). The launch
+  // fetch — wttr.in can take most of a minute — finishes *after* the mount
+  // read above, and without this the headers stayed empty until the hourly
+  // tick. The update notice's exact race, and its exact fix.
+  $effect(() => {
+    const un = listen('weather-changed', () => { void refreshWeather(); });
+    return () => { un.then((f) => f()); };
+  });
 
   async function refreshCalendars() {
     try { calendars = await getCalendars(); } catch (e) { error = String(e); }

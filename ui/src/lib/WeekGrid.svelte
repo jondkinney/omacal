@@ -795,7 +795,7 @@
              in the muted register the day name already uses. Absent for any
              day the forecast does not cover — the past, the far future — so
              the header never guesses. -->
-        <span class="wx" title="{wx.tmax}° / {wx.tmin}°">
+        <span class="wx">
           <WeatherGlyph bucket={wx.bucket} size={13} />{wx.tmax}°
         </span>
       {/if}

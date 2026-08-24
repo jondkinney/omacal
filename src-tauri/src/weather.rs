@@ -282,9 +282,15 @@ fn urlencoding_encode(s: &str) -> String {
         .collect()
 }
 
-/// One fetch: resolve where, ask Open-Meteo, cache the report. Quiet on
-/// every failure — the header just keeps whatever it last knew.
-async fn refresh(pool: &SqlitePool) {
+/// One fetch: resolve where, ask Open-Meteo, cache the report — and say so.
+/// Quiet on every failure — the header just keeps whatever it last knew.
+///
+/// The `weather-changed` emit is the race the first field run lost: the UI
+/// reads the cache once at mount, and the first fetch — wttr.in can take
+/// most of a minute — lands after that read, leaving the headers empty
+/// until the hourly re-poll. Same fix as `update-notice`: the backend
+/// learned something; it tells the webview instead of waiting to be asked.
+async fn refresh(app: Option<&tauri::AppHandle>, pool: &SqlitePool) {
     let now_ms = jiff::Timestamp::now().as_millisecond();
     let Some((lat, lon, place)) = resolve_location(pool, now_ms).await else {
         tracing::debug!("weather: no location; skipping");
@@ -301,6 +307,10 @@ async fn refresh(pool: &SqlitePool) {
                 let _ = crate::settings::write(pool, CACHE_KEY, &json).await;
                 let _ = crate::settings::write(pool, CACHE_AT_KEY, &now_ms.to_string()).await;
                 tracing::debug!(days = report.days.len(), "weather: forecast cached");
+                if let Some(app) = app {
+                    use tauri::Emitter;
+                    let _ = app.emit("weather-changed", ());
+                }
             }
         }
         None => tracing::debug!("weather: fetch or parse failed; keeping the stale cache"),
@@ -311,11 +321,11 @@ async fn refresh(pool: &SqlitePool) {
 /// switching weather on shows a sky now rather than at the next tick. Gated
 /// again here: the toggle handing this a `false` is a programming error, but
 /// demo handing it anything must still fetch nothing.
-pub fn refresh_soon(pool: SqlitePool, demo: bool, enabled: bool) {
+pub fn refresh_soon(app: tauri::AppHandle, pool: SqlitePool, demo: bool, enabled: bool) {
     if !may_fetch(demo, enabled) {
         return;
     }
-    tauri::async_runtime::spawn(async move { refresh(&pool).await });
+    tauri::async_runtime::spawn(async move { refresh(Some(&app), &pool).await });
 }
 
 /// The three-hour loop. The enabled setting is re-read every tick, so a
@@ -336,7 +346,7 @@ pub(crate) fn spawn(app: tauri::AppHandle) {
             ticker.tick().await; // the first tick resolves immediately
             let enabled = crate::settings::weather_enabled(&pool).await;
             if may_fetch(demo, enabled) {
-                refresh(&pool).await;
+                refresh(Some(&app), &pool).await;
             }
         }
     });

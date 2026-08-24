@@ -94,7 +94,7 @@
           {dateLabel(d.startMs)}
           {#if weather?.get(dateKey(d.startMs))}
             {@const wx = weather.get(dateKey(d.startMs))!}
-            <span class="wx" title="{wx.tmax}° / {wx.tmin}°">
+            <span class="wx">
               <WeatherGlyph bucket={wx.bucket} size={12} />{wx.tmax}°
             </span>
           {/if}
@@ -119,10 +119,16 @@
                    render. No fill is used — a 2px spine and the theme's own
                    text — so `ink.ts` has nothing to decide here; give a row a
                    filled background and it does. -->
+              <!-- No `title=` anywhere in this list, per `EventBlock`'s
+                   doctrine: the attribute renders as the engine's native
+                   tooltip, which no stylesheet can reach — and on a
+                   translucent compositor it also ghosts, leaving faint
+                   seams where tooltips popped as the pointer crossed the
+                   rows. The row's own text already says everything the
+                   tooltip did; the popover is one click away for the rest. -->
               <button
                 class="srow"
                 class:allday={ev.is_all_day}
-                title={ev.title}
                 onclick={(e) => open(ev, e)}
               >
                 <em class="when">
@@ -138,7 +144,7 @@
                 {#if ev.recurring}
                   <!-- One glyph, muted: "this row repeats" is orientation,
                        not news. -->
-                  <span class="meta rep" title="Repeats">
+                  <span class="meta rep">
                     <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
                       d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 1.8v2.7h-2.7"/></svg>
                   </span>
@@ -147,7 +153,7 @@
                   <!-- Only when there is anybody besides the user to count:
                        "1" on every solo event is a column of noise. The count
                        includes the organizer, matching the widget's feed. -->
-                  <span class="meta who" title="{ev.attendees} invitees">
+                  <span class="meta who">
                     <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
                       d="M5.5 7.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Zm-4 6c0-2.2 1.8-4 4-4s4 1.8 4 4M11 7.3a2.3 2.3 0 1 0-1.6-4M11.6 9.6c1.7.5 2.9 2 2.9 3.9"/></svg>{ev.attendees}
                   </span>
@@ -162,7 +168,7 @@
                      away. The camera is the widget's own glyph for the same
                      fact. Backend-side by id, like the popover's Join and
                      for its reasons (`api.openConference`). -->
-                <button class="join" title="Join video call" aria-label="Join video call"
+                <button class="join" aria-label="Join video call"
                         onclick={() => void openConference(ev.id)}>
                   <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"
                     d="M2 4.75h7.5a.75.75 0 0 1 .75.75v5a.75.75 0 0 1-.75.75H2a.75.75 0 0 1-.75-.75v-5A.75.75 0 0 1 2 4.75Zm8.25 2.4 4.5-2.4v6.5l-4.5-2.4"/></svg>

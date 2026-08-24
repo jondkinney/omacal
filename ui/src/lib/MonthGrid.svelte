@@ -102,7 +102,6 @@
               grid-column:{lane.start_col + 1} / {lane.end_col + 2};
               --cal:{ev.color};
             "
-            title={ev.title}
             onclick={(e) => openEvent(ev, e)}
           >{lane.cont_left ? '‹ ' : ''}{ev.title}</button>
         {/each}
@@ -139,7 +138,6 @@
               <button
                 class="timed"
                 style="--cal:{ev.color}"
-                title={ev.title}
                 onclick={(e) => openEvent(ev, e)}
               ><i class="dot" style="background:{ev.color}"></i>{ev.title}</button>
             {/each}
