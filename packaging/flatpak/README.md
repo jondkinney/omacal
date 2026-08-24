@@ -1,13 +1,15 @@
 # The Flatpak build
 
-> **Status: built and verified, submission parked (2026-08-24).** Everything
-> in this directory works — the manifest builds, installs and runs on this
-> machine, and Flathub's own linter has been run against it. Nothing has been
-> submitted to Flathub yet, by choice.
+> **Status: unblocked, submission parked (2026-08-24).** The manifest builds,
+> installs and runs on this machine, pinned to **v0.4.0 — the release that
+> carries the `FLATPAK_ID`-aware `single_instance_plugin`**, so the
+> never-granted `--own-name` is gone from `finish-args` and the linter is
+> down to the one error that is granted on explanation
+> (`finish-args-login1-system-talk-name`). Nothing has been submitted to
+> Flathub yet, by choice.
 >
-> **To pick it up, start at "Before you submit" below.** The single blocking
-> item is a release carrying the `FLATPAK_ID`-aware `single_instance_plugin`
-> in `src-tauri/src/lib.rs`; every other step is mechanical once that exists.
+> **To pick it up, start at "Before you submit" below** — step 1 is done;
+> what remains is the logind exception PR and the submission itself.
 
 
 Every other install path omacal has is distro-shaped: the AppImage, the

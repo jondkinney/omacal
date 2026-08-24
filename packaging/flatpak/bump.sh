@@ -31,16 +31,19 @@ sha=$(sha256sum "$tmp/omacal.deb" | cut -d' ' -f1)
 date=$(curl -fsSL "https://api.github.com/repos/$repo/releases/tags/v$version" \
   | sed -n 's/.*"published_at": *"\([0-9-]*\)T.*/\1/p' | head -1)
 
-# Every module but omacal itself comes from shared-modules, so the manifest
-# carries exactly one sha256 and a blind rewrite is safe. Check that rather
-# than assume it: a second checksum appearing here would otherwise be
-# silently overwritten with the .deb's.
-count=$(grep -c '^ *sha256: [0-9a-f]\{64\}$' "$manifest")
-[ "$count" = 1 ] || { echo "expected 1 sha256 in $manifest, found $count" >&2; exit 1; }
+# The manifest carries several checksums now — the Ayatana tray stack pins
+# its own sources — so the .deb's is addressed by adjacency, not pattern:
+# the sha256 rewritten is the line directly under the one release URL. The
+# guard checks that URL appears exactly once, so a second .deb appearing in
+# the manifest fails loudly instead of half-updating.
+count=$(grep -c "^ *url: https://github.com/$repo/releases/download/.*\.deb$" "$manifest")
+[ "$count" = 1 ] || { echo "expected 1 omacal .deb url in $manifest, found $count" >&2; exit 1; }
 
 sed -i \
   -e "s|^\( *url: \)https://github.com/$repo/releases/download/.*\.deb$|\1$url|" \
-  -e "s|^\( *sha256: \)[0-9a-f]\{64\}$|\1$sha|" \
+  "$manifest"
+sed -i \
+  -e "\|^ *url: https://github.com/$repo/releases/download/.*[.]deb\$|{n;s|^\( *sha256: \)[0-9a-f]\{64\}\$|\1$sha|}" \
   "$manifest"
 
 sed -i -e "s|<release version=\"[^\"]*\" date=\"[^\"]*\"/>|<release version=\"$version\" date=\"${date:-$(date -u +%F)}\"/>|" \

@@ -44,14 +44,6 @@ finish-args:
   # the session bus, and that identifier is not this app id — so the sandbox
   # denies it by default. Without this line every launch starts a second copy
   # and the tray's Open / Sync actions never reach the running one.
-  #
-  # DELETE THIS LINE when the pinned .deb is a release that carries the
-  # FLATPAK_ID-aware `single_instance_plugin` (src-tauri/src/lib.rs). Flathub's
-  # linter rejects --own-name outside the app id as an exception it "never
-  # grants", so this manifest cannot be submitted while the line is here. It
-  # stays only so the currently pinned 0.3.14 keeps working locally: without
-  # it an old build gets two full instances, two trays, doubled reminders.
-  - --own-name=com.omacal.app.SingleInstance
   # Sync on resume. The watcher subscribes to logind's PrepareForSleep on the
   # *system* bus, which a sandbox cannot see at all by default — without this
   # the app logs "suspend watcher unavailable" at startup and every lid-close
@@ -172,8 +164,8 @@ modules:
       - install -Dm644 ${FLATPAK_ID}.metainfo.xml /app/share/metainfo/${FLATPAK_ID}.metainfo.xml
     sources:
       - type: file
-        url: https://github.com/x3me/omacal/releases/download/v0.3.14/omacal_0.3.14_amd64.deb
-        sha256: 098dc00f49ad3a0556c5b4f2241aa979c19aaa67957b2728d38d5528c0595b1c
+        url: https://github.com/x3me/omacal/releases/download/v0.4.0/omacal_0.4.0_amd64.deb
+        sha256: 42c9a317c1d129f5ca0c2687e38a5e8bb756daf6c4d3f52ac133d847ea212de7
         dest-filename: omacal.deb
         # flatpak-external-data-checker reads this and opens the version-bump
         # pull request by itself once the app is on Flathub. Until then,
