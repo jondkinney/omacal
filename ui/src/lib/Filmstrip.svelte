@@ -2,9 +2,9 @@
 <script lang="ts">
   import { clockFormat } from './clock.svelte';
   import { formatClock } from './timefmt';
-  import type { UiEvent } from './api';
+  import { openConference, type UiEvent } from './api';
   import type { Rect } from './position';
-  import { locationLabel } from './location';
+  import { locationLabel, meetingUrl } from './location';
   import type { ListDay } from './filmstrip';
 
   let { days, onopen }: {
@@ -38,6 +38,38 @@
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
     onopen(event, { top: r.top, left: r.left, width: r.width, height: r.height });
   }
+
+  /** The joinable link, from the same two places in the same order as the
+   *  popover's own derivation — so a row offering Join and the popover it
+   *  opens can never disagree about whether there is a meeting. */
+  const joinable = (ev: UiEvent) => ev.conference ?? meetingUrl(ev.location);
+
+  // The ticking clock behind the now marker — `WeekGrid`'s exact pattern,
+  // interval and focus-snap included, and for its reasons: a list left open
+  // overnight or across a suspend must not keep drawing "now" where
+  // yesterday's afternoon was.
+  let nowMs = $state(Date.now());
+  $effect(() => {
+    const id = setInterval(() => { nowMs = Date.now(); }, 60_000);
+    const snap = () => { nowMs = Date.now(); };
+    window.addEventListener('focus', snap);
+    return () => { clearInterval(id); window.removeEventListener('focus', snap); };
+  });
+
+  /** Where today's now marker sits in a day's rows: the index of the first
+   *  timed event still ahead of now — all-day rows sort first and are days,
+   *  not instants, so the marker never lands among them — or one past the
+   *  end when everything has started. `-1` for any day that is not today,
+   *  which the template reads as "no marker in this section".
+   *
+   *  A `ListDay` carries only its midnight, so "today" is `startMs`'s
+   *  24-hour window; DST puts the boundary an hour out twice a year, which
+   *  for a marker between rows is a miss of nothing. */
+  function markerIndex(d: ListDay, now: number): number {
+    if (now < d.startMs || now >= d.startMs + 24 * 3_600_000) return -1;
+    const i = d.events.findIndex((ev) => !ev.is_all_day && ev.start_ms > now);
+    return i === -1 ? d.events.length : i;
+  }
 </script>
 
 <!-- **No drag handlers anywhere below, and that is the feature** (spec §6): a
@@ -51,11 +83,22 @@
     <p class="none">Nothing scheduled.</p>
   {:else}
     {#each days as d (d.startMs)}
+      {@const marker = markerIndex(d, nowMs)}
       <section class="sday" data-start-ms={d.startMs}>
         <h2 class="sdate">{dateLabel(d.startMs)}</h2>
         <ul>
-          {#each d.events as ev}
-            <li>
+          {#each d.events as ev, i}
+            {#if i === marker}
+              <!-- The current instant, drawn between the row that has started
+                   and the row still to come — the one orientation a grid gives
+                   for free and a list otherwise loses. Time in the `.when`
+                   column so it lines up with every other time on screen. -->
+              <li class="nowrow" aria-hidden="true">
+                <em class="when">{hhmm(nowMs)}</em>
+                <span class="nowline"></span>
+              </li>
+            {/if}
+            <li class="srow-li" style="--cal:{ev.color}">
               <!-- `--cal` and nothing else, exactly as the grid's own chips
                    declare it (spec §5). A calendar recoloured in settings is
                    recoloured here for free, because the override has already
@@ -66,7 +109,6 @@
               <button
                 class="srow"
                 class:allday={ev.is_all_day}
-                style="--cal:{ev.color}"
                 title={ev.title}
                 onclick={(e) => open(ev, e)}
               >
@@ -75,13 +117,45 @@
                 </em>
                 <b>{ev.title}</b>
                 {#if locationLabel(ev.location)}
-                  <!-- Second, because it is the second thing anyone looks for
-                       and the grid has no room for it at all. -->
+                  <!-- Right beside the title, not across the row: the second
+                       thing anyone looks for should not be a screen-width
+                       away from the first. -->
                   <em class="where">{locationLabel(ev.location)}</em>
                 {/if}
+                {#if ev.recurring}
+                  <!-- One glyph, muted: "this row repeats" is orientation,
+                       not news. -->
+                  <span class="meta rep" title="Repeats">
+                    <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
+                      d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 1.8v2.7h-2.7"/></svg>
+                  </span>
+                {/if}
+                {#if ev.attendees > 1}
+                  <!-- Only when there is anybody besides the user to count:
+                       "1" on every solo event is a column of noise. The count
+                       includes the organizer, matching the widget's feed. -->
+                  <span class="meta who" title="{ev.attendees} invitees">
+                    <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"
+                      d="M5.5 7.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5Zm-4 6c0-2.2 1.8-4 4-4s4 1.8 4 4M11 7.3a2.3 2.3 0 1 0-1.6-4M11.6 9.6c1.7.5 2.9 2 2.9 3.9"/></svg>{ev.attendees}
+                  </span>
+                {/if}
               </button>
+              {#if joinable(ev)}
+                <!-- A sibling of the row button, never inside it — nested
+                     interactive elements are where keyboards and readers go
+                     to die. Backend-side by id, like the popover's Join and
+                     for its reasons (`api.openConference`). -->
+                <button class="join" title="Join video call"
+                        onclick={() => void openConference(ev.id)}>Join</button>
+              {/if}
             </li>
           {/each}
+          {#if marker === d.events.length}
+            <li class="nowrow" aria-hidden="true">
+              <em class="when">{hhmm(nowMs)}</em>
+              <span class="nowline"></span>
+            </li>
+          {/if}
         </ul>
       </section>
     {/each}
@@ -107,8 +181,13 @@
 
   ul { list-style: none; margin: 0; padding: 0; }
 
+  /* The row is a flex pair — the opening button, then Join when there is one —
+     so Join can be a real control without nesting inside another one. */
+  .srow-li { display: flex; align-items: baseline; }
+
   .srow { appearance: none; -webkit-appearance: none; font: inherit;
-          display: flex; align-items: baseline; gap: 10px; width: 100%;
+          display: flex; align-items: baseline; gap: 10px;
+          flex: 1 1 auto; min-width: 0;
           text-align: left; cursor: pointer; border: 0;
           border-left: 2px solid var(--cal); background: none;
           color: var(--text); border-radius: 4px; padding: 4px 8px; }
@@ -121,13 +200,38 @@
           font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
   .srow.allday .when { color: color-mix(in srgb, var(--cal) 60%, var(--muted)); }
 
-  .srow b { flex: 1 1 auto; min-width: 0; font-size: 12.5px; font-weight: 500;
+  /* `flex: 0 1 auto`, deliberately not `1 1`: a stretching title is what used
+     to shove the location to the far edge of the window, a screen-width away
+     from the name it belongs to. Now the title takes what it needs and
+     everything after it sits beside it. */
+  .srow b { flex: 0 1 auto; min-width: 0; font-size: 12.5px; font-weight: 500;
             letter-spacing: -.01em; white-space: nowrap; overflow: hidden;
             text-overflow: ellipsis; }
 
   .where { font-style: normal; flex: 0 1 auto; min-width: 0; font-size: 11px;
            color: var(--muted); white-space: nowrap; overflow: hidden;
            text-overflow: ellipsis; }
+
+  .meta { flex: none; display: inline-flex; align-items: center; gap: 3px;
+          font-size: 10.5px; color: var(--muted);
+          font-variant-numeric: tabular-nums; }
+  .meta svg { width: 12px; height: 12px; display: block;
+              /* Optical: the icons sit on the baseline row beside 11px text
+                 and read high without a nudge. */
+              transform: translateY(2px); }
+
+  .join { appearance: none; -webkit-appearance: none; font: inherit;
+          flex: none; cursor: pointer; border: 0; border-radius: 5px;
+          margin-left: 6px; padding: 2px 9px; font-size: 11px; font-weight: 600;
+          color: var(--on-accent); background: var(--accent); }
+  .join:hover, .join:focus-visible { filter: brightness(1.1); }
+
+  /* The marker: today's current minute, as a rule the accent colour owns.
+     `aria-hidden` in the template — a decoration between rows, not a stop on
+     anybody's reading order. */
+  .nowrow { display: flex; align-items: center; padding: 1px 8px 1px 10px; }
+  .nowrow .when { color: var(--accent); font-weight: 600; font-size: 10.5px; }
+  .nowline { flex: 1; height: 0; border-top: 1.5px solid var(--accent); }
 
   .none { font-size: 12.5px; color: var(--muted); margin: 0; padding: 10px 2px; }
 </style>

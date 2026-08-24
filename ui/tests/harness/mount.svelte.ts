@@ -265,6 +265,12 @@ if (name === 'App') {
       // clicked occurrence up rather than opening anything itself, which is
       // spec §6's "no second way to reach an event's detail". Captured on the
       // window exactly as `MonthGrid`'s and `BigYearRibbon`'s are.
+      //
+      // The stub too, unlike its neighbours: a row's Join chip calls
+      // `open_conference` itself — the one command this component owns — and
+      // without the stub that click is an unhandled rejection instead of a
+      // fact in `harness.calls`.
+      installTauriStub(fixture);
       mount(Filmstrip, {
         target,
         props: {

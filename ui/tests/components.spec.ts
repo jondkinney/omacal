@@ -3052,11 +3052,16 @@ test.describe('BigYearRibbon', () => {
 test.describe('Filmstrip', () => {
   const show = (f: string) => `/tests/harness/index.html?c=Filmstrip&f=${f}`;
 
-  // No frozen clock in this block, and deliberately, unlike the four grids
-  // above: `Filmstrip` reads no clock at all. It has no today-highlight and no
-  // current-time line — the design gives it neither — so there is nothing here
-  // for a run date to change. Give it one and this needs the same `beforeEach`
-  // its neighbours have.
+  // Frozen inside the fixture's Monday, mid-afternoon-gap, because the list
+  // reads the clock now: the marker between "has started" and "still to
+  // come" is drawn from it. 13:00 sits between Standup (09:00) and Ops
+  // review (14:00), which is what lets the marker spec name its neighbours.
+  // Same mechanism as every grid block above; before `page.goto`, since the
+  // component reads the clock at mount.
+  const STRIP_NOW = MON + 13 * 3_600_000;
+  test.beforeEach(async ({ page }) => {
+    await page.clock.setFixedTime(STRIP_NOW);
+  });
 
   // Which days are listed and in what order is `filmstrip.ts`'s, and
   // `filmstrip.spec.ts` holds it to that against the payloads directly. This
@@ -3154,6 +3159,69 @@ test.describe('Filmstrip', () => {
     await page.goto(show('empty'));
     await expect(page.locator('.sday')).toHaveCount(0);
     await expect(page.locator('.none')).toHaveText('Nothing scheduled.');
+  });
+
+  /** The current instant, drawn once, between the row that has started and
+   *  the row still to come — and only in today's section. The other days
+   *  carry no marker at all: "now" repeated down every section would orient
+   *  nobody. */
+  test('the now marker sits between past and future rows of today only', async ({ page }) => {
+    await page.goto(show('week'));
+    const monday = page.locator('.sday').nth(0);
+    await expect(monday.locator('.nowrow')).toHaveCount(1);
+    await expect(monday.locator('.nowrow .when')).toHaveText('13:00');
+    // Between its neighbours, not merely present: previous row Standup
+    // (ended 09:30), next row Ops review (14:00).
+    const rows = monday.locator('ul > li');
+    await expect(rows.nth(0).locator('b')).toHaveText('Standup');
+    await expect(rows.nth(1)).toHaveClass(/nowrow/);
+    await expect(rows.nth(2).locator('b')).toHaveText('Ops review');
+    // Today only.
+    await expect(page.locator('.nowrow')).toHaveCount(1);
+  });
+
+  /** The meta cluster, each piece on its own row with a plain row as the
+   *  control: repeats-glyph for a series, an invitee count only when there is
+   *  somebody besides the user to count, and nothing on an event carrying
+   *  none of it. */
+  test('a row says what repeats and who is invited, and only then', async ({ page }) => {
+    await page.goto(show('meta'));
+    const rows = page.locator('.srow');
+    await expect(rows.nth(0).locator('.rep')).toBeVisible();       // Standup repeats
+    await expect(rows.nth(0).locator('.who')).toHaveCount(0);
+    await expect(rows.nth(1).locator('.who')).toHaveText('4');     // Mesh discussion
+    await expect(rows.nth(1).locator('.rep')).toHaveCount(0);
+    await expect(rows.nth(3).locator('.rep')).toHaveCount(0);      // Solo focus: nothing
+    await expect(rows.nth(3).locator('.who')).toHaveCount(0);
+  });
+
+  /** The Join chip: only where there is a meeting, a sibling of the row
+   *  rather than a control nested inside one, and backend-side by id — the
+   *  command goes out with the event's id and the row does NOT also open.
+   *  (The URL never travels; `commands::open_conference` re-derives it, for
+   *  `open_latest_release`'s reason.) */
+  test('Join goes to the backend by id and does not open the row', async ({ page }) => {
+    await page.goto(show('meta'));
+    const items = page.locator('.srow-li');
+    await expect(items.nth(2).locator('.join')).toBeVisible();     // Daily Dev Sync
+    await expect(items.nth(3).locator('.join')).toHaveCount(0);    // Solo focus
+
+    await items.nth(2).locator('.join').click();
+    const calls = await page.evaluate(() => (window as any).__harness.calls);
+    const call = calls.find((c: any) => c.cmd === 'open_conference');
+    expect(call.args).toMatchObject({ id: expect.any(Number) });
+    expect(await page.evaluate(() => (window as any).__lastOpen)).toBeFalsy();
+  });
+
+  /** The regression the redesign exists to fix: the location sits beside the
+   *  title, not flushed to the far edge of a 1280px row. Asserted as a bound
+   *  rather than a pixel — the old layout put Room 4A past x=900, the new one
+   *  keeps it inside the row's first stretch. */
+  test('the location stays next to the title', async ({ page }) => {
+    await page.goto(show('meta'));
+    const where = page.locator('.srow', { hasText: 'Mesh discussion' }).locator('.where');
+    const box = (await where.boundingBox())!;
+    expect(box.x).toBeLessThan(400);
   });
 });
 

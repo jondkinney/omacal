@@ -81,6 +81,11 @@ const ev = (o: Partial<UiEvent> & { title: string; start_ms: number; end_ms: num
   color: '#5b8def',
   response: 'accepted',
   is_all_day: false,
+  // Solo, one-off, no meeting — the quiet defaults; the fixtures that are
+  // *about* the list row's meta declare their own.
+  attendees: 0,
+  recurring: false,
+  conference: null,
   ...o,
 });
 
@@ -209,6 +214,27 @@ const singleDayOverlapWeek = (): WeekPayload => {
  * the fixture sweep can recompute it: each takes the full width, and `idx` is
  * the position in `events` rather than the chronological order.
  */
+/** One Monday exercising each piece of row meta on its own row, so a spec
+ *  failure names the feature that broke rather than "the busy row changed".
+ *  The plain row is the control: nothing in the meta cluster may appear on
+ *  an event that carries none of it. */
+export const filmstripMeta = (): WeekPayload => {
+  const w = emptyWeek();
+  w.days[0] = day(0, [
+    ev({ title: 'Standup', recurring: true,
+         start_ms: MON + 9 * H, end_ms: MON + 9 * H + 30 * 60_000 }),
+    ev({ title: 'Mesh discussion', location: 'Room 4A', attendees: 4,
+         start_ms: MON + 11 * H, end_ms: MON + 12 * H }),
+    ev({ title: 'Daily Dev Sync', conference: 'https://us02web.zoom.us/j/9',
+         start_ms: MON + 12 * H, end_ms: MON + 12 * H + 30 * 60_000 }),
+    ev({ title: 'Solo focus', start_ms: MON + 15 * H, end_ms: MON + 16 * H }),
+  ], [
+    placed(9 / 24, 0.5 / 24, 0, 1, 0), placed(11 / 24, 1 / 24, 0, 1, 1),
+    placed(12 / 24, 0.5 / 24, 0, 1, 2), placed(15 / 24, 1 / 24, 0, 1, 3),
+  ]);
+  return w;
+};
+
 export const filmstripWeek = (): WeekPayload => {
   const w = emptyWeek();
   const wed = MON + 2 * 24 * H;
@@ -1677,6 +1703,7 @@ export const FIXTURES: Record<string, Record<string, any>> = {
   // change to either reaches the rendering specs as well.
   Filmstrip: {
     week: { days: daysFromWeek(filmstripWeek()) },
+    meta: { days: daysFromWeek(filmstripMeta()) },
     month: { days: daysFromMonth(filmstripMonth()) },
     /** A period with nothing in it, which has to say so rather than render as
      *  blank (spec §3). `emptyWeek()` rather than a bare `[]`, so the empty

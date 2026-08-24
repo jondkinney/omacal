@@ -24,6 +24,17 @@ pub struct UiEvent {
     /// `accepted` | `needsAction` | `tentative` | `declined`
     pub response: String,
     pub is_all_day: bool,
+    /// Invitees on the event, the organizer's row included — the same count
+    /// the widget's feed publishes. `0` means a solo event, not unknown.
+    pub attendees: u32,
+    /// Part of a series: the master's own expansion, or an exception row
+    /// that overrides one occurrence of it. Either way the row on screen is
+    /// one instance of something that repeats.
+    pub recurring: bool,
+    /// Google's structured conference link, when the event carries one. The
+    /// list row's Join reads this first and falls back to a recognised
+    /// meeting URL in `location` — the popover's exact derivation.
+    pub conference: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -88,6 +99,9 @@ fn to_ui(src: &StoredEvent, start_ms: i64, end_ms: i64) -> UiEvent {
             .unwrap_or_else(|| DEFAULT_EVENT_COLOR.into()),
         response: src.self_response.clone().unwrap_or_else(|| "accepted".into()),
         is_all_day: src.is_all_day,
+        attendees: src.attendees.len() as u32,
+        recurring: src.recurrence.is_some() || src.recurring_event_id.is_some(),
+        conference: src.conference_uri.clone(),
     }
 }
 

@@ -7,7 +7,24 @@ export type UiEvent = {
   start_ms: number; end_ms: number; color: string;
   response: 'accepted' | 'needsAction' | 'tentative' | 'declined';
   is_all_day: boolean;
+  /** Invitees, the organizer included; `0` is a solo event, not unknown. */
+  attendees: number;
+  /** One instance of something that repeats — the series' own expansion or
+   *  an exception overriding one occurrence of it. */
+  recurring: boolean;
+  /** Google's structured conference link. The list row's Join treats this
+   *  and a recognised meeting URL in `location` as one fact, the same pair
+   *  of places the popover reads. */
+  conference: string | null;
 };
+
+/** Opens an event's meeting link in the system browser, backend-side. The
+ *  webview sends only the event's id — never the URL — for
+ *  `open_latest_release`'s reason: the backend resolves what the browser is
+ *  pointed at from its own store, so a compromised webview can only name an
+ *  event, not choose a destination. It is also what routes the click around
+ *  the AppImage environment that crashes a spawned browser (issue #1). */
+export const openConference = (id: number) => invoke<void>('open_conference', { id });
 export type Placed = { idx: number; column: number; columns: number; top: number; height: number };
 export type Lane = {
   idx: number; lane: number; start_col: number; end_col: number;
@@ -93,11 +110,3 @@ export type BigYearPayload = { year: number; rows: RibbonRow[]; legend: LegendEn
 
 export const getBigYear = (year: number) =>
   invoke<BigYearPayload>('get_big_year', { year });
-
-/** Opens an event's meeting link in the system browser, backend-side. The
- *  webview sends only the event's id — never the URL — for
- *  `open_latest_release`'s reason: the backend resolves what the browser is
- *  pointed at from its own store, so a compromised webview can only name an
- *  event, not choose a destination. It is also what routes the click around
- *  the AppImage environment that crashes a spawned browser (issue #1). */
-export const openConference = (id: number) => invoke<void>('open_conference', { id });

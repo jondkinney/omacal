@@ -62,7 +62,10 @@
       "end_ms": 1786536000000,
       "color": "#5b8def",
       "response": "accepted",
-      "is_all_day": true
+      "is_all_day": true,
+      "attendees": 0,
+      "recurring": false,
+      "conference": null
     }
   ],
   "overflow": []
