@@ -15,12 +15,12 @@ non-selectable chrome. Two platform notes:
 
 - **Weather location** comes from your IP (there is no Omarchy widget to
   read here); the Settings → General knob turns the feature off.
-- **Updates are notice-only**: the header says a newer version exists and
-  "What's new" opens the release page, but the one-click **Update** button
-  is the AppImage's — a macOS self-update needs an Apple-signed app, or
-  every swap would end at a Gatekeeper wall. Apple Developer enrollment is
-  approved and signing + notarization are plumbed into the release
-  workflow; once the certificates land, the button follows.
+- **Updates are one click from v0.5.0 on**: the `.dmg` is signed with a
+  Developer ID certificate and notarized by Apple, so the header's update
+  notice carries the same **Update** button the AppImage has — download,
+  signature check, swap, restart. Builds before 0.5.0 are unsigned and
+  keep the notice-only banner: update those once by hand (right-click →
+  Open the new `.dmg`) and the button takes over from there.
 
 
 For Omarchy Linux, see [`running-on-omarchy.md`](running-on-omarchy.md) — the

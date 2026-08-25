@@ -139,7 +139,9 @@ async fn get_status(
     let update = state.update.lock().expect("update notice poisoned").clone();
     let tz_change = state.system_tz_change.lock().expect("tz change poisoned").clone();
     let version = app.package_info().version.to_string();
-    let self_update = update::may_self_update(update::running_as_appimage(), state.demo);
+    let self_update = update::may_self_update(
+        update::running_as_appimage(), cfg!(target_os = "macos"), state.demo,
+    );
     status::read_status(
         &state.pool, state.demo, overlay, self_update, needs_reauth, update, tz_change, version,
     )

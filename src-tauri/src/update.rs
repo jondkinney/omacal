@@ -62,17 +62,22 @@ pub(crate) fn may_check(demo: bool) -> bool {
 }
 
 /// Whether this process may replace itself — the gate on the banner's
-/// "Update" button and on [`install_update`], decided from two facts.
+/// "Update" button and on [`install_update`], decided from three facts.
 ///
-/// Only the AppImage qualifies: it is one file the user owns, so replacing
-/// it is an ordinary write. Everything else that runs this code is somebody
-/// else's property — dpkg's, rpm's, pacman's, flatpak's — and a binary that
-/// overwrites files a package manager believes it owns corrupts exactly the
-/// record that manager exists to keep. Those channels keep the notice-only
-/// banner. And demo stays out for `may_check`'s reason: a download is
-/// network traffic.
-pub(crate) fn may_self_update(is_appimage: bool, demo: bool) -> bool {
-    is_appimage && !demo
+/// The AppImage qualifies because it is one file the user owns, so
+/// replacing it is an ordinary write. macOS qualifies since 2026-08-25,
+/// when the first notarization cleared: the .app is the user's own too,
+/// and the *signed* guarantee lives in the pipeline, not here — the
+/// updater manifest only ever carries a `darwin-aarch64` entry when Apple
+/// signing actually ran (release.yml's join job), so an unsigned build
+/// cannot be offered as an update whatever this gate says. Everything
+/// else is somebody else's property — dpkg's, rpm's, pacman's, flatpak's —
+/// and a binary that overwrites files a package manager believes it owns
+/// corrupts exactly the record that manager exists to keep. Those
+/// channels keep the notice-only banner. And demo stays out for
+/// `may_check`'s reason: a download is network traffic.
+pub(crate) fn may_self_update(is_appimage: bool, is_macos: bool, demo: bool) -> bool {
+    (is_appimage || is_macos) && !demo
 }
 
 /// Whether this process is running out of an AppImage. The AppImage runtime
@@ -295,7 +300,7 @@ pub(crate) async fn install_update(
     app: AppHandle,
     state: tauri::State<'_, crate::AppState>,
 ) -> Result<(), String> {
-    if !may_self_update(running_as_appimage(), state.demo) {
+    if !may_self_update(running_as_appimage(), cfg!(target_os = "macos"), state.demo) {
         // Unreachable through the UI — the button only renders when
         // `get_status` said yes — so this is the backend refusing to trust
         // the webview's gating, same as `open_latest_release` refusing its
@@ -403,15 +408,19 @@ mod tests {
         assert!(may_check(false));
     }
 
-    /// The self-update gate, all four corners. The packaged cases are the
-    /// ones that matter: a .deb or AUR build offering to overwrite files its
+    /// The self-update gate, every corner. The packaged cases are the ones
+    /// that matter: a .deb or AUR build offering to overwrite files its
     /// package manager owns corrupts the manager's record of the system.
+    /// Parameters rather than `cfg!`, so every platform's answer is pinned
+    /// from any platform's test run.
     #[test]
-    fn only_a_non_demo_appimage_may_self_update() {
-        assert!(may_self_update(true, false));
-        assert!(!may_self_update(false, false), "a packaged build offered to replace itself");
-        assert!(!may_self_update(true, true), "demo offered to make network traffic");
-        assert!(!may_self_update(false, true));
+    fn only_a_non_demo_appimage_or_macos_build_may_self_update() {
+        assert!(may_self_update(true, false, false));
+        assert!(may_self_update(false, true, false), "signed macOS lost its button");
+        assert!(!may_self_update(false, false, false), "a packaged build offered to replace itself");
+        assert!(!may_self_update(true, false, true), "demo offered to make network traffic");
+        assert!(!may_self_update(false, true, true), "demo on macOS offered network traffic");
+        assert!(!may_self_update(false, false, true));
     }
 
     /// Through the real fetch path, with the one header the whole feature
