@@ -40,3 +40,22 @@ textarea::placeholder {
   color: var(--muted);
   opacity: 0.55;
 }
+
+/* The app's chrome is not selectable text. A drag that misses a control —
+   easiest of all in list mode, which owns no drag gesture — used to sweep
+   a text selection across every row it crossed, and WebKit's selection
+   boxes read as faint borders wrapping each line (reported 2026-08-25,
+   twice, as "strange almost invisible borders"). Selection stays where
+   text is genuinely for copying: form fields, and the event popover —
+   locations, conference links and descriptions are exactly the strings
+   people take elsewhere. */
+body {
+  -webkit-user-select: none;
+  user-select: none;
+}
+input,
+textarea,
+.pop {
+  -webkit-user-select: text;
+  user-select: text;
+}

@@ -3256,6 +3256,22 @@ test.describe('Filmstrip', () => {
     expect(joinBox.x).toBeLessThan(400);
   });
 
+  /** Chrome is not selectable text (app.css): a drag that misses a control
+   *  used to sweep a selection across every row — WebKit's selection boxes
+   *  read as faint borders wrapping each line. The popover keeps selection,
+   *  because its locations and links are exactly what people copy. */
+  test('a drag across the list selects nothing', async ({ page }) => {
+    await page.goto(show('week'));
+    const rows = page.locator('.srow');
+    const a = (await rows.nth(0).boundingBox())!;
+    const b = (await rows.nth(1).boundingBox())!;
+    await page.mouse.move(a.x + 10, a.y + a.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(b.x + b.width - 10, b.y + b.height / 2, { steps: 6 });
+    await page.mouse.up();
+    expect(await page.evaluate(() => String(window.getSelection()))).toBe('');
+  });
+
   /** The forecast beside the day heading — the same map `WeekGrid`'s headers
    *  read, keyed the same way, so the list and the grid name one sky for one
    *  day. The `meta` fixture covers Monday only; the absence on a section
