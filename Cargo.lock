@@ -3086,6 +3086,7 @@ dependencies = [
  "futures-util",
  "jiff",
  "keyring",
+ "libc",
  "notify",
  "notify-rust",
  "omacal-caldav",

@@ -54,6 +54,12 @@ notify = "8.2.0"
 
 # Omarchy's notification transport. D-Bus rather than the Tauri plugin because
 # only this one has action buttons, and Join/Snooze are half the feature.
+[target.'cfg(unix)'.dependencies]
+# The CLI's SIGPIPE reset (cli.rs): Rust ignores the signal, so `omacal
+# agenda | head` panics mid-print without it. Already in the tree many
+# times over transitively; this only adds the right to name it.
+libc = "0.2"
+
 [target.'cfg(target_os = "linux")'.dependencies]
 notify-rust = "4"
 # The suspend watcher's bus client (resume.rs). Already in the tree twice —

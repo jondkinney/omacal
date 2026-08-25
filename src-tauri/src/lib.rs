@@ -3,6 +3,7 @@
 mod accounts;
 mod browser;
 mod caldav_account;
+mod cli;
 mod caldav_write;
 mod calendars;
 mod commands;
@@ -1024,6 +1025,13 @@ fn single_instance_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // The CLI door, before anything else exists — before tracing (a --json
+    // stream must not carry log lines), before GTK, before the
+    // single-instance plugin could forward a subcommand to the running GUI.
+    // A recognised subcommand runs to an exit inside this call; everything
+    // else falls straight through to the app omacal has always been.
+    cli::maybe_run_and_exit();
+
     tracing_subscriber::fmt::init();
 
     // Before the builder is even assembled: GTK and WebKit read the

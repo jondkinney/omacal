@@ -120,6 +120,15 @@ result rather than one per occurrence, resolved to the occurrence nearest today.
 It searches only calendars you display: a result on a hidden calendar is one you
 could not land on.
 
+**The CLI** — the same binary reads the calendar from a terminal: `omacal
+agenda` for the week ahead, `omacal events list --from … --to …`, `omacal
+search <query>`, `omacal calendars` — each with `--json` for scripts and
+agents (stable envelope, stable exit codes, never prompts, read-only by
+design). `omacal cli-help` has the details, and `skills/omacal-calendar/`
+in this repo is a ready-made agent skill for Claude Code: drop it into
+`~/.claude/skills/` and your agent can answer "what's on my calendar
+Thursday?" from the same data the app draws.
+
 **Settings** — behind the hamburger, in four tabs. **General** carries the sync
 interval — which used to require editing the database by hand — the calendar new
 events land on, and whether times read as `13:30` or `1:30 PM` (the hour ruler

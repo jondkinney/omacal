@@ -32,6 +32,18 @@ pub use events::{
     StoredEvent,
 };
 
+/// Opens an existing database read-only: no create, no migrations, no
+/// permission sweep — nothing about the file changes because it was read.
+/// The CLI's door (`src-tauri/src/cli.rs`): it must be able to answer
+/// beside a running app without ever being able to damage what the app
+/// maintains, and WAL already lets readers ride beside the writer.
+pub async fn connect_readonly(url: &str) -> anyhow::Result<SqlitePool> {
+    let opts = SqliteConnectOptions::from_str(url)?
+        .read_only(true)
+        .foreign_keys(true);
+    Ok(SqlitePoolOptions::new().max_connections(1).connect_with(opts).await?)
+}
+
 /// Opens (creating if needed) the database at `url` and runs migrations.
 pub async fn connect(url: &str) -> anyhow::Result<SqlitePool> {
     let opts = SqliteConnectOptions::from_str(url)?
