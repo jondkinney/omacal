@@ -18,6 +18,8 @@ const FALLBACK_KEY: &str = "fallback_reminder_minutes";
 const DEFAULT_CALENDAR_KEY: &str = "default_calendar_id";
 const TIME_FORMAT_KEY: &str = "time_format";
 const WEEK_START_KEY: &str = "week_start";
+const WEEK_STARTS_TODAY_KEY: &str = "week_starts_today";
+const WEEK_VIEW_DAYS_KEY: &str = "week_view_days";
 const TRAY_ICON_KEY: &str = "tray_icon";
 const WEATHER_KEY: &str = "weather_enabled";
 const DISPLAY_TZ_KEY: &str = "display_timezone";
@@ -208,8 +210,18 @@ pub struct AppSettings {
     pub time_format: TimeFormat,
     /// The day a week begins on, honoured by the Week grid's own anchor, the
     /// month grid's leading blanks, the Year view's twelve small grids, and
-    /// Big Year's 392-day ribbon.
+    /// Big Year's 392-day ribbon. When `week_starts_today` is on, this still
+    /// aligns the three calendar-shaped views; it is preserved so switching
+    /// back from the rolling Week view restores the user's last fixed day.
     pub week_start: WeekStart,
+    /// Whether Week view is a rolling range whose first column is the current
+    /// day instead of a calendar-aligned week. This deliberately does not
+    /// change Month, Year or Big Year: "today" is not a stable weekday those
+    /// grids can align rows to.
+    pub week_starts_today: bool,
+    /// Total columns in the rolling Week view, including today. Only 3, 5 and
+    /// 7 are written; an absent or hand-edited value falls back to 7.
+    pub week_view_days: u8,
     /// The IANA zone every time in the app is read in, or `None` for the
     /// system's. Applied by exporting `TZ` before the webview starts — the
     /// one mechanism that keeps the browser, Rust, notifications and the
@@ -319,6 +331,20 @@ pub async fn read_settings(pool: &SqlitePool) -> AppSettings {
             Some("sunday") => WeekStart::Sunday,
             Some("saturday") => WeekStart::Saturday,
             _ => WeekStart::Monday,
+        },
+        // Opt-in, like list mode: absent, garbage and a future spelling keep
+        // the calendar-aligned week the app has always drawn.
+        week_starts_today: read(pool, WEEK_STARTS_TODAY_KEY)
+            .await
+            .map(|v| v == "1")
+            .unwrap_or(false),
+        // The select offers exactly these three. A row edited by hand must not
+        // become an unbounded query or a zero-column grid, so all other values
+        // return to the old seven-day shape.
+        week_view_days: match read(pool, WEEK_VIEW_DAYS_KEY).await.as_deref() {
+            Some("3") => 3,
+            Some("5") => 5,
+            _ => 7,
         },
         // Same polarity as `notifications_enabled`, same reason: absent and
         // garbage both keep the icon — losing the quit affordance must take
@@ -599,17 +625,69 @@ pub async fn set_time_format(
     Ok(read_settings(&state.pool).await)
 }
 
-/// Stores the day a week begins on. Nothing to refuse: [`WeekStart`] has
-/// three variants and the select offers all three.
+/// Stores the day a calendar-aligned week begins on and leaves rolling mode.
+/// Nothing to refuse: [`WeekStart`] has three variants and the select offers
+/// all three. The two writes are one user choice; the helper keeps that shape
+/// reachable from tests without constructing a Tauri `State`.
 #[tauri::command]
 pub async fn set_week_start(
     state: tauri::State<'_, AppState>,
     start: WeekStart,
 ) -> Result<AppSettings, String> {
-    write(&state.pool, WEEK_START_KEY, start.as_str())
+    set_week_start_impl(&state.pool, start)
+        .await
+        .map_err(|e| crate::errors::user_facing(&e))
+}
+
+async fn set_week_start_impl(pool: &SqlitePool, start: WeekStart) -> anyhow::Result<AppSettings> {
+    let mut tx = pool.begin().await?;
+    for (key, value) in [(WEEK_START_KEY, start.as_str()), (WEEK_STARTS_TODAY_KEY, "0")] {
+        sqlx::query(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(key)
+        .bind(value)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(read_settings(pool).await)
+}
+
+/// Turns the rolling Week view on or off. Turning it on preserves the concrete
+/// `week_start` used by Month, Year and Big Year, and by Week when this is later
+/// turned off again.
+#[tauri::command]
+pub async fn set_week_starts_today(
+    state: tauri::State<'_, AppState>,
+    on: bool,
+) -> Result<AppSettings, String> {
+    write(&state.pool, WEEK_STARTS_TODAY_KEY, if on { "1" } else { "0" })
         .await
         .map_err(|e| crate::errors::user_facing(&e))?;
     Ok(read_settings(&state.pool).await)
+}
+
+/// Stores the number of columns in a rolling Week view. The browser offers
+/// only these values, and this guard keeps a hand-written invoke from asking
+/// the backend to allocate an arbitrary number of day columns.
+#[tauri::command]
+pub async fn set_week_view_days(
+    state: tauri::State<'_, AppState>,
+    days: u8,
+) -> Result<AppSettings, String> {
+    set_week_view_days_impl(&state.pool, days)
+        .await
+        .map_err(|e| crate::errors::user_facing(&e))
+}
+
+async fn set_week_view_days_impl(pool: &SqlitePool, days: u8) -> anyhow::Result<AppSettings> {
+    if !matches!(days, 3 | 5 | 7) {
+        anyhow::bail!("the rolling week can show 3, 5, or 7 days");
+    }
+    write(pool, WEEK_VIEW_DAYS_KEY, &days.to_string()).await?;
+    Ok(read_settings(pool).await)
 }
 
 #[cfg(test)]
@@ -645,6 +723,8 @@ mod tests {
             WeekStart::Monday,
             "the week omacal has always drawn"
         );
+        assert!(!s.week_starts_today, "a fresh install keeps the calendar-aligned week");
+        assert_eq!(s.week_view_days, 7, "the old Week view has seven columns");
     }
 
     /// `None` must clear a previously stored id back to the old rule — a
@@ -850,6 +930,41 @@ mod tests {
                 "{stored:?} is not a day this version writes",
             );
         }
+    }
+
+    #[tokio::test]
+    async fn the_rolling_week_settings_round_trip_and_reject_other_day_counts() {
+        let p = pool().await;
+
+        write(&p, WEEK_STARTS_TODAY_KEY, "1").await.unwrap();
+        for days in [3, 5, 7] {
+            let s = set_week_view_days_impl(&p, days).await.unwrap();
+            assert!(s.week_starts_today);
+            assert_eq!(s.week_view_days, days);
+        }
+
+        let before = read(&p, WEEK_VIEW_DAYS_KEY).await;
+        for days in [0, 1, 4, 6, 8, u8::MAX] {
+            assert!(set_week_view_days_impl(&p, days).await.is_err());
+            assert_eq!(read(&p, WEEK_VIEW_DAYS_KEY).await, before, "{days} changed the row");
+        }
+
+        for stored in ["", "0", "4", "8", "three", "255"] {
+            write(&p, WEEK_VIEW_DAYS_KEY, stored).await.unwrap();
+            assert_eq!(read_settings(&p).await.week_view_days, 7, "{stored:?} must fall back");
+        }
+    }
+
+    #[tokio::test]
+    async fn choosing_a_fixed_week_start_leaves_rolling_mode_atomically() {
+        let p = pool().await;
+        write(&p, WEEK_STARTS_TODAY_KEY, "1").await.unwrap();
+
+        let s = set_week_start_impl(&p, WeekStart::Sunday).await.unwrap();
+        assert_eq!(s.week_start, WeekStart::Sunday);
+        assert!(!s.week_starts_today);
+        assert_eq!(read(&p, WEEK_START_KEY).await.as_deref(), Some("sunday"));
+        assert_eq!(read(&p, WEEK_STARTS_TODAY_KEY).await.as_deref(), Some("0"));
     }
 
     /// The polarity rule, witnessed by a value the app never writes. A row
