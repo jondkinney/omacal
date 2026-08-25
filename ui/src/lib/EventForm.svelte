@@ -1,6 +1,8 @@
 <!-- ui/src/lib/EventForm.svelte -->
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { clockFormat } from './clock.svelte';
+  import { displayClock, parseClock } from './timefmt';
   import { knownGuests, type KnownGuest } from './people';
   import { escapeCloses } from './dismiss.svelte';
   import { placePopover, type Rect } from './position';
@@ -14,6 +16,47 @@
     toggledGuestOptional, timeProblem, toggledAllDay,
     type EventFormResult, type EventFormValue, type Scope,
   } from './eventform';
+
+  // The two time fields, imperatively synced rather than value-bound: a
+  // reactive `value=` would rewrite the input the moment a keystroke
+  // commits — "9" becoming "09:00" under the cursor — so the DOM is only
+  // written when the field is not being typed in. External changes (a
+  // moved date, the DST repair) land through the same effect, which is
+  // safe because both happen with focus elsewhere.
+  let startEl = $state<HTMLInputElement | undefined>();
+  let endEl = $state<HTMLInputElement | undefined>();
+  $effect(() => {
+    const shown = displayClock(value.start, clockFormat());
+    if (startEl && document.activeElement !== startEl) startEl.value = shown;
+  });
+  $effect(() => {
+    const shown = displayClock(value.end, clockFormat());
+    if (endEl && document.activeElement !== endEl) endEl.value = shown;
+  });
+
+  /** Keystroke-time commit, so the grid's ghost keeps following the typing
+   *  the way it did when these were native time inputs (the live-preview
+   *  spec holds it to that). Only once the text reads as a *finished* time
+   *  — two-digit minutes after a separator, or a meridiem said — because
+   *  committing "1" as 01:00 on the way to "12:30" would walk the ghost
+   *  through nonsense on every keystroke. */
+  function liveClock(e: Event, which: 'start' | 'end') {
+    const el = e.currentTarget as HTMLInputElement;
+    if (!/[:.][0-5]\d|[ap]/i.test(el.value)) return;
+    const parsed = parseClock(el.value);
+    if (parsed) value[which] = parsed;
+  }
+
+  /** Blur-time commit: parse what was typed — either clock, suffix
+   *  deciding — take it on success, and re-render from storage either way,
+   *  so an unparseable entry snaps back to the last real time instead of
+   *  lingering as text the save would have to refuse. */
+  function commitClock(e: Event, which: 'start' | 'end') {
+    const el = e.currentTarget as HTMLInputElement;
+    const parsed = parseClock(el.value);
+    if (parsed) value[which] = parsed;
+    el.value = displayClock(value[which], clockFormat());
+  }
 
   let {
     anchor,
@@ -380,9 +423,16 @@
           <!-- Marked, not only described: `aria-invalid` puts the answer on the
                field it is about, which for a time that does not exist is the
                whole difficulty — nothing else on the form looks wrong. -->
+          <!-- Text, not `type="time"`: the native field renders the *system
+               locale's* clock — AM/PM over a grid drawn in 24h — and offers
+               no say in the matter. This one renders and parses through the
+               app's own clock setting; storage stays `HH:MM` (reported
+               2026-08-25). -->
           <input
-            type="time"
-            bind:value={value.start}
+            type="text"
+            bind:this={startEl}
+            oninput={(e) => liveClock(e, 'start')}
+            onchange={(e) => commitClock(e, 'start')}
             aria-invalid={invalidField === 'start' ? 'true' : undefined}
           />
         </label>
@@ -400,8 +450,10 @@
         <label class="field">
           <span class="lab">End</span>
           <input
-            type="time"
-            bind:value={value.end}
+            type="text"
+            bind:this={endEl}
+            oninput={(e) => liveClock(e, 'end')}
+            onchange={(e) => commitClock(e, 'end')}
             aria-invalid={invalidField === 'end' ? 'true' : undefined}
           />
         </label>

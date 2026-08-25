@@ -3362,6 +3362,27 @@ test.describe('EventForm', () => {
     expect(await saves(page)).toEqual([]);
   });
 
+  /** The time fields speak the app's clock, not the engine's: they are
+   *  text now (the native input rendered the system locale's AM/PM over a
+   *  24h grid), rendered through `displayClock` and parsed through
+   *  `parseClock` — so a dial entry lands as storage, an unparseable one
+   *  snaps back to the last real time, and either clock is accepted on the
+   *  way in. The 12h rendering itself is pinned unit-side (timefmt.spec). */
+  test('a time typed in either clock lands, and a typo snaps back', async ({ page }) => {
+    await open(page, 'create');
+    const start = page.getByLabel('Start', { exact: true });
+
+    // `blur()` after each fill: commit rides `change`, which fires on
+    // leaving the field — exactly what clicking Save does in real use.
+    await start.fill('9:30 pm');
+    await start.blur();
+    await expect(start).toHaveValue('21:30');
+
+    await start.fill('half past nine');
+    await start.blur();
+    await expect(start).toHaveValue('21:30');
+  });
+
   test('only writable calendars are offered', async ({ page }) => {
     // A subscribed holiday calendar is a `reader` and a room is a
     // `freeBusyReader`; `create_impl` refuses both server-side, so offering
