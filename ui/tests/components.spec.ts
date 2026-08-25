@@ -595,16 +595,15 @@ test.describe('WeekGrid popover flow', () => {
 });
 
 test.describe('EventBlock duration ladder', () => {
-  test('cards paint a two-pixel lower separator', async ({ page }) => {
+  test('cards leave one pixel of grid at each vertical edge', async ({ page }) => {
     await page.goto(show('EventBlock', 'ladder-60'));
-    const style = await page.locator('.ev').evaluate((el) => ({
-      separator: getComputedStyle(document.documentElement)
-        .getPropertyValue('--event-separator').trim(),
-      shadow: getComputedStyle(el).boxShadow,
-    }));
-    expect(style.separator).toBe('rgba(0,0,0,.32)');
-    expect(style.shadow).toContain('rgba(0, 0, 0, 0.32)');
-    expect(style.shadow).toMatch(/0px -2px 0px/);
+    const frame = (await page.locator('#app').boundingBox())!;
+    const card = (await page.locator('.ev').boundingBox())!;
+    // The fixture's nominal geometry is 20% down a 480px frame and one hour
+    // (1/24) tall: 96px and 20px. The painted card gives one pixel back at
+    // each edge without changing the event's calendar-time geometry.
+    expect(card.y - frame.y).toBeCloseTo(97, 1);
+    expect(card.height).toBeCloseTo(18, 1);
   });
 
   test('15 minutes shows title only', async ({ page }) => {
