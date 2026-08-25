@@ -3342,6 +3342,24 @@ test.describe('App: keyboard event navigation', () => {
     await expect(selectedTitle(page)).toContainText('Plan the launch');
   });
 
+  test('entering a day through its first all-day item reveals the top of its hours', async ({ page }) => {
+    await page.keyboard.press('w');
+    await page.keyboard.press('j');
+    await expect(selectedTitle(page)).toContainText('Tuesday brief');
+    await page.keyboard.press('k');
+    await expect(selectedTitle(page)).toContainText('Review notes');
+    await page.keyboard.press('k');
+    await expect(selectedTitle(page)).toContainText('Plan the launch');
+
+    const body = page.getByTestId('week-body');
+    await body.evaluate((el) => { el.scrollTop = el.scrollHeight; });
+    expect(await body.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+
+    await page.keyboard.press('k');
+    await expect(selectedTitle(page)).toContainText('All-day planning');
+    await expect.poll(() => body.evaluate((el) => el.scrollTop)).toBe(0);
+  });
+
   test('j late today begins with tomorrow instead of replaying past events', async ({ page }) => {
     await page.clock.setFixedTime(APP_MON + 22 * 3_600_000);
     // This row is still visibly part of today, but has no clock position. It

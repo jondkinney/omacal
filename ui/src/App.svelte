@@ -329,6 +329,23 @@
       const event = document.querySelector<HTMLElement>('[data-kbd-selected-event]');
       if (event) {
         event.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+
+        // An all-day chip sits above, not inside, WeekGrid's hour scrollport.
+        // Revealing the chip therefore cannot move the hours on its own, and
+        // the pane otherwise remains parked wherever the previous timed event
+        // left it until traversal finally reaches a timed block. Entering a
+        // day through its first row means starting at the top of that day, so
+        // move the hour pane immediately. Later all-day rows leave it alone.
+        if (!listMode && (view === 'day' || view === 'week')) {
+          const day = keyboardDays.find((d) => d.startMs === keyboardCursor.dayStartMs);
+          const selected = eventAtCursor(keyboardDays, keyboardCursor);
+          const first = day?.events[0];
+          if (selected?.is_all_day && first
+              && first.id === selected.id && first.start_ms === selected.start_ms) {
+            const hours = document.querySelector<HTMLElement>('[data-testid="week-body"]');
+            if (hours) hours.scrollTop = 0;
+          }
+        }
         return;
       }
       const day = document.querySelector<HTMLElement>('[data-kbd-selected-day]');
