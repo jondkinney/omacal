@@ -183,11 +183,14 @@ jobs:
             gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
               --draft --title "omacal $tag" --notes "" || true
           if [ "$RUNNER_OS" = "Linux" ]; then
+            # latest.json is NOT here: it moved to the updater-manifest
+            # join job, which needs both platforms' signatures in view —
+            # naming it here after the move is exactly the ls-failure that
+            # broke the v0.5.0 first build, on a step only tag pushes run.
             files=$(ls target/release/bundle/appimage/*.AppImage \
                        target/release/bundle/appimage/*.AppImage.sig \
                        target/release/bundle/deb/*.deb \
-                       target/release/bundle/rpm/*.rpm \
-                       latest.json)
+                       target/release/bundle/rpm/*.rpm)
           else
             files=$(ls target/release/bundle/dmg/*.dmg \
                        target/release/bundle/macos/*.app.tar.gz \
