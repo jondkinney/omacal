@@ -334,16 +334,24 @@
         // Revealing the chip therefore cannot move the hours on its own, and
         // the pane otherwise remains parked wherever the previous timed event
         // left it until traversal finally reaches a timed block. Entering a
-        // day through its first row means starting at the top of that day, so
-        // move the hour pane immediately. Later all-day rows leave it alone.
+        // day through its first row should also reveal the day ahead: place
+        // its first timed event one hour below the band. Later all-day rows
+        // leave the hour pane alone.
         if (!listMode && (view === 'day' || view === 'week')) {
           const day = keyboardDays.find((d) => d.startMs === keyboardCursor.dayStartMs);
           const selected = eventAtCursor(keyboardDays, keyboardCursor);
           const first = day?.events[0];
           if (selected?.is_all_day && first
               && first.id === selected.id && first.start_ms === selected.start_ms) {
+            const firstTimed = day.events.find((candidate) => !candidate.is_all_day);
             const hours = document.querySelector<HTMLElement>('[data-testid="week-body"]');
-            if (hours) hours.scrollTop = 0;
+            if (hours) {
+              const scrollStart = firstTimed
+                ? Math.max(day.startMs, firstTimed.start_ms - 3_600_000)
+                : day.startMs;
+              hours.scrollTop = (scrollStart - day.startMs)
+                / (day.endMs - day.startMs) * hours.scrollHeight;
+            }
           }
         }
         return;

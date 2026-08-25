@@ -3342,7 +3342,7 @@ test.describe('App: keyboard event navigation', () => {
     await expect(selectedTitle(page)).toContainText('Plan the launch');
   });
 
-  test('entering a day through its first all-day item reveals the top of its hours', async ({ page }) => {
+  test('entering a day through its first all-day item reveals its first timed event one hour down', async ({ page }) => {
     await page.keyboard.press('w');
     await page.keyboard.press('j');
     await expect(selectedTitle(page)).toContainText('Tuesday brief');
@@ -3357,7 +3357,14 @@ test.describe('App: keyboard event navigation', () => {
 
     await page.keyboard.press('k');
     await expect(selectedTitle(page)).toContainText('All-day planning');
-    await expect.poll(() => body.evaluate((el) => el.scrollTop)).toBe(0);
+    await expect.poll(() => page.evaluate(() => {
+      const viewport = document.querySelector<HTMLElement>('[data-testid="week-body"]')!;
+      const firstTimed = [...viewport.querySelectorAll<HTMLElement>('.ev')]
+        .find((event) => event.textContent?.includes('Plan the launch'))!;
+      const oneHour = viewport.scrollHeight / 24;
+      return Math.abs(firstTimed.getBoundingClientRect().top
+        - viewport.getBoundingClientRect().top - oneHour);
+    })).toBeLessThan(4);
   });
 
   test('j late today begins with tomorrow instead of replaying past events', async ({ page }) => {
