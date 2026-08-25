@@ -595,6 +595,18 @@ test.describe('WeekGrid popover flow', () => {
 });
 
 test.describe('EventBlock duration ladder', () => {
+  test('cards paint a two-pixel lower separator', async ({ page }) => {
+    await page.goto(show('EventBlock', 'ladder-60'));
+    const style = await page.locator('.ev').evaluate((el) => ({
+      separator: getComputedStyle(document.documentElement)
+        .getPropertyValue('--event-separator').trim(),
+      shadow: getComputedStyle(el).boxShadow,
+    }));
+    expect(style.separator).toBe('rgba(0,0,0,.32)');
+    expect(style.shadow).toContain('rgba(0, 0, 0, 0.32)');
+    expect(style.shadow).toMatch(/0px -2px 0px/);
+  });
+
   test('15 minutes shows title only', async ({ page }) => {
     await page.goto(show('EventBlock', 'ladder-15'));
     await expect(page.locator('.ev b')).toHaveText('Sync w/ Ivan');

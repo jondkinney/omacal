@@ -34,6 +34,10 @@ export function setPalette(p: Palette): void {
   r.setProperty('--hairline', p.is_dark ? 'rgba(255,255,255,.055)' : 'rgba(0,0,0,.07)');
   r.setProperty('--hour-rule', p.is_dark ? 'rgba(255,255,255,.035)' : 'rgba(0,0,0,.05)');
   r.setProperty('--today-tint', p.is_dark ? 'rgba(255,255,255,.028)' : 'rgba(0,0,0,.025)');
+  // Timed cards often abut exactly, so their similar fills otherwise merge
+  // into one tall block. Always darker than the card in both theme families;
+  // the dark theme gets a stronger edge because its event washes are subtler.
+  r.setProperty('--event-separator', p.is_dark ? 'rgba(0,0,0,.32)' : 'rgba(0,0,0,.14)');
   // The two endpoints for text drawn on a *calendar's own colour* rather than
   // on the theme's background — Big Year's solid pills. Which one a given
   // pill takes is a per-event decision made from that colour's relative
