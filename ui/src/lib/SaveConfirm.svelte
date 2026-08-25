@@ -62,10 +62,10 @@
          same ruling as the drag's, for the same reason: sending mail to other
          people is the deliberate choice, never the default. This is also the
          only path from this form to `sendUpdates=all`. -->
-    <button type="button" class="ghost" onclick={() => onconfirm('all')}>
+    <button type="button" class="ghost" data-choice onclick={() => onconfirm('all')}>
       {verb} and notify guests
     </button>
-    <button type="button" class="primary" onclick={() => onconfirm('none')}>
+    <button type="button" class="primary" data-choice data-initial-choice onclick={() => onconfirm('none')}>
       {verb} without notifying
     </button>
   {/snippet}

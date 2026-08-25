@@ -3,6 +3,7 @@
   import { onMount, type Snippet } from 'svelte';
   import { escapeCloses } from './dismiss.svelte';
   import { placePopover, type Rect } from './position';
+  import { focusInitialChoice, handleChoiceKey } from './choicefocus';
 
   let {
     anchor,
@@ -45,13 +46,10 @@
         viewport,
       );
     }
-    // The **safe** control, whichever panel this is. `role="dialog"` plus
-    // `aria-modal` oblige focus to start inside, and the safe end of a dialog
-    // with a write behind it is the one that changes nothing: a stray Return
-    // on a panel the user did not mean to open closes it instead of mailing a
-    // guest list. Found rather than bound, so a caller cannot forget to pass
-    // it and silently land focus on the destructive button.
-    panelEl?.querySelector<HTMLButtonElement>('[data-cancel]')?.focus();
+    // These panels are questions, so focus begins on their first/default
+    // answer. That makes Enter accept it immediately while Tab remains the
+    // native route through Cancel and the other actions.
+    focusInitialChoice(panelEl);
   });
 
   // Escape closes this panel. `escapeCloses` carries the whole reason it is a
@@ -72,10 +70,11 @@
   tabindex="-1"
   aria-label={label}
   style="top:{pos.top}px; left:{pos.left}px"
+  onkeydown={(event) => panelEl && handleChoiceKey(panelEl, event)}
 >
   <h2>{title}</h2>
   {@render body()}
-  <div class="actions">{@render actions()}</div>
+  <div class="actions" data-choice-group>{@render actions()}</div>
 </div>
 
 <style>

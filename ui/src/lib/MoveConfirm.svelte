@@ -47,12 +47,14 @@
            writes: it ends the old series before this occurrence and creates a
            new one at the new time, which is why it cannot be described as
            "moves some of them". -->
-      <div class="scope" role="radiogroup" aria-label="Move">
+      <div class="scope" role="radiogroup" aria-label="Move" data-choice-group>
         <label>
           <input
             type="radio"
             name="move-scope"
             aria-label="This event"
+            data-choice
+            data-initial-choice
             checked={scope === 'this'}
             onchange={() => (scope = 'this')}
           />
@@ -63,6 +65,7 @@
             type="radio"
             name="move-scope"
             aria-label="This and following"
+            data-choice
             checked={scope === 'following'}
             onchange={() => (scope = 'following')}
           />
@@ -76,6 +79,7 @@
             type="radio"
             name="move-scope"
             aria-label="All events"
+            data-choice
             checked={scope === 'all'}
             onchange={() => (scope = 'all')}
           />
@@ -107,11 +111,15 @@
       <button
         type="button"
         class="ghost"
+        data-choice
         onclick={() => onconfirm({ scope, sendUpdates: 'all' })}
       >Move and notify guests</button>
       <button
         type="button"
         class="primary"
+        data-choice
+        data-default-choice-action
+        data-initial-choice={detail.is_recurring ? undefined : ''}
         onclick={() => onconfirm({ scope, sendUpdates: 'none' })}
       >Move without notifying</button>
     {:else}
@@ -120,6 +128,8 @@
       <button
         type="button"
         class="primary"
+        data-choice
+        data-default-choice-action
         onclick={() => onconfirm({ scope, sendUpdates: 'none' })}
       >Move</button>
     {/if}
