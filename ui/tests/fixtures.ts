@@ -594,7 +594,7 @@ POPOVER_DETAILS[KEYBOARD_FIRST_ID] = detail({
   can_respond: false,
 });
 POPOVER_DETAILS[KEYBOARD_SECOND_ID] = detail({
-  id: KEYBOARD_SECOND_ID, title: 'Review notes', can_respond: false,
+  id: KEYBOARD_SECOND_ID, title: 'Review notes', can_edit: true, can_respond: false,
 });
 POPOVER_DETAILS[KEYBOARD_NEXT_DAY_ID] = detail({
   id: KEYBOARD_NEXT_DAY_ID, title: 'Tuesday brief', can_respond: false,

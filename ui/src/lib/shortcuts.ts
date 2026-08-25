@@ -73,6 +73,8 @@ export const SHORTCUTS = [
 
   { id: 'openSelected', key: 'o', aliases: ['enter'], label: 'o / Enter',
     group: 'Doing things', consumes: true },
+  { id: 'deleteSelected', key: 'backspace', label: 'Backspace',
+    group: 'Doing things', consumes: true },
   { id: 'create',   key: 'n', label: 'n', group: 'Doing things', consumes: true },
   { id: 'quickCreate', key: 'q', label: 'q', group: 'Doing things', consumes: true },
   { id: 'list',     key: 'f', label: 'f', group: 'Doing things' },
@@ -110,6 +112,7 @@ export const SHORTCUT_TEXT: Record<ShortcutId, string> = {
   search: 'Search',
   quickCreate: 'Quick add from natural language',
   openSelected: 'Open the selected event',
+  deleteSelected: 'Delete the selected event (asks first)',
   create: 'New event',
   list: 'Switch between the grid and the list',
   help: 'This list',
@@ -153,13 +156,15 @@ export const CHORDS: { label: string; text: string; hint?: string }[] = [
 export type EventShortcut = {
   id: string;
   key: string;
+  aliases?: readonly string[];
   label: string;
   text: string;
 };
 
 export const EVENT_SHORTCUTS = [
   { id: 'edit',   key: 'e',     label: 'e',     text: 'Edit event' },
-  { id: 'delete', key: 'd',     label: 'd',     text: 'Delete event' },
+  { id: 'delete', key: 'd', aliases: ['backspace'], label: 'd / Backspace',
+    text: 'Delete event (asks first)' },
   { id: 'yes',    key: 'y',     label: 'y',     text: 'RSVP yes' },
   { id: 'maybe',  key: 'm',     label: 'm',     text: 'RSVP maybe' },
   { id: 'no',     key: 'n',     label: 'n',     text: 'RSVP no' },

@@ -378,7 +378,7 @@
     if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
 
     const key = e.key.toLowerCase();
-    const hit = EVENT_SHORTCUT_LIST.find((s) => s.key === key);
+    const hit = EVENT_SHORTCUT_LIST.find((s) => s.key === key || s.aliases?.includes(key));
     if (!hit) return;
 
     if (hit.id === 'join') {
