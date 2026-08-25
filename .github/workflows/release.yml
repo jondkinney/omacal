@@ -253,3 +253,14 @@ jobs:
 
           cat latest.json
           gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber latest.json
+
+          # SHA-256 over every artifact, for the install script and anyone
+          # verifying by hand. Assembled here for the same reason
+          # latest.json is: this is the one place both platforms' files are
+          # in view. The manifest and this file are excluded from
+          # themselves — a checksum file listing itself can never verify.
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
+            -p "*.dmg" -p "*.deb" -p "*.rpm" || true
+          sha256sum $(ls | grep -v -e '^latest.json$' -e '^checksums.txt$') > checksums.txt
+          cat checksums.txt
+          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber checksums.txt

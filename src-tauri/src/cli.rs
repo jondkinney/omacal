@@ -42,6 +42,7 @@ USAGE
   omacal events list --from YYYY-MM-DD --to YYYY-MM-DD [--json]
   omacal search <query> [--json]           titles, nearest to today first
   omacal calendars [--json]                every calendar, with ids
+  omacal doctor [--json]                   diagnose this install
   omacal cli-help                          this text
 
 OUTPUT
@@ -58,6 +59,7 @@ pub(crate) enum Command {
     Events { from: jiff::civil::Date, to: jiff::civil::Date },
     Search { query: String },
     Calendars,
+    Doctor,
     Help,
 }
 
@@ -96,6 +98,7 @@ pub(crate) fn parse(argv: &[String]) -> Option<Result<Invocation, String>> {
     match sub.as_str() {
         "cli-help" => build(Command::Help),
         "calendars" => build(Command::Calendars),
+        "doctor" => build(Command::Doctor),
         "agenda" => {
             let days = match take("--days") {
                 Err(e) => return Some(Err(e)),
@@ -316,6 +319,11 @@ pub(crate) fn run(inv: Invocation) -> i32 {
     let Some(path) = db_path() else {
         return fail(inv.json, "no_home", "HOME is not set", EXIT_ERROR);
     };
+    if matches!(inv.command, Command::Doctor) {
+        // Doctor's whole job is diagnosing a broken install, so a missing
+        // database is a finding for it, never a refusal.
+        return doctor::run(inv.json, &path);
+    }
     if !path.exists() {
         return fail(
             inv.json,
@@ -339,7 +347,7 @@ pub(crate) fn run(inv: Invocation) -> i32 {
 
         let result: anyhow::Result<i32> = async {
             match &inv.command {
-                Command::Help => unreachable!("handled above"),
+                Command::Help | Command::Doctor => unreachable!("handled above"),
                 Command::Calendars => {
                     let cals = omacal_store::list_calendars(&pool).await?;
                     if inv.json {
@@ -433,6 +441,143 @@ pub(crate) fn maybe_run_and_exit() {
     }
 }
 
+/// `omacal doctor`: every fact a bug report needs, in one paste.
+///
+/// Born from issue #1, where the reporter spent an afternoon establishing
+/// facts this prints in two seconds — which binary, which channel, whether
+/// the keyring answers, whether the network does. Checks that can fail do
+/// so as findings, never as crashes: a doctor that dies on the disease it
+/// exists to diagnose is the one outcome not allowed.
+mod doctor {
+    use serde::Serialize;
+
+    #[derive(Debug, Serialize)]
+    #[serde(rename_all = "camelCase")]
+    pub(super) struct Check {
+        pub name: &'static str,
+        /// `None` is "informational", not pass/fail — the version row is
+        /// nobody's failure.
+        pub ok: Option<bool>,
+        pub detail: String,
+    }
+
+    /// Which door this binary came through. The same probes the updater
+    /// gates on (`update::running_as_appimage`, the flatpak marker file),
+    /// pure over their answers so the mapping is testable.
+    pub(super) fn channel(is_appimage: bool, is_flatpak: bool) -> &'static str {
+        match (is_appimage, is_flatpak) {
+            (true, _) => "appimage",
+            (_, true) => "flatpak",
+            _ => "package or dev build",
+        }
+    }
+
+    fn push(checks: &mut Vec<Check>, name: &'static str, ok: Option<bool>, detail: String) {
+        checks.push(Check { name, ok, detail });
+    }
+
+    pub(super) fn run(json: bool, db: &std::path::Path) -> i32 {
+        let mut checks = Vec::new();
+
+        push(&mut checks, "version", None, env!("CARGO_PKG_VERSION").into());
+        let is_flatpak = std::path::Path::new("/.flatpak-info").exists();
+        push(
+            &mut checks,
+            "channel",
+            None,
+            channel(crate::update::running_as_appimage(), is_flatpak).into(),
+        );
+
+        push(
+            &mut checks,
+            "database",
+            Some(db.exists()),
+            if db.exists() {
+                format!("{}", db.display())
+            } else {
+                format!("missing — launch omacal and connect an account ({})", db.display())
+            },
+        );
+
+        // The keyring: ask for an entry that never exists. "No such entry"
+        // is the healthy answer — the Secret Service picked up and said no —
+        // while a platform error means no gnome-keyring/KeePassXC/kwallet is
+        // running, which is issue-#1-adjacent territory: sign-in appears to
+        // work and nothing persists.
+        let keyring = match keyring::Entry::new(crate::KEYRING_SERVICE, "__doctor_probe__")
+            .and_then(|e| e.get_password().map(|_| ()))
+        {
+            Err(keyring::Error::NoEntry) | Ok(()) => (true, "Secret Service reachable".to_string()),
+            Err(e) => (false, format!("unreachable — start gnome-keyring, KeePassXC or kwallet ({e})")),
+        };
+        push(&mut checks, "keyring", Some(keyring.0), keyring.1);
+
+        push(
+            &mut checks,
+            "custom credentials",
+            None,
+            if std::env::var_os("HOME")
+                .map(|h| std::path::Path::new(&h).join(".config/omacal/config.toml").exists())
+                .unwrap_or(false)
+            {
+                "config.toml present (own Google client in use)".into()
+            } else {
+                "none (the official client)".into()
+            },
+        );
+
+        // Network, with the update endpoint doubling as the reachability
+        // probe: one request answers both "is there internet" and "is a
+        // newer omacal out".
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build();
+        if let Ok(rt) = rt {
+            let latest = rt.block_on(async {
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(5),
+                    crate::update::fetch_latest(crate::update::LATEST_RELEASE_ENDPOINT),
+                )
+                .await
+            });
+            match latest {
+                Ok(Ok((tag, _))) => {
+                    let tag_v = tag.trim_start_matches('v');
+                    let current = env!("CARGO_PKG_VERSION");
+                    let newer = crate::update::newer_than(current, &tag);
+                    push(&mut checks, "network", Some(true), "release endpoint reachable".into());
+                    push(
+                        &mut checks,
+                        "update",
+                        Some(!newer),
+                        if newer {
+                            format!("{tag_v} is available (this is {current})")
+                        } else {
+                            "up to date".into()
+                        },
+                    );
+                }
+                Ok(Err(e)) => push(&mut checks, "network", Some(false), format!("release endpoint: {e}")),
+                Err(_) => push(&mut checks, "network", Some(false), "release endpoint: timed out".into()),
+            }
+        }
+
+        if json {
+            println!("{}", serde_json::json!({ "ok": true, "data": checks }));
+        } else {
+            for c in &checks {
+                let mark = match c.ok {
+                    Some(true) => "✓",
+                    Some(false) => "✗",
+                    None => "·",
+                };
+                println!("{mark} {:<20} {}", c.name, c.detail);
+            }
+        }
+        // Exit 0 even with red rows: doctor reports, the reader decides.
+        // A script that wants a verdict reads the JSON.
+        super::EXIT_OK
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -452,6 +597,20 @@ mod tests {
         for s in ["", "--sync-now", "--quit", "2026-09-01"] {
             assert_eq!(parse(&argv(s)), None, "{s:?} was claimed by the CLI");
         }
+    }
+
+    /// The channel mapping, pinned: AppImage wins over a stray flatpak
+    /// marker (it cannot happen, but the arm order should not matter by
+    /// accident), and neither means a package.
+    #[test]
+    fn the_doctor_names_the_channel_it_actually_is() {
+        assert_eq!(super::doctor::channel(true, false), "appimage");
+        assert_eq!(super::doctor::channel(false, true), "flatpak");
+        assert_eq!(super::doctor::channel(false, false), "package or dev build");
+        assert_eq!(
+            parse(&argv("doctor --json")),
+            Some(Ok(Invocation { command: Command::Doctor, json: true }))
+        );
     }
 
     #[test]

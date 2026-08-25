@@ -309,7 +309,7 @@ async fn get_big_year_impl(
     Ok(payload)
 }
 
-const KEYRING_SERVICE: &str = "omacal";
+pub(crate) const KEYRING_SERVICE: &str = "omacal";
 
 /// Google's Calendar API root. A constant so the one place that overrides it —
 /// a test pointing `sync_accounts` at a local mock — is the only place a
