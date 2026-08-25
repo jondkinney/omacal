@@ -11,6 +11,7 @@
   import { occurrenceDate, ruleInWords } from './eventform';
   import { isMachineAddress } from './organizer';
   import { respondToEvent, type Attendee, type EventDetail } from './eventdetail';
+  import { EVENT_SHORTCUT_LIST, type EventShortcutId } from './shortcuts';
 
   let {
     detail,
@@ -350,9 +351,63 @@
     note = { text: 'Copied — Ctrl+V pastes it as a new event', kind: 'info' };
     oncopy();
   }
+
+  function clickResponse(response: 'accepted' | 'tentative' | 'declined') {
+    const button = panelEl?.querySelector<HTMLButtonElement>(
+      `[data-event-response="${response}"]`,
+    );
+    if (!button || button.disabled) return false;
+    // Use the real control so one-off responses, recurring scope questions,
+    // optimistic state and focus restoration remain the click path's job.
+    button.click();
+    return true;
+  }
+
+  const EVENT_SHORTCUT_ACTIONS: Record<EventShortcutId, () => boolean> = {
+    edit: () => {
+      if (!detail.can_edit) return false;
+      onedit();
+      return true;
+    },
+    delete: () => {
+      if (!detail.can_edit) return false;
+      ondelete();
+      return true;
+    },
+    yes: () => clickResponse('accepted'),
+    maybe: () => clickResponse('tentative'),
+    no: () => clickResponse('declined'),
+    join: () => {
+      if (!joinUrl) return false;
+      void openConference(detail.id);
+      return true;
+    },
+  };
+
+  /** An open event owns these bare keys. Focused controls keep Enter's native
+   * meaning — a focused Join link joins once, an RSVP button answers, and a
+   * copy field copies — while Enter on the panel itself joins immediately. */
+  function onPopoverKey(e: KeyboardEvent) {
+    onCopyKey(e);
+    if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+
+    const key = e.key.toLowerCase();
+    const hit = EVENT_SHORTCUT_LIST.find((s) => s.key === key);
+    if (!hit) return;
+
+    if (hit.id === 'join') {
+      const target = e.target as Element | null;
+      if (target && target !== panelEl
+          && target.closest('a[href], button, input, select, textarea, [contenteditable="true"]')) {
+        return;
+      }
+    }
+
+    if (EVENT_SHORTCUT_ACTIONS[hit.id]()) e.preventDefault();
+  }
 </script>
 
-<svelte:window onkeydown={onCopyKey} />
+<svelte:window onkeydown={onPopoverKey} />
 
 <!-- A sibling of `.pop`, not a wrapper around it, so a click inside the
      panel — the guest list included — never reaches this button. -->
@@ -466,13 +521,13 @@
       </div>
     {/if}
     <div class="rsvp">
-      <button class:chosen={shown === 'accepted'} disabled={busy.size > 0 || pending !== null} onclick={(e) => ask('accepted', e)}
+      <button data-event-response="accepted" class:chosen={shown === 'accepted'} disabled={busy.size > 0 || pending !== null} onclick={(e) => ask('accepted', e)}
         >Yes</button
       >
-      <button class:chosen={shown === 'tentative'} disabled={busy.size > 0 || pending !== null} onclick={(e) => ask('tentative', e)}
+      <button data-event-response="tentative" class:chosen={shown === 'tentative'} disabled={busy.size > 0 || pending !== null} onclick={(e) => ask('tentative', e)}
         >Maybe</button
       >
-      <button class:chosen={shown === 'declined'} disabled={busy.size > 0 || pending !== null} onclick={(e) => ask('declined', e)}
+      <button data-event-response="declined" class:chosen={shown === 'declined'} disabled={busy.size > 0 || pending !== null} onclick={(e) => ask('declined', e)}
         >No</button
       >
     </div>

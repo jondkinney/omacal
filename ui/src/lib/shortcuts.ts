@@ -144,6 +144,32 @@ export const CHORDS: { label: string; text: string; hint?: string }[] = [
     hint: 'opens the form on the day you are looking at, to fine-tune first' },
 ];
 
+/** Bare keys that belong to an open event rather than to the calendar.
+ *
+ * Kept out of `SHORTCUTS` because `App` deliberately ignores every key whose
+ * target is inside a dialog. `EventPopover` dispatches this table itself, and
+ * the shortcut sheet renders these same rows, preserving the binding-and-docs
+ * invariant without making `n` both "new event" and "RSVP no" globally. */
+export type EventShortcut = {
+  id: string;
+  key: string;
+  label: string;
+  text: string;
+};
+
+export const EVENT_SHORTCUTS = [
+  { id: 'edit',   key: 'e',     label: 'e',     text: 'Edit event' },
+  { id: 'delete', key: 'd',     label: 'd',     text: 'Delete event' },
+  { id: 'yes',    key: 'y',     label: 'y',     text: 'RSVP yes' },
+  { id: 'maybe',  key: 'm',     label: 'm',     text: 'RSVP maybe' },
+  { id: 'no',     key: 'n',     label: 'n',     text: 'RSVP no' },
+  { id: 'join',   key: 'enter', label: 'Enter', text: 'Join meeting' },
+] as const satisfies readonly EventShortcut[];
+
+export type EventShortcutId = (typeof EVENT_SHORTCUTS)[number]['id'];
+export const EVENT_SHORTCUT_LIST: readonly (EventShortcut & { id: EventShortcutId })[] =
+  EVENT_SHORTCUTS;
+
 /** The table in the order the sheet draws it. A group with no shortcuts is
  *  dropped rather than drawn empty, so `SHORTCUT_GROUPS` can name a heading
  *  before anything is filed under it. */

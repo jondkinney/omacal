@@ -1383,7 +1383,12 @@
     // not an Element and therefore has no `matches` method.
     if (typeof t.matches === 'function'
         && t.matches('input, textarea, select, [contenteditable="true"]')) return true;
-    return !!t.closest?.('[role="dialog"]');
+    // A disabled control can drop focus to <body> while its dialog remains
+    // open. The dialog still owns the keyboard then; looking only upward from
+    // the event target would let a global `n` create a form behind an RSVP
+    // popover at exactly that moment.
+    return !!t.closest?.('[role="dialog"]')
+      || document.querySelector('[role="dialog"][aria-modal="true"]') !== null;
   }
 
   /**

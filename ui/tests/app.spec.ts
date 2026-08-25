@@ -4,7 +4,9 @@
 // stubbed IPC layer (tests/harness/tauri.ts).
 
 import { test, expect, type Page } from '@playwright/test';
-import { CHORDS, SHORTCUT_LIST, SHORTCUT_TEXT } from '../src/lib/shortcuts';
+import {
+  CHORDS, EVENT_SHORTCUT_LIST, SHORTCUT_LIST, SHORTCUT_TEXT,
+} from '../src/lib/shortcuts';
 import {
   APP_MON, APP_NOW, weekLabel,
   APP_SOLO_SERIES_ID,
@@ -3388,6 +3390,13 @@ test.describe('App: keyboard event navigation', () => {
     await page.keyboard.press('j');
     await expect(selectedTitle(page)).toContainText('Plan the launch');
 
+    // A disabled control can briefly leave focus on body. The still-open
+    // dialog owns bare keys even then; `n` must not create a form behind it.
+    await page.evaluate(() => (document.activeElement as HTMLElement)?.blur());
+    await page.keyboard.press('n');
+    await expect(page.getByRole('dialog', { name: 'New event' })).toHaveCount(0);
+    await expect(dialog).toBeVisible();
+
     await page.keyboard.press('Escape');
     await expect(dialog).toHaveCount(0);
     await page.keyboard.press('Enter');
@@ -3467,7 +3476,7 @@ test.describe('App: the keyboard sheet', () => {
 
     for (const s of SHORTCUT_LIST) {
       await expect(
-        sheet(page).locator('dt', { hasText: literal(s.label) }),
+        sheet(page).locator('[data-shortcut-scope="calendar"] dt', { hasText: literal(s.label) }),
         `${s.label} (${s.id}) is bound but not listed`,
       ).toHaveCount(1);
       await expect(
@@ -3480,6 +3489,17 @@ test.describe('App: the keyboard sheet', () => {
         sheet(page).locator('dt', { hasText: literal(c.label) }),
       ).toHaveCount(1);
       await expect(sheet(page).locator('.what', { hasText: literal(c.text) })).toHaveCount(1);
+    }
+
+    for (const s of EVENT_SHORTCUT_LIST) {
+      await expect(
+        sheet(page).locator('[data-shortcut-scope="event"] dt', { hasText: literal(s.label) }),
+        `${s.label} (${s.id}) is scoped to event details but not listed`,
+      ).toHaveCount(1);
+      await expect(
+        sheet(page).locator('.what', { hasText: literal(s.text) }),
+        `${s.id} is listed under a key but not described`,
+      ).toHaveCount(1);
     }
   });
 
