@@ -1519,6 +1519,24 @@ test.describe('App', () => {
     await expect(newForm(page).getByLabel('Calendar')).toHaveValue('8');
   });
 
+  test('a default meeting duration chosen in Settings is used by n immediately', async ({ page }) => {
+    await writable(page);
+    await page.getByRole('button', { name: 'Menu' }).click();
+    await page.getByRole('button', { name: 'Settings…' }).click();
+    const modal = page.getByRole('dialog', { name: 'Settings' });
+    await modal.getByRole('spinbutton', { name: 'Default meeting duration' }).fill('45');
+    await modal.getByRole('button', { name: 'Save default meeting duration' }).click();
+    await page.keyboard.press('Escape');
+
+    await page.keyboard.press('n');
+    await newForm(page).getByLabel('Title', { exact: true }).fill('Short review');
+    await newForm(page).getByRole('button', { name: 'Create', exact: true }).click();
+
+    const [args] = await callsTo(page, 'create_event');
+    expect(args.fields.when.kind).toBe('timed');
+    expect(args.fields.when.endMs - args.fields.when.startMs).toBe(45 * 60_000);
+  });
+
   /**
    * The picker wears the chosen calendar's colour (2026-08-10, by request):
    * names identify calendars to a reader who knows them, colour to everyone.

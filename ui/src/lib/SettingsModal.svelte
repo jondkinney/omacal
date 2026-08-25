@@ -11,6 +11,7 @@
   import { listAccounts, signOut, type Account } from './accounts';
   import {
     getSettings, listTimezones, minutesOf, msOfMinutes, setDefaultCalendar,
+    setDefaultEventDuration,
     setDisplayTimezone, setFallbackReminders, setNotificationsEnabled,
     setSecondTimezone, setSyncInterval, setTimeFormat, setTrayIcon,
     setWeatherEnabled, setWeekStart,
@@ -57,6 +58,7 @@
   /** What is in the interval box, in minutes, as a string — a form value, not a
    *  number, so a half-typed "1" is not read as one minute mid-keystroke. */
   let intervalText = $state('');
+  let durationText = $state('');
   let note = $state<{ text: string; kind: 'info' | 'error' } | null>(null);
   /** The interval row's own feedback, rendered beside the field it is about.
    *  Not the shared `note` below: that one sits at the bottom of a modal
@@ -64,12 +66,14 @@
    *  General tab had enough content to scroll — reported as "no visual clue
    *  it saved" (2026-08-17), which for every practical purpose it was. */
   let intervalNote = $state<{ text: string; kind: 'info' | 'error' } | null>(null);
+  let durationNote = $state<{ text: string; kind: 'info' | 'error' } | null>(null);
 
   $effect(() => {
     getSettings()
       .then((s) => {
         settings = s;
         intervalText = String(minutesOf(s.syncIntervalMs));
+        durationText = String(s.defaultEventDurationMinutes);
       })
       .catch((e) => (note = { text: String(e), kind: 'error' }));
   });
@@ -254,6 +258,24 @@
     } catch (e) {
       note = { text: String(e), kind: 'error' };
       settings = settings ? { ...settings } : null;
+    }
+  }
+
+  async function saveDefaultEventDuration() {
+    const minutes = Number(durationText);
+    if (!Number.isSafeInteger(minutes) || minutes < 1 || minutes > 0xffff_ffff) {
+      durationNote = { text: 'Enter a positive whole number of minutes.', kind: 'error' };
+      return;
+    }
+
+    durationNote = null;
+    try {
+      settings = await setDefaultEventDuration(minutes);
+      durationText = String(settings.defaultEventDurationMinutes);
+      onsettingschange?.(settings);
+      durationNote = { text: 'Saved.', kind: 'info' };
+    } catch (e) {
+      durationNote = { text: String(e), kind: 'error' };
     }
   }
 
@@ -490,7 +512,12 @@
             }}
           />
           <span class="unit">minutes</span>
-          <button type="button" onclick={saveInterval} disabled={!settings}>Save</button>
+          <button
+            type="button"
+            aria-label="Save sync interval"
+            onclick={saveInterval}
+            disabled={!settings}
+          >Save</button>
           {#if intervalNote}
             <span
               class="rownote"
@@ -532,6 +559,45 @@
       <p class="hint">
         Only calendars omacal can write to are offered; if the choice ever
         stops being writable, creates fall back to your primary.
+      </p>
+
+      <div class="row">
+        <label class="lab" for="default-event-duration">Default meeting duration</label>
+        <div class="inline">
+          <input
+            id="default-event-duration"
+            type="number"
+            min="1"
+            step="1"
+            disabled={!settings}
+            bind:value={durationText}
+            oninput={() => (durationNote = null)}
+            onkeydown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                saveDefaultEventDuration();
+              }
+            }}
+          />
+          <span class="unit">minutes</span>
+          <button
+            type="button"
+            aria-label="Save default meeting duration"
+            disabled={!settings}
+            onclick={saveDefaultEventDuration}
+          >Save</button>
+          {#if durationNote}
+            <span
+              class="rownote"
+              class:err={durationNote.kind === 'error'}
+              data-testid="duration-note"
+            >{durationNote.text}</span>
+          {/if}
+        </div>
+      </div>
+      <p class="hint">
+        Used when a new event has a start time but no end time selected yet.
+        Dragging a range still uses the range you chose.
       </p>
 
       <div class="row">

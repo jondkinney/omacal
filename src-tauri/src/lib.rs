@@ -1359,6 +1359,7 @@ pub fn run() {
             settings::set_list_mode,
             settings::set_fallback_reminders,
             settings::set_default_calendar,
+            settings::set_default_event_duration,
             settings::set_time_format,
             settings::set_week_start,
             events::event_detail,

@@ -355,6 +355,15 @@ test.describe('blankValue', () => {
     expect(v.endDate).toBe('2026-08-05');
     expect(spanOf(v)).toBe(60 * MINUTES);
   });
+
+  test('a caller can choose the default duration, while an explicit range still wins', () => {
+    const start = at(2026, 8, 5, 10, 0);
+    expect(spanOf(blankValueAt(start, 1, undefined, 45))).toBe(45 * MINUTES);
+    expect(spanOf(blankValue(start, 1, undefined, 75))).toBe(75 * MINUTES);
+
+    const sweptEnd = start + 20 * MINUTES;
+    expect(spanOf(blankValueAt(start, 1, sweptEnd, 45))).toBe(20 * MINUTES);
+  });
 });
 
 test.describe('endAfterStart on an all-day value', () => {

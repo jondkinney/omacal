@@ -254,6 +254,10 @@
    *  that call this copy is stale until a restart, and the form would keep
    *  landing creates on a calendar the user has stopped choosing. */
   let defaultCalendarId = $state<number | null>(null);
+  /** Length for a new event whose opener names only its start. Sixty is the
+   *  backend's fresh-install default while the initial settings read is in
+   *  flight. */
+  let defaultEventDurationMinutes = $state(60);
 
   /** Whether the keyboard-shortcut sheet is up. A session flag and not a
    *  setting: it is a thing you look at, not a thing you configure. */
@@ -264,6 +268,7 @@
     getSettings()
       .then((s) => {
         defaultCalendarId = s.defaultCalendarId;
+        defaultEventDurationMinutes = s.defaultEventDurationMinutes;
         setClockFormat(s.timeFormat);
         setWeekStartDay(s.weekStart);
         setSecondZone(s.secondTimezone);
@@ -770,7 +775,10 @@
         : keyboardAnchor(),
       initial: pastedValue(
         copiedEvent,
-        blankValue(Date.now(), calendarId, onPointedDay ? pointedDayMs : createDayMs()),
+        blankValue(
+          Date.now(), calendarId, onPointedDay ? pointedDayMs : createDayMs(),
+          defaultEventDurationMinutes,
+        ),
       ),
     };
   }
@@ -817,7 +825,9 @@
     form = {
       mode: 'create',
       anchor: keyboardAnchor(),
-      initial: blankValue(Date.now(), createCalendarId, createDayMs()),
+      initial: blankValue(
+        Date.now(), createCalendarId, createDayMs(), defaultEventDurationMinutes,
+      ),
     };
   }
 
@@ -826,8 +836,8 @@
    *
    * `endMs` arrives only from a **sweep** — a drag across empty grid, which
    * names both ends. A click names only the moment it landed on, and leaves the
-   * duration to `blankValueAt`'s own hour; passing one there would move
-   * the decision out of the form module and into the grid.
+   * duration to the stored preference; passing one there would replace the
+   * preference with a value invented by the grid.
    *
    * Nothing is created here either way. The form does the creating, through the
    * path it has always used, which is why a sweep needs no command of its own —
@@ -836,18 +846,24 @@
    */
   function newEventAt(startMs: number, rect: Rect, endMs?: number) {
     form = {
-      mode: 'create', anchor: rect, initial: blankValueAt(startMs, createCalendarId, endMs),
+      mode: 'create',
+      anchor: rect,
+      initial: blankValueAt(
+        startMs, createCalendarId, endMs, defaultEventDurationMinutes,
+      ),
     };
   }
 
   /** Month and Big Year: the grid names a date and no time, so the form takes
-   *  the same default hour `n` would have used — the next half hour, moved to
-   *  the day that was clicked. */
+   *  the same start and duration `n` would have used — the next half hour,
+   *  moved to the day that was clicked. */
   function newEventOnDay(dayStartMs: number, rect: Rect) {
     form = {
       mode: 'create',
       anchor: rect,
-      initial: blankValue(Date.now(), createCalendarId, dayStartMs),
+      initial: blankValue(
+        Date.now(), createCalendarId, dayStartMs, defaultEventDurationMinutes,
+      ),
     };
   }
 
@@ -1223,6 +1239,7 @@
     onSearch={() => (searchOpen = true)}
     onsettingschange={(s) => {
       defaultCalendarId = s.defaultCalendarId;
+      defaultEventDurationMinutes = s.defaultEventDurationMinutes;
       setClockFormat(s.timeFormat);
       setWeekStartDay(s.weekStart);
       setSecondZone(s.secondTimezone);
