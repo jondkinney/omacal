@@ -34,7 +34,7 @@ const MONTHS: [&str; 12] =
 /// `Wed, Aug 19` for an instant read in `tz` — a reminder fires minutes ahead
 /// and says only the hour, but an invitation may be for weeks away, so the
 /// day is the headline. Unknown zones fall back to UTC, the same policy as
-/// `notify::time_in_zone`.
+/// `notify::time_in_zone_with_format`.
 fn date_in_words(ms: i64, tz: &str) -> String {
     let ts = jiff::Timestamp::from_millisecond(ms).unwrap_or(jiff::Timestamp::UNIX_EPOCH);
     let z = ts.in_tz(tz).unwrap_or_else(|_| ts.in_tz("UTC").expect("UTC always resolves"));
@@ -61,14 +61,18 @@ pub(crate) fn offers_accept(c: &InviteCandidate) -> bool {
 /// The "Click to accept" line appears only when the click actually does that:
 /// an action-less announcement (CalDAV, a read-only calendar, macOS's
 /// button-less transport) must not instruct anyone to click.
-pub(crate) fn invite_notification(c: &InviteCandidate, display_tz: &str) -> Notification {
+pub(crate) fn invite_notification_with_format(
+    c: &InviteCandidate,
+    display_tz: &str,
+    time_format: crate::settings::TimeFormat,
+) -> Notification {
     let when = if c.is_all_day {
         format!("{} · All day", date_in_words(c.start_utc, &c.calendar_timezone))
     } else {
         format!(
             "{} · {}",
             date_in_words(c.start_utc, display_tz),
-            crate::notify::time_in_zone(c.start_utc, display_tz)
+            crate::notify::time_in_zone_with_format(c.start_utc, display_tz, time_format)
         )
     };
 
@@ -108,6 +112,14 @@ pub(crate) fn invite_notification(c: &InviteCandidate, display_tz: &str) -> Noti
         // invite still deserves to be seen, and dismissal is one right-click.
         sticky: true,
     }
+}
+
+/// A 24-hour wrapper for tests whose subject is invitation wording or actions
+/// rather than the clock. The live pass has no default and always supplies
+/// the stored preference.
+#[cfg(test)]
+pub(crate) fn invite_notification(c: &InviteCandidate, display_tz: &str) -> Notification {
+    invite_notification_with_format(c, display_tz, crate::settings::TimeFormat::H24)
 }
 
 /// One pass over the ledger: seed what predates the watch, announce what is
@@ -154,7 +166,11 @@ pub(crate) async fn run_pass(
         if !c.calendar_selected {
             continue;
         }
-        if let Err(e) = notifier.post(&invite_notification(&c, display_tz)) {
+        if let Err(e) = notifier.post(&invite_notification_with_format(
+            &c,
+            display_tz,
+            settings.time_format,
+        )) {
             tracing::warn!(%e, event_id = c.event_id, "could not announce an invitation");
         }
         omacal_store::record_invite_notice(pool, c.event_id, true, now_ms).await?;
@@ -632,6 +648,20 @@ mod tests {
         assert_eq!(fake.posted().len(), 1);
     }
 
+    #[tokio::test]
+    async fn the_pass_applies_the_stored_clock_format_to_invitation_notifications() {
+        let pool = seeded_pool().await;
+        seeded_and_swallowed(&pool).await;
+        sqlx::query("INSERT INTO settings (key, value) VALUES ('time_format', '12h')")
+            .execute(&pool).await.unwrap();
+        upsert_event(&pool, &invite("new-1", NOW + HOUR)).await.unwrap();
+
+        let fake = RecordingNotifier::default();
+        run_pass(&pool, false, NOW, SOFIA, &fake).await.unwrap();
+
+        assert!(fake.posted()[0].body.starts_with("Mon, Aug 10 · 1:00 PM"));
+    }
+
     /// `run_once`'s trade, inherited deliberately: a refusing transport logs
     /// and records rather than retrying the same announcement forever.
     #[tokio::test]
@@ -742,6 +772,16 @@ mod tests {
         assert_eq!(n.title, "Invitation: NVP sync meeting");
         // 2026-08-10T10:00Z is Monday 13:00 in Sofia.
         assert!(n.body.starts_with("Mon, Aug 10 · 13:00 · from ana@x.com"), "{}", n.body);
+    }
+
+    #[test]
+    fn a_timed_invitation_uses_the_selected_twelve_hour_clock() {
+        let n = invite_notification_with_format(
+            &candidate(),
+            SOFIA,
+            crate::settings::TimeFormat::H12,
+        );
+        assert!(n.body.starts_with("Mon, Aug 10 · 1:00 PM · from ana@x.com"), "{}", n.body);
     }
 
     #[test]

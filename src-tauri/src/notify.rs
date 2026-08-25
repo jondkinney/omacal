@@ -2,7 +2,7 @@
 //!
 //! Two halves, split so only one of them is untestable.
 //!
-//! [`notification_for`] decides *what a reminder says* — title, body, which
+//! [`notification_for_format`] decides *what a reminder says* — title, body, which
 //! actions. It is a pure function of a [`Due`] and a zone, so every rule about
 //! wording and about when a *Join* button appears is tested without anything
 //! being posted anywhere.
@@ -16,6 +16,7 @@
 //! stated here rather than hidden, per spec §3.
 
 use omacal_core::remind::Due;
+use crate::settings::TimeFormat;
 
 /// What a posted notification says.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -154,11 +155,15 @@ pub(crate) const NO_TITLE: &str = "(no title)";
 /// midnight in the *calendar's* zone, which rendered in the display zone is
 /// some arbitrary hour of the previous or next day — an actively misleading
 /// thing to print.
-pub(crate) fn notification_for(d: &Due, tz: &str) -> Notification {
+pub(crate) fn notification_for_format(
+    d: &Due,
+    tz: &str,
+    time_format: TimeFormat,
+) -> Notification {
     let when = if d.is_all_day {
         "All day".to_string()
     } else {
-        time_in_zone(d.key.occurrence_ms, tz)
+        time_in_zone_with_format(d.key.occurrence_ms, tz, time_format)
     };
 
     let body = match &d.location {
@@ -194,12 +199,28 @@ pub(crate) fn notification_for(d: &Due, tz: &str) -> Notification {
     }
 }
 
-/// `HH:MM` for an instant, read in `tz`. Falls back to UTC for an unknown zone
-/// rather than panicking, the same policy as `omacal_core::zone::date_in_zone`.
-pub(crate) fn time_in_zone(ms: i64, tz: &str) -> String {
+/// A clock time for an instant, read in `tz`. Falls back to UTC for an unknown
+/// zone rather than panicking, the same policy as
+/// `omacal_core::zone::date_in_zone`.
+pub(crate) fn time_in_zone_with_format(ms: i64, tz: &str, time_format: TimeFormat) -> String {
     let ts = jiff::Timestamp::from_millisecond(ms).unwrap_or(jiff::Timestamp::UNIX_EPOCH);
     let z = ts.in_tz(tz).unwrap_or_else(|_| ts.in_tz("UTC").expect("UTC always resolves"));
-    format!("{:02}:{:02}", z.hour(), z.minute())
+    match time_format {
+        TimeFormat::H24 => format!("{:02}:{:02}", z.hour(), z.minute()),
+        TimeFormat::H12 => {
+            let hour = z.hour();
+            let dial = if hour % 12 == 0 { 12 } else { hour % 12 };
+            format!("{dial}:{:02} {}", z.minute(), if hour < 12 { "AM" } else { "PM" })
+        }
+    }
+}
+
+/// The pre-preference spelling retained only for the tests whose subject is
+/// notification content other than the clock. Production has no default: it
+/// must pass the stored preference to `notification_for_format`.
+#[cfg(test)]
+pub(crate) fn notification_for(d: &Due, tz: &str) -> Notification {
+    notification_for_format(d, tz, TimeFormat::H24)
 }
 
 /// The category ids registered once with the macOS notification centre.
@@ -468,6 +489,23 @@ mod tests {
 
         let utc = notification_for(&due(Some("Standup"), None, None), "UTC");
         assert_eq!(utc.body, "09:00", "the zone argument must actually be used");
+    }
+
+    #[test]
+    fn the_body_uses_the_selected_twelve_hour_clock() {
+        let noon = notification_for_format(
+            &due(Some("Standup"), None, None),
+            SOFIA,
+            crate::settings::TimeFormat::H12,
+        );
+        assert_eq!(noon.body, "12:00 PM");
+
+        let morning = notification_for_format(
+            &due(Some("Standup"), None, None),
+            "UTC",
+            crate::settings::TimeFormat::H12,
+        );
+        assert_eq!(morning.body, "9:00 AM");
     }
 
     /// An absolute time rather than "in 10 minutes", and deliberately: a missed
