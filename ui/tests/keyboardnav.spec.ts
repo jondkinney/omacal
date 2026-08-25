@@ -31,9 +31,7 @@ test.describe('calendar keyboard cursor', () => {
   test('j from today skips events that have already ended', () => {
     const list = days();
     const lateMonday = APP_MON + 22 * 3_600_000;
-    const next = moveEvent(list, dayCursor(APP_MON), 1, {
-      nowMs: lateMonday, todayStartMs: APP_MON,
-    });
+    const next = moveEvent(list, dayCursor(APP_MON), 1, { nowMs: lateMonday });
 
     expect(next.cursor.dayStartMs).toBe(APP_MON + DAY);
     expect(eventAtCursor(list, next.cursor)?.title).toBe('Tuesday brief');
@@ -52,12 +50,24 @@ test.describe('calendar keyboard cursor', () => {
   test('k from today skips events that have not started yet', () => {
     const list = days();
     const earlyTuesday = APP_MON + DAY + 8 * 3_600_000;
-    const previous = moveEvent(list, dayCursor(APP_MON + DAY), -1, {
-      nowMs: earlyTuesday, todayStartMs: APP_MON + DAY,
-    });
+    const previous = moveEvent(list, dayCursor(APP_MON + DAY), -1, { nowMs: earlyTuesday });
 
     expect(previous.cursor.dayStartMs).toBe(APP_MON);
     expect(eventAtCursor(list, previous.cursor)?.title).toBe('Review notes');
+  });
+
+  test('the payload day interval, not the browser midnight, decides which day is today', () => {
+    const list = days();
+    const lateMonday = APP_MON + 22 * 3_600_000;
+
+    // A calendar can display a zone other than the browser/system zone. Its
+    // midnight is then a different instant, but 10 PM is still inside the
+    // day interval the payload supplied. This is the live-app failure the
+    // previous exact-midnight comparison missed.
+    const next = moveEvent(list, dayCursor(APP_MON), 1, { nowMs: lateMonday });
+
+    expect(next.cursor.dayStartMs).toBe(APP_MON + DAY);
+    expect(eventAtCursor(list, next.cursor)?.title).toBe('Tuesday brief');
   });
 
   test('cross-day event movement skips an empty day and includes all-day events', () => {

@@ -35,7 +35,7 @@ test.describe('daysFromWeek', () => {
   test('the navigation form retains every day, including gaps', () => {
     const days = allDaysFromWeek(filmstripWeek());
     expect(days).toHaveLength(7);
-    expect(days[1]).toEqual({ startMs: dayOf(1), events: [] });
+    expect(days[1]).toEqual({ startMs: dayOf(1), endMs: dayOf(2), events: [] });
   });
   test('the fixture really is out of order, and really has a gap', () => {
     // §5 of the testing standard: a fixture built from a stated hazard proves

@@ -366,7 +366,7 @@
     if (!listable(view)) return;
     const now = Date.now();
     const moved = moveEvent(
-      keyboardDays, keyboardCursor, dir, { nowMs: now, todayStartMs: dayStart(now) },
+      keyboardDays, keyboardCursor, dir, { nowMs: now },
     );
     if (moved.overflow) {
       // `moveEvent` has already scanned every remaining day in this payload,
@@ -411,7 +411,7 @@
       if (eventDir !== null) {
         const now = Date.now();
         const moved = moveEvent(
-          days, keyboardCursor, eventDir, { nowMs: now, todayStartMs: dayStart(now) },
+          days, keyboardCursor, eventDir, { nowMs: now },
         );
         if (!moved.overflow) selectKeyboard(moved.cursor);
       } else {

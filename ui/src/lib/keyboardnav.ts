@@ -20,7 +20,6 @@ export type CursorMove = {
 
 export type NavigationClock = {
   nowMs: number;
-  todayStartMs: number;
 };
 
 export function dayCursor(dayStartMs: number): KeyboardCursor {
@@ -79,10 +78,11 @@ export function moveEvent(
 
   if (dayOnly && day.events.length > 0) {
     let event: UiEvent | undefined;
-    // The caller supplies the day boundary as well as the instant. Deriving it
-    // here would use whichever timezone this pure function happened to run
-    // in, which need not be the calendar/browser zone that named `startMs`.
-    if (clock && day.startMs === clock.todayStartMs) {
+    // The payload's own interval names today. Comparing `startMs` with a
+    // browser-derived midnight was subtly wrong whenever the display calendar
+    // and browser/system zones differed; adding 24 hours would also be wrong
+    // on a DST boundary. The backend already supplied both true boundaries.
+    if (clock && clock.nowMs >= day.startMs && clock.nowMs < day.endMs) {
       if (dir === 1) {
         event = day.events.find((candidate) => candidate.end_ms > clock.nowMs);
       } else {
