@@ -544,8 +544,53 @@ test.describe('App', () => {
     await page.keyboard.press('l');
     await page.keyboard.press('l');
     expect(await col.getAttribute('data-start-ms')).not.toBe(opened);
+    await page.getByTestId('week-body').evaluate((el) => { el.scrollTop = 0; });
     await page.keyboard.press('t');
     expect(await col.getAttribute('data-start-ms')).toBe(opened);
+    // The reveal request must wait for today's payload rather than being
+    // consumed by the week that was still mounted when T was pressed.
+    await expect.poll(() => page.evaluate(() => {
+      const viewport = document.querySelector<HTMLElement>('[data-testid="week-body"]')!;
+      const marker = viewport.querySelector<HTMLElement>('.now')!;
+      const box = viewport.getBoundingClientRect();
+      const position = (marker.getBoundingClientRect().top - box.top) / box.height;
+      return Math.abs(position - 0.45);
+    })).toBeLessThan(0.07);
+  });
+
+  test('Today recenters NOW in Week and Day, even when already on today', async ({ page }) => {
+    await page.clock.setFixedTime(APP_MON + 16 * 3_600_000);
+    await page.goto(app('connected'));
+
+    const hideNow = () => page.getByTestId('week-body').evaluate((el) => { el.scrollTop = 0; });
+    const nowPosition = () => page.evaluate(() => {
+      const viewport = document.querySelector<HTMLElement>('[data-testid="week-body"]')!;
+      const marker = viewport.querySelector<HTMLElement>('.now')!;
+      const box = viewport.getBoundingClientRect();
+      return (marker.getBoundingClientRect().top - box.top) / box.height;
+    });
+    const expectCentered = async () => {
+      await expect.poll(async () => Math.abs((await nowPosition()) - 0.45))
+        .toBeLessThan(0.07);
+    };
+
+    // Already on today's week: changing the anchor alone would be a no-op, so
+    // this proves the key itself carries an explicit reveal request.
+    await hideNow();
+    await page.keyboard.press('t');
+    await expectCentered();
+
+    // The header button is the same action, including on a second invocation.
+    await hideNow();
+    await page.getByRole('button', { name: 'Today', exact: true }).click();
+    await expectCentered();
+
+    // Day uses the same clock grid with one column and keeps the same contract.
+    await page.keyboard.press('1');
+    await expect(page.locator('.col')).toHaveCount(1);
+    await hideNow();
+    await page.keyboard.press('t');
+    await expectCentered();
   });
 
   // Own spec, guarding the keyboard trap (not in the brief's five): the event
@@ -2083,6 +2128,36 @@ test.describe('App', () => {
     await page.keyboard.press('f');
     await expect(page.locator('.ev')).toHaveCount(1);
     await expect(rows(page)).toHaveCount(0);
+  });
+
+  test('Today reveals the NOW row in list view', async ({ page }) => {
+    await page.clock.setFixedTime(APP_MON + 20 * 3_600_000);
+    await page.setViewportSize({ width: 900, height: 260 });
+    await opened(page);
+    await page.keyboard.press('f');
+
+    const strip = page.locator('.strip');
+    const marker = strip.locator('.nowrow');
+    await expect(marker).toHaveCount(1);
+    await strip.evaluate((el) => {
+      (el as HTMLElement).style.flex = 'none';
+      (el as HTMLElement).style.height = '30px';
+      el.scrollTop = 0;
+    });
+    await expect.poll(async () => {
+      const viewport = await strip.boundingBox();
+      const now = await marker.boundingBox();
+      return !!viewport && !!now && now.y > viewport.y + viewport.height;
+    }).toBe(true);
+
+    await page.keyboard.press('t');
+    await expect.poll(async () => {
+      const viewport = await strip.boundingBox();
+      const now = await marker.boundingBox();
+      return !!viewport && !!now
+        && now.y >= viewport.y
+        && now.y + now.height <= viewport.y + viewport.height;
+    }).toBe(true);
   });
 
   test('the control and the key are the same switch', async ({ page }) => {

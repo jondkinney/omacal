@@ -9,13 +9,15 @@
   import { dateKey, type DayWeather } from './weather';
   import type { ListDay } from './filmstrip';
 
-  let { days, weather = null, onopen }: {
+  let { days, weather = null, revealNowRequest = 0, onopen }: {
     /** Already grouped, ordered and emptied of blank days by `filmstrip.ts`.
      *  This component draws a list; it does not decide what is in one. */
     days: ListDay[];
     /** The forecast by ISO date, or null for none — same contract as
      *  `WeekGrid`'s: a heading with no sky is just a heading. */
     weather?: Map<string, DayWeather> | null;
+    /** The explicit Today request counter shared with the clock grid. */
+    revealNowRequest?: number;
     /** Same contract as `MonthGrid`'s and `BigYearRibbon`'s: the clicked event
      *  plus an anchor rect, handed straight up to `App.openGridEvent` and so to
      *  `openOccurrence`.
@@ -68,19 +70,53 @@
    *  which the template reads as "no marker in this section".
    *
    *  A `ListDay` carries only its midnight, so "today" is `startMs`'s
-   *  24-hour window; DST puts the boundary an hour out twice a year, which
-   *  for a marker between rows is a miss of nothing. */
+   *  24-hour window. */
   function markerIndex(d: ListDay, now: number): number {
     if (now < d.startMs || now >= d.startMs + 24 * 3_600_000) return -1;
     const i = d.events.findIndex((ev) => !ev.is_all_day && ev.start_ms > now);
     return i === -1 ? d.events.length : i;
   }
+
+  let stripEl: HTMLDivElement | undefined = $state();
+  let handledRevealNowRequest: number | null = null;
+  const NOW_VIEWPORT_FRACTION = 0.45;
+
+  // A list has no hour geometry to calculate against, so centre the rendered
+  // NOW row itself. As in WeekGrid, a Today request waits for the newly-loaded
+  // period rather than being consumed by the old one, and repeated requests
+  // remain meaningful while the anchor already names today.
+  $effect(() => {
+    if (!stripEl) return;
+    const request = revealNowRequest;
+    if (handledRevealNowRequest === null) {
+      handledRevealNowRequest = request;
+      return;
+    }
+    const revealRequested = request !== handledRevealNowRequest;
+    if (!revealRequested) return;
+    const today = days.find(
+      (d) => nowMs >= d.startMs && nowMs < d.startMs + 24 * 3_600_000,
+    );
+    if (!today) return;
+    const el = stripEl;
+    requestAnimationFrame(() => {
+      const marker = el.querySelector<HTMLElement>('.nowrow');
+      if (!marker) return;
+      const viewport = el.getBoundingClientRect();
+      const markerTop = marker.getBoundingClientRect().top - viewport.top + el.scrollTop;
+      el.scrollTop = Math.max(
+        0,
+        markerTop - el.clientHeight * NOW_VIEWPORT_FRACTION,
+      );
+      if (revealRequested) handledRevealNowRequest = request;
+    });
+  });
 </script>
 
 <!-- **No drag handlers anywhere below, and that is the feature** (spec §6): a
      list has no geometry to drop onto, so they are absent rather than disabled.
      Creating still works through `n` and through the form. -->
-<div class="strip">
+<div class="strip" bind:this={stripEl}>
   {#if days.length === 0}
     <!-- Spec §3: a period with nothing in it says so, plainly, rather than
          rendering as blank. Empty days being skipped is exactly what makes an
