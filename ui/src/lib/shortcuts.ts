@@ -43,9 +43,9 @@ export type Shortcut = {
    *  than in a second map beside it — that map was `KEY_VIEW`, and a table
    *  that lists a key without saying what it does is half the drift back. */
   view?: View;
-  /** Whether the handler must consume the keystroke. `/` and `q` protect the
-   * fields they mount and focus in WebKitGTK; open protects its calendar
-   * surface. */
+  /** Whether the handler must consume the keystroke. `/`, `n`, and `q`
+   * protect the fields they mount and focus in WebKitGTK; open protects its
+   * calendar surface. */
   consumes?: true;
 };
 
@@ -73,7 +73,7 @@ export const SHORTCUTS = [
 
   { id: 'openSelected', key: 'o', aliases: ['enter'], label: 'o / Enter',
     group: 'Doing things', consumes: true },
-  { id: 'create',   key: 'n', label: 'n', group: 'Doing things' },
+  { id: 'create',   key: 'n', label: 'n', group: 'Doing things', consumes: true },
   { id: 'quickCreate', key: 'q', label: 'q', group: 'Doing things', consumes: true },
   { id: 'list',     key: 'f', label: 'f', group: 'Doing things' },
   { id: 'help',     key: '?', label: '?', group: 'Doing things' },

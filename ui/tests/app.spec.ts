@@ -1113,6 +1113,24 @@ test.describe('App', () => {
     await expect(newForm(page).getByLabel('Start', { exact: true })).toHaveValue('12:30');
   });
 
+  test('n is consumed instead of becoming the new event title', async ({ page }) => {
+    await writable(page);
+    // WebKitGTK applies a keydown's default insertion after the shortcut has
+    // mounted and focused the title field. A synthetic cancelable event makes
+    // that contract observable in Playwright; the empty title confirms the
+    // form itself still opens cleanly.
+    const prevented = await page.evaluate(() => {
+      const event = new KeyboardEvent('keydown', {
+        key: 'n', cancelable: true, bubbles: true,
+      });
+      window.dispatchEvent(event);
+      return event.defaultPrevented;
+    });
+    expect(prevented, 'an unconsumed n is typed into the title it just focused').toBe(true);
+    await expect(newForm(page)).toBeVisible();
+    await expect(newForm(page).getByLabel('Title', { exact: true })).toHaveValue('');
+  });
+
   test('clicking empty grid space opens the form at that time', async ({ page }) => {
     await writable(page);
     const col = page.locator('.col').first();

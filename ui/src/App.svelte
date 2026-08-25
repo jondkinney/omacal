@@ -1520,10 +1520,10 @@
     )) return;
     const hit = SHORTCUT_LIST.find((s) => s.key === key || s.aliases?.includes(key));
     if (!hit) return;
-    // Consumed where the table says so. `/` needs it because WebKitGTK runs
-    // the keydown's default insertion after search has focused its field;
-    // `o`/Enter share the flag so the open action cannot also activate the
-    // surface that happened to sit under the selection.
+    // Consumed where the table says so. `/`, `n`, and `q` need it because
+    // WebKitGTK runs the keydown's default insertion after the new panel has
+    // focused its field; `o`/Enter share the flag so the open action cannot
+    // also activate the surface that happened to sit under the selection.
     if (hit.consumes) e.preventDefault();
     SHORTCUT_ACTIONS[hit.id]();
   }
