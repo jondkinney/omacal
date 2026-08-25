@@ -2,9 +2,26 @@
 
 > **Just want to use it?** The [releases
 > page](https://github.com/x3me/omacal/releases) carries a `.dmg` (Apple
-> Silicon, unsigned: right-click → Open to get past Gatekeeper) with
+> Silicon, unsigned for now: right-click → Open to get past Gatekeeper) with
 > credentials included — no Google Cloud project, no config file. Everything
 > below is for building and running from source.
+
+## What the macOS build does and doesn't do (as of v0.4.4)
+
+The UI is one shared codebase, so everything recent is in the `.dmg`: the
+list-mode rows (invitee count, repeat glyph, the Join camera), the now
+marker, weather in the day headers, the clock-following time fields, the
+non-selectable chrome. Two platform notes:
+
+- **Weather location** comes from your IP (there is no Omarchy widget to
+  read here); the Settings → General knob turns the feature off.
+- **Updates are notice-only**: the header says a newer version exists and
+  "What's new" opens the release page, but the one-click **Update** button
+  is the AppImage's — a macOS self-update needs an Apple-signed app, or
+  every swap would end at a Gatekeeper wall. Apple Developer enrollment is
+  approved and signing + notarization are plumbed into the release
+  workflow; once the certificates land, the button follows.
+
 
 For Omarchy Linux, see [`running-on-omarchy.md`](running-on-omarchy.md) — the
 setup is the same except for token storage, which needs a Secret Service

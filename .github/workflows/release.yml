@@ -60,12 +60,40 @@ jobs:
       # Build only — attaching happens after the AppImage is repaired below.
       # (tauri-action's own release upload would publish the artifact before
       # the strip step could touch it.)
+      # macOS signing + notarization ride entirely on these env vars: absent
+      # secrets mean the bundler builds unsigned, exactly as before, so this
+      # plumbing is a no-op until the Apple Developer credentials land. The
+      # names are the tauri bundler's own contract:
+      #   APPLE_CERTIFICATE            base64 of the Developer ID Application .p12
+      #   APPLE_CERTIFICATE_PASSWORD   the .p12's export password
+      #   APPLE_SIGNING_IDENTITY       "Developer ID Application: <name> (<team id>)"
+      #   APPLE_API_ISSUER/KEY(+file)  App Store Connect API key, for notarytool
+      # The updater signing key is here too, so the macOS .app.tar.gz updater
+      # artifact is minisign-signed at build; on Linux the post-repack step
+      # below re-signs the AppImage and overwrites the bundler's own .sig.
+      - name: Write the notarization key
+        if: startsWith(matrix.platform, 'macos')
+        env:
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+        run: |
+          if [ -n "$APPLE_API_KEY_CONTENT" ]; then
+            echo "$APPLE_API_KEY_CONTENT" > "$RUNNER_TEMP/apple-api-key.p8"
+            echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/apple-api-key.p8" >> "$GITHUB_ENV"
+          fi
+
       - name: Build the bundles
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OMACAL_CLIENT_ID: ${{ secrets.OMACAL_CLIENT_ID }}
           OMACAL_CLIENT_SECRET: ${{ secrets.OMACAL_CLIENT_SECRET }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
 
       # The bundler ships Ubuntu's whole Wayland client stack inside the
       # AppImage. On hosts with a newer Mesa (Arch, so Omarchy itself) the
@@ -128,25 +156,6 @@ jobs:
           npx --yes @tauri-apps/cli@^2 signer sign "$image"
           test -s "$image.sig" || { echo "no signature was produced" >&2; exit 1; }
 
-      # What the running app's update check reads (tauri.conf.json points at
-      # this file via the release's /latest redirect). Linux x86_64 only: the
-      # macOS build is unsigned by Apple and self-update there would trip
-      # Gatekeeper, and every other Linux channel updates through its package
-      # manager. Tag pushes only — the URL inside names the tag.
-      - name: Write latest.json for the updater
-        if: startsWith(matrix.platform, 'ubuntu') && startsWith(github.ref, 'refs/tags/')
-        run: |
-          image=$(ls target/release/bundle/appimage/*.AppImage)
-          jq -n \
-            --arg version "${GITHUB_REF_NAME#v}" \
-            --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            --arg sig "$(cat "$image.sig")" \
-            --arg url "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/$(basename "$image")" \
-            '{version: $version, pub_date: $date,
-              platforms: {"linux-x86_64": {signature: $sig, url: $url}}}' \
-            > latest.json
-          cat latest.json
-
       # Tag push: attach the repaired bundles to a draft release for the tag.
       # Both matrix jobs race to create it; the loser just uploads.
       - name: Attach to draft release
@@ -165,7 +174,9 @@ jobs:
                        target/release/bundle/rpm/*.rpm \
                        latest.json)
           else
-            files=$(ls target/release/bundle/dmg/*.dmg)
+            files=$(ls target/release/bundle/dmg/*.dmg \
+                       target/release/bundle/macos/*.app.tar.gz \
+                       target/release/bundle/macos/*.app.tar.gz.sig)
           fi
           gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber $files
 
@@ -182,3 +193,48 @@ jobs:
             target/release/bundle/rpm/*.rpm
             target/release/bundle/dmg/*.dmg
           if-no-files-found: warn
+
+  # What the running app's update check reads (tauri.conf.json points at this
+  # file via the release's /latest redirect). A join job rather than a step of
+  # either build: the Linux signature exists only after that job's repack
+  # re-sign, and the macOS one only after its build — this is the one place
+  # both are in view. The darwin entry appears only when the mac updater
+  # artifact is on the release AND Apple signing ran (an unsigned .app would
+  # update users into a Gatekeeper wall); until the Apple secrets land, the
+  # manifest stays Linux-only exactly as before.
+  updater-manifest:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assemble and upload latest.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_SIGNED: ${{ secrets.APPLE_CERTIFICATE != '' }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          mkdir assets && cd assets
+          gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
+            -p "*.AppImage" -p "*.AppImage.sig" -p "*.app.tar.gz" -p "*.app.tar.gz.sig" || true
+
+          image=$(ls *.AppImage)
+          jq -n \
+            --arg version "${tag#v}" \
+            --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg sig "$(cat "$image.sig")" \
+            --arg url "https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/$image" \
+            '{version: $version, pub_date: $date,
+              platforms: {"linux-x86_64": {signature: $sig, url: $url}}}' \
+            > latest.json
+
+          mac=$(ls *.app.tar.gz 2>/dev/null | head -1 || true)
+          if [ -n "$mac" ] && [ -s "$mac.sig" ] && [ "$APPLE_SIGNED" = "true" ]; then
+            jq \
+              --arg sig "$(cat "$mac.sig")" \
+              --arg url "https://github.com/$GITHUB_REPOSITORY/releases/download/$tag/$mac" \
+              '.platforms["darwin-aarch64"] = {signature: $sig, url: $url}' \
+              latest.json > latest.json.tmp && mv latest.json.tmp latest.json
+          fi
+
+          cat latest.json
+          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber latest.json
