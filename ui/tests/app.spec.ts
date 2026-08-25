@@ -4,7 +4,7 @@
 // stubbed IPC layer (tests/harness/tauri.ts).
 
 import { test, expect, type Page } from '@playwright/test';
-import { SHORTCUT_LIST, SHORTCUT_TEXT } from '../src/lib/shortcuts';
+import { CHORDS, SHORTCUT_LIST, SHORTCUT_TEXT } from '../src/lib/shortcuts';
 import {
   APP_MON, APP_NOW, weekLabel,
   APP_SOLO_SERIES_ID,
@@ -3085,6 +3085,20 @@ test.describe('App: the keyboard sheet', () => {
     await expect(sheet(page)).toHaveCount(0);
   });
 
+  test('Ctrl+Comma opens General settings and Escape closes it', async ({ page }) => {
+    await openApp(page);
+    await page.keyboard.press('Control+Comma');
+
+    const settings = page.getByRole('dialog', { name: 'Settings' });
+    await expect(settings).toBeVisible();
+    await expect(settings.getByRole('tab', { name: 'General' })).toHaveAttribute(
+      'aria-selected', 'true',
+    );
+
+    await page.keyboard.press('Escape');
+    await expect(settings).toHaveCount(0);
+  });
+
   /**
    * **Every row, read from the table itself.** A sheet that hardcoded its own
    * list would pass a test that hardcoded the same list, and the two would
@@ -3109,6 +3123,12 @@ test.describe('App: the keyboard sheet', () => {
         sheet(page).locator('.what', { hasText: literal(SHORTCUT_TEXT[s.id]) }),
         `${s.id} is listed under a key but not described`,
       ).toHaveCount(1);
+    }
+    for (const c of CHORDS) {
+      await expect(
+        sheet(page).locator('dt', { hasText: literal(c.label) }),
+      ).toHaveCount(1);
+      await expect(sheet(page).locator('.what', { hasText: literal(c.text) })).toHaveCount(1);
     }
   });
 

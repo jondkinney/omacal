@@ -255,6 +255,10 @@
    *  landing creates on a calendar the user has stopped choosing. */
   let defaultCalendarId = $state<number | null>(null);
 
+  /** Bound into Header so the application-wide preferences chord opens the
+   *  same SettingsModal as the menu item. */
+  let settingsOpen = $state(false);
+
   /** Whether the keyboard-shortcut sheet is up. A session flag and not a
    *  setting: it is a thing you look at, not a thing you configure. */
   let helpOpen = $state(false);
@@ -1152,9 +1156,20 @@
   };
 
   function handleKeydown(e: KeyboardEvent) {
+    // The conventional preferences chord is application-wide, but it never
+    // stacks Settings over another modal. Claimed before `isTypingTarget` so
+    // the shortcut itself remains global; an open form/search/popover is what
+    // prevents the second dialog, not which child happened to hold focus.
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key === ',') {
+      e.preventDefault();
+      if (!document.querySelector('[role="dialog"][aria-modal="true"]')) {
+        settingsOpen = true;
+      }
+      return;
+    }
     if (isTypingTarget(e)) return;
-    // The one modifier chord omacal claims: Ctrl+V (⌘V), paste the copied
-    // event. Ahead of the modifier bail-out below, and narrower than it
+    // Ctrl+V (⌘V) pastes the copied event. Ahead of the modifier bail-out
+    // below, and narrower than it
     // looks — an empty buffer passes the chord through untouched, so V means
     // nothing new until a copy has meant something first. Copy's half lives
     // in `EventPopover`, the only place that knows a popover is open in
@@ -1215,6 +1230,7 @@
   }}
 >
   <Header
+    bind:settingsOpen
     {status} {anchorMs} {weekStartMs} {busy} {error} {calendars} {view} {listMode}
     onToggleList={toggleList}
     onPrev={() => step(-1)}
