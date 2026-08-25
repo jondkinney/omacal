@@ -598,12 +598,20 @@ test.describe('EventBlock duration ladder', () => {
   test('cards leave one pixel of grid at each vertical edge', async ({ page }) => {
     await page.goto(show('EventBlock', 'ladder-60'));
     const frame = (await page.locator('#app').boundingBox())!;
-    const card = (await page.locator('.ev').boundingBox())!;
+    const event = page.locator('.ev');
+    const card = (await event.boundingBox())!;
     // The fixture's nominal geometry is 20% down a 480px frame and one hour
     // (1/24) tall: 96px and 20px. The painted card gives one pixel back at
     // each edge without changing the event's calendar-time geometry.
     expect(card.y - frame.y).toBeCloseTo(97, 1);
     expect(card.height).toBeCloseTo(18, 1);
+
+    // The exposed strip crosses an hourly rule for some meetings but not
+    // others. A one-pixel background mask above and below the card keeps those
+    // two cases the same weight instead of alternating thick and thin gaps.
+    const shadow = await event.evaluate((el) => getComputedStyle(el).boxShadow);
+    expect(shadow).toMatch(/0px -1px 0px/);
+    expect(shadow).toMatch(/0px 1px 0px/);
   });
 
   test('15 minutes shows title only', async ({ page }) => {

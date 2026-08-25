@@ -198,9 +198,13 @@
        is removed rather than worked around. */
     border: 0;
     /* States recolour --spine rather than redeclaring box-shadow, so the hover
-       lift below is never lost by a later, more specific rule. */
+       lift below is never lost by a later, more specific rule. The two outer
+       one-pixel shadows paint the exposed edge strips with the page background:
+       otherwise a whole-hour boundary also exposes `.rule`, making hourly
+       gaps look heavier than half-hour gaps. */
     --spine: var(--cal);
-    box-shadow: inset 2px 0 0 0 var(--spine);
+    box-shadow: inset 2px 0 0 0 var(--spine),
+                0 -1px 0 0 var(--bg), 0 1px 0 0 var(--bg);
     background-clip: padding-box;
     /* Composited over --bg, not `transparent`. Blocks overlap constantly, and a
        translucent fill lets the one behind read through — its title, and its
@@ -222,7 +226,9 @@
      one; this rule had been losing the same fight invisibly until a dense
      iCloud week made it obvious. */
   .ev:hover { left: 3px !important; width: calc(100% - 6px) !important; z-index: 20 !important;
-              box-shadow: inset 2px 0 0 0 var(--spine), 0 4px 14px rgba(0, 0, 0, .5); }
+              box-shadow: inset 2px 0 0 0 var(--spine),
+                          0 -1px 0 0 var(--bg), 0 1px 0 0 var(--bg),
+                          0 4px 14px rgba(0, 0, 0, .5); }
 
   /* 11.5/10.5, up from 10/9 (2026-08-14): at 10px the grid read as decoration
      on a 14" screen, and Google's own week view sits at ~12px. The density
