@@ -1975,11 +1975,12 @@ test.describe('App', () => {
     expect(args.occurrenceStartMs).not.toBe(APP_ALLDAY_SERIES_DTSTART);
   });
 
-  test('cancelling the confirmation deletes nothing', async ({ page }) => {
+  test('Space on the focused Cancel button deletes nothing', async ({ page }) => {
     await writable(page);
-    await block(page, 'Standup').click();
+    await block(page, 'Board prep').click();
     await page.getByRole('button', { name: 'Delete' }).click();
-    await confirmPanel(page).getByRole('button', { name: 'Cancel' }).click();
+    await expect(confirmPanel(page).getByRole('button', { name: 'Cancel' })).toBeFocused();
+    await page.keyboard.press('Space');
     await expect(confirmPanel(page)).toHaveCount(0);
     expect(await callsTo(page, 'delete_event_cmd')).toEqual([]);
   });

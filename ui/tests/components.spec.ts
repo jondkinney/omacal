@@ -4275,9 +4275,11 @@ test.describe('DeleteConfirm', () => {
     expect(await confirms(page)).toEqual(['following']);
   });
 
-  test('a one-off focuses Delete so Enter accepts the only option', async ({ page }) => {
+  test('a one-off focuses Cancel while Enter accepts the action', async ({ page }) => {
     await open(page, 'one-off');
-    await expect(page.getByRole('button', { name: 'Delete' })).toBeFocused();
+    await expect(
+      page.getByRole('dialog', { name: 'Delete event' }).getByRole('button', { name: 'Cancel' }),
+    ).toBeFocused();
     await page.keyboard.press('Enter');
     expect(await confirms(page)).toEqual(['this']);
   });

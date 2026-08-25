@@ -37,6 +37,37 @@
   // open rather than reused, so one placement is all this needs.
   let pos = $state<{ top: number; left: number }>({ top: 0, left: 0 });
 
+  /** A confirmation with only Cancel and one action has deliberately asymmetric
+   *  keyboard behavior: focus begins on the safe choice, Space activates that
+   *  focused button normally, and Enter accepts the action. Panels with scope
+   *  or notification choices keep their existing first-choice behavior. */
+  function cancelActionPair(root: HTMLElement | undefined) {
+    if (!root) return undefined;
+
+    const hasBodyChoices = [...root.querySelectorAll<HTMLElement>('[data-choice]:not(:disabled)')]
+      .some((choice) => !choice.closest('[data-confirm-actions]'));
+    if (hasBodyChoices) return undefined;
+
+    const buttons = [...root.querySelectorAll<HTMLButtonElement>(
+      '[data-confirm-actions] button:not(:disabled)',
+    )];
+    if (buttons.length !== 2) return undefined;
+
+    const cancel = buttons.find((button) => button.hasAttribute('data-cancel'));
+    const action = buttons.find((button) => button.hasAttribute('data-default-choice-action'));
+    return cancel && action ? { cancel, action } : undefined;
+  }
+
+  function handlePanelKey(event: KeyboardEvent) {
+    const pair = cancelActionPair(panelEl);
+    if (pair && event.key === 'Enter') {
+      event.preventDefault();
+      pair.action.click();
+      return;
+    }
+    if (panelEl) handleChoiceKey(panelEl, event);
+  }
+
   onMount(() => {
     if (panelEl) {
       const viewport = { width: window.innerWidth, height: window.innerHeight };
@@ -46,10 +77,11 @@
         viewport,
       );
     }
-    // These panels are questions, so focus begins on their first/default
-    // answer. That makes Enter accept it immediately while Tab remains the
-    // native route through Cancel and the other actions.
-    focusInitialChoice(panelEl);
+    // A simple Cancel/Action question begins on its safe choice. More involved
+    // questions begin on their first/default scope or notification choice.
+    const pair = cancelActionPair(panelEl);
+    if (pair) pair.cancel.focus();
+    else focusInitialChoice(panelEl);
   });
 
   // Escape closes this panel. `escapeCloses` carries the whole reason it is a
@@ -70,11 +102,11 @@
   tabindex="-1"
   aria-label={label}
   style="top:{pos.top}px; left:{pos.left}px"
-  onkeydown={(event) => panelEl && handleChoiceKey(panelEl, event)}
+  onkeydown={handlePanelKey}
 >
   <h2>{title}</h2>
   {@render body()}
-  <div class="actions" data-choice-group>{@render actions()}</div>
+  <div class="actions" data-choice-group data-confirm-actions>{@render actions()}</div>
 </div>
 
 <style>

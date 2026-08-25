@@ -116,7 +116,6 @@
       class="primary"
       data-choice
       data-default-choice-action
-      data-initial-choice={detail.is_recurring ? undefined : ''}
       onclick={() => onconfirm(scope)}
     >Delete</button>
   {/snippet}
