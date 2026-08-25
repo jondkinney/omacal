@@ -842,6 +842,7 @@
   lanes={week.all_day}
   events={week.all_day_events}
   overflow={week.overflow}
+  columns={week.days.length}
   onopen={openPopover}
 />
 

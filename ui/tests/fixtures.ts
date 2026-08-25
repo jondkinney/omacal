@@ -104,8 +104,8 @@ const day = (offset: number, events: UiEvent[], p: Placed[]) => ({
  *  is what every component fixture in this file wants. The App-level write
  *  fixtures need one at `APP_MON` instead, so that a click on empty grid space
  *  lands on the same date the app actually opened on. */
-const emptyWeekAt = (weekStartMs: number): WeekPayload => ({
-  days: Array.from({ length: 7 }, (_, i) => ({
+const emptyWeekAt = (weekStartMs: number, dayCount = 7): WeekPayload => ({
+  days: Array.from({ length: dayCount }, (_, i) => ({
     start_ms: weekStartMs + i * 24 * H,
     end_ms: weekStartMs + (i + 1) * 24 * H,
     events: [] as UiEvent[],
@@ -123,21 +123,22 @@ const emptyWeek = (): WeekPayload => emptyWeekAt(MON);
  * projection of, so `fixtures.spec.ts`'s lane sweep can hold it to the same
  * invariants as every other payload.
  *
- * Exact rather than a contortion: `WeekGrid` hands `AllDayBand` these three
- * fields and nothing else, unchanged —
+ * Exact rather than a contortion: `WeekGrid` hands `AllDayBand` these fields
+ * unchanged —
  *
- *     lanes={week.all_day} events={week.all_day_events} overflow={week.overflow}
+ *     lanes={week.all_day} events={week.all_day_events}
+ *     overflow={week.overflow} columns={week.days.length}
  *
- * (`WeekGrid.svelte:344-349`) — so a props fixture *is* three fields of a week
+ * (`WeekGrid.svelte:344-349`) — so a props fixture *is* these fields of a week
  * payload with the rest of the week dropped. Putting them back on an otherwise
- * empty seven-day week restores exactly what was dropped and invents nothing:
- * the day columns the sweep needs for its column-bound checks are the same
- * seven every other fixture here has.
+ * empty range restores exactly what was dropped and invents nothing. The
+ * optional column count preserves a rolling three-, five-, or seven-day
+ * range; older fixtures omit it and therefore remain seven-day weeks.
  */
 export const bandAsWeek = (
-  p: { lanes: Lane[]; events: UiEvent[]; overflow: number[] },
+  p: { lanes: Lane[]; events: UiEvent[]; overflow: number[]; columns?: number },
 ): WeekPayload => ({
-  ...emptyWeek(),
+  ...emptyWeekAt(MON, p.columns ?? 7),
   all_day: p.lanes,
   all_day_events: p.events,
   overflow: p.overflow,
@@ -286,8 +287,8 @@ export const weekLabel = (weekStartMs: number) =>
  * flight for different weeks, the grid has to say out loud which one painted
  * it, or a stale repaint is indistinguishable from a correct one.
  */
-export const labelledWeek = (weekStartMs: number): WeekPayload => ({
-  days: Array.from({ length: 7 }, (_, i) => ({
+export const labelledWeek = (weekStartMs: number, dayCount = 7): WeekPayload => ({
+  days: Array.from({ length: dayCount }, (_, i) => ({
     start_ms: weekStartMs + i * 24 * H,
     end_ms: weekStartMs + (i + 1) * 24 * H,
     events: i === 0
@@ -1780,6 +1781,16 @@ export const FIXTURES: Record<string, Record<string, any>> = {
       overflow: [],
       onopen: noop,
     },
+    'three-days': (() => {
+      const w = populatedWeek();
+      return {
+        lanes: w.all_day,
+        events: w.all_day_events,
+        overflow: [],
+        columns: 3,
+        onopen: noop,
+      };
+    })(),
     // A band that really overflows, described the way `pack_lanes` would
     // actually have produced it.
     //

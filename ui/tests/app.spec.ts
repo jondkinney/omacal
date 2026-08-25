@@ -3252,4 +3252,61 @@ test.describe('App: the first day of the week', () => {
     const sundayMs = await firstColumn.getAttribute('data-start-ms');
     expect(Number(sundayMs)).toBe(Number(mondayMs) - 24 * 3_600_000);
   });
+
+  test('Today starts a rolling 3, 5, or 7-day Week view on the current day', async ({ page }) => {
+    const day = 24 * 3_600_000;
+    const wednesday = APP_NOW + 2 * day;
+    await page.clock.setFixedTime(wednesday);
+    await openApp(page);
+
+    await page.getByRole('button', { name: 'Menu' }).click();
+    await page.getByRole('button', { name: 'Settings…' }).click();
+    const modal = page.getByRole('dialog', { name: 'Settings' });
+    await modal.locator('#week-start').selectOption({ label: 'Today' });
+
+    const count = modal.locator('#week-view-days');
+    await expect(count).toBeVisible();
+    await expect(count.locator('option')).toHaveText(['3 days', '5 days', '7 days']);
+    await count.selectOption('3');
+    await page.keyboard.press('Escape');
+
+    const columns = page.locator('[data-testid="week-body"] .col');
+    await expect(columns).toHaveCount(3);
+    await expect(columns.first()).toHaveAttribute('data-start-ms', String(wednesday - 12 * 3_600_000));
+    await expect(page.getByRole('button', { name: 'Next 3 days' })).toBeVisible();
+
+    await page.getByRole('button', { name: 'Next 3 days' }).click();
+    await expect(columns.first()).toHaveAttribute(
+      'data-start-ms', String(wednesday - 12 * 3_600_000 + 3 * day),
+    );
+
+    // All three supported sizes change the payload, not only the select.
+    await page.getByRole('button', { name: 'Menu' }).click();
+    await page.getByRole('button', { name: 'Settings…' }).click();
+    const reopened = page.getByRole('dialog', { name: 'Settings' });
+    await reopened.locator('#week-view-days').selectOption('5');
+    await expect(columns).toHaveCount(5);
+    await reopened.locator('#week-view-days').selectOption('7');
+    await expect(columns).toHaveCount(7);
+  });
+
+  test('a rolling range follows today across midnight but preserves Month alignment', async ({ page }) => {
+    const day = 24 * 3_600_000;
+    const wednesdayNoon = APP_NOW + 2 * day;
+    await page.clock.setFixedTime(wednesdayNoon);
+    await openApp(page);
+
+    await chooseStart(page, 'Sunday');
+    await chooseStart(page, 'Today');
+    const first = page.locator('[data-testid="week-body"] .col').first();
+    const wednesday = wednesdayNoon - 12 * 3_600_000;
+    await expect(first).toHaveAttribute('data-start-ms', String(wednesday));
+
+    await page.clock.setSystemTime(wednesdayNoon + day);
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await expect(first).toHaveAttribute('data-start-ms', String(wednesday + day));
+
+    await page.keyboard.press('3');
+    await expect(monthHeader(page).first()).toHaveText('SUN');
+  });
 });

@@ -12,7 +12,8 @@
   import type { ChangeNotice, DeclineNotice, PendingInvite } from './invites';
 
   let {
-    status, anchorMs, weekStartMs, busy, error, calendars, view, onpick,
+    status, anchorMs, weekStartMs, weekStartsToday = false, weekDays = 7,
+    busy, error, calendars, view, onpick,
     onsettingschange,
     listMode, onToggleList,
     onPrev, onNext, onToday, onSearch, onSignIn, onSync, oncalendarchange,
@@ -24,8 +25,14 @@
     /** The date every view is rendered against — `App`'s own anchor. Day and
      *  Month are built from this one directly. */
     anchorMs: number;
-    /** The Monday of `anchorMs`'s week, which is what Week view renders. */
+    /** The first day Week view renders: a configured weekday boundary or the
+     *  rolling range's anchored/current day. */
     weekStartMs: number;
+    /** Whether Week view is the rolling range rather than a weekday-aligned
+     *  calendar week. Used to name navigation by what it actually moves. */
+    weekStartsToday?: boolean;
+    /** Total columns in that rolling range. Ignored for fixed weeks. */
+    weekDays?: 3 | 5 | 7;
     busy: boolean;
     error: string | null;
     calendars: Calendar[];
@@ -98,7 +105,9 @@
   const NAV_UNIT: Record<View, string> = {
     day: 'day', week: 'week', month: 'month', year: 'year', bigyear: 'year',
   };
-  const unit = $derived(NAV_UNIT[view]);
+  const unit = $derived(
+    view === 'week' && weekStartsToday ? `${weekDays} days` : NAV_UNIT[view]
+  );
   const connected = $derived((status?.accounts.length ?? 0) > 0);
   /** Accounts whose Google sign-in is dead — the backend has stopped syncing
    *  them and re-consent is the only fix, so this is the one failure with a

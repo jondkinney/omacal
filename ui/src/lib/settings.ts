@@ -3,6 +3,9 @@ import { invoke } from '@tauri-apps/api/core';
 import type { TimeFormat } from './timefmt';
 import type { WeekStartDay } from './weekstart';
 
+/** Total columns in the rolling Week view, including today. */
+export type WeekViewDays = 3 | 5 | 7;
+
 /**
  * The preferences the settings modal edits.
  *
@@ -41,6 +44,11 @@ export type AppSettings = {
   /** The day a week begins on. Read by the grids through the
    *  `weekstartstore.svelte.ts` rune, for the same reason `timeFormat` is. */
   weekStart: WeekStartDay;
+  /** Whether Week view begins on the current day instead of the fixed
+   *  `weekStart`. Month, Year and Big Year continue using the fixed day. */
+  weekStartsToday: boolean;
+  /** Number of columns in that rolling Week view, including today. */
+  weekViewDays: WeekViewDays;
   /** Whether the system tray icon is shown. On by default — the tray is where
    *  Quit lives. Turning it off is for setups where something else carries
    *  those actions, like Omarchy 4's bar widget. */
@@ -98,6 +106,15 @@ export const setTimeFormat = (format: TimeFormat) =>
  *  exactly the three variants `settings::WeekStart` has. */
 export const setWeekStart = (start: WeekStartDay) =>
   invoke<AppSettings>('set_week_start', { start });
+
+/** Enters or leaves the rolling Week view without changing the concrete day
+ *  used to align Month, Year and Big Year. */
+export const setWeekStartsToday = (on: boolean) =>
+  invoke<AppSettings>('set_week_starts_today', { on });
+
+/** Stores the rolling Week view's total column count. */
+export const setWeekViewDays = (days: WeekViewDays) =>
+  invoke<AppSettings>('set_week_view_days', { days });
 
 /** Stores the filmstrip toggle. Nothing is refused: unlike the sync interval
  *  there is no value of a boolean the app has to protect anything from. */

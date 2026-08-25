@@ -287,7 +287,7 @@ const weeks: [string, WeekPayload][] = [
   //
   // `corners` is not here, and that is a ruling rather than an oversight — see
   // `BAND_NOT_SWEPT` below.
-  ...(['populated', 'overflow', 'empty'] as const).map(
+  ...(['populated', 'three-days', 'overflow', 'empty'] as const).map(
     (n) => [`band:${n}`, bandAsWeek(FIXTURES.AllDayBand[n])] as [string, WeekPayload],
   ),
 ];
@@ -375,11 +375,11 @@ test.describe('the hand-written week fixtures describe payloads assemble_days co
     expect(weeks.length).toBeGreaterThanOrEqual(15);
     let checked = 0;
     for (const [name, w] of weeks) {
-      // `assemble_days(events, start_ms, n, tz)` has exactly two callers in the
-      // app: `get_day` at `n = 1` (lib.rs:104) and `assemble_week` at `n = 7`
-      // (commands.rs:365). No other column count is reachable, so a fixture
-      // with three days — or none — is one nothing can serve.
-      expect([1, 7], `${name} has ${w.days.length} day columns`).toContain(w.days.length);
+      // `assemble_days(events, start_ms, n, tz)` serves Day at `n = 1`, fixed
+      // Week at `n = 7`, and rolling Week ranges at `n = 3`, `5`, or `7`.
+      // No other column count is reachable, so a fixture with two days — or
+      // none — is one nothing can serve.
+      expect([1, 3, 5, 7], `${name} has ${w.days.length} day columns`).toContain(w.days.length);
 
       for (const [d, col] of w.days.entries()) {
         // `DayColumn { start_ms: bounds[d], end_ms: bounds[d + 1], .. }`
@@ -403,7 +403,7 @@ test.describe('the hand-written week fixtures describe payloads assemble_days co
       }
     }
     // Every fixture contributed all of its columns. A `days: []` is already
-    // caught by the `[1, 7]` check above; this catches a loop that skipped one.
+    // caught by the allowed-count check above; this catches a loop that skipped one.
     expect(checked).toBe(weeks.reduce((n, [, w]) => n + w.days.length, 0));
   });
 
@@ -705,7 +705,7 @@ test.describe('the hand-written week fixtures describe payloads assemble_days co
     }
     // Eleven today: two in `populated`, two in `popover-all-day`, one in
     // `filmstrip`, one in `app:writable`, one in `app:cross-zone`, and two each
-    // in `band:populated` and `band:overflow`.
+    // in `band:populated`, `band:three-days`, and `band:overflow`.
     expect(checked).toBeGreaterThan(0);
   });
 });

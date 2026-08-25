@@ -14,7 +14,7 @@
     setDisplayTimezone, setFallbackReminders, setNotificationsEnabled,
     setSecondTimezone, setSyncInterval, setTimeFormat, setTrayIcon,
     setWeatherEnabled, setWeekStart,
-    type AppSettings,
+    setWeekStartsToday, setWeekViewDays, type AppSettings, type WeekViewDays,
   } from './settings';
   import { formatClock, type TimeFormat } from './timefmt';
   import type { WeekStartDay } from './weekstart';
@@ -91,9 +91,13 @@
    * repaints the calendar behind the modal — `App` owns the rune, and this
    * modal deliberately does not reach past its own props to set it.
    */
-  /** The three days, and what to call them. Google Calendar's own three —
-   *  see `settings::WeekStart` for why not seven. */
-  const WEEK_STARTS: { id: WeekStartDay; label: string }[] = [
+  type WeekStartChoice = WeekStartDay | 'today';
+
+  /** The rolling option plus Google Calendar's three concrete starts. Today
+   *  applies only to Week view; the concrete value remains the row alignment
+   *  for Month, Year and Big Year. */
+  const WEEK_STARTS: { id: WeekStartChoice; label: string }[] = [
+    { id: 'today', label: 'Today' },
     { id: 'monday', label: 'Monday' },
     { id: 'sunday', label: 'Sunday' },
     { id: 'saturday', label: 'Saturday' },
@@ -180,9 +184,20 @@
     }
   }
 
-  async function saveWeekStart(start: WeekStartDay) {
+  async function saveWeekStart(start: WeekStartChoice) {
     try {
-      settings = await setWeekStart(start);
+      settings = start === 'today'
+        ? await setWeekStartsToday(true)
+        : await setWeekStart(start);
+      onsettingschange?.(settings);
+    } catch (e) {
+      note = { text: String(e), kind: 'error' };
+    }
+  }
+
+  async function saveWeekViewDays(days: WeekViewDays) {
+    try {
+      settings = await setWeekViewDays(days);
       onsettingschange?.(settings);
     } catch (e) {
       note = { text: String(e), kind: 'error' };
@@ -561,14 +576,14 @@
       </p>
 
       <div class="row">
-        <label class="lab" for="week-start">Weeks start on</label>
+        <label class="lab" for="week-start">Week view starts on</label>
         <div class="inline">
           <select
             id="week-start"
             disabled={!settings}
-            value={settings?.weekStart ?? 'monday'}
+            value={settings?.weekStartsToday ? 'today' : (settings?.weekStart ?? 'monday')}
             onchange={(e) =>
-              saveWeekStart((e.currentTarget as HTMLSelectElement).value as WeekStartDay)}
+              saveWeekStart((e.currentTarget as HTMLSelectElement).value as WeekStartChoice)}
           >
             {#each WEEK_STARTS as w (w.id)}
               <option value={w.id}>{w.label}</option>
@@ -576,9 +591,31 @@
           </select>
         </div>
       </div>
-      <p class="hint">
-        Week, Month, Year and Big Year all start their rows on this day.
-      </p>
+      {#if settings?.weekStartsToday}
+        <div class="row">
+          <label class="lab" for="week-view-days">Days shown</label>
+          <div class="inline">
+            <select
+              id="week-view-days"
+              value={settings.weekViewDays}
+              onchange={(e) =>
+                saveWeekViewDays(Number((e.currentTarget as HTMLSelectElement).value) as WeekViewDays)}
+            >
+              {#each [3, 5, 7] as const as days (days)}
+                <option value={days}>{days} days</option>
+              {/each}
+            </select>
+          </div>
+        </div>
+        <p class="hint">
+          Includes today as the first day. Month, Year and Big Year keep their
+          rows aligned to {WEEK_STARTS.find((w) => w.id === settings?.weekStart)?.label ?? 'Monday'}.
+        </p>
+      {:else}
+        <p class="hint">
+          Week, Month, Year and Big Year all start their rows on this day.
+        </p>
+      {/if}
 
       <div class="row">
         <label class="lab" for="display-tz">Time zone</label>
