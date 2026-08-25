@@ -3302,7 +3302,10 @@ test.describe('App: the clock format', () => {
  */
 test.describe('App: keyboard event navigation', () => {
   test.beforeEach(async ({ page }) => {
-    await page.clock.setFixedTime(APP_NOW);
+    // Before the first event, so the ordinary traversal specs still start at
+    // the top. The late-today spec below advances this same clock to exercise
+    // the time-aware entrance separately.
+    await page.clock.setFixedTime(APP_MON + 8 * 3_600_000);
     await page.goto(app('keyboard-navigation'));
     await expect(page.locator('[data-kbd-selected-day]')).toBeVisible();
   });
@@ -3337,6 +3340,24 @@ test.describe('App: keyboard event navigation', () => {
     await expect(selectedTitle(page)).toContainText('Review notes');
     await page.keyboard.press('k');
     await expect(selectedTitle(page)).toContainText('Plan the launch');
+  });
+
+  test('j late today begins with tomorrow instead of replaying past events', async ({ page }) => {
+    await page.clock.setFixedTime(APP_MON + 22 * 3_600_000);
+
+    await page.keyboard.press('j');
+    await expect(selectedTitle(page)).toContainText('Tuesday brief');
+    await expect(page.locator('[data-kbd-selected-day]'))
+      .toHaveAttribute('data-start-ms', String(APP_MON + 24 * 3_600_000));
+  });
+
+  test('j on a future day starts with that day’s first event', async ({ page }) => {
+    for (let i = 0; i < 3; i++) await page.keyboard.press('w');
+
+    await page.keyboard.press('j');
+    await expect(selectedTitle(page)).toContainText('Off-site');
+    await expect(page.locator('[data-kbd-selected-day]'))
+      .toHaveAttribute('data-start-ms', String(APP_MON + 3 * 24 * 3_600_000));
   });
 
   test('k from a selected day begins at its last event, then crosses backward', async ({ page }) => {

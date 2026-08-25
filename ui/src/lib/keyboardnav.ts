@@ -18,6 +18,11 @@ export type CursorMove = {
   overflow: -1 | 1 | null;
 };
 
+export type NavigationClock = {
+  nowMs: number;
+  todayStartMs: number;
+};
+
 export function dayCursor(dayStartMs: number): KeyboardCursor {
   return { dayStartMs, eventId: null, eventStartMs: null };
 }
@@ -49,26 +54,60 @@ export function moveDay(days: ListDay[], cursor: KeyboardCursor, dir: -1 | 1): C
 }
 
 /**
- * Move through events in reading order. From a selected day, `j` takes its
- * first event and `k` its last. Crossing an edge skips empty days and lands on
- * the first/last event in the next non-empty day.
+ * Move through events in reading order. From a selected day other than today,
+ * `j` takes its first event and `k` its last. Today is time-aware when a
+ * clock is supplied: `j` starts with the first event that has not ended and
+ * `k` with the last event that has begun. If there is no such event today,
+ * traversal continues into the adjacent day instead of replaying elapsed or
+ * not-yet-started events. Once an event is selected, movement is strictly
+ * adjacent and the clock no longer participates.
  */
-export function moveEvent(days: ListDay[], cursor: KeyboardCursor, dir: -1 | 1): CursorMove {
+export function moveEvent(
+  days: ListDay[],
+  cursor: KeyboardCursor,
+  dir: -1 | 1,
+  clock: NavigationClock | null = null,
+): CursorMove {
   const dayIndex = days.findIndex((d) => d.startMs === cursor.dayStartMs);
   if (dayIndex === -1) return { cursor, overflow: dir };
 
   const day = days[dayIndex];
-  const eventIndex = cursor.eventId === null || cursor.eventStartMs === null
+  const dayOnly = cursor.eventId === null || cursor.eventStartMs === null;
+  const eventIndex = dayOnly
     ? -1
     : day.events.findIndex((event) => cursorNamesEvent(cursor, day.startMs, event));
 
-  if (eventIndex === -1 && day.events.length > 0) {
+  if (dayOnly && day.events.length > 0) {
+    let event: UiEvent | undefined;
+    // The caller supplies the day boundary as well as the instant. Deriving it
+    // here would use whichever timezone this pure function happened to run
+    // in, which need not be the calendar/browser zone that named `startMs`.
+    if (clock && day.startMs === clock.todayStartMs) {
+      if (dir === 1) {
+        event = day.events.find((candidate) => candidate.end_ms > clock.nowMs);
+      } else {
+        for (let i = day.events.length - 1; i >= 0; i -= 1) {
+          if (day.events[i].start_ms <= clock.nowMs) {
+            event = day.events[i];
+            break;
+          }
+        }
+      }
+    } else {
+      event = dir === 1 ? day.events[0] : day.events[day.events.length - 1];
+    }
+    if (event) return { cursor: eventCursor(day, event), overflow: null };
+  } else if (eventIndex === -1 && day.events.length > 0) {
+    // A stale event identity is treated as its day selection. It is not the
+    // initial-today path above, so a clock tick must not skip visible rows.
     const event = dir === 1 ? day.events[0] : day.events[day.events.length - 1];
     return { cursor: eventCursor(day, event), overflow: null };
   }
 
-  const nextInDay = day.events[eventIndex + dir];
-  if (nextInDay) return { cursor: eventCursor(day, nextInDay), overflow: null };
+  if (!dayOnly) {
+    const nextInDay = day.events[eventIndex + dir];
+    if (nextInDay) return { cursor: eventCursor(day, nextInDay), overflow: null };
+  }
 
   for (let i = dayIndex + dir; i >= 0 && i < days.length; i += dir) {
     if (days[i].events.length === 0) continue;

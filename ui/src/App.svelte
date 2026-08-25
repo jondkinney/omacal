@@ -364,7 +364,10 @@
 
   function navigateSelectedEvent(dir: -1 | 1) {
     if (!listable(view)) return;
-    const moved = moveEvent(keyboardDays, keyboardCursor, dir);
+    const now = Date.now();
+    const moved = moveEvent(
+      keyboardDays, keyboardCursor, dir, { nowMs: now, todayStartMs: dayStart(now) },
+    );
     if (moved.overflow) {
       // `moveEvent` has already scanned every remaining day in this payload,
       // including empty ones. Continue after that edge, not merely after the
@@ -406,7 +409,10 @@
       pendingKeyboardDay = null;
       pendingEventMove = null;
       if (eventDir !== null) {
-        const moved = moveEvent(days, keyboardCursor, eventDir);
+        const now = Date.now();
+        const moved = moveEvent(
+          days, keyboardCursor, eventDir, { nowMs: now, todayStartMs: dayStart(now) },
+        );
         if (!moved.overflow) selectKeyboard(moved.cursor);
       } else {
         revealKeyboardCursor();

@@ -28,6 +28,17 @@ test.describe('calendar keyboard cursor', () => {
     expect(eventAtCursor(list, nextDay.cursor)?.title).toBe('Tuesday brief');
   });
 
+  test('j from today skips events that have already ended', () => {
+    const list = days();
+    const lateMonday = APP_MON + 22 * 3_600_000;
+    const next = moveEvent(list, dayCursor(APP_MON), 1, {
+      nowMs: lateMonday, todayStartMs: APP_MON,
+    });
+
+    expect(next.cursor.dayStartMs).toBe(APP_MON + DAY);
+    expect(eventAtCursor(list, next.cursor)?.title).toBe('Tuesday brief');
+  });
+
   test('k at the top enters the last event of the previous day', () => {
     const list = days();
     const tuesdayLast = moveEvent(list, dayCursor(APP_MON + DAY), -1);
@@ -36,6 +47,17 @@ test.describe('calendar keyboard cursor', () => {
     const mondayLast = moveEvent(list, tuesdayLast.cursor, -1);
     expect(mondayLast.cursor.dayStartMs).toBe(APP_MON);
     expect(eventAtCursor(list, mondayLast.cursor)?.title).toBe('Review notes');
+  });
+
+  test('k from today skips events that have not started yet', () => {
+    const list = days();
+    const earlyTuesday = APP_MON + DAY + 8 * 3_600_000;
+    const previous = moveEvent(list, dayCursor(APP_MON + DAY), -1, {
+      nowMs: earlyTuesday, todayStartMs: APP_MON + DAY,
+    });
+
+    expect(previous.cursor.dayStartMs).toBe(APP_MON);
+    expect(eventAtCursor(list, previous.cursor)?.title).toBe('Review notes');
   });
 
   test('cross-day event movement skips an empty day and includes all-day events', () => {
