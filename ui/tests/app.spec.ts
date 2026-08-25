@@ -3298,6 +3298,103 @@ test.describe('App: the clock format', () => {
  * What is left for a spec is the other end — that the sheet prints every row,
  * and that the keys it prints are the keys that work.
  */
+test.describe('App: keyboard event navigation', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.clock.setFixedTime(APP_NOW);
+    await page.goto(app('keyboard-navigation'));
+    await expect(page.locator('[data-kbd-selected-day]')).toBeVisible();
+  });
+
+  const selectedTitle = (page: Page) =>
+    page.locator('[data-kbd-selected-event]');
+
+  test('w and b select adjacent days', async ({ page }) => {
+    await expect(page.locator('[data-kbd-selected-day]'))
+      .toHaveAttribute('data-start-ms', String(APP_MON));
+
+    await page.keyboard.press('w');
+    await expect(page.locator('[data-kbd-selected-day]'))
+      .toHaveAttribute('data-start-ms', String(APP_MON + 24 * 3_600_000));
+
+    await page.keyboard.press('b');
+    await expect(page.locator('[data-kbd-selected-day]'))
+      .toHaveAttribute('data-start-ms', String(APP_MON));
+  });
+
+  test('j and k cross day boundaries in event order', async ({ page }) => {
+    await page.keyboard.press('j');
+    await expect(selectedTitle(page)).toContainText('Plan the launch');
+    await page.keyboard.press('j');
+    await expect(selectedTitle(page)).toContainText('Review notes');
+    await page.keyboard.press('j');
+    await expect(selectedTitle(page)).toContainText('Tuesday brief');
+    await expect(page.locator('[data-kbd-selected-day]'))
+      .toHaveAttribute('data-start-ms', String(APP_MON + 24 * 3_600_000));
+
+    await page.keyboard.press('k');
+    await expect(selectedTitle(page)).toContainText('Review notes');
+    await page.keyboard.press('k');
+    await expect(selectedTitle(page)).toContainText('Plan the launch');
+  });
+
+  test('k from a selected day begins at its last event, then crosses backward', async ({ page }) => {
+    await page.keyboard.press('w');
+    await page.keyboard.press('k');
+    await expect(selectedTitle(page)).toContainText('Tuesday brief');
+    await page.keyboard.press('k');
+    await expect(selectedTitle(page)).toContainText('Review notes');
+  });
+
+  test('j continues into the first event of the next loaded period', async ({ page }) => {
+    for (let i = 0; i < 5; i++) await page.keyboard.press('j');
+    await expect(selectedTitle(page)).toContainText('Plan the launch');
+    await expect(page.locator('[data-kbd-selected-day]'))
+      .toHaveAttribute('data-start-ms', String(APP_MON + WEEK));
+  });
+
+  test('o and Enter open details, whose own keyboard interaction stays native', async ({ page }) => {
+    await page.keyboard.press('j');
+    await page.keyboard.press('o');
+
+    const dialog = page.getByRole('dialog', { name: 'Plan the launch' });
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toBeFocused();
+
+    await page.keyboard.press('Tab');
+    await expect(dialog.getByRole('button', { name: 'Copy title' })).toBeFocused();
+    await page.evaluate(() => {
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: { writeText: async (value: string) => { (window as any).__fieldCopy = value; } },
+      });
+    });
+    await page.keyboard.press('Control+c');
+    await expect.poll(() => page.evaluate(() => (window as any).__fieldCopy))
+      .toBe('Plan the launch');
+    await expect(dialog.locator('.note')).toHaveText('Copied title');
+
+    await page.keyboard.press('Tab');
+    await expect(dialog.getByRole('button', { name: 'Copy date and time' })).toBeFocused();
+    await page.keyboard.press('Tab');
+    const join = dialog.getByRole('link', { name: 'Join video call' });
+    await expect(join).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect.poll(() => page.evaluate(() =>
+      window.__harness.calls.filter((call) => call.cmd === 'open_conference').length,
+    )).toBe(1);
+
+    // `j` belongs to the dialog while its focus is inside: it must not move
+    // the calendar cursor behind the still-open details.
+    await page.keyboard.press('j');
+    await expect(selectedTitle(page)).toContainText('Plan the launch');
+
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0);
+    await page.keyboard.press('Enter');
+    await expect(page.getByRole('dialog', { name: 'Plan the launch' })).toBeVisible();
+  });
+});
+
 test.describe('App: the keyboard sheet', () => {
   test.beforeEach(async ({ page }) => {
     await page.clock.setFixedTime(APP_NOW);

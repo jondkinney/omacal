@@ -15,8 +15,9 @@
   import {
     SNAP_MS, beganDrag, colsMoved, edgeAt, spanForMove, spanForResize, spanForSweep,
   } from './drag';
+  import { cursorNamesEvent, type KeyboardCursor } from './keyboardnav';
 
-  let { week, weather = null, formPreview = null, revealNowRequest = 0, oncreate, onedit, ondelete, oncopy, onmove, onresponded }: {
+  let { week, weather = null, formPreview = null, revealNowRequest = 0, keyboardCursor = null, oncreate, onedit, ondelete, oncopy, onmove, onresponded }: {
     week: WeekPayload;
     /** The forecast by ISO date (`weather.ts`), or null for none — off, not
      *  yet fetched, or failed all look the same here: a header with no sky,
@@ -29,6 +30,7 @@
     /** Incremented by App for every explicit Today action, including when the
      *  anchor already names today and therefore no payload navigation occurs. */
     revealNowRequest?: number;
+    keyboardCursor?: KeyboardCursor | null;
     /** A click on empty space in a day column, at the half hour it landed in,
      *  or a **sweep** across it, which names an `endMs` as well.
      *  `rect` is the anchor to put the form beside — the column at the height
@@ -837,7 +839,8 @@
     {/if}
   </div>
   {#each week.days as d}
-    <div class="head" class:today={d.start_ms === todayStart}>
+    <div class="head" class:today={d.start_ms === todayStart}
+         class:keyboard={keyboardCursor?.dayStartMs === d.start_ms}>
       <span>{dayName(d.start_ms)}</span>
       <span class="daterow">
         <b>{new Date(d.start_ms).getDate()}</b>
@@ -869,6 +872,8 @@
   events={week.all_day_events}
   overflow={week.overflow}
   columns={week.days.length}
+  dayStarts={week.days.map((day) => day.start_ms)}
+  {keyboardCursor}
   onopen={openPopover}
 />
 
@@ -889,7 +894,10 @@
   {#each effectiveDays as day}
     {@const isToday = day.start_ms === todayStart}
     {@const ghost = sweepStyle(day)}
-    <div class="col" class:today={isToday} data-start-ms={day.start_ms}>
+    <div class="col" class:today={isToday}
+         class:keyboard={keyboardCursor?.dayStartMs === day.start_ms}
+         data-start-ms={day.start_ms}
+         data-kbd-selected-day={keyboardCursor?.dayStartMs === day.start_ms ? '' : undefined}>
       <!-- Empty grid space, as a real control rather than a click handler on
            the column div: the role, the pointer target and the accessible name
            come with the element. First in the column so every block, rule and
@@ -954,6 +962,9 @@
           ongrab={(ev, e) => startDrag(ev, day, e)}
           preview={previewFor(day.events[p.idx])}
           liveSpan={liveSpanFor(day.events[p.idx])}
+          keyboardSelected={keyboardCursor
+            ? cursorNamesEvent(keyboardCursor, day.start_ms, day.events[p.idx])
+            : false}
         />
       {/each}
 
@@ -1045,6 +1056,7 @@
      golden holds it to that). The forecast hangs off the number's right
      via the absolute `.wx` below. */
   .daterow { display: block; position: relative; }
+  .head.keyboard:not(.today) b { color: var(--accent); font-weight: 650; }
 
   /* No column borders: the grid reads through alignment, not rules (spec §7.1). */
   /* 70px per hour (24 x 70 = 1680), up from 50 (2026-08-14): at 50 a
@@ -1056,6 +1068,8 @@
      column, so nothing else knows the number. */
   .col { position: relative; min-height: 1680px; }
   .col.today { background: var(--today-tint); border-radius: 6px; }
+  .col.keyboard { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+                  border-radius: 6px; }
 
   .gutter { position: relative; }
   /* 11.5px at .85, up from 10.5 at .7 (2026-08-26, by request twice over):

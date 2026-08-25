@@ -21,7 +21,7 @@ import {
   APP_ONE_OFF_ID, APP_ONE_OFF_START, APP_GUESTS_ID, APP_SOLO_SERIES_ID,
   POPOVER_DETAILS, busyDayMonth,
   appWritableWeek, APP_WRITE_CALENDARS, CREATED_DETAIL, crossZoneWeek,
-  XZONE_WEEK_START,
+  XZONE_WEEK_START, keyboardWeek,
 } from '../fixtures';
 
 /** What the real `get_palette` returns; the same fallback_dark values. */
@@ -395,6 +395,9 @@ function getWeek(scenario: string, weekStartMs: number, dayCount = 7): Promise<W
   // below: its specs pin literal instants, and none of them needs the payload
   // to match the week it requested.
   if (scenario === 'writable') return Promise.resolve(appWritableWeek());
+  if (scenario === 'keyboard-navigation') {
+    return Promise.resolve(keyboardWeek(weekStartMs));
+  }
   // `cross-zone` is the one scenario where the week actually asked for is part
   // of the claim: its payload's columns are `Europe/Sofia` midnights, and it
   // only describes what is on screen if the app requested that same Monday.

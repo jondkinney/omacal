@@ -1,6 +1,7 @@
 <!-- ui/src/App.svelte -->
 <script lang="ts">
   import { listen } from '@tauri-apps/api/event';
+  import { tick } from 'svelte';
   import { applyPalette, setPalette, type Palette } from './lib/theme';
   import {
     getWeek, getDay, getRange, getMonth, getYear, getBigYear, weekStart,
@@ -19,7 +20,13 @@
     valueFromDetail, type EventFormResult, type EventFormValue, type Scope,
   } from './lib/eventform';
   import type { Rect } from './lib/position';
-  import { daysFromMonth, daysFromWeek, listable } from './lib/filmstrip';
+  import {
+    allDaysFromMonth, allDaysFromWeek, daysFromMonth, daysFromWeek, listable,
+    MONTH_GRID_TIMED_LIMIT, type ListDay,
+  } from './lib/filmstrip';
+  import {
+    dayCursor, eventAtCursor, moveDay, moveEvent, type KeyboardCursor,
+  } from './lib/keyboardnav';
   import { getSettings, setListMode, type AppSettings, type WeekViewDays } from './lib/settings';
   import { setClockFormat } from './lib/clock.svelte';
   import { setSecondZone } from './lib/secondzone.svelte';
@@ -113,6 +120,18 @@
   let month = $state<MonthPayload | null>(null);
   let year = $state<YearPayload | null>(null);
   let bigYear = $state<BigYearPayload | null>(null);
+
+  /** The day/event named by the vim-style navigation keys. It lives in App
+   * rather than a grid so switching between grid and list preserves the same
+   * selection, and `o`/Enter always reaches the shared detail popover. */
+  let keyboardCursor = $state<KeyboardCursor>(dayCursor(dayStart(Date.now())));
+  /** A `j`/`k` that crossed the loaded payload. The adjacent period is fetched
+   * by moving `anchorMs`; once it lands, this finishes the move at its first or
+   * last event. One hop is deliberate: an empty Day view remains selected and
+   * another press advances again instead of silently paging without bound. */
+  let pendingEventMove = $state<-1 | 1 | null>(null);
+  let pendingKeyboardDay = $state<number | null>(null);
+
   let status = $state<AppStatus | null>(null);
   let calendars = $state<Calendar[]>([]);
   let busy = $state(false);
@@ -264,6 +283,141 @@
    * the user asked for something and it will not survive the restart.
    */
   let listMode = $state(false);
+
+  const keyboardDays = $derived.by<ListDay[]>(() => {
+    if (view === 'month' && month) {
+      const days = allDaysFromMonth(month);
+      if (listMode) return days;
+      // Month folds timed rows after three. Keyboard navigation follows what
+      // is actually visible rather than selecting a hidden row behind +N.
+      return days.map((day) => ({
+        ...day,
+        events: [
+          ...day.events.filter((event) => event.is_all_day),
+          ...day.events.filter((event) => !event.is_all_day).slice(0, MONTH_GRID_TIMED_LIMIT),
+        ],
+      }));
+    }
+    if ((view === 'day' || view === 'week') && week) {
+      return allDaysFromWeek(week);
+    }
+    return [];
+  });
+
+  const keyboardStatus = $derived.by(() => {
+    if (!listable(view) || keyboardDays.length === 0) return '';
+    const day = new Date(keyboardCursor.dayStartMs).toLocaleDateString(undefined, {
+      weekday: 'long', month: 'long', day: 'numeric',
+    });
+    const event = eventAtCursor(keyboardDays, keyboardCursor);
+    return event ? `Selected ${event.title} on ${day}` : `Selected ${day}`;
+  });
+
+  function shiftKeyboardDay(startMs: number, dir: -1 | 1): number {
+    const d = new Date(startMs);
+    d.setDate(d.getDate() + dir);
+    d.setHours(0, 0, 0, 0);
+    return d.getTime();
+  }
+
+  /** Keep the visual cursor in the nearest scrollport without moving DOM
+   * focus away from wherever the user is typing or, after opening, away from
+   * the detail dialog. Week columns already fit horizontally, so scrolling a
+   * 1680px-tall column as a day marker is explicitly avoided. */
+  function revealKeyboardCursor() {
+    void tick().then(() => {
+      const event = document.querySelector<HTMLElement>('[data-kbd-selected-event]');
+      if (event) {
+        event.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+        return;
+      }
+      const day = document.querySelector<HTMLElement>('[data-kbd-selected-day]');
+      if (day && !day.classList.contains('col')) {
+        day.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      }
+    });
+  }
+
+  function selectKeyboard(cursor: KeyboardCursor) {
+    keyboardCursor = cursor;
+    revealKeyboardCursor();
+  }
+
+  function loadKeyboardDay(startMs: number, eventDir: -1 | 1 | null) {
+    pendingKeyboardDay = startMs;
+    pendingEventMove = eventDir;
+    selectKeyboard(dayCursor(startMs));
+    anchorMs = startMs;
+  }
+
+  function navigateSelectedDay(dir: -1 | 1) {
+    if (!listable(view)) return;
+    const moved = moveDay(keyboardDays, keyboardCursor, dir);
+    if (moved.overflow) {
+      loadKeyboardDay(shiftKeyboardDay(keyboardCursor.dayStartMs, dir), null);
+      return;
+    }
+    pendingKeyboardDay = null;
+    pendingEventMove = null;
+    selectKeyboard(moved.cursor);
+  }
+
+  function navigateSelectedEvent(dir: -1 | 1) {
+    if (!listable(view)) return;
+    const moved = moveEvent(keyboardDays, keyboardCursor, dir);
+    if (moved.overflow) {
+      // `moveEvent` has already scanned every remaining day in this payload,
+      // including empty ones. Continue after that edge, not merely after the
+      // selected event's day, or an empty tail would fetch the same week again.
+      const edge = keyboardDays[dir === 1 ? keyboardDays.length - 1 : 0];
+      loadKeyboardDay(shiftKeyboardDay(edge?.startMs ?? keyboardCursor.dayStartMs, dir), dir);
+      return;
+    }
+    pendingKeyboardDay = null;
+    pendingEventMove = null;
+    selectKeyboard(moved.cursor);
+  }
+
+  function openSelectedEvent() {
+    if (!listable(view)) return;
+    const event = eventAtCursor(keyboardDays, keyboardCursor);
+    if (!event) return;
+    const el = document.querySelector<HTMLElement>('[data-kbd-selected-event]');
+    const r = el?.getBoundingClientRect();
+    void openOccurrence(
+      event.id,
+      event.start_ms,
+      event.end_ms,
+      r ? { top: r.top, left: r.left, width: r.width, height: r.height } : keyboardAnchor(),
+    );
+  }
+
+  // A boundary key moves the anchor first, then finishes against the payload
+  // that contains the destination. Ordinary header navigation is normalized
+  // here too: once a new period arrives, selection follows its anchor rather
+  // than remaining invisibly parked in the old payload.
+  $effect(() => {
+    const days = keyboardDays;
+    if (!listable(view) || days.length === 0) return;
+
+    if (pendingKeyboardDay !== null) {
+      if (!days.some((day) => day.startMs === pendingKeyboardDay)) return;
+      const eventDir = pendingEventMove;
+      pendingKeyboardDay = null;
+      pendingEventMove = null;
+      if (eventDir !== null) {
+        const moved = moveEvent(days, keyboardCursor, eventDir);
+        if (!moved.overflow) selectKeyboard(moved.cursor);
+      } else {
+        revealKeyboardCursor();
+      }
+      return;
+    }
+
+    if (days.some((day) => day.startMs === keyboardCursor.dayStartMs)) return;
+    const target = days.find((day) => day.startMs === anchorMs) ?? days[0];
+    selectKeyboard(dayCursor(target.startMs));
+  });
 
   /**
    * How many times the user has decided this, so a slow read cannot undo a fast
@@ -549,6 +703,9 @@
 
   function goToday() {
     const today = dayStart(Date.now());
+    pendingKeyboardDay = null;
+    pendingEventMove = null;
+    selectKeyboard(dayCursor(today));
     anchorMs = today;
     revealNowRequest += 1;
   }
@@ -630,6 +787,9 @@
   // point of this task (spec §5): without it, Day view opens on today
   // instead of the day that was actually clicked.
   function handleDayPick(startMs: number) {
+    pendingKeyboardDay = null;
+    pendingEventMove = null;
+    selectKeyboard(dayCursor(startMs));
     anchorMs = startMs;
     view = 'day';
   }
@@ -1212,15 +1372,18 @@
     await refreshAfterWrite();
   }
 
-  // Keys are dropped when the user is typing (an `input`/`textarea`) or when
-  // focus is inside the event popover — RSVP buttons and a description live
-  // there, and a stray `3` while it has focus must not switch views behind
-  // it. `.pop` is `EventPopover`'s own root class.
+  // Keys are dropped when the user is typing or inside any dialog. The latter
+  // lets event details own Tab, native copy, and Enter on a focused link
+  // without a calendar shortcut firing behind them.
   function isTypingTarget(e: KeyboardEvent): boolean {
     const t = e.target as HTMLElement | null;
     if (!t) return false;
-    if (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA') return true;
-    return !!t.closest?.('.pop');
+    // A synthetic event can be dispatched on `window` itself (and the
+    // WebKit contract spec does exactly that), which is an EventTarget but
+    // not an Element and therefore has no `matches` method.
+    if (typeof t.matches === 'function'
+        && t.matches('input, textarea, select, [contenteditable="true"]')) return true;
+    return !!t.closest?.('[role="dialog"]');
   }
 
   /**
@@ -1244,6 +1407,10 @@
     bigyear: () => pick('bigyear'),
     prev: () => step(-1),
     next: () => step(1),
+    prevDay: () => navigateSelectedDay(-1),
+    nextDay: () => navigateSelectedDay(1),
+    prevEvent: () => navigateSelectedEvent(-1),
+    nextEvent: () => navigateSelectedEvent(1),
     today: goToday,
     // `/` joins the bare-key family rather than inventing a modifier chord: it
     // is the search key everywhere that has one, it collides with nothing
@@ -1252,6 +1419,7 @@
     // to claim. Its `consumes` flag is why — see below.
     search: () => (searchOpen = true),
     quickCreate: openQuickAdd,
+    openSelected: openSelectedEvent,
     create: newEventOnAnchor,
     // `F`, joining the same bare-key family as the rest (spec §1). It is a
     // no-op in Year and Big Year, where the control it duplicates is absent —
@@ -1308,18 +1476,28 @@
     // Lowercased, which is what makes `H` step like `h` — the old `switch`
     // did the same, and digits and punctuation are unaffected (`'?'` and
     // `'/'` lowercase to themselves).
-    const hit = SHORTCUT_LIST.find((s) => s.key === e.key.toLowerCase());
+    const key = e.key.toLowerCase();
+    // Enter on a focused control belongs to that control. The alias opens the
+    // calendar selection only from the calendar surface itself.
+    if (key === 'enter' && (e.target as HTMLElement | null)?.closest?.(
+      'button, a, input, textarea, select, [contenteditable="true"]',
+    )) return;
+    const hit = SHORTCUT_LIST.find((s) => s.key === key || s.aliases?.includes(key));
     if (!hit) return;
-    // Consumed where the table says so, which today is `/` alone: WebKitGTK
-    // runs the keydown's default action — inserting the character — *after*
-    // the overlay has mounted and focused its field, so an unconsumed `/`
-    // lands in the input it just opened and "sync" is searched as "/sync".
+    // Consumed where the table says so. `/` needs it because WebKitGTK runs
+    // the keydown's default insertion after search has focused its field;
+    // `o`/Enter share the flag so the open action cannot also activate the
+    // surface that happened to sit under the selection.
     if (hit.consumes) e.preventDefault();
     SHORTCUT_ACTIONS[hit.id]();
   }
 </script>
 
 <svelte:window onkeydown={handleKeydown} onmousemove={trackPointer} />
+
+{#if keyboardStatus}
+  <p class="kbd-status" aria-live="polite">{keyboardStatus}</p>
+{/if}
 
 <!-- The webview's own context menu — Reload, Back, View Source — is browser
      chrome inside what presents itself as a native app, so it is suppressed
@@ -1380,10 +1558,11 @@
   {#if view === 'month'}
     {#if month}
       {#if listMode}
-        <Filmstrip days={daysFromMonth(month)} {weather} {revealNowRequest}
+        <Filmstrip days={daysFromMonth(month)} {weather} {revealNowRequest} {keyboardCursor}
                    onopen={openGridEvent} />
       {:else}
-        <MonthGrid {month} onopen={openGridEvent} ondaypick={handleDayPick} oncreate={newEventOnDay} />
+        <MonthGrid {month} {keyboardCursor} onopen={openGridEvent}
+                   ondaypick={handleDayPick} oncreate={newEventOnDay} />
       {/if}
     {/if}
   {:else if view === 'year'}
@@ -1411,10 +1590,10 @@
     {/if}
   {:else if week}
     {#if listMode}
-      <Filmstrip days={daysFromWeek(week)} {weather} {revealNowRequest}
+      <Filmstrip days={daysFromWeek(week)} {weather} {revealNowRequest} {keyboardCursor}
                  onopen={openGridEvent} />
     {:else}
-      <WeekGrid {week} {weather} {formPreview} {revealNowRequest}
+      <WeekGrid {week} {weather} {formPreview} {revealNowRequest} {keyboardCursor}
                 oncreate={newEventAt} onedit={openEdit} ondelete={askDelete}
                 oncopy={copyOccurrence}
         onmove={moveOccurrence} onresponded={refreshAfterWrite} />
@@ -1549,4 +1728,6 @@
      drawn to and not just the header's. */
   main { padding: 0 16px 14px; box-sizing: border-box; height: 100%;
          display: flex; flex-direction: column; }
+  .kbd-status { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+                overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 </style>

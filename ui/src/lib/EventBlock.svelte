@@ -13,6 +13,7 @@
     ongrab,
     preview = null,
     liveSpan = null,
+    keyboardSelected = false,
   }: {
     event: UiEvent;
     placed: Placed;
@@ -40,6 +41,9 @@
      *  from the drag's `landed`, the very value a drop writes, so the label
      *  and the write can never disagree. */
     liveSpan?: { startMs: number; endMs: number } | null;
+    /** Named by App's vim-style cursor. This is visual selection, not DOM
+     * focus; opening it moves focus into the detail dialog. */
+    keyboardSelected?: boolean;
   } = $props();
 
   // What the card *says*: the drag's tentative span while one is in flight,
@@ -123,6 +127,8 @@
 <button
   class="ev {event.response}"
   class:dragging={preview !== null}
+  class:keyboard={keyboardSelected}
+  data-kbd-selected-event={keyboardSelected ? '' : undefined}
   style="
     top:{preview
       ? `calc(${placed.top * 100}% + ${preview.topDeltaPct}% + 1px)`
@@ -174,6 +180,8 @@
      the block is following a pointer and easing would put it behind the
      finger. */
   .ev.dragging { z-index: 50 !important; opacity: 0.85; cursor: grabbing; }
+  .ev.keyboard { outline: 2px solid var(--accent); outline-offset: 1px;
+                 z-index: 25 !important; }
   /* The grab bands, as cursors only — the hit test itself is `drag.ts`'s
      `edgeAt`, on the press's own offset. The `.grip` spans in the template
      exist purely to carry `ns-resize` over those bands: sized by the same

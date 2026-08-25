@@ -8,8 +8,9 @@
   import WeatherGlyph from './WeatherGlyph.svelte';
   import { dateKey, type DayWeather } from './weather';
   import type { ListDay } from './filmstrip';
+  import { cursorNamesEvent, type KeyboardCursor } from './keyboardnav';
 
-  let { days, weather = null, revealNowRequest = 0, onopen }: {
+  let { days, weather = null, revealNowRequest = 0, keyboardCursor = null, onopen }: {
     /** Already grouped, ordered and emptied of blank days by `filmstrip.ts`.
      *  This component draws a list; it does not decide what is in one. */
     days: ListDay[];
@@ -18,6 +19,7 @@
     weather?: Map<string, DayWeather> | null;
     /** The explicit Today request counter shared with the clock grid. */
     revealNowRequest?: number;
+    keyboardCursor?: KeyboardCursor | null;
     /** Same contract as `MonthGrid`'s and `BigYearRibbon`'s: the clicked event
      *  plus an anchor rect, handed straight up to `App.openGridEvent` and so to
      *  `openOccurrence`.
@@ -126,7 +128,9 @@
   {:else}
     {#each days as d (d.startMs)}
       {@const marker = markerIndex(d, nowMs)}
-      <section class="sday" data-start-ms={d.startMs}>
+      <section class="sday" class:keyboard={keyboardCursor?.dayStartMs === d.startMs}
+               data-start-ms={d.startMs}
+               data-kbd-selected-day={keyboardCursor?.dayStartMs === d.startMs ? '' : undefined}>
         <h2 class="sdate">
           {dateLabel(d.startMs)}
           {#if weather?.get(dateKey(d.startMs))}
@@ -166,6 +170,11 @@
               <button
                 class="srow"
                 class:allday={ev.is_all_day}
+                class:keyboard={keyboardCursor
+                  ? cursorNamesEvent(keyboardCursor, d.startMs, ev)
+                  : false}
+                data-kbd-selected-event={keyboardCursor
+                  && cursorNamesEvent(keyboardCursor, d.startMs, ev) ? '' : undefined}
                 onclick={(e) => open(ev, e)}
               >
                 <em class="when">
@@ -234,6 +243,8 @@
 
   .sday { border-top: 1px solid var(--hairline); padding: 6px 0 8px; }
   .sday:first-child { border-top: 0; }
+  .sday.keyboard { box-shadow: inset 2px 0 0 color-mix(in srgb, var(--accent) 55%, transparent);
+                   padding-left: 6px; }
 
   /* Sticky, so the day a row belongs to is still named after scrolling past its
      heading — the one thing a list loses that a grid gives for free. */
@@ -276,6 +287,7 @@
              on the row moves. */
           box-shadow: inset 2px 0 0 0 var(--cal); background: none;
           color: var(--text); border-radius: 4px; padding: 4px 8px 4px 10px; }
+  .srow.keyboard { outline: 2px solid var(--accent); outline-offset: 1px; }
 
   /* Tabular figures so the times form a column the eye can run down, and a
      fixed width so a title never starts at a different x from the row above

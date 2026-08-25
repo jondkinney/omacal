@@ -11,7 +11,9 @@
 
 import { test, expect } from '@playwright/test';
 import type { WeekPayload } from '../src/lib/api';
-import { daysFromMonth, daysFromWeek, listable, LISTABLE_VIEWS } from '../src/lib/filmstrip';
+import {
+  allDaysFromMonth, allDaysFromWeek, daysFromMonth, daysFromWeek, listable, LISTABLE_VIEWS,
+} from '../src/lib/filmstrip';
 import {
   FIXTURES, crossZoneWeek, filmstripMonth, filmstripWeek,
   XZONE_DAY, XZONE_DISPLAY_MISREADING,
@@ -30,6 +32,11 @@ const titlesOn = (days: ReturnType<typeof daysFromWeek>, startMs: number) =>
   days.find((d) => d.startMs === startMs)?.events.map((e) => e.title);
 
 test.describe('daysFromWeek', () => {
+  test('the navigation form retains every day, including gaps', () => {
+    const days = allDaysFromWeek(filmstripWeek());
+    expect(days).toHaveLength(7);
+    expect(days[1]).toEqual({ startMs: dayOf(1), events: [] });
+  });
   test('the fixture really is out of order, and really has a gap', () => {
     // §5 of the testing standard: a fixture built from a stated hazard proves
     // the statement unless the statement is checked. Both premises the two
@@ -140,6 +147,10 @@ test.describe('daysFromMonth', () => {
     for (const c of [3, 4, 5, 6]) {
       expect(m.rows[1].cells[c].timed, `6-9 Aug must be the gap`).toEqual([]);
     }
+  });
+
+  test('the navigation form retains all 42 grid cells', () => {
+    expect(allDaysFromMonth(filmstripMonth())).toHaveLength(42);
   });
 
   test('a month lists only the days that carry something, in grid order', () => {

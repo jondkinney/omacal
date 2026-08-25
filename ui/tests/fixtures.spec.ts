@@ -1,7 +1,8 @@
 import { test, expect } from '@playwright/test';
 import type { MonthPayload, WeekPayload } from '../src/lib/api';
 import {
-  FIXTURES, bandAsWeek, busyDayMonth, labelledWeek, appWritableWeek, crossZoneWeek, APP_MON,
+  FIXTURES, bandAsWeek, busyDayMonth, labelledWeek, keyboardWeek, appWritableWeek,
+  crossZoneWeek, APP_MON,
 } from './fixtures';
 
 // The fixtures themselves are under test here.
@@ -277,6 +278,7 @@ const weeks: [string, WeekPayload][] = [
   ),
   ['app:labelled', labelledWeek(APP_MON)],
   ['app:labelled-next', labelledWeek(APP_MON + 7 * 24 * H)],
+  ['app:keyboard', keyboardWeek(APP_MON)],
   ['app:writable', appWritableWeek()],
   ['app:cross-zone', crossZoneWeek()],
   // `AllDayBand`'s own props fixtures, lifted back into the payload they are a
@@ -363,7 +365,7 @@ test.describe('the hand-written week fixtures describe payloads assemble_days co
       expect.arrayContaining([
         'empty', 'populated', 'popover', 'popover-two-occurrences', 'popover-all-day',
         'single-day', 'single-day-overlap', 'filmstrip',
-        'app:labelled', 'app:labelled-next', 'app:writable', 'app:cross-zone',
+        'app:labelled', 'app:labelled-next', 'app:keyboard', 'app:writable', 'app:cross-zone',
       ]),
     );
   });
