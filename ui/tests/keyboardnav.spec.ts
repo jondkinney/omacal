@@ -15,21 +15,34 @@ test.describe('calendar keyboard cursor', () => {
     expect(back).toEqual({ cursor: dayCursor(APP_MON), overflow: null });
   });
 
-  test('j walks down a day, then enters the first event of the next day', () => {
+  test('j walks down all-day and timed rows, then enters the next day', () => {
     const list = days();
     const first = moveEvent(list, dayCursor(APP_MON), 1);
-    expect(eventAtCursor(list, first.cursor)?.title).toBe('Plan the launch');
+    expect(eventAtCursor(list, first.cursor)?.title).toBe('All-day planning');
 
     const second = moveEvent(list, first.cursor, 1);
-    expect(eventAtCursor(list, second.cursor)?.title).toBe('Review notes');
+    expect(eventAtCursor(list, second.cursor)?.title).toBe('Plan the launch');
 
-    const nextDay = moveEvent(list, second.cursor, 1);
+    const third = moveEvent(list, second.cursor, 1);
+    expect(eventAtCursor(list, third.cursor)?.title).toBe('Review notes');
+
+    const nextDay = moveEvent(list, third.cursor, 1);
     expect(nextDay.cursor.dayStartMs).toBe(APP_MON + DAY);
     expect(eventAtCursor(list, nextDay.cursor)?.title).toBe('Tuesday brief');
   });
 
   test('j from today skips events that have already ended', () => {
     const list = days();
+    const lateMonday = APP_MON + 22 * 3_600_000;
+    const next = moveEvent(list, dayCursor(APP_MON), 1, { nowMs: lateMonday });
+
+    expect(next.cursor.dayStartMs).toBe(APP_MON + DAY);
+    expect(eventAtCursor(list, next.cursor)?.title).toBe('Tuesday brief');
+  });
+
+  test('j from late today ignores an all-day row and advances to tomorrow', () => {
+    const list = days();
+    expect(list[0].events.some((event) => event.is_all_day)).toBe(true);
     const lateMonday = APP_MON + 22 * 3_600_000;
     const next = moveEvent(list, dayCursor(APP_MON), 1, { nowMs: lateMonday });
 
@@ -49,6 +62,29 @@ test.describe('calendar keyboard cursor', () => {
 
   test('k from today skips events that have not started yet', () => {
     const list = days();
+    const earlyTuesday = APP_MON + DAY + 8 * 3_600_000;
+    const previous = moveEvent(list, dayCursor(APP_MON + DAY), -1, { nowMs: earlyTuesday });
+
+    expect(previous.cursor.dayStartMs).toBe(APP_MON);
+    expect(eventAtCursor(list, previous.cursor)?.title).toBe('Review notes');
+  });
+
+  test('k from early today ignores an all-day row and retreats to yesterday', () => {
+    const list = days();
+    const source = list[3].events.find((event) => event.is_all_day)!;
+    list[1] = {
+      ...list[1],
+      events: [
+        {
+          ...source,
+          id: 906,
+          title: 'Today all day',
+          start_ms: APP_MON + DAY,
+          end_ms: APP_MON + 2 * DAY,
+        },
+        ...list[1].events,
+      ],
+    };
     const earlyTuesday = APP_MON + DAY + 8 * 3_600_000;
     const previous = moveEvent(list, dayCursor(APP_MON + DAY), -1, { nowMs: earlyTuesday });
 

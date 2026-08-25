@@ -306,10 +306,12 @@ export const KEYBOARD_FIRST_ID = 901;
 export const KEYBOARD_SECOND_ID = 902;
 export const KEYBOARD_NEXT_DAY_ID = 903;
 export const KEYBOARD_ALL_DAY_ID = 904;
+export const KEYBOARD_TODAY_ALL_DAY_ID = 905;
 
 /** A week whose ordering can distinguish every keyboard edge: two events on
- * the first day, one on the next, an empty day, then an all-day chip. Built at
- * the requested boundary so paging across a payload edge remains truthful. */
+ * the first day beneath an all-day chip, one on the next, an empty day, then
+ * another all-day chip. Built at the requested boundary so paging across a
+ * payload edge remains truthful. */
 export const keyboardWeek = (weekStartMs: number): WeekPayload => {
   const w = emptyWeekAt(weekStartMs);
   if (w.days[0]) {
@@ -321,6 +323,13 @@ export const keyboardWeek = (weekStartMs: number): WeekPayload => {
            start_ms: weekStartMs + 11 * H, end_ms: weekStartMs + 12 * H }),
     ];
     w.days[0].placed = [placed(9 / 24, 1 / 24, 0, 1, 0), placed(11 / 24, 1 / 24, 0, 1, 1)];
+    w.all_day_events.push(
+      ev({ id: KEYBOARD_TODAY_ALL_DAY_ID, title: 'All-day planning', is_all_day: true,
+           start_ms: weekStartMs, end_ms: weekStartMs + 24 * H }),
+    );
+    w.all_day.push(
+      { idx: 0, lane: 0, start_col: 0, end_col: 0, cont_left: false, cont_right: false },
+    );
   }
   if (w.days[1]) {
     const start = weekStartMs + 24 * H;
@@ -332,13 +341,14 @@ export const keyboardWeek = (weekStartMs: number): WeekPayload => {
   }
   if (w.days[3]) {
     const start = weekStartMs + 3 * 24 * H;
-    w.all_day_events = [
+    w.all_day_events.push(
       ev({ id: KEYBOARD_ALL_DAY_ID, title: 'Off-site', is_all_day: true,
            start_ms: start, end_ms: start + 24 * H }),
-    ];
-    w.all_day = [
-      { idx: 0, lane: 0, start_col: 3, end_col: 3, cont_left: false, cont_right: false },
-    ];
+    );
+    w.all_day.push(
+      { idx: w.all_day_events.length - 1, lane: 0, start_col: 3, end_col: 3,
+        cont_left: false, cont_right: false },
+    );
   }
   return w;
 };
@@ -595,6 +605,14 @@ POPOVER_DETAILS[KEYBOARD_ALL_DAY_ID] = detail({
   is_all_day: true,
   start_date: utcDate(APP_MON + 3 * 24 * H),
   end_date: utcDate(APP_MON + 3 * 24 * H),
+  can_respond: false,
+});
+POPOVER_DETAILS[KEYBOARD_TODAY_ALL_DAY_ID] = detail({
+  id: KEYBOARD_TODAY_ALL_DAY_ID,
+  title: 'All-day planning',
+  is_all_day: true,
+  start_date: utcDate(APP_MON),
+  end_date: utcDate(APP_MON),
   can_respond: false,
 });
 

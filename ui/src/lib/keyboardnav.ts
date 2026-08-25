@@ -55,11 +55,14 @@ export function moveDay(days: ListDay[], cursor: KeyboardCursor, dir: -1 | 1): C
 /**
  * Move through events in reading order. From a selected day other than today,
  * `j` takes its first event and `k` its last. Today is time-aware when a
- * clock is supplied: `j` starts with the first event that has not ended and
- * `k` with the last event that has begun. If there is no such event today,
- * traversal continues into the adjacent day instead of replaying elapsed or
- * not-yet-started events. Once an event is selected, movement is strictly
- * adjacent and the clock no longer participates.
+ * clock is supplied: `j` starts with the first timed event that has not ended
+ * and `k` with the last timed event that has begun. All-day rows have no useful
+ * position relative to the current clock, so this initial-today check ignores
+ * them. If there is no eligible timed event today, traversal continues into
+ * the adjacent day instead of replaying elapsed events or selecting an all-day
+ * row merely because its stored midnight-to-midnight span contains `now`.
+ * Once an event is selected, movement is strictly adjacent—including all-day
+ * rows—and the clock no longer participates.
  */
 export function moveEvent(
   days: ListDay[],
@@ -84,10 +87,12 @@ export function moveEvent(
     // on a DST boundary. The backend already supplied both true boundaries.
     if (clock && clock.nowMs >= day.startMs && clock.nowMs < day.endMs) {
       if (dir === 1) {
-        event = day.events.find((candidate) => candidate.end_ms > clock.nowMs);
+        event = day.events.find(
+          (candidate) => !candidate.is_all_day && candidate.end_ms > clock.nowMs,
+        );
       } else {
         for (let i = day.events.length - 1; i >= 0; i -= 1) {
-          if (day.events[i].start_ms <= clock.nowMs) {
+          if (!day.events[i].is_all_day && day.events[i].start_ms <= clock.nowMs) {
             event = day.events[i];
             break;
           }

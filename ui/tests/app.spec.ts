@@ -3344,6 +3344,10 @@ test.describe('App: keyboard event navigation', () => {
 
   test('j late today begins with tomorrow instead of replaying past events', async ({ page }) => {
     await page.clock.setFixedTime(APP_MON + 22 * 3_600_000);
+    // This row is still visibly part of today, but has no clock position. It
+    // must not keep the time-aware entrance on today after every timed event
+    // has ended.
+    await expect(page.getByText('All-day planning', { exact: true })).toBeVisible();
 
     await page.keyboard.press('j');
     await expect(selectedTitle(page)).toContainText('Tuesday brief');
@@ -3370,7 +3374,7 @@ test.describe('App: keyboard event navigation', () => {
 
   test('j continues into the first event of the next loaded period', async ({ page }) => {
     for (let i = 0; i < 5; i++) await page.keyboard.press('j');
-    await expect(selectedTitle(page)).toContainText('Plan the launch');
+    await expect(selectedTitle(page)).toContainText('All-day planning');
     await expect(page.locator('[data-kbd-selected-day]'))
       .toHaveAttribute('data-start-ms', String(APP_MON + WEEK));
   });
