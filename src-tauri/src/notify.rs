@@ -8,8 +8,9 @@
 //! being posted anywhere.
 //!
 //! [`Notifier`] is *how it leaves the process*, and its implementations are the
-//! one seam this feature cannot test. `notify-rust` talks to D-Bus and
-//! `tauri-plugin-notification` talks to the macOS notification centre; both
+//! one seam this feature cannot test. `notify-rust` talks to D-Bus, a signed
+//! macOS bundle talks to `UNUserNotificationCenter` (`notify_mac.rs`), and an
+//! unbundled macOS run falls back to `tauri-plugin-notification`; all of them
 //! would put something in the user's notification centre if a test ran them.
 //! **The only notifier the suite ever sees is [`RecordingNotifier`].** That is
 //! stated here rather than hidden, per spec §3.
@@ -36,7 +37,15 @@ pub(crate) struct Notification {
 }
 
 /// A button on a notification.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// Serde, because macOS has no equivalent of the D-Bus action key riding back
+/// with a click: `UNNotificationResponse` returns the *request identifier* and
+/// the *action identifier*, and everything else the handler needs must have
+/// been carried by the notification itself. The actions serialize into the
+/// request identifier at post ([`un_payload`]) and deserialize out of it at
+/// click ([`action_for_un`]), so the payload format is this enum's own derive
+/// — one representation, no hand-rolled second one to drift.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum Action {
     /// Open the occurrence's conferencing link. Carries the URI, so nothing
     /// downstream has to find it again — and **only exists when there is one**.
@@ -75,14 +84,17 @@ pub(crate) enum Action {
 /// What a clicked reminder emits, carrying the occurrence (`id`, `startMs`,
 /// `endMs`) for the webview to land on and open — the same three numbers a
 /// chosen search hit navigates by.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
 pub(crate) const OPEN_EVENT_EVENT: &str = "open-event";
 
 /// The D-Bus action key a clicked notification comes back with, resolved to
 /// the [`Action`] it stood for — `None` for a dismissal (`__closed`) or a key
 /// this notification never offered. Pure, because it is the one decision in
 /// the click path and the transport around it cannot be tested at all.
-#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+/// macOS resolves through the same keys: [`action_for_un`] normalises Apple's
+/// action identifiers to these before calling here, so both platforms answer
+/// a click from one tested table.
+#[cfg_attr(not(any(target_os = "linux", target_os = "macos")), allow(dead_code))]
 pub(crate) fn action_for_key(actions: &[Action], key: &str) -> Option<Action> {
     actions
         .iter()
@@ -111,10 +123,12 @@ pub(crate) enum NotifyError {
 /// `Send + Sync` because the driver holds one across await points in a spawned
 /// task.
 ///
-/// **A failing `post` is not an error the user is shown.** On macOS,
-/// `UNUserNotificationCenter` needs a correctly signed bundle and omacal is
-/// unsigned, so refusal is the expected case rather than a fault (§2.4). The
-/// driver logs it, records the reminder as fired anyway, and moves on. See
+/// **A failing `post` is not an error the user is shown.** The rule was
+/// written when every macOS build was unsigned and `UNUserNotificationCenter`
+/// refused it wholesale (§2.4); the signed bundle un-made that case, but the
+/// rule stands — a user who declines the permission prompt, or an unbundled
+/// dev run, is still a transport that refuses, and the driver's answer is the
+/// same: log it, record the reminder as fired anyway, move on. See
 /// `notify_loop::run_once` for why recording a failed post is the right trade.
 pub(crate) trait Notifier: Send + Sync {
     fn post(&self, n: &Notification) -> Result<(), NotifyError>;
@@ -186,6 +200,83 @@ pub(crate) fn time_in_zone(ms: i64, tz: &str) -> String {
     let ts = jiff::Timestamp::from_millisecond(ms).unwrap_or(jiff::Timestamp::UNIX_EPOCH);
     let z = ts.in_tz(tz).unwrap_or_else(|_| ts.in_tz("UTC").expect("UTC always resolves"));
     format!("{:02}:{:02}", z.hour(), z.minute())
+}
+
+/// The category ids registered once with the macOS notification centre.
+///
+/// Categories are macOS's shape for buttons: a posted notification only
+/// *names* a category, and the buttons were declared up front at registration
+/// — there is no per-notification button list the way the D-Bus builder takes
+/// one. So the button layouts this app can produce are enumerated here as
+/// categories, and [`un_category`] picks one per notification.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) const UN_CATEGORY_JOIN: &str = "omacal.reminder.join";
+/// A reminder with no conferencing link: Snooze alone.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(crate) const UN_CATEGORY_REMINDER: &str = "omacal.reminder";
+
+/// Which registered category a notification's actions call for — `""` for
+/// none (the invitation toast and the plain announcements: their click is
+/// their whole interface, and a considered Maybe/No stays in the popover,
+/// exactly the Linux shape).
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+pub(crate) fn un_category(actions: &[Action]) -> &'static str {
+    if actions.iter().any(|a| matches!(a, Action::Join(_))) {
+        UN_CATEGORY_JOIN
+    } else if actions.iter().any(|a| matches!(a, Action::Snooze5m)) {
+        UN_CATEGORY_REMINDER
+    } else {
+        ""
+    }
+}
+
+/// What rides in a UN request identifier: the actions, plus a nonce.
+///
+/// The nonce is not decoration. macOS treats the request identifier as a
+/// replacement key — post twice under one identifier and the first
+/// notification is silently swapped out. Actions alone are identical for,
+/// say, two plain announcements in one sync pass ("3 guests declined",
+/// "a meeting moved" — both `[]`), and the second would eat the first.
+/// A per-process counter keeps same-session identifiers distinct, while a
+/// re-fire of the *same occurrence* across restarts may still replace its
+/// stale predecessor — which is the one replacement worth having.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct UnPayload {
+    n: u64,
+    a: Vec<Action>,
+}
+
+/// The actions serialized for the UN request identifier. `n` is the caller's
+/// nonce — the transport counts posts; tests pass what they like.
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+pub(crate) fn un_payload(n: u64, actions: &[Action]) -> String {
+    serde_json::to_string(&UnPayload { n, a: actions.to_vec() }).unwrap_or_default()
+}
+
+/// Apple's own identifier for "the notification body itself was clicked" —
+/// a stable ABI string, matched by value because the constant the framework
+/// exports is just this string with a symbol name on it.
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+pub(crate) const UN_DEFAULT_ACTION: &str = "com.apple.UNNotificationDefaultActionIdentifier";
+/// And for an explicit dismissal, which must resolve to no action at all.
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+pub(crate) const UN_DISMISS_ACTION: &str = "com.apple.UNNotificationDismissActionIdentifier";
+
+/// The macOS click, resolved to the [`Action`] it stood for — `None` for a
+/// dismissal, an unparseable identifier (a notification from an older build,
+/// left in Notification Center across an update), or a button this
+/// notification never offered. Pure for the reason [`action_for_key`] is,
+/// and resolving *through* it: Apple's identifiers are normalised to the
+/// D-Bus keys and then both platforms answer from the one tested table.
+#[cfg_attr(not(any(target_os = "macos", test)), allow(dead_code))]
+pub(crate) fn action_for_un(payload: &str, action_identifier: &str) -> Option<Action> {
+    let key = match action_identifier {
+        UN_DEFAULT_ACTION => "default",
+        UN_DISMISS_ACTION => return None,
+        other => other,
+    };
+    let p: UnPayload = serde_json::from_str(payload).ok()?;
+    action_for_key(&p.a, key)
 }
 
 /// The only notifier any test uses. Records what it was handed and posts
@@ -298,16 +389,19 @@ impl Notifier for DbusNotifier {
     }
 }
 
-/// macOS, and **allowed to fail** (§2.4).
+/// macOS **unbundled** — `cargo tauri dev`, the raw binary — and **allowed
+/// to fail** (§2.4).
 ///
-/// `UNUserNotificationCenter` needs a correctly signed bundle; omacal is
-/// unsigned, so this may simply refuse. That is expected, not a fault: the
-/// error goes back to the driver, which logs it and carries on. It is never
-/// surfaced as a banner and never retried into a loop.
+/// The shipping transport is `notify_mac::UnNotifier`; this is what remains
+/// for the run it cannot serve. `UNUserNotificationCenter` raises outside a
+/// real bundle, so a dev run posts through the plugin instead and may simply
+/// be refused. That is expected, not a fault: the error goes back to the
+/// driver, which logs it and carries on. It is never surfaced as a banner
+/// and never retried into a loop.
 ///
 /// No actions. `tauri-plugin-notification` has no action buttons, which is why
-/// Linux uses `notify-rust` instead; on macOS the notification is informational
-/// and the app is one click away.
+/// Linux uses `notify-rust` and the bundled app uses the centre directly; here
+/// the notification is informational and the app is one click away.
 #[cfg(target_os = "macos")]
 pub(crate) struct MacNotifier {
     pub app: tauri::AppHandle,
@@ -512,6 +606,68 @@ mod tests {
             fake.posted().len(),
             1,
             "a failed post is still an attempt, and the fake records the attempt"
+        );
+    }
+
+    /// The macOS round trip: the actions a notification was posted with come
+    /// back out of its request identifier, resolved through the same table
+    /// the D-Bus path answers from. Real reminders' action lists, not
+    /// hand-built ones, for the reason the D-Bus resolution test uses them.
+    #[test]
+    fn a_un_click_resolves_through_the_posted_payload() {
+        let reminder =
+            notification_for(&due(Some("Standup"), None, Some("https://meet/x")), SOFIA).actions;
+        let payload = un_payload(3, &reminder);
+
+        assert_eq!(
+            action_for_un(&payload, "join"),
+            Some(Action::Join("https://meet/x".into()))
+        );
+        assert_eq!(action_for_un(&payload, "snooze"), Some(Action::Snooze5m));
+        assert_eq!(
+            action_for_un(&payload, UN_DEFAULT_ACTION),
+            Some(Action::OpenEvent { event_id: 1, start_ms: T0900Z, end_ms: T0900Z + HOUR }),
+            "the body click opens the app on the occurrence, exactly as on Linux"
+        );
+        assert_eq!(
+            action_for_un(&payload, UN_DISMISS_ACTION),
+            None,
+            "dismissal is not consent — the invitation rule, on the other platform"
+        );
+        // A notification left in Notification Center across an update, whose
+        // identifier an older build wrote in some other shape: silence, not a
+        // panic and not a misread action.
+        assert_eq!(action_for_un("not json at all", "join"), None);
+    }
+
+    /// Identifiers must not collide for notifications posted alive at once:
+    /// macOS treats the request identifier as a replacement key, and two
+    /// same-pass announcements with identical (empty) action lists would
+    /// otherwise silently eat each other. The nonce is what keeps them apart.
+    #[test]
+    fn the_nonce_keeps_identical_action_lists_from_replacing_each_other() {
+        assert_ne!(un_payload(1, &[]), un_payload(2, &[]));
+        // …while the payload still resolves regardless of the nonce.
+        let accept = Action::AcceptInvite { event_id: 7, start_ms: T0900Z };
+        let p = un_payload(9, &[accept.clone()]);
+        assert_eq!(action_for_un(&p, UN_DEFAULT_ACTION), Some(accept));
+    }
+
+    /// Which pre-registered category each action list names: buttons on
+    /// macOS are declared up front, so this mapping is the whole of "which
+    /// buttons does this notification get".
+    #[test]
+    fn the_category_follows_the_buttons_a_notification_would_carry() {
+        let with_join =
+            notification_for(&due(Some("Standup"), None, Some("https://meet/x")), SOFIA).actions;
+        let without =
+            notification_for(&due(Some("Coffee"), None, None), SOFIA).actions;
+        assert_eq!(un_category(&with_join), UN_CATEGORY_JOIN);
+        assert_eq!(un_category(&without), UN_CATEGORY_REMINDER);
+        assert_eq!(
+            un_category(&[Action::AcceptInvite { event_id: 7, start_ms: T0900Z }]),
+            "",
+            "the invitation toast keeps its click as its whole interface"
         );
     }
 }

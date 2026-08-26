@@ -16,6 +16,8 @@ mod fixtures;
 mod golden;
 mod invites;
 mod notify;
+#[cfg(target_os = "macos")]
+mod notify_mac;
 mod notify_loop;
 #[cfg(target_os = "linux")]
 mod nvidia;
@@ -1009,6 +1011,40 @@ fn tz_action(sidecar: Option<&str>, we_set_it: bool) -> TzAction {
 /// where `FLATPAK_ID` is set — which is only ever inside a Flatpak — the
 /// name becomes `<app id>.SingleInstance` and needs no permission at all.
 /// Every other build keeps the name it has always had.
+/// The one dispatcher for clicked notification actions, whichever transport
+/// reported the click — D-Bus on Linux, the notification centre's delegate on
+/// macOS. Everything it does beyond routing lives in tested functions; it is
+/// a free function rather than a closure inside one platform's setup so the
+/// other platform cannot grow a second, slightly different copy.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn dispatch_notification_action(handle: &tauri::AppHandle, action: notify::Action) {
+    match action {
+        notify::Action::AcceptInvite { event_id, start_ms } => {
+            let app = handle.clone();
+            tauri::async_runtime::spawn(async move {
+                invites::accept_from_notification(app, event_id, start_ms).await;
+            });
+        }
+        notify::Action::Join(uri) => {
+            if let Err(e) = tauri_plugin_opener::open_url(&uri, None::<&str>) {
+                tracing::warn!(%e, "could not open the meeting link");
+            }
+        }
+        // Still display-only; re-queueing is §2.5's future.
+        notify::Action::Snooze5m => {}
+        // The click itself: bring the window up, then hand the webview the
+        // occurrence — it lands and opens the popover exactly as a chosen
+        // search hit does.
+        notify::Action::OpenEvent { event_id, start_ms, end_ms } => {
+            use tauri::Emitter;
+            tray::show_main_window(handle);
+            let _ = handle.emit(notify::OPEN_EVENT_EVENT, serde_json::json!({
+                "id": event_id, "startMs": start_ms, "endMs": end_ms,
+            }));
+        }
+    }
+}
+
 fn single_instance_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
     let mut builder = tauri_plugin_single_instance::Builder::new().callback(
         |app: &tauri::AppHandle, argv: Vec<String>, _cwd: String| {
@@ -1222,41 +1258,31 @@ pub fn run() {
                 #[cfg(target_os = "linux")]
                 let notifier: std::sync::Arc<dyn notify::Notifier> = {
                     let dbus = std::sync::Arc::new(notify::DbusNotifier::default());
-                    // The one dispatcher for clicked notification actions.
                     // Wired here because it is the only place that has the
-                    // app handle the actions need; everything it does beyond
-                    // routing lives in tested functions.
+                    // app handle the actions need.
                     let handle = app.handle().clone();
-                    dbus.set_on_action(std::sync::Arc::new(move |action| match action {
-                        notify::Action::AcceptInvite { event_id, start_ms } => {
-                            let app = handle.clone();
-                            tauri::async_runtime::spawn(async move {
-                                invites::accept_from_notification(app, event_id, start_ms).await;
-                            });
-                        }
-                        notify::Action::Join(uri) => {
-                            if let Err(e) = tauri_plugin_opener::open_url(&uri, None::<&str>) {
-                                tracing::warn!(%e, "could not open the meeting link");
-                            }
-                        }
-                        // Still display-only; re-queueing is §2.5's future.
-                        notify::Action::Snooze5m => {}
-                        // The click itself: bring the window up, then hand
-                        // the webview the occurrence — it lands and opens
-                        // the popover exactly as a chosen search hit does.
-                        notify::Action::OpenEvent { event_id, start_ms, end_ms } => {
-                            use tauri::Emitter;
-                            tray::show_main_window(&handle);
-                            let _ = handle.emit(notify::OPEN_EVENT_EVENT, serde_json::json!({
-                                "id": event_id, "startMs": start_ms, "endMs": end_ms,
-                            }));
-                        }
+                    dbus.set_on_action(std::sync::Arc::new(move |action| {
+                        dispatch_notification_action(&handle, action);
                     }));
                     dbus
                 };
                 #[cfg(target_os = "macos")]
-                let notifier: std::sync::Arc<dyn notify::Notifier> =
-                    std::sync::Arc::new(notify::MacNotifier { app: app.handle().clone() });
+                let notifier: std::sync::Arc<dyn notify::Notifier> = {
+                    // The real notification centre, with the buttons and the
+                    // click — possible at all only in a signed bundle, which
+                    // v0.5.0 made the shipping reality (§2.4 as amended).
+                    // `new` refuses when the process runs unbundled (`cargo
+                    // tauri dev`), where `UNUserNotificationCenter` would
+                    // throw; the legacy plugin path stays for exactly that
+                    // run, failing quietly as it always has.
+                    let handle = app.handle().clone();
+                    match notify_mac::UnNotifier::new(std::sync::Arc::new(move |action| {
+                        dispatch_notification_action(&handle, action);
+                    })) {
+                        Some(un) => std::sync::Arc::new(un),
+                        None => std::sync::Arc::new(notify::MacNotifier { app: app.handle().clone() }),
+                    }
+                };
                 // Managed so the invite pass (`invites::after_sync`) and the
                 // click handler can post through the same transport the
                 // reminder loop uses.

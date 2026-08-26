@@ -68,9 +68,27 @@ notify-rust = "4"
 zbus = "5"
 futures-util = { version = "0.3", default-features = false }
 
-# macOS, best-effort (spec §2.4): an unsigned bundle may simply be refused.
+# macOS. The objc2 quartet is the real transport (notify_mac.rs):
+# UNUserNotificationCenter with registered action categories and a click
+# delegate — possible since v0.5.0 made the bundle signed, which is that
+# API's entry fee. The Tauri plugin stays as the fallback for unbundled
+# runs (`cargo tauri dev`), where the centre throws instead of answering;
+# there it remains best-effort exactly as spec §2.4 originally accepted.
+# Features are the crate's per-header gates: each names the one class it
+# unlocks, plus `block2` for every completion-handler-taking method.
 [target.'cfg(target_os = "macos")'.dependencies]
 tauri-plugin-notification = "2"
+objc2 = "0.6"
+block2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std", "NSString", "NSArray", "NSSet", "NSError", "NSBundle", "NSObject",
+] }
+objc2-user-notifications = { version = "0.3", default-features = false, features = [
+    "std", "block2", "bitflags",
+    "UNUserNotificationCenter", "UNNotificationContent", "UNNotificationRequest",
+    "UNNotificationTrigger", "UNNotificationAction", "UNNotificationCategory",
+    "UNNotificationResponse", "UNNotification",
+] }
 
 [dev-dependencies]
 wiremock = "0.6.5"
