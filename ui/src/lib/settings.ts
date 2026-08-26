@@ -55,6 +55,11 @@ export type AppSettings = {
    *  why changing it restarts omacal — the JS engine and libc both capture
    *  the zone at process start and offer no runtime swap. */
   displayTimezone: string | null;
+  /** A second zone shown beside times for convenience, or `null` for off.
+   *  Display only — every write still happens in the display zone — and read
+   *  through the `secondzone.svelte.ts` rune for `timeFormat`'s reason: the
+   *  gutter and the form both print it and neither owns it. */
+  secondTimezone: string | null;
 };
 
 export const getSettings = () => invoke<AppSettings>('get_settings');
@@ -117,6 +122,15 @@ export const listTimezones = () => invoke<string[]>('list_timezones');
  */
 export const setDisplayTimezone = (tz: string | null) =>
   invoke<void>('set_display_timezone', { tz });
+
+/**
+ * Stores the second time zone; `null` turns the feature off. No restart,
+ * unlike the display zone: nothing process-level captures this one — the
+ * webview converts at render time from the IANA name — so the settings that
+ * come back are already the settings in force.
+ */
+export const setSecondTimezone = (tz: string | null) =>
+  invoke<AppSettings>('set_second_timezone', { tz });
 
 export const setDefaultCalendar = (id: number | null) =>
   invoke<AppSettings>('set_default_calendar', { id });

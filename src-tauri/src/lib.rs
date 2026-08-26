@@ -1345,6 +1345,7 @@ pub fn run() {
             settings::set_tray_icon,
             settings::set_weather_enabled,
             settings::set_display_timezone,
+            settings::set_second_timezone,
             settings::list_timezones,
             settings::restart_app,
             caldav_account::connect_caldav,

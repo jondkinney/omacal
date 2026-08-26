@@ -514,10 +514,15 @@ type StubSettings = {
   timeFormat: TimeFormat;
   weekStart: WeekStartDay;
   displayTimezone: string | null;
+  secondTimezone: string | null;
   weatherEnabled: boolean;
 };
 
 const SETTINGS_KEY = 'omacal-stub-settings';
+
+/** What `list_timezones` answers and `set_second_timezone` validates
+ *  against — one list, so the stub cannot offer a zone it then refuses. */
+const STUB_TIMEZONES = ['Asia/Kolkata', 'Europe/Sofia', 'UTC'];
 
 const DEFAULT_SETTINGS: StubSettings = {
   syncIntervalMs: 5 * 60_000,
@@ -533,6 +538,9 @@ const DEFAULT_SETTINGS: StubSettings = {
   // The week omacal has always drawn, so every golden holds.
   weekStart: 'monday',
   displayTimezone: null,
+  // Off, the backend's fresh-install default — and what keeps every
+  // committed gutter golden describing a 44px ruler with one clock.
+  secondTimezone: null,
   // The backend's default: on unless somebody turned it off.
   weatherEnabled: true,
 };
@@ -741,13 +749,24 @@ export function installTauriStub(scenario: string): Harness {
       // A short list, not the real ~600: the spec's premise is that choosing
       // one and applying sends it, not that jiff's database is complete.
       case 'list_timezones':
-        return ['Asia/Kolkata', 'Europe/Sofia', 'UTC'];
+        return [...STUB_TIMEZONES];
       case 'set_display_timezone':
         settings = saveSettings({ ...settings, displayTimezone: (args.tz as string | null) ?? null });
         // The real command restarts the app after replying; the stub only
         // replies, which is exactly what lets a spec see the "Restarting…"
         // state the window would otherwise take with it.
         return null;
+      case 'set_second_timezone': {
+        // The backend's own refusal, mirrored against the stub's short list
+        // so a spec can watch the form surface it; the real validator asks
+        // jiff the same question of the same name.
+        const tz = (args.tz as string | null) ?? null;
+        if (tz !== null && !STUB_TIMEZONES.includes(tz)) {
+          throw new Error(`omacal does not know the time zone "${tz}"`);
+        }
+        settings = saveSettings({ ...settings, secondTimezone: tz });
+        return { ...settings };
+      }
       // Empty on purpose: App-level scenarios stay weatherless, so no
       // existing spec or screenshot grows a sky it never asked for. The
       // rendering itself is proven component-side, where the fixture hands

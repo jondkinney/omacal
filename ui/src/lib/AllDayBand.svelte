@@ -2,6 +2,7 @@
 <script lang="ts">
   import type { Lane, UiEvent } from './api';
   import type { Rect } from './position';
+  import { gutterWidth } from './secondzone.svelte';
 
   let { lanes, events, overflow, onopen }:
     { lanes: Lane[]; events: UiEvent[]; overflow: number[];
@@ -30,7 +31,7 @@
 </script>
 
 {#if lanes.length || overflow.length}
-  <div class="band">
+  <div class="band" style="--gutter:{gutterWidth()}">
     <div class="label">ALL-DAY</div>
     <div class="rows">
       {#each lanes as lane}
@@ -60,7 +61,11 @@
 {/if}
 
 <style>
-  .band { display: grid; grid-template-columns: 44px 1fr;
+  /* `--gutter` is WeekGrid's own first column (see `secondzone.svelte`'s
+     one exported width): the band's label sits over the hour ruler, and the
+     two must widen together when the second clock takes a lane, or the
+     chips shear off their days. */
+  .band { display: grid; grid-template-columns: var(--gutter, 44px) 1fr;
           border-bottom: 1px solid var(--hairline); padding: 3px 0 6px; margin-bottom: 2px; }
   .label { font-size: 9.5px; color: var(--muted); opacity: .8; text-align: right;
            padding-right: 7px; letter-spacing: .05em; align-self: center; }

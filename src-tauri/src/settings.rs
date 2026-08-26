@@ -21,6 +21,7 @@ const WEEK_START_KEY: &str = "week_start";
 const TRAY_ICON_KEY: &str = "tray_icon";
 const WEATHER_KEY: &str = "weather_enabled";
 const DISPLAY_TZ_KEY: &str = "display_timezone";
+const SECOND_TZ_KEY: &str = "second_timezone";
 
 /// The boot fast-path beside the database: `main()` must export `TZ` before
 /// GTK and the webview initialise — both capture the zone at process start —
@@ -217,6 +218,15 @@ pub struct AppSettings {
     /// the JS engine and libc capture the zone at process start and offer
     /// no runtime swap.
     pub display_timezone: Option<String>,
+    /// A second zone shown *beside* times for convenience, or `None` for off
+    /// — Google Calendar's own feature, for the reader who lives in one zone
+    /// and meets in another. Display only, and that is the whole contract:
+    /// events are stored, laid out, edited and fired in the display zone
+    /// above, and this one never touches a write. Which is also why changing
+    /// it does **not** restart the app the way `display_timezone` does — no
+    /// process-level `TZ` is involved; the webview converts at render time
+    /// from the IANA name itself.
+    pub second_timezone: Option<String>,
 }
 
 pub(crate) async fn read(pool: &SqlitePool, key: &str) -> Option<String> {
@@ -281,6 +291,11 @@ pub async fn read_settings(pool: &SqlitePool) -> AppSettings {
         // Empty and absent both mean "system": the row is written as "" to
         // clear, and a blank zone name is nothing anyone chose.
         display_timezone: read(pool, DISPLAY_TZ_KEY)
+            .await
+            .filter(|v| !v.trim().is_empty()),
+        // Same convention: "" is the feature off, which is the fresh-install
+        // state and not an error.
+        second_timezone: read(pool, SECOND_TZ_KEY)
             .await
             .filter(|v| !v.trim().is_empty()),
         // Absent, cleared ("" — see `set_default_calendar`) and garbage all
@@ -406,6 +421,41 @@ pub async fn set_display_timezone(
         crate::restart::hard_restart();
     });
     Ok(())
+}
+
+/// Stores the second time zone — the convenience clock beside the real one —
+/// or clears it with `None`/blank. Validated against the same authority the
+/// display zone is, and for the same reason: a zone jiff does not know is a
+/// name the webview's own converter will not know either, and storing it
+/// would draw a gutter of blanks. **No restart**, unlike its neighbour: see
+/// [`AppSettings::second_timezone`] — nothing process-level captures this
+/// zone, so the reply alone is enough for the UI to start drawing it.
+#[tauri::command]
+pub async fn set_second_timezone(
+    state: tauri::State<'_, AppState>,
+    tz: Option<String>,
+) -> Result<AppSettings, String> {
+    // The refusal carries the name, so it is built here and returned
+    // directly — `errors::user_facing` allowlists exact strings and would
+    // withhold a message with a zone name in it (see `set_display_timezone`,
+    // which routes its own refusal the same way).
+    let tz = validate_second_timezone(tz)?;
+    write(&state.pool, SECOND_TZ_KEY, tz.as_deref().unwrap_or(""))
+        .await
+        .map_err(|e| crate::errors::user_facing(&e))?;
+    Ok(read_settings(&state.pool).await)
+}
+
+/// Blank and `None` collapse to off; a non-blank name must be one jiff knows.
+/// Split from the command so the rule is reachable from a test without a
+/// `tauri::State`.
+fn validate_second_timezone(tz: Option<String>) -> Result<Option<String>, String> {
+    let tz = tz.map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
+    if let Some(name) = tz.as_deref() {
+        jiff::tz::TimeZone::get(name)
+            .map_err(|_| format!("omacal does not know the time zone \"{name}\""))?;
+    }
+    Ok(tz)
 }
 
 /// Restarts the app because the user asked to — the system-tz banner's one
@@ -670,6 +720,39 @@ mod tests {
             "a refused value must not half-land",
         );
         assert_eq!(crate::errors::user_facing(&err), INTERVAL_TOO_SHORT);
+    }
+
+    /// Fresh install: no second zone, which is the feature off — and `""`
+    /// stored (how a clear is written) reads back as off too, not as a zone
+    /// named nothing.
+    #[tokio::test]
+    async fn the_second_zone_is_absent_until_chosen_and_blank_reads_as_off() {
+        let p = pool().await;
+        assert_eq!(read_settings(&p).await.second_timezone, None);
+
+        write(&p, SECOND_TZ_KEY, "").await.unwrap();
+        assert_eq!(read_settings(&p).await.second_timezone, None);
+
+        write(&p, SECOND_TZ_KEY, "Asia/Kolkata").await.unwrap();
+        assert_eq!(read_settings(&p).await.second_timezone.as_deref(), Some("Asia/Kolkata"));
+    }
+
+    /// The validator is the command's whole opinion: a known zone passes
+    /// trimmed, blank and `None` collapse to off, and an unknown name is
+    /// refused with the name in the message — the same contract
+    /// `set_display_timezone` gives its own input.
+    #[test]
+    fn a_second_zone_is_validated_against_jiffs_database() {
+        assert_eq!(
+            validate_second_timezone(Some("  Asia/Kolkata ".into())).unwrap().as_deref(),
+            Some("Asia/Kolkata"),
+        );
+        assert_eq!(validate_second_timezone(Some("   ".into())).unwrap(), None);
+        assert_eq!(validate_second_timezone(None).unwrap(), None);
+        assert_eq!(
+            validate_second_timezone(Some("Mars/Olympus_Mons".into())).unwrap_err(),
+            "omacal does not know the time zone \"Mars/Olympus_Mons\"",
+        );
     }
 
     /// The three grids' shared arithmetic, as a table.

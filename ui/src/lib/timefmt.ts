@@ -55,6 +55,87 @@ export function gutterLabel(hour24: number, format: TimeFormat): string {
 }
 
 /**
+ * The wall-clock reading of an instant in an arbitrary IANA zone — the second
+ * time zone's whole mechanism.
+ *
+ * `Intl` where `formatClock` deliberately is not, because this is the one job
+ * only `Intl` can do in a browser: the tz database lives in the engine. The
+ * locale-rendering hazard the header warns about is dodged the same way the
+ * hazard was named: the formatter is only ever asked for *numbers*
+ * (`formatToParts`, `en-US`, `hourCycle: 'h23'`), and the strings around them
+ * stay hand-built below, so a screenshot never depends on ICU's idea of a
+ * clock face.
+ *
+ * `null` for a zone the engine does not know — a row written by a newer
+ * jiff than this WebKit's ICU, or hand-edited. Callers draw nothing, which
+ * beats drawing the wrong clock with a confident face.
+ */
+export function zoneParts(ms: number, tz: string): { h: number; m: number } | null {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz, hourCycle: 'h23', hour: 'numeric', minute: 'numeric',
+    }).formatToParts(new Date(ms));
+    const num = (type: string) => Number(parts.find((p) => p.type === type)?.value);
+    const h = num('hour');
+    const m = num('minute');
+    // ICU spells midnight '24' under h23 in some versions; a clock does not.
+    return Number.isFinite(h) && Number.isFinite(m) ? { h: h % 24, m } : null;
+  } catch {
+    return null;
+  }
+}
+
+/** An instant on the second zone's clock, in the app's own two spellings —
+ *  `formatClock`'s twin with the zone made explicit. `''` for a zone the
+ *  engine refuses, per `zoneParts`. */
+export function zoneClock(ms: number, tz: string, format: TimeFormat): string {
+  const p = zoneParts(ms, tz);
+  if (!p) return '';
+  return format === '12h'
+    ? `${dial(p.h)}:${pad2(p.m)} ${p.h < 12 ? 'AM' : 'PM'}`
+    : `${pad2(p.h)}:${pad2(p.m)}`;
+}
+
+/**
+ * One label on the second zone's half of the hour ruler, for the instant a
+ * primary hour line marks.
+ *
+ * Takes an instant rather than an hour, because the second zone's reading of
+ * the primary's `09:00` is not an hour of anything — India against a
+ * whole-hour zone puts every label on `:30`. Minutes appear only when they
+ * are non-zero, so a whole-hour second zone keeps the ruler as quiet as the
+ * primary's own (`07`, `7a`), and a half-hour one says what it must
+ * (`07:30`, `7:30a`).
+ */
+export function zoneGutterLabel(ms: number, tz: string, format: TimeFormat): string {
+  const p = zoneParts(ms, tz);
+  if (!p) return '';
+  const min = p.m === 0 ? '' : `:${pad2(p.m)}`;
+  return format === '12h'
+    ? `${dial(p.h)}${min}${p.h < 12 ? 'a' : 'p'}`
+    : `${pad2(p.h)}${min}`;
+}
+
+/**
+ * The short name a zone wears in the gutter's header — `GMT+5:30`, `PST` —
+ * whatever the engine's `en-US` data calls it, which is what Google's own
+ * header shows. The IANA id's last segment is the fallback for a zone the
+ * engine cannot name, because `Asia/Kolkata` cut to `Kolkata` still orients
+ * where an empty header orients nobody.
+ */
+export function zoneAbbrev(tz: string): string {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz, timeZoneName: 'short',
+    }).formatToParts(new Date());
+    return parts.find((p) => p.type === 'timeZoneName')?.value
+      ?? tz.split('/').pop() ?? tz;
+  } catch {
+    return tz.split('/').pop() ?? tz;
+  }
+}
+
+/**
  * A stored `HH:MM` as the clock the user chose — what the event form's time
  * fields *show*.
  *
