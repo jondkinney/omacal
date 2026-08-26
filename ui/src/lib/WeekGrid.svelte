@@ -1022,7 +1022,12 @@
   .col.today { background: var(--today-tint); border-radius: 6px; }
 
   .gutter { position: relative; }
-  .gutter span { position: absolute; right: 8px; font-size: 10.5px; color: var(--muted);
+  /* 11.5px, up from 10.5 (2026-08-26, by request): at 10.5 under the .7 wash
+     the ruler was the faintest text on the grid — fine as furniture, hard to
+     actually read a meeting's hour off. One point of size, not a louder
+     colour: the ruler should be legible when looked at and stay invisible
+     when not. */
+  .gutter span { position: absolute; right: 8px; font-size: 11.5px; color: var(--muted);
                  opacity: .7; transform: translateY(-50%); font-variant-numeric: tabular-nums; }
   /* The second clock's lane: same rules, same voice, offset past the primary
      labels so the two columns of digits stay columns. */
