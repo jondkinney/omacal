@@ -129,6 +129,8 @@
   class:dragging={preview !== null}
   class:keyboard={keyboardSelected}
   data-kbd-selected-event={keyboardSelected ? '' : undefined}
+  data-event-id={event.id}
+  data-event-start-ms={event.start_ms}
   style="
     top:{preview
       ? `calc(${placed.top * 100}% + ${preview.topDeltaPct}% + 1px)`

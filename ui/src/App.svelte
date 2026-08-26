@@ -346,11 +346,29 @@
             const firstTimed = day.events.find((candidate) => !candidate.is_all_day);
             const hours = document.querySelector<HTMLElement>('[data-testid="week-body"]');
             if (hours) {
-              const scrollStart = firstTimed
-                ? Math.max(day.startMs, firstTimed.start_ms - 3_600_000)
-                : day.startMs;
-              hours.scrollTop = (scrollStart - day.startMs)
-                / (day.endMs - day.startMs) * hours.scrollHeight;
+              if (!firstTimed) {
+                hours.scrollTop = 0;
+              } else {
+                const column = hours.querySelector<HTMLElement>(
+                  `.col[data-start-ms="${day.startMs}"]`,
+                );
+                const firstTimedBlock = column?.querySelector<HTMLElement>(
+                  `[data-event-id="${firstTimed.id}"][data-event-start-ms="${firstTimed.start_ms}"]`,
+                );
+                if (firstTimedBlock) {
+                  // Measure the rendered block rather than deriving its position
+                  // from scrollHeight. The scrollport owns top padding while the
+                  // 24-hour column does not, and conflating the two leaves this
+                  // target several pixels adrift (and changes with its padding).
+                  const targetTop = hours.scrollHeight / 24;
+                  const delta = firstTimedBlock.getBoundingClientRect().top
+                    - hours.getBoundingClientRect().top - targetTop;
+                  hours.scrollTop = Math.max(0, Math.min(
+                    hours.scrollHeight - hours.clientHeight,
+                    hours.scrollTop + delta,
+                  ));
+                }
+              }
             }
           }
         }
