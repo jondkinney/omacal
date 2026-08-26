@@ -649,7 +649,7 @@ mod tests {
         assert_ne!(un_payload(1, &[]), un_payload(2, &[]));
         // …while the payload still resolves regardless of the nonce.
         let accept = Action::AcceptInvite { event_id: 7, start_ms: T0900Z };
-        let p = un_payload(9, &[accept.clone()]);
+        let p = un_payload(9, std::slice::from_ref(&accept));
         assert_eq!(action_for_un(&p, UN_DEFAULT_ACTION), Some(accept));
     }
 
