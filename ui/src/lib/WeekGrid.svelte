@@ -987,7 +987,16 @@
      `overflow-y` is what buys that: a flex item whose overflow is not
      `visible` has no automatic minimum size, so no `min-height: 0` is needed
      beside it. Measured — adding one moves nothing, at 400px or at 720p. */
-  .body { flex: 1; overflow-y: auto; position: relative; }
+  /* 8px of headroom, for the ruler's first labels: every label centres on
+     its rule (`translateY(-50%)` below), so hour 0's top half has always
+     hung above this box's edge and been clipped at scroll-top. Half a "00"
+     was furniture nobody missed; the second zone made that same label read
+     "21:30" and the clipping started hiding information (reported
+     2026-08-26, the first field run of v0.6.0). Padding rather than a
+     special case for hour 0: the rules position as fractions *inside* the
+     columns, so everything — labels, rules, blocks, the now line — shifts
+     down together and nothing can shear. */
+  .body { flex: 1; overflow-y: auto; position: relative; padding-top: 8px; }
 
   .head { text-align: center; font-size: 11px; color: var(--muted);
           letter-spacing: .05em; padding-bottom: 8px; }
@@ -1022,25 +1031,36 @@
   .col.today { background: var(--today-tint); border-radius: 6px; }
 
   .gutter { position: relative; }
-  /* 11.5px, up from 10.5 (2026-08-26, by request): at 10.5 under the .7 wash
-     the ruler was the faintest text on the grid — fine as furniture, hard to
-     actually read a meeting's hour off. One point of size, not a louder
-     colour: the ruler should be legible when looked at and stay invisible
-     when not. */
+  /* 11.5px at .85, up from 10.5 at .7 (2026-08-26, by request twice over):
+     the ruler was the faintest text on the grid — fine as furniture, hard
+     to actually read a meeting's hour off — and once a second clock stood
+     beside it, the two lanes were indistinguishable in rank. */
   .gutter span { position: absolute; right: 8px; font-size: 11.5px; color: var(--muted);
-                 opacity: .7; transform: translateY(-50%); font-variant-numeric: tabular-nums; }
-  /* The second clock's lane: same rules, same voice, offset past the primary
-     labels so the two columns of digits stay columns. */
-  .gutter span.z2 { right: 60px; }
+                 opacity: .85; transform: translateY(-50%); font-variant-numeric: tabular-nums; }
+  /* The second clock's lane, one step down in both size and wash — the
+     hierarchy is the point: the primary is the ruler the grid obeys, the
+     second an annotation about it, and quieting the annotation says so
+     without the primary having to shout. Offset past the primary labels so
+     the two columns of digits stay columns. */
+  .gutter span.z2 { right: 60px; font-size: 10.5px; opacity: .55; }
 
   /* The zone captions over the ruler, only rendered when there are two
      clocks to tell apart. Small on purpose — they are column headers for
      digits, not content — and bottom-aligned so they sit just over the
-     first labels the way the day names sit over their columns. */
+     first labels the way the day names sit over their columns.
+
+     The outer caption anchors LEFT while its digits anchor right, and the
+     width cap is load-bearing: two "GMT+X:30"-shaped names right-anchored
+     to adjacent lanes met in the middle and read as one mashed string
+     ("GMT+3GMT+5:30" on the first field run, 2026-08-26). Left vs right
+     anchoring keeps the gap where the names are widest, and the ellipsis
+     bounds the worst pair the tz database can produce. */
   .zl { position: absolute; bottom: 8px; font-size: 9px; color: var(--muted);
-        letter-spacing: .04em; }
-  .zl.z2 { right: 60px; }
-  .zl.z1 { right: 8px; }
+        letter-spacing: .04em; max-width: 46px; overflow: hidden;
+        text-overflow: ellipsis; white-space: nowrap; }
+  /* The captions carry their lanes' own ranks. */
+  .zl.z2 { left: 4px; opacity: .55; }
+  .zl.z1 { right: 8px; opacity: .85; }
 
   /* Fills the column, paints nothing, and sits under everything else in it —
      it is first in the DOM and every sibling that could cover it is either

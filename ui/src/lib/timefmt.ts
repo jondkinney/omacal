@@ -117,22 +117,34 @@ export function zoneGutterLabel(ms: number, tz: string, format: TimeFormat): str
 }
 
 /**
- * The short name a zone wears in the gutter's header — `GMT+5:30`, `PST` —
- * whatever the engine's `en-US` data calls it, which is what Google's own
- * header shows. The IANA id's last segment is the fallback for a zone the
- * engine cannot name, because `Asia/Kolkata` cut to `Kolkata` still orients
- * where an empty header orients nobody.
+ * The short name a zone wears in the gutter's header and beside the form's
+ * echo line — `IST`, `EEST`, and only as a last resort the city.
+ *
+ * Alphabetic abbreviations, insisted on rather than taken as they come:
+ * `en-US` alone answers `GMT+5:30` for Kolkata, and two right-anchored
+ * `GMT+X:30`-shaped names in adjacent 40px lanes met in the middle and
+ * read as one mashed string (first field run, 2026-08-26). No single
+ * locale's English knows every conventional abbreviation — `en-US` has
+ * EEST and PST but not IST, `en-IN` the reverse — so a few are asked in
+ * turn and the first proper abbreviation wins. A zone none of them can
+ * name falls back to its IANA city (`Asia/Tokyo` → `Tokyo`), which still
+ * orients better than the offset that caused the pile-up.
  */
 export function zoneAbbrev(tz: string): string {
-  try {
-    const parts = new Intl.DateTimeFormat('en-US', {
-      timeZone: tz, timeZoneName: 'short',
-    }).formatToParts(new Date());
-    return parts.find((p) => p.type === 'timeZoneName')?.value
-      ?? tz.split('/').pop() ?? tz;
-  } catch {
-    return tz.split('/').pop() ?? tz;
+  const city = () => tz.split('/').pop()?.replace(/_/g, ' ') ?? tz;
+  for (const locale of ['en-US', 'en-GB', 'en-IN']) {
+    try {
+      const name = new Intl.DateTimeFormat(locale, {
+        timeZone: tz, timeZoneName: 'short',
+      }).formatToParts(new Date()).find((p) => p.type === 'timeZoneName')?.value;
+      if (name && /^[A-Z]{2,5}$/.test(name)) return name;
+    } catch {
+      // An unknown zone throws for every locale alike; the city is all
+      // that is left to say.
+      return city();
+    }
   }
+  return city();
 }
 
 /**
