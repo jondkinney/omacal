@@ -6,8 +6,11 @@ iCloud, or any CalDAV server**, including CalDAV **task lists** (VTODO)
 with tasks fully manageable (complete, add, delete) from the app. Meeting
 **invitations announce themselves** and can be accepted with one click, and
 the header's tray keeps score of everything that changed around your
-meetings: who declined, what moved, what was cancelled. Built with Tauri v2,
-Rust and Svelte 5, for Omarchy Linux first — it also runs on macOS.
+meetings: who declined, what moved, what was cancelled. A **read-only CLI**
+rides in the same binary — `omacal agenda --json` — with a shipped agent
+skill, so your terminal and your coding agent read the same calendar the
+app draws. Built with Tauri v2, Rust and Svelte 5, for Omarchy Linux
+first — with a signed, notarized macOS build alongside.
 
 iCloud connects with an app-specific password from appleid.apple.com — no
 OAuth dance. Edits on CalDAV events are etag-guarded (a change that raced
@@ -40,6 +43,15 @@ needed, dependencies resolved by apt:
     sudo apt install ./omacal_<version>_amd64.deb
 
 The `.rpm` on the same page covers Fedora-family the same way.
+
+**On macOS** (Apple Silicon): [download the
+.dmg](https://github.com/x3me/omacal/releases/latest/download/omacal.dmg),
+drag omacal to Applications, double-click — the build is signed with a
+Developer ID certificate and notarized by Apple, so there is no
+right-click ritual and no warning. From v0.5.0 on it updates itself the
+same way the AppImage does: the header's notice carries an Update button.
+(A build older than 0.5.0 is unsigned — update it by hand once via
+right-click → Open, and the button takes over.)
 
 Then run `omacal` and click **Connect Google Calendar** — and that is the
 whole setup. **You do not need your own Google credentials, an API key, or a

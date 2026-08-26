@@ -192,6 +192,10 @@ jobs:
                        target/release/bundle/deb/*.deb \
                        target/release/bundle/rpm/*.rpm)
           else
+            # The stable name beside the versioned one, so
+            # releases/latest/download/omacal.dmg is a link that never rots —
+            # the site's Download button points at it.
+            cp target/release/bundle/dmg/*.dmg target/release/bundle/dmg/omacal.dmg
             files=$(ls target/release/bundle/dmg/*.dmg \
                        target/release/bundle/macos/*.app.tar.gz \
                        target/release/bundle/macos/*.app.tar.gz.sig)
