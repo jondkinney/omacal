@@ -231,13 +231,18 @@ Signing an account out — that means revoking a token, clearing the Keychain
 entry and deleting that account's calendars and their events, and a button
 that did half of it would leave rows nothing can reach.
 
-**Reliable notifications on macOS.** `UNUserNotificationCenter` wants a correctly
-signed bundle and this one is unsigned, so a reminder may simply never appear.
-The path is wired and fails quietly by design — no error banner, no retry loop,
-and the reminder is still recorded as fired so a refusing transport cannot turn
-into an unbounded retry. The scheduler, the tray and start-on-login all work
-regardless; it is only the final hand-off to macOS that is unreliable. Omarchy
-is the platform this was built for, where it goes over D-Bus to mako.
+**Notifications from a dev run.** The installed, signed app talks to
+`UNUserNotificationCenter` directly (`notify_mac.rs`, since the arc after
+v0.5.1): the standard permission prompt on first launch, Join and Snooze as
+real buttons, and a click that lands the calendar on the occurrence — the
+Omarchy feature set, minus only the sticky invitation toast, whose
+banner-versus-alert persistence macOS reserves for the user's own System
+Settings. What stays unreliable is the **unbundled** run this document is
+about: `cargo tauri dev` has no bundle identity, the centre refuses on
+principle, and the old best-effort plugin path fails quietly by design — no
+error banner, no retry loop, and the reminder is still recorded as fired so a
+refusing transport cannot turn into an unbounded retry. To see a real macOS
+notification, test against a bundled build.
 
 All three residuals in §7 of
 `docs/superpowers/specs/2026-08-08-omacal-form-time-boundary-design.md` are now

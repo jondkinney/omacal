@@ -84,6 +84,19 @@ omacal is unsigned. Rather than block on a developer account:
 This is the target platform first and the development platform second, which is
 the correct order for this project and is not the order convenience suggests.
 
+> **Amended 2026-08-26.** v0.5.0 shipped the signed, notarized bundle this
+> section said we would not block on — so the premise dissolved rather than
+> the decision being wrong. Bundled macOS builds now talk to
+> `UNUserNotificationCenter` directly (`notify_mac.rs`): the permission
+> prompt, Join/Snooze as registered category buttons, and the click routed
+> through the same `Action` dispatch as the D-Bus path. The best-effort
+> plugin transport survives exactly where the original reasoning still
+> holds — unbundled dev runs, where the centre refuses on principle. What
+> macOS still does not get is the sticky invitation toast: banner-versus-
+> alert persistence is the user's System Settings choice there, not a
+> per-notification urgency, and the in-app invite tray was always the
+> backstop for a missed toast.
+
 ### 2.5 Actions
 
 *Join* when the occurrence has a conferencing URI (the popover already resolves
