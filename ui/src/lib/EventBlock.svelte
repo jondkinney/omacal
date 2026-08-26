@@ -1,5 +1,6 @@
 <script lang="ts">
   import { clockFormat } from './clock.svelte';
+  import { RESIZE_EDGE_PX } from './drag';
   import { formatClock } from './timefmt';
   import type { UiEvent, Placed } from './api';
   import type { Rect } from './position';
@@ -87,6 +88,20 @@
    *  below also gates on `!preview`. */
   let tip = $state<{ x: number; y: number; above: boolean } | null>(null);
 
+  /** The block's rendered height, for the grips below — the one fact the
+   *  short-block rule needs and CSS alone cannot ask. */
+  let heightPx = $state(0);
+
+  /** Whether the ends grow resize grips. **`edgeAt`'s own rule, on the same
+   *  constant**: below three bands of height there is no middle left between
+   *  them and the press-time hit test answers `null` — so the cursor must not
+   *  promise what the press will not do. The grips are the *affordance* for a
+   *  resize that has worked since `856406b` and that nobody could find,
+   *  because the only cursor the block ever showed was `grab` (reported
+   *  2026-08-26: "I want to extend this to grabbing an edge" — it existed,
+   *  invisibly). */
+  const grips = $derived(heightPx >= RESIZE_EDGE_PX * 3);
+
   function showTip(e: MouseEvent) {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
     // Above the block unless that would leave the viewport; clamped right so
@@ -124,7 +139,17 @@
   onmouseenter={showTip}
   onmouseleave={hideTip}
   onpointerdown={(e) => { hideTip(); ongrab?.(event, e); }}
+  bind:clientHeight={heightPx}
 >
+  <!-- The resize cursor's home, and nothing else's: no background, no
+       handler, no size of their own beyond the band constant — the press
+       still lands on the button and `edgeAt` still decides. Hidden while
+       this block is the one being dragged, when the only honest cursor is
+       the grid's own `grabbing`. -->
+  {#if grips && !preview}
+    <span class="grip" style="top:0; height:{RESIZE_EDGE_PX}px" aria-hidden="true"></span>
+    <span class="grip" style="bottom:0; height:{RESIZE_EDGE_PX}px" aria-hidden="true"></span>
+  {/if}
   <!-- `?` means MAYBE — the answer niki gave, in the letter Google and
        Outlook both use for it (2026-08-10, by request). An unanswered invite
        carries no letter: its dashed ring is the whole of "nothing yet". -->
@@ -150,9 +175,13 @@
      finger. */
   .ev.dragging { z-index: 50 !important; opacity: 0.85; cursor: grabbing; }
   /* The grab bands, as cursors only — the hit test itself is `drag.ts`'s
-     `edgeAt`, on the press's own offset, so there is no element here whose
-     bounds could disagree with it. */
+     `edgeAt`, on the press's own offset. The `.grip` spans in the template
+     exist purely to carry `ns-resize` over those bands: sized by the same
+     constant and gated by the same short-block rule, so what the cursor
+     promises and what the press does cannot disagree — and transparent, so
+     the committed baselines hold them to invisibility. */
   .ev:hover { cursor: grab; }
+  .grip { position: absolute; left: 0; right: 0; cursor: ns-resize; }
 
   .ev {
     /* A <button> keeps native chrome in macOS WKWebView unless appearance is

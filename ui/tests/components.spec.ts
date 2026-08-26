@@ -610,6 +610,28 @@ test.describe('EventBlock duration ladder', () => {
     await page.goto(show('EventBlock', 'ladder-120'));
     await expect(page.locator('.ev em')).toHaveCount(2);
   });
+
+  test('the ends wear the resize cursor, exactly where a press would resize', async ({ page }) => {
+    // The resize itself has worked since 856406b; what was missing was any
+    // way to know it was there — the block's only cursor was `grab`, so the
+    // feature shipped invisible (reported 2026-08-26 as a request for the
+    // feature that already existed). The grips carry `ns-resize` over
+    // `edgeAt`'s own bands — same constant, same short-block rule — and this
+    // asserts the promise matches the behaviour on both sides of that rule.
+    await page.goto(show('EventBlock', 'ladder-60'));
+    const grips = page.locator('.grip');
+    await expect(grips).toHaveCount(2);
+    for (const g of await grips.all()) {
+      expect(await g.evaluate((el) => getComputedStyle(el).cursor)).toBe('ns-resize');
+    }
+
+    // A 15-minute block has no edges at all — `edgeAt` answers null there,
+    // so every press stays the move gesture — and it must therefore make
+    // no resize promise either.
+    await page.goto(show('EventBlock', 'ladder-15'));
+    await expect(page.locator('.ev')).toBeVisible();
+    await expect(page.locator('.grip')).toHaveCount(0);
+  });
 });
 
 // The frame is `.ev`, not `#app`, and that is the whole point of these four.
