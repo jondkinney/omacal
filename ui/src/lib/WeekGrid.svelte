@@ -1,9 +1,10 @@
 <!-- ui/src/lib/WeekGrid.svelte -->
 <script lang="ts">
   import { clockFormat } from './clock.svelte';
+  import { gutterWidth, secondZone } from './secondzone.svelte';
   import WeatherGlyph from './WeatherGlyph.svelte';
   import { dateKey, type DayWeather } from './weather';
-  import { gutterLabel } from './timefmt';
+  import { gutterLabel, zoneAbbrev, zoneGutterLabel } from './timefmt';
   import { tick } from 'svelte';
   import type { WeekPayload, UiEvent } from './api';
   import type { Rect } from './position';
@@ -85,6 +86,21 @@
   const gutterDay = $derived(
     week.days.find((d) => d.end_ms - d.start_ms === 86_400_000) ?? week.days[0]
   );
+
+  // The instant a primary hour line marks — `hourFrac`'s own Date, kept as
+  // milliseconds, so the second zone's label describes exactly the rule it
+  // sits beside (and lands on `:30` where the zones are half an hour apart,
+  // which is the honest reading, not a rounding error).
+  const hourMs = (day: { start_ms: number }, h: number) => {
+    const d = new Date(day.start_ms);
+    d.setHours(h, 0, 0, 0);
+    return d.getTime();
+  };
+
+  // The zone this grid is laid out in — the process's own, which is the
+  // display zone when one is set. Named only when a second clock appears:
+  // one clock needs no label, two clocks unlabelled are a guessing game.
+  const primaryZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
   // Current-time line, recomputed each minute. Held as an instant and divided by
   // the column it lands in, rather than assuming a 1440-minute day.
@@ -783,8 +799,17 @@
   }
 </script>
 
-<div class="grid" style="--cols:{week.days.length}">
-  <div class="gutter head"></div>
+<div class="grid" style="--cols:{week.days.length}; --gutter:{gutterWidth()}">
+  <div class="gutter head">
+    {#if secondZone()}
+      <!-- Which clock is which, Google's own layout: the convenience zone in
+           the outer lane, the zone the grid actually lives in beside the
+           columns it governs. Absent entirely with one clock — a ruler that
+           has always been unlabelled does not grow a caption for nothing. -->
+      <span class="zl z2">{zoneAbbrev(secondZone()!)}</span>
+      <span class="zl z1">{zoneAbbrev(primaryZone)}</span>
+    {/if}
+  </div>
   {#each week.days as d}
     <div class="head" class:today={d.start_ms === todayStart}>
       <span>{dayName(d.start_ms)}</span>
@@ -820,9 +845,16 @@
   onopen={openPopover}
 />
 
-<div class="grid body" style="--cols:{week.days.length}" bind:this={bodyEl} data-testid="week-body">
+<div class="grid body" style="--cols:{week.days.length}; --gutter:{gutterWidth()}" bind:this={bodyEl} data-testid="week-body">
   <div class="gutter">
     {#each HOURS as h}
+      {#if secondZone()}
+        <!-- The second clock's reading of this same rule — one instant, two
+             spellings, which is the entire feature. Same top, so the eye can
+             run straight across. -->
+        <span class="z2" style="top:{hourFrac(gutterDay, h) * 100}%">
+          {zoneGutterLabel(hourMs(gutterDay, h), secondZone()!, clockFormat())}</span>
+      {/if}
       <span style="top:{hourFrac(gutterDay, h) * 100}%">{gutterLabel(h, clockFormat())}</span>
     {/each}
   </div>
@@ -942,7 +974,11 @@
 {/if}
 
 <style>
-  .grid { display: grid; grid-template-columns: 44px repeat(var(--cols), 1fr); }
+  /* `--gutter` from `secondzone.svelte`'s one exported width: 44px alone,
+     wider when the second clock takes the outer lane. A var rather than two
+     hardcodings because the head row here, the body row below and the
+     all-day band between them must all move together or the columns shear. */
+  .grid { display: grid; grid-template-columns: var(--gutter, 44px) repeat(var(--cols), 1fr); }
   /* The last of this component's three roots, and the only one that stretches:
      the day-name row and the all-day band above it are content-sized, so
      `flex: 1` here means "the rest of whatever App's `main` has left", rather
@@ -986,8 +1022,25 @@
   .col.today { background: var(--today-tint); border-radius: 6px; }
 
   .gutter { position: relative; }
-  .gutter span { position: absolute; right: 8px; font-size: 10.5px; color: var(--muted);
+  /* 11.5px, up from 10.5 (2026-08-26, by request): at 10.5 under the .7 wash
+     the ruler was the faintest text on the grid — fine as furniture, hard to
+     actually read a meeting's hour off. One point of size, not a louder
+     colour: the ruler should be legible when looked at and stay invisible
+     when not. */
+  .gutter span { position: absolute; right: 8px; font-size: 11.5px; color: var(--muted);
                  opacity: .7; transform: translateY(-50%); font-variant-numeric: tabular-nums; }
+  /* The second clock's lane: same rules, same voice, offset past the primary
+     labels so the two columns of digits stay columns. */
+  .gutter span.z2 { right: 60px; }
+
+  /* The zone captions over the ruler, only rendered when there are two
+     clocks to tell apart. Small on purpose — they are column headers for
+     digits, not content — and bottom-aligned so they sit just over the
+     first labels the way the day names sit over their columns. */
+  .zl { position: absolute; bottom: 8px; font-size: 9px; color: var(--muted);
+        letter-spacing: .04em; }
+  .zl.z2 { right: 60px; }
+  .zl.z1 { right: 8px; }
 
   /* Fills the column, paints nothing, and sits under everything else in it —
      it is first in the DOM and every sibling that could cover it is either

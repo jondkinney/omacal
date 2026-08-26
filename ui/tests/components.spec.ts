@@ -37,6 +37,36 @@ test.describe('WeekGrid', () => {
     await expect(page.locator('.col.today .now')).toBeVisible();
   });
 
+  test('the hour ruler grows a second clock only when settings name one', async ({ page }) => {
+    await page.goto(show('WeekGrid', 'empty'));
+
+    // Off is the default, and off is byte-for-byte the ruler the committed
+    // goldens hold: one label per hour, no zone captions, 44px of gutter.
+    const ruler = page.getByTestId('week-body').locator('.gutter');
+    await expect(ruler.locator('span.z2')).toHaveCount(0);
+    await expect(page.locator('.zl')).toHaveCount(0);
+
+    // App's one line, played by the spec (see mount.svelte.ts). The suite
+    // runs in UTC and Kolkata is +05:30 with no DST, so every conversion is
+    // a constant — and the half-hour offset is the interesting case, where
+    // the second clock cannot just repeat the primary's digits.
+    await page.evaluate(() => (window as any).__setSecondZone('Asia/Kolkata'));
+
+    // The ruler's own spans, not the head's caption — which wears `.z2`
+    // too, for the same lane.
+    const z2 = ruler.locator('span.z2');
+    await expect(z2).toHaveCount(24);
+    await expect(z2.first()).toHaveText('05:30'); // the 00:00 UTC rule
+    await expect(z2.nth(9)).toHaveText('14:30');  // the 09:00 UTC rule
+
+    // Both clocks are captioned once there are two — the convenience zone
+    // in the outer lane, the grid's own beside its columns. What the
+    // engine calls Kolkata varies by ICU ("GMT+5:30" here, "IST" in an
+    // Indian locale), so the assertion accepts the family, not one string.
+    await expect(page.locator('.zl.z2')).toHaveText(/GMT\+5:30|IST/);
+    await expect(page.locator('.zl.z1')).toHaveText(/UTC|GMT/);
+  });
+
   // `WeekGrid` reads the real clock three times — `todayStart` at mount (the
   // accent day-number pill and the `.col.today` tint), `nowMs` for the
   // current-time line, and `Date.now()` again for where the grid opens
@@ -1238,7 +1268,7 @@ test.describe('Header', () => {
 
     // Defaults to the system zone; Apply is dead until something changes —
     // a restart button that is live with nothing to apply invites misclicks.
-    const box = modal.getByLabel('Time zone');
+    const box = modal.getByLabel('Time zone', { exact: true });
     await expect(box).toHaveValue('');
     const apply = modal.getByRole('button', { name: 'Apply & restart' });
     await expect(apply).toBeDisabled();
@@ -1265,11 +1295,48 @@ test.describe('Header', () => {
     // vocabulary.
     await page.keyboard.press('Escape');
     const again = await openSettings(page);
-    await expect(again.getByLabel('Time zone')).toHaveValue('Europe/Sofia');
-    await again.getByLabel('Time zone').fill('');
+    await expect(again.getByLabel('Time zone', { exact: true })).toHaveValue('Europe/Sofia');
+    await again.getByLabel('Time zone', { exact: true }).fill('');
     await again.getByRole('button', { name: 'Apply & restart' }).click();
     const second = await page.evaluate(() =>
       (window as any).__harness.calls.filter((c: { cmd: string }) => c.cmd === 'set_display_timezone').pop()?.args);
+    expect(second).toEqual({ tz: null });
+  });
+
+  test('the second zone applies without a restart and clears to off', async ({ page }) => {
+    await page.goto(show('Header', 'connected'));
+    const modal = await openSettings(page);
+
+    // Same combo pattern as the display zone above it, same substring
+    // search — and the same dead-until-valid Apply, though this one costs
+    // no restart and says so by not being labelled with one.
+    const box = modal.getByLabel('Second time zone');
+    await expect(box).toHaveValue('');
+    const apply = modal.getByRole('button', { name: 'Apply', exact: true });
+    await expect(apply).toBeDisabled();
+
+    await box.fill('kolkata');
+    await expect(apply).toBeDisabled();
+    await modal.getByRole('option', { name: 'Asia/Kolkata' }).click();
+    await expect(apply).toBeEnabled();
+    await apply.click();
+
+    // Stored under the command's own name — and no restart note appears,
+    // because none is coming.
+    const call = await page.evaluate(() =>
+      (window as any).__harness.calls.find((c: { cmd: string }) => c.cmd === 'set_second_timezone')?.args);
+    expect(call).toEqual({ tz: 'Asia/Kolkata' });
+    await expect(page.getByTestId('tz-note')).toHaveCount(0);
+
+    // The stored choice survives a reopen, and clearing sends null — the
+    // backend's vocabulary for off, exactly as the display zone clears.
+    await page.keyboard.press('Escape');
+    const again = await openSettings(page);
+    await expect(again.getByLabel('Second time zone')).toHaveValue('Asia/Kolkata');
+    await again.getByLabel('Second time zone').fill('');
+    await again.getByRole('button', { name: 'Apply', exact: true }).click();
+    const second = await page.evaluate(() =>
+      (window as any).__harness.calls.filter((c: { cmd: string }) => c.cmd === 'set_second_timezone').pop()?.args);
     expect(second).toEqual({ tz: null });
   });
 
@@ -3323,6 +3390,29 @@ test.describe('EventForm', () => {
    *  was saved at all. */
   const saves = (page: import('@playwright/test').Page) =>
     page.evaluate(() => (window as any).__saves as any[]);
+
+  test('the typed times echo in the second zone when settings name one', async ({ page }) => {
+    await open(page, 'create');
+    // Absent while the setting is off — the form has never had this line,
+    // and without a second zone it still does not.
+    await expect(page.getByTestId('second-zone')).toHaveCount(0);
+
+    await page.evaluate(() => (window as any).__setSecondZone('Asia/Kolkata'));
+    await page.getByLabel('Start', { exact: true }).fill('09:00');
+    await page.getByLabel('End', { exact: true }).fill('10:30');
+
+    // UTC 09:00–10:30 on Kolkata's clock, live as the times are typed —
+    // the same keystroke-commit the grid ghost follows. The zone's short
+    // name varies by ICU, so it is matched as a family.
+    const line = page.getByTestId('second-zone');
+    await expect(line).toContainText('14:30–16:00');
+    await expect(line).toContainText(/GMT\+5:30|IST/);
+
+    // All-day silences it: a day is a day in every zone, and printing
+    // "05:30–05:30" under a trip would be the line lying with digits.
+    await page.getByText('All day').click();
+    await expect(page.getByTestId('second-zone')).toHaveCount(0);
+  });
 
   test('typing a fragment offers people from meeting history', async ({ page }) => {
     // "Right now I have to write them from memory or find them in mail"

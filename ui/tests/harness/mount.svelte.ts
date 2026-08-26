@@ -17,6 +17,7 @@ import * as drag from '../../src/lib/drag';
 import { FIXTURES } from '../fixtures';
 import { installTauriStub } from './tauri';
 import { setPalette } from '../../src/lib/theme';
+import { setSecondZone } from '../../src/lib/secondzone.svelte';
 import { VIEW_BOX_CSS } from './viewbox';
 
 // The form's pure date functions, reachable from a spec.
@@ -33,6 +34,12 @@ import { VIEW_BOX_CSS } from './viewbox';
 // answer it gives depends on the browser's zone, and `timezoneId` reaches the
 // browser context rather than Node.
 (window as any).__drag = drag;
+
+// The second-zone rune's writer, reachable from a spec. In the app the only
+// writer is `App`, seeded from settings; a component mounted standalone has
+// no App above it, so a spec that wants the second clock drawn plays App's
+// one line itself.
+(window as any).__setSecondZone = setSecondZone;
 
 // Palette normally arrives from the Rust get_palette command; the harness
 // applies the same `fallback_dark` values (`src-tauri/src/theme.rs`) so

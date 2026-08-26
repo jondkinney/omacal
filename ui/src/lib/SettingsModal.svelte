@@ -12,7 +12,8 @@
   import {
     getSettings, listTimezones, minutesOf, msOfMinutes, setDefaultCalendar,
     setDisplayTimezone, setFallbackReminders, setNotificationsEnabled,
-    setSyncInterval, setTimeFormat, setTrayIcon, setWeatherEnabled, setWeekStart,
+    setSecondTimezone, setSyncInterval, setTimeFormat, setTrayIcon,
+    setWeatherEnabled, setWeekStart,
     type AppSettings,
   } from './settings';
   import { formatClock, type TimeFormat } from './timefmt';
@@ -145,6 +146,36 @@
       await setDisplayTimezone(tzChoice === '' ? null : tzChoice);
     } catch (e) {
       tzRestarting = false;
+      note = { text: String(e), kind: 'error' };
+    }
+  }
+
+  /** The second-zone box — the display zone's combo pattern over the same
+   *  fetched list; '' is "Off". Its Apply carries no restart: nothing
+   *  process-level captures this zone, so the settings that come back are
+   *  already in force, and `onsettingschange` starts the second clock
+   *  drawing behind the modal in the same breath. */
+  let z2Choice = $state('');
+  let z2Seeded = false;
+  $effect(() => {
+    if (settings && !z2Seeded) {
+      z2Seeded = true;
+      z2Choice = settings.secondTimezone ?? '';
+    }
+  });
+  const z2Valid = $derived(z2Choice === '' || timezones.includes(z2Choice));
+  const z2Changed = $derived(
+    settings !== null && z2Valid && z2Choice !== (settings.secondTimezone ?? ''));
+  const z2Matches = $derived.by(() => {
+    const q = z2Choice.trim().toLowerCase();
+    if (q === '' || timezones.includes(z2Choice)) return [];
+    return timezones.filter((z) => z.toLowerCase().includes(q)).slice(0, 8);
+  });
+  async function applySecondZone() {
+    try {
+      settings = await setSecondTimezone(z2Choice === '' ? null : z2Choice);
+      onsettingschange?.(settings);
+    } catch (e) {
       note = { text: String(e), kind: 'error' };
     }
   }
@@ -581,6 +612,38 @@
         Every time omacal shows reads in this zone — the grid, reminders, the
         bar widget's feed. Applying restarts omacal, which is what makes all
         of them agree.
+      </p>
+
+      <div class="row">
+        <label class="lab" for="second-tz">Second time zone</label>
+        <div class="inline">
+          <input
+            id="second-tz"
+            type="text"
+            placeholder="Off"
+            disabled={!settings}
+            bind:value={z2Choice}
+          />
+          <button
+            type="button"
+            disabled={!z2Changed}
+            onclick={applySecondZone}
+          >Apply</button>
+        </div>
+        {#if z2Matches.length > 0}
+          <div class="tzlist" role="listbox" aria-label="Matching second time zones">
+            {#each z2Matches as z (z)}
+              <button type="button" role="option" aria-selected="false"
+                      onclick={() => (z2Choice = z)}>{z}</button>
+            {/each}
+          </div>
+        {/if}
+      </div>
+      <p class="hint">
+        A second clock beside the first — on the Week and Day hour ruler, and
+        under the event form's times. Convenience only: events are still
+        created and edited in the time zone above. Clear the box to turn it
+        off; no restart either way.
       </p>
 
       <label class="check">

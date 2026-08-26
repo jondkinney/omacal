@@ -2,7 +2,8 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { clockFormat } from './clock.svelte';
-  import { displayClock, parseClock } from './timefmt';
+  import { secondZone } from './secondzone.svelte';
+  import { displayClock, parseClock, zoneAbbrev, zoneClock } from './timefmt';
   import { knownGuests, type KnownGuest } from './people';
   import { escapeCloses } from './dismiss.svelte';
   import { placePopover, type Rect } from './position';
@@ -12,7 +13,7 @@
   import type { SendUpdates } from './eventdetail';
   import {
     CUSTOM_REPEAT, REPEAT_OPTIONS, addGuest, endAfterStart, isAddress, mailableGuests,
-    removableGuest, removeGuest, ruleInWords, shiftedEndDate, toEventInput,
+    previewSpan, removableGuest, removeGuest, ruleInWords, shiftedEndDate, toEventInput,
     toggledGuestOptional, timeProblem, toggledAllDay,
     type EventFormResult, type EventFormValue, type Scope,
   } from './eventform';
@@ -129,6 +130,23 @@
   $effect(() => {
     onvaluechange?.($state.snapshot(value) as EventFormValue);
   });
+  /** The convenience clock under the time fields: the working span read in
+   *  the second zone, when one is set. Derived from `previewSpan` — the
+   *  grid ghost's own derivation — so this line and the ghost can never
+   *  describe different spans, and its `null`s (all-day, half-typed, end
+   *  before start) silence the line for the same reasons they hide the
+   *  ghost. Display only, exactly like the setting it reads. */
+  const zwhen = $derived.by(() => {
+    const tz = secondZone();
+    if (!tz) return null;
+    const span = previewSpan(value);
+    if (!span) return null;
+    const start = zoneClock(span.startMs, tz, clockFormat());
+    const end = zoneClock(span.endMs, tz, clockFormat());
+    // Both or neither: a zone the engine refuses renders nothing, not "–".
+    return start && end ? { start, end, label: zoneAbbrev(tz) } : null;
+  });
+
   /** Set by a refused save, cleared by the next edit. Deliberately not derived
    *  from `value`: a form that reddens while you are still typing the end time
    *  is telling you off for a sentence you have not finished. */
@@ -459,6 +477,15 @@
         </label>
       {/if}
     </div>
+
+    {#if zwhen}
+      <!-- What these times read as on the second clock, when settings name
+           one — the other half of the gutter's feature, at the moment it
+           matters most: typing a time for somebody who lives in that zone. -->
+      <p class="zwhen" data-testid="second-zone">
+        {zwhen.start}–{zwhen.end} <span>{zwhen.label}</span>
+      </p>
+    {/if}
 
     <label class="field">
       <span class="lab">Location</span>
@@ -813,6 +840,13 @@
 
   /* Two per row, so a date and its time read as one thing. */
   .when { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 8px; }
+
+  /* The second clock's reading, in the hint's own quiet voice — information
+     beside the fields, never a field. Tabular digits so the line holds still
+     while the times under it are typed. */
+  .zwhen { margin: 0; font-size: 11px; color: var(--muted);
+           font-variant-numeric: tabular-nums; }
+  .zwhen span { font-size: 9px; letter-spacing: .04em; opacity: .85; }
 
   .scope { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--muted); }
   .scope label { display: flex; align-items: center; gap: 6px; cursor: pointer; }

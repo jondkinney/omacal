@@ -22,6 +22,7 @@
   import { daysFromMonth, daysFromWeek, listable } from './lib/filmstrip';
   import { getSettings, setListMode } from './lib/settings';
   import { setClockFormat } from './lib/clock.svelte';
+  import { setSecondZone } from './lib/secondzone.svelte';
   import { setWeekStartDay } from './lib/weekstartstore.svelte';
   import ShortcutSheet from './lib/ShortcutSheet.svelte';
   import { SHORTCUT_LIST, type ShortcutId } from './lib/shortcuts';
@@ -265,6 +266,7 @@
         defaultCalendarId = s.defaultCalendarId;
         setClockFormat(s.timeFormat);
         setWeekStartDay(s.weekStart);
+        setSecondZone(s.secondTimezone);
         if (listModeChoices !== before) return; // superseded by the user's own choice
         listMode = s.listMode;
       })
@@ -1223,6 +1225,7 @@
       defaultCalendarId = s.defaultCalendarId;
       setClockFormat(s.timeFormat);
       setWeekStartDay(s.weekStart);
+      setSecondZone(s.secondTimezone);
       // The weather toggle lives in the same modal; refetching on every
       // settings change is one cache read, and it is what makes flipping
       // the switch change the headers now rather than within the hour.
