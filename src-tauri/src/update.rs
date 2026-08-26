@@ -335,7 +335,11 @@ pub(crate) async fn install_update(
 
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-        app.restart();
+        // Not `app.restart()`: its exit-time teardown is what left a
+        // windowless zombie of the old instance after every update
+        // (field-diagnosed 2026-08-26; see `restart`'s module doc).
+        drop(app);
+        crate::restart::hard_restart();
     });
     Ok(())
 }

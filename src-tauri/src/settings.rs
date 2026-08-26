@@ -402,7 +402,8 @@ pub async fn set_display_timezone(
 
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-        app.restart();
+        drop(app);
+        crate::restart::hard_restart();
     });
     Ok(())
 }
@@ -412,12 +413,15 @@ pub async fn set_display_timezone(
 /// for the same reason: the reply has to reach the webview before the
 /// process re-execs, so the button can say "restarting" instead of dying
 /// mid-await. No state to write first: the restart *is* the fix, because the
-/// fresh process reads the zone the system already moved to.
+/// fresh process reads the zone the system already moved to. Through
+/// [`crate::restart::hard_restart`], not `app.restart()` — the graceful
+/// teardown is the thing that hangs (its module doc has the field story).
 #[tauri::command]
 pub fn restart_app(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-        app.restart();
+        drop(app);
+        crate::restart::hard_restart();
     });
 }
 

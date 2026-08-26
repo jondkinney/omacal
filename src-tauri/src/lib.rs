@@ -19,6 +19,7 @@ mod notify;
 mod notify_loop;
 #[cfg(target_os = "linux")]
 mod nvidia;
+mod restart;
 mod resume;
 mod search;
 mod settings;
