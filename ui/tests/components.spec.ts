@@ -3151,17 +3151,21 @@ test.describe('Filmstrip', () => {
 
   test('the calendar\'s colour reaches the row, and is drawn with', async ({ page }) => {
     // Spec §5: the same `--cal` the grid's own chips use, so a recoloured
-    // calendar is recoloured here for free. Asserted on the *computed* border
+    // calendar is recoloured here for free. Asserted on the *computed* shadow
     // rather than on the inline custom property, because a `--cal` that is set
     // and never read renders a colourless list while passing the weaker check.
+    // The spine is an inset box-shadow, not a `border-left` — see `.srow`'s
+    // own comment for the WebKitGTK artifact a one-sided border paints — and
+    // a regex rather than the full serialisation, because the engines order
+    // the colour and the offsets differently.
     await page.goto(show('week'));
     const allDay = page.locator('.sday').nth(1).locator('.srow').nth(0);
     // `#e2a03f`, the fixture's own colour for that event.
-    await expect(allDay).toHaveCSS('border-left-color', 'rgb(226, 160, 63)');
+    await expect(allDay).toHaveCSS('box-shadow', /rgb\(226, 160, 63\)/);
     // …and a different event on a different calendar is a different colour, so
     // this is reading the event rather than one hardcoded value.
     const timed = page.locator('.sday').nth(0).locator('.srow').nth(0);
-    await expect(timed).toHaveCSS('border-left-color', 'rgb(91, 141, 239)');
+    await expect(timed).toHaveCSS('box-shadow', /rgb\(91, 141, 239\)/);
   });
 
   test('clicking a row hands the occurrence up rather than opening anything itself', async ({ page }) => {

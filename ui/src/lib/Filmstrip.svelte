@@ -225,8 +225,20 @@
           display: flex; align-items: baseline; gap: 10px;
           flex: 0 1 auto; min-width: 0;
           text-align: left; cursor: pointer; border: 0;
-          border-left: 2px solid var(--cal); background: none;
-          color: var(--text); border-radius: 4px; padding: 4px 8px; }
+          /* The colour spine is an inset shadow, not a `border-left` —
+             EventBlock's fix (89bcb2b), which this row needed too. Give a
+             rounded element a border on one side only and WebKit derives the
+             whole corner geometry from it: WebKitGTK strokes the *entire*
+             rounded path in that colour at hairline width, and on a row with
+             no fill that stroke sits naked on the background — the
+             "semi-visible border" wrapping every list row, which outlived
+             both the tooltip purge (06c84bb) and the user-select fix
+             (8b85db8) because neither was the painter. An inset shadow
+             follows border-radius exactly and paints only the 2px it names.
+             Left padding grows by the 2px the border occupied, so nothing
+             on the row moves. */
+          box-shadow: inset 2px 0 0 0 var(--cal); background: none;
+          color: var(--text); border-radius: 4px; padding: 4px 8px 4px 10px; }
 
   /* Tabular figures so the times form a column the eye can run down, and a
      fixed width so a title never starts at a different x from the row above
