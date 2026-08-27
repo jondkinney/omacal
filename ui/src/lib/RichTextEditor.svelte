@@ -108,6 +108,27 @@
     return item && editor.contains(item) ? item as HTMLLIElement : null;
   }
 
+  function boundaryChildListItem(node: Node | undefined, fromStart: boolean): HTMLLIElement | null {
+    if (node instanceof HTMLLIElement) return node;
+    if (!(node instanceof Element)) return null;
+    const items = Array.from(node.querySelectorAll('li'));
+    return (fromStart ? items[0] : items[items.length - 1]) ?? null;
+  }
+
+  /** WebKit can expose a caret at the visual front or end of a list-item
+   * line as a boundary on the surrounding list instead of a point inside
+   * the li. Resolve that boundary to the item the caret visually belongs to. */
+  function listItemAtBoundary(container: Node, offset: number, preferFollowing: boolean): HTMLLIElement | null {
+    const direct = listItemAt(container);
+    if (direct) return direct;
+    if (!(container instanceof HTMLUListElement || container instanceof HTMLOListElement) || !editor?.contains(container)) {
+      return null;
+    }
+    const following = boundaryChildListItem(container.childNodes[offset], true);
+    const preceding = boundaryChildListItem(container.childNodes[offset - 1], false);
+    return preferFollowing ? following ?? preceding : preceding ?? following;
+  }
+
   function outerList(item: HTMLLIElement): ListElement | null {
     let list = item.closest('ul, ol') as ListElement | null;
     while (list && editor) {
@@ -123,8 +144,8 @@
     const selection = window.getSelection();
     const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
     if (!range || !editor.contains(range.commonAncestorContainer)) return false;
-    const first = listItemAt(range.startContainer);
-    const last = listItemAt(range.endContainer);
+    const first = listItemAtBoundary(range.startContainer, range.startOffset, true);
+    const last = listItemAtBoundary(range.endContainer, range.endOffset, range.collapsed);
     return !!first && !!last && outerList(first) === outerList(last);
   }
 
@@ -136,8 +157,8 @@
     const selection = window.getSelection();
     const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
     if (!range || !editor.contains(range.commonAncestorContainer)) return null;
-    const first = listItemAt(range.startContainer);
-    const last = listItemAt(range.endContainer);
+    const first = listItemAtBoundary(range.startContainer, range.startOffset, true);
+    const last = listItemAtBoundary(range.endContainer, range.endOffset, range.collapsed);
     const list = first?.parentElement;
     if (!first || !last || list !== last.parentElement || !(list instanceof HTMLUListElement || list instanceof HTMLOListElement)) {
       return null;
@@ -188,6 +209,30 @@
       range.selectNodeContents(fallback);
       range.collapse(false);
     }
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+
+  /** Convert a list-container boundary into a stable position inside its li
+   * before moving that li. This both survives the DOM move and preserves
+   * whether subsequent typing happens at the front or end of the line. */
+  function normalizeCollapsedListCaret(selected: ListItemSelection) {
+    const selection = window.getSelection();
+    const active = selection?.rangeCount ? selection.getRangeAt(0) : null;
+    if (!selection || !active?.collapsed || selected.first !== selected.last) return;
+    if (active.startContainer === selected.first || selected.first.contains(active.startContainer)) return;
+
+    const following = boundaryChildListItem(active.startContainer.childNodes[active.startOffset], true);
+    const range = document.createRange();
+    if (following === selected.first) {
+      range.setStart(selected.first, 0);
+    } else {
+      const nestedListIndex = Array.from(selected.first.childNodes).findIndex(
+        (child) => child instanceof HTMLUListElement || child instanceof HTMLOListElement,
+      );
+      range.setStart(selected.first, nestedListIndex < 0 ? selected.first.childNodes.length : nestedListIndex);
+    }
+    range.collapse(true);
     selection.removeAllRanges();
     selection.addRange(range);
   }
@@ -300,6 +345,7 @@
     const selected = selectedListItems();
     if (!selected) return false;
     editor?.focus();
+    normalizeCollapsedListCaret(selected);
     const bookmark = selectionBookmark();
     if (direction === 'indent') {
       if (!(selected.first.previousElementSibling instanceof HTMLLIElement)) return true;

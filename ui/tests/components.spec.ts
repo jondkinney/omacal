@@ -4401,6 +4401,45 @@ test.describe('EventForm', () => {
     expect(saved.fields.description).not.toContain('style=');
   });
 
+  test('Tab indents a list item from the front, middle, or end of its line', async ({ page }) => {
+    const cases = [
+      { position: 'front', expected: 'XChild' },
+      { position: 'middle', expected: 'ChXild' },
+      { position: 'end', expected: 'ChildX' },
+    ] as const;
+
+    for (const { position, expected } of cases) {
+      await open(page, 'create');
+      const editor = page.getByLabel('Description', { exact: true });
+      await editor.pressSequentially('- ');
+      await page.keyboard.type('Parent');
+      await editor.press('Enter');
+      await page.keyboard.type('Child');
+
+      await editor.evaluate((element, caretPosition) => {
+        const list = element.querySelector('ul');
+        const item = list?.querySelectorAll(':scope > li')[1];
+        const text = item?.firstChild;
+        if (!list || !item || !(text instanceof Text)) throw new Error('expected a two-item list');
+
+        (element as HTMLElement).focus();
+        const range = document.createRange();
+        if (caretPosition === 'front') range.setStart(list, 1);
+        else if (caretPosition === 'middle') range.setStart(text, 2);
+        else range.setStart(list, 2);
+        range.collapse(true);
+        const selection = window.getSelection();
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+      }, position);
+
+      await editor.press('Tab');
+      await page.keyboard.type('X');
+      await expect(editor.locator('ul > li > ul > li')).toHaveText(expected);
+      await expect(editor).toBeFocused();
+    }
+  });
+
   test('list indent controls preserve normal Tab navigation and cannot eject a first item', async ({ page }) => {
     await open(page, 'create');
     const editor = page.getByLabel('Description', { exact: true });
