@@ -1045,7 +1045,7 @@ fn dispatch_notification_action(handle: &tauri::AppHandle, action: notify::Actio
             });
         }
         notify::Action::Join(uri) => {
-            if let Err(e) = tauri_plugin_opener::open_url(&uri, None::<&str>) {
+            if let Err(e) = crate::browser::open_external(&uri) {
                 tracing::warn!(%e, "could not open the meeting link");
             }
         }
