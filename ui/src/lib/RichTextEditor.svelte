@@ -228,7 +228,7 @@
 
   /** Markdown's line-opening shortcuts are useful here as gestures, not as a
    * storage format. As soon as the marker's trailing space is pressed, remove
-   * the marker and ask the browser to create the same HTML the toolbar does.
+   * the marker and create the same HTML the toolbar does.
    * Requiring the marker to be the block's entire contents keeps prose such
    * as "budget - " from unexpectedly turning into a list. */
   function markdownBlockShortcut(event: KeyboardEvent): boolean {
@@ -260,34 +260,33 @@
 
     const marker = before.toString();
     if ((block.textContent ?? '') !== marker) return false;
-    const format = marker === '-' || marker === '*'
-      ? { command: 'insertUnorderedList' }
+    const tag = marker === '-' || marker === '*'
+      ? 'ul'
       : marker === '1.'
-        ? { command: 'insertOrderedList' }
+        ? 'ol'
         : marker === '#'
-          ? { command: 'formatBlock', argument: 'h3' }
+          ? 'h3'
           : null;
-    if (!format) return false;
+    if (!tag) return false;
 
     event.preventDefault();
-    before.deleteContents();
-    before.collapse(true);
+    const replacement = document.createElement(tag);
+    const caretBlock = tag === 'ul' || tag === 'ol'
+      ? replacement.appendChild(document.createElement('li'))
+      : replacement;
+    caretBlock.append(document.createElement('br'));
+    if (block === editor) editor.replaceChildren(replacement);
+    else block.replaceWith(replacement);
+
+    // Do not leave this to execCommand's block-affinity rules: WebKit can put
+    // a collapsed selection after the new list, visually on the line below
+    // its empty bullet. Offset zero is immediately inside the <li>, before
+    // its placeholder break, so the first typed character has no leading gap.
+    const inside = document.createRange();
+    inside.setStart(caretBlock, 0);
+    inside.collapse(true);
     selection?.removeAllRanges();
-    selection?.addRange(before);
-    if (format.argument === 'h3') {
-      const heading = document.createElement('h3');
-      heading.append(document.createElement('br'));
-      if (block === editor) editor.replaceChildren(heading);
-      else block.replaceWith(heading);
-      const inside = document.createRange();
-      inside.setStart(heading, 0);
-      inside.collapse(true);
-      selection?.removeAllRanges();
-      selection?.addRange(inside);
-      sync();
-      return true;
-    }
-    document.execCommand(format.command, false, format.argument);
+    selection?.addRange(inside);
     sync();
     return true;
   }
