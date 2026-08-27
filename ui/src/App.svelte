@@ -1453,7 +1453,7 @@
     nowMs={quickAdd.nowMs}
     anchorDayMs={quickAdd.anchorDayMs}
     calendarId={createCalendarId}
-    defaultDurationMinutes={30}
+    defaultDurationMinutes={defaultEventDurationMinutes}
     {calendars}
     oncreate={saveQuick}
     onedit={continueQuick}
