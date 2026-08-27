@@ -2383,17 +2383,29 @@ test.describe('EventPopover', () => {
 
   test('a link written with words keeps the words and the destination', async ({ page }) => {
     // Issue #19. The popover is where this is finally true or not: the
-    // segment carries label and href separately, and the anchor renders the
-    // first with the second behind it. Both halves asserted, because showing
-    // the URL as the text would "fix" the link and lose the sentence.
+    // rendered HTML carries label and href separately, and the anchor shows
+    // the first with the second behind it. Both halves asserted, because
+    // showing the URL as the text would "fix" the link and lose the sentence.
     await page.goto(show('labelled-link-description'));
     const link = page.locator('.desc a');
     await expect(link).toHaveText('the pre-read');
     await expect(link).toHaveAttribute('href', 'https://docs.example.com/pre-read');
-    // The paragraph, not `.desc` — that also holds the Copy button.
-    await expect(page.locator('.desc p')).toHaveText('Please read the pre-read first.');
-    // Copying a link copies where it goes, not what it is called.
+    // The rendered body, not `.desc` — that also holds the Copy button.
+    await expect(page.locator('.desc-content')).toHaveText('Please read the pre-read first.');
+    // Copying a link copies where it goes, not what it is called. Stamped by
+    // `renderedDescriptionHtml` now that the body is HTML rather than segments.
     await expect(link).toHaveAttribute('data-copy-value', 'https://docs.example.com/pre-read');
+  });
+
+  test('safe description formatting and links render as formatting', async ({ page }) => {
+    await page.goto(show('rich-description'));
+    const description = page.locator('.desc');
+    await expect(description.getByRole('heading', { name: 'Preparation' })).toBeVisible();
+    await expect(description.locator('strong')).toHaveText('quarterly numbers');
+    await expect(description.getByRole('link', { name: 'agenda' }))
+      .toHaveAttribute('href', 'https://example.com/agenda');
+    await expect(description.getByRole('link', { name: 'agenda' }))
+      .toHaveAttribute('rel', 'noopener noreferrer');
   });
 
   test('a one-off event offers no scope choice', async ({ page }) => {
@@ -4207,16 +4219,100 @@ test.describe('EventForm', () => {
     await expect(page.getByTestId('guest-notice')).toContainText('4 guests');
   });
 
-  test('a description is rendered as text, never as markup', async ({ page }) => {
+  test('unsafe description markup is removed before it reaches the editor', async ({ page }) => {
     // Anyone who knows the user's email can put an event on their calendar,
     // description included, and this webview can invoke Tauri commands.
     await open(page, 'nasty-description');
     await expect(page.locator('img')).toHaveCount(0);
-    // And byte for byte: sanitising on the way *in* would rewrite what the
-    // author typed and then save the rewrite back over the real event —
-    // `stripTags` alone would leave this field empty.
-    await expect(page.getByLabel('Description', { exact: true }))
-      .toHaveValue('<img src=x onerror=alert(1)>');
+    await expect(page.getByLabel('Description', { exact: true })).toBeEmpty();
+  });
+
+  test('safe existing HTML is editable as formatted content', async ({ page }) => {
+    await open(page, 'rich-description');
+    const editor = page.getByLabel('Description', { exact: true });
+    await expect(editor.getByRole('heading', { name: 'Preparation' })).toBeVisible();
+    await expect(editor.locator('strong')).toHaveText('quarterly numbers');
+  });
+
+  test('the compact toolbar authors bold, italic, underline, heading and links', async ({ page }) => {
+    await open(page, 'create');
+    const box = page.getByTestId('description-editor');
+    const editor = page.getByLabel('Description', { exact: true });
+    await editor.fill('Agenda');
+
+    await editor.selectText();
+    await box.getByRole('button', { name: 'Bold' }).click();
+    await expect(editor.locator('b, strong')).toHaveText('Agenda');
+
+    await editor.selectText();
+    await box.getByRole('button', { name: 'Italic' }).click();
+    await expect(editor.locator('i, em')).toHaveText('Agenda');
+
+    await editor.selectText();
+    await box.getByRole('button', { name: 'Underline' }).click();
+    await expect(editor.locator('u')).toHaveText('Agenda');
+
+    await editor.selectText();
+    await box.getByRole('button', { name: 'Heading' }).click();
+    await expect(editor.locator('h3')).toContainText('Agenda');
+
+    await editor.selectText();
+    await box.getByRole('button', { name: 'Link' }).click();
+    await box.getByLabel('Link URL').fill('example.com/agenda');
+    await box.getByRole('button', { name: 'Apply' }).click();
+    await expect(editor.getByRole('link')).toHaveAttribute('href', 'https://example.com/agenda');
+
+    await page.getByRole('button', { name: 'Create' }).click();
+    const [saved] = await saves(page);
+    expect(saved.fields.description).toContain('href="https://example.com/agenda"');
+    expect(saved.fields.description).not.toContain('style=');
+  });
+
+  test('dropped rich text is sanitised before it enters the editor', async ({ page }) => {
+    await open(page, 'create');
+    const editor = page.getByLabel('Description', { exact: true });
+    await editor.evaluate((element) => {
+      const transfer = new DataTransfer();
+      transfer.setData(
+        'text/html',
+        '<img src=x onerror="window.__dropped = true"><strong>Agenda</strong>',
+      );
+      const rect = element.getBoundingClientRect();
+      element.dispatchEvent(new DragEvent('drop', {
+        bubbles: true,
+        cancelable: true,
+        dataTransfer: transfer,
+        clientX: rect.left + 8,
+        clientY: rect.top + 8,
+      }));
+    });
+    await expect(editor.locator('img')).toHaveCount(0);
+    await expect(editor.locator('strong')).toHaveText('Agenda');
+    expect(await page.evaluate(() => (window as any).__dropped)).toBeUndefined();
+  });
+
+  test('reminders use the guest-list remove control', async ({ page }) => {
+    await open(page, 'with-guests');
+    await page.getByRole('button', { name: '+ Add notification' }).click();
+
+    const reminderX = page.getByRole('button', { name: 'Remove reminder' });
+    const guestX = page.getByRole('button', { name: 'Remove petya@x.com' });
+    await expect(reminderX).toHaveText('×');
+    await expect(guestX).toHaveText('×');
+    await expect(reminderX).toHaveClass(/\bx\b/);
+    await expect(guestX).toHaveClass(/\bx\b/);
+  });
+
+  test('every guest reserves the remove column so Optional stays aligned', async ({ page }) => {
+    await open(page, 'with-guests');
+    const rows = page.locator('[data-testid="guests"] .guest');
+    await expect(rows).toHaveCount(5);
+    await expect(rows.locator(':scope > .x, :scope > .xslot')).toHaveCount(5);
+
+    const optionalX = await rows.locator('.opt').evaluateAll((labels) =>
+      labels.map((label) => Math.round(label.getBoundingClientRect().x)),
+    );
+    expect(Math.max(...optionalX) - Math.min(...optionalX)).toBeLessThanOrEqual(1);
   });
 
   test('a new event opens at the next half hour', async ({ page }) => {

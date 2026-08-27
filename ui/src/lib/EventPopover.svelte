@@ -7,7 +7,7 @@
   import { onMount, tick } from 'svelte';
   import { escapeCloses } from './dismiss.svelte';
   import { placePopover, type Rect } from './position';
-  import { descriptionSegments } from './sanitize';
+  import { renderedDescriptionHtml } from './sanitize';
   import { occurrenceDate, ruleInWords } from './eventform';
   import { isMachineAddress } from './organizer';
   import { respondToEvent, type Attendee, type EventDetail } from './eventdetail';
@@ -79,7 +79,9 @@
     oncopy: () => void;
   } = $props();
 
-  const segments = $derived(descriptionSegments(detail.description));
+  // This is already DOMPurify-cleaned allowlist HTML; raw calendar markup
+  // never reaches the `{@html}` block below.
+  const descriptionHtml = $derived(renderedDescriptionHtml(detail.description));
 
   const hhmm = (ms: number) => formatClock(ms, clockFormat());
 
@@ -456,20 +458,17 @@
                        onclick={() => copyField(cadence!, 'repeat schedule')}
                        >{cadence}</button></p>{/if}
 
-  {#if segments.length}
+  {#if descriptionHtml}
     <div class="desc">
       <button type="button" class="copydesc" aria-label="Copy description"
               data-copy-label="description"
               data-copy-value={detail.description ?? ''}
               onclick={() => copyField(detail.description ?? '', 'description')}>Copy</button>
       <!-- `href` and the copied value are the destination; the text between
-           the tags is the label. For a bare URL those are the same string,
-           which is every link this popover drew before descriptions could
-           carry an anchor with words in it. -->
-      <p>{#each segments as s}{#if s.kind === 'link'}<a
-              href={s.href} target="_blank" rel="noopener noreferrer"
-              data-copy-label="link" data-copy-value={s.href}>{s.value}</a
-          >{:else}{s.value}{/if}{/each}</p>
+           the tags is the label. `renderedDescriptionHtml` carries both, for a
+           bare URL (where they are the same string) and for an anchor with
+           words in it, and stamps the copy attributes this panel reads. -->
+      <div class="desc-content">{@html descriptionHtml}</div>
     </div>
   {/if}
 
@@ -625,12 +624,14 @@
 
   .desc { position: relative; white-space: pre-wrap; word-break: break-word; line-height: 1.5;
           margin: 0 0 10px; padding-right: 38px; }
-  .desc p { margin: 0; }
   .copydesc { appearance: none; -webkit-appearance: none; position: absolute; top: 0; right: 0;
               font: inherit; font-size: 9.5px; color: var(--muted); cursor: copy;
               border: 0; border-radius: 3px; background: none; padding: 1px 3px; }
   .copydesc:hover { color: var(--text); }
-  .desc a { color: var(--accent); }
+  :global(.desc p), :global(.desc div) { margin: 0 0 .55em; }
+  :global(.desc h2), :global(.desc h3) { margin: .25em 0 .45em; font-size: 1.1em; }
+  :global(.desc ul), :global(.desc ol) { margin: .35em 0; padding-left: 1.45em; }
+  :global(.desc a) { color: var(--accent); }
 
   .loc, .organizer { color: var(--muted); font-size: 11px; margin: 0 0 4px; }
   .conf { display: inline-block; color: var(--accent); font-size: 11px;

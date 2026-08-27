@@ -11,6 +11,7 @@
   import { offerableCalendarId, writableCalendars, type Calendar } from './calendars';
   import CalendarPicker from './CalendarPicker.svelte';
   import SaveConfirm from './SaveConfirm.svelte';
+  import RichTextEditor from './RichTextEditor.svelte';
   import { editReach, type SendUpdates } from './eventdetail';
   import {
     CUSTOM_REPEAT, REPEAT_OPTIONS, WEEKDAY_OPTIONS, addGuest, endAfterStart, isAddress,
@@ -786,12 +787,12 @@
             <span>before</span>
             <button
               type="button"
-              class="unremind"
+              class="x"
               aria-label="Remove reminder"
               onclick={() => {
                 value.popupReminders = value.popupReminders.filter((_, j) => j !== i);
               }}
-            >⊗</button>
+            >×</button>
           </div>
         {/each}
         {#if value.popupReminders.length + value.emailReminders.length < 5}
@@ -811,15 +812,13 @@
       </div>
     </div>
 
-    <label class="field card">
+    <div class="field card">
       <span class="lab">Description</span>
-      <!-- A textarea, and never anything rendered. Descriptions arrive from
-           whoever created the event — anyone who knows the user's email can put
-           one on their calendar — and this one round-trips byte for byte:
-           stripping or unescaping it on the way in would quietly rewrite what
-           the user typed and then save the rewrite back. -->
-      <textarea rows="3" bind:value={value.description}></textarea>
-    </label>
+      <!-- The editor only ever receives DOMPurify-cleaned allowlist HTML.
+           Descriptions are invitation-controlled input inside a Tauri webview,
+           so raw calendar markup is never inserted into the DOM. -->
+      <RichTextEditor bind:value={value.description} />
+    </div>
 
     <div class="card">
     <label class="field">
@@ -972,6 +971,10 @@
                 aria-label={isSelf ? 'Remove yourself from this event' : `Remove ${g.email}`}
                 onclick={() => (value.guests = removeGuest(value.guests, g.email))}
               >×</button>
+            {:else}
+              <!-- Keep every Optional control on the same column even when
+                   Google forbids removing the organizer. -->
+              <span class="xslot" aria-hidden="true"></span>
             {/if}
           </li>
         {/each}
@@ -1119,13 +1122,11 @@
   .field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
   .lab { font-size: 9.5px; color: var(--muted); letter-spacing: .05em; }
 
-  .reminders { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+  .reminders { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
   .reminder { display: flex; align-items: center; gap: 5px; width: 100%; font-size: 12px; }
   .reminder input[type='number'] { width: 56px; flex: none; }
   .reminder select { width: auto; flex: none; }
-  .unremind { font: inherit; font-size: 13px; color: var(--muted); cursor: pointer;
-              background: none; border: 0; padding: 0 2px; margin-left: auto; }
-  .unremind:hover { color: var(--text); }
+  .reminder > .x { margin-left: auto; }
   .remind { font: inherit; font-size: 11px; color: var(--muted); cursor: pointer;
             background: none; border: 1px solid var(--hairline); border-radius: 5px;
             padding: 2px 7px; }
@@ -1134,13 +1135,13 @@
   /* Not the checkboxes or radios: those are drawn app-wide in app.css, and
      a scoped rule outranks it — this one, left to match every input, turned
      the all-day box into a padded pill with no tick (2026-09-02). */
-  input:not([type='checkbox']):not([type='radio']), select, textarea {
+  input:not([type='checkbox']):not([type='radio']), select {
     font: inherit; font-size: 12px; color: var(--text);
     background: color-mix(in srgb, var(--text) 5%, transparent);
     border: 1px solid var(--hairline); border-radius: 5px;
     padding: 4px 6px; min-width: 0; width: 100%; box-sizing: border-box;
   }
-  input:not([type='checkbox']):not([type='radio']):focus, select:focus, textarea:focus { outline: 1px solid var(--accent); outline-offset: -1px; }
+  input:not([type='checkbox']):not([type='radio']):focus, select:focus { outline: 1px solid var(--accent); outline-offset: -1px; }
   /* The appearance/chevron rule is global now — App.svelte, and fix/56's
      commit message for why. Only the background shorthand's reset needs
      compensating here: it clears the global background-image, so the chevron
@@ -1156,7 +1157,6 @@
   }
   select:disabled { opacity: .6; }
 
-  textarea { resize: vertical; line-height: 1.45; }
 
   .weekdayfield { display: flex; flex-direction: column; gap: 4px; }
   .weekdayrow { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
@@ -1200,18 +1200,22 @@
 
   .hint { font-size: 10px; color: var(--muted); opacity: .85; line-height: 1.45; margin: 0; }
 
-  .guests { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .guests { display: flex; flex-direction: column; gap: 6px; min-width: 0; margin-top: 3px; }
   .guests ul { list-style: none; margin: 0; padding: 0; display: flex;
-               flex-direction: column; gap: 3px; }
-  .guest { display: flex; align-items: center; gap: 6px; font-size: 11px; min-width: 0; }
+               flex-direction: column; gap: 5px; }
+  .guest { display: grid; grid-template-columns: minmax(0, 1fr) auto 16px;
+           align-items: center; gap: 6px; font-size: 11px; min-width: 0; }
   /* The address takes what is left and truncates rather than wrapping: a long
      one would otherwise push the two controls beside it off the panel. */
   .addr { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
           white-space: nowrap; }
   .opt { display: flex; align-items: center; gap: 4px; color: var(--muted);
          font-size: 10px; cursor: pointer; flex: none; }
-  .x { flex: none; font: inherit; font-size: 13px; line-height: 1; cursor: pointer;
-       background: none; border: 0; color: var(--muted); padding: 0 2px; }
+  .opt input { width: auto; }
+  .x, .xslot { flex: none; width: 16px; height: 18px; box-sizing: border-box; }
+  .x { display: inline-grid; place-items: center; font: inherit; font-size: 13px;
+       line-height: 1; cursor: pointer; background: none; border: 0;
+       color: var(--muted); padding: 0; }
   .x:hover { color: var(--text); }
 
   .addguest { display: flex; gap: 6px; position: relative; }
