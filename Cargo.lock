@@ -3082,7 +3082,7 @@ dependencies = [
 
 [[package]]
 name = "omacal"
-version = "0.7.3"
+version = "0.7.4"
 dependencies = [
  "anyhow",
  "block2",
