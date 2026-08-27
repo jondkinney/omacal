@@ -125,6 +125,13 @@ export const CHORDS: { label: string; text: string; hint?: string }[] = [
     hint: 'opens the form on the day you are looking at, to fine-tune first' },
 ];
 
+/** A form chord rather than a bare key: it bubbles from any field to the form
+ * and submits through the same validation and guest-notification path as its
+ * Save button. */
+export const EDIT_CHORDS: { label: string; text: string; hint?: string }[] = [
+  { label: `${MOD_LABEL} Enter`, text: 'Save edits', hint: 'from anywhere in the edit form' },
+];
+
 /** The table in the order the sheet draws it. A group with no shortcuts is
  *  dropped rather than drawn empty, so `SHORTCUT_GROUPS` can name a heading
  *  before anything is filed under it. */

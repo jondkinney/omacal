@@ -4,7 +4,7 @@
 // stubbed IPC layer (tests/harness/tauri.ts).
 
 import { test, expect, type Page } from '@playwright/test';
-import { CHORDS, SHORTCUT_LIST, SHORTCUT_TEXT } from '../src/lib/shortcuts';
+import { CHORDS, EDIT_CHORDS, SHORTCUT_LIST, SHORTCUT_TEXT } from '../src/lib/shortcuts';
 import {
   APP_MON, APP_NOW, weekLabel,
   APP_SOLO_SERIES_ID,
@@ -3381,6 +3381,13 @@ test.describe('App: the keyboard sheet', () => {
     for (const c of CHORDS) {
       await expect(
         sheet(page).locator('dt', { hasText: literal(c.label) }),
+      ).toHaveCount(1);
+      await expect(sheet(page).locator('.what', { hasText: literal(c.text) })).toHaveCount(1);
+    }
+
+    for (const c of EDIT_CHORDS) {
+      await expect(
+        sheet(page).locator('[data-shortcut-scope="edit"] dt', { hasText: literal(c.label) }),
       ).toHaveCount(1);
       await expect(sheet(page).locator('.what', { hasText: literal(c.text) })).toHaveCount(1);
     }

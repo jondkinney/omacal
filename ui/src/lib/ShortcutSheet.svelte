@@ -1,7 +1,7 @@
 <!-- ui/src/lib/ShortcutSheet.svelte -->
 <script lang="ts">
   import { escapeCloses } from './dismiss.svelte';
-  import { CHORDS, groupedShortcuts, SHORTCUT_TEXT } from './shortcuts';
+  import { CHORDS, EDIT_CHORDS, groupedShortcuts, SHORTCUT_TEXT } from './shortcuts';
 
   let { onclose }: { onclose: () => void } = $props();
 
@@ -53,6 +53,17 @@
       {/if}
     </dl>
   {/each}
+
+  <h3>Editing an event</h3>
+  <dl data-shortcut-scope="edit">
+    {#each EDIT_CHORDS as c (c.label)}
+      <dt><kbd>{c.label}</kbd></dt>
+      <dd>
+        <span class="what">{c.text}</span>
+        {#if c.hint}<em>{c.hint}</em>{/if}
+      </dd>
+    {/each}
+  </dl>
 
   <p class="foot">Escape closes this.</p>
 </div>
