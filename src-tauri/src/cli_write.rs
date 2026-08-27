@@ -507,6 +507,20 @@ struct Target {
     all_day: bool,
     start_ms: i64,
     end_ms: i64,
+    summary: Option<String>,
+    location: Option<String>,
+    description: Option<String>,
+}
+
+/// An update's descriptive fields: the flag when given, the event's own
+/// value otherwise — **never absent**, because the wire treats the whole
+/// `EventInput` as the caller's complete statement, exactly as the form
+/// sends it. The first field run proved what an absent field means: a
+/// time-only update went out with `summary: null` and came back titled
+/// "(no title)", the title honestly cleared by a caller that never meant
+/// to mention it.
+fn merged_field(flag: &Option<String>, current: &Option<String>) -> Option<String> {
+    flag.clone().or_else(|| current.clone())
 }
 
 async fn target(pool: &SqlitePool, id: i64) -> Result<Target, String> {
@@ -523,6 +537,9 @@ async fn target(pool: &SqlitePool, id: i64) -> Result<Target, String> {
         all_day: event.is_all_day,
         start_ms: event.start_utc,
         end_ms: event.end_utc,
+        summary: event.summary.clone(),
+        location: event.location.clone(),
+        description: event.description.clone(),
     })
 }
 
@@ -604,14 +621,20 @@ pub(crate) async fn execute(pool: &SqlitePool, cmd: &WriteCmd, json: bool) -> i3
                 Ok((s, e)) => serde_json::json!({ "kind": "timed", "startMs": s, "endMs": e }),
                 Err(m) => return refuse(&m),
             };
+            // Flags override, the event's own values carry — an update is
+            // the whole statement (`merged_field`'s doc has the field
+            // story of what an absent title really does).
+            let summary = merged_field(&args.title, &t.summary);
+            let location = merged_field(&args.location, &t.location);
+            let description = merged_field(&args.description, &t.description);
             (
                 update_request(
                     args,
                     scope,
                     when,
-                    args.title.as_deref(),
-                    args.location.as_deref(),
-                    args.description.as_deref(),
+                    summary.as_deref(),
+                    location.as_deref(),
+                    description.as_deref(),
                     notify,
                     &tz_name,
                 ),
@@ -752,6 +775,19 @@ mod tests {
         assert_eq!(notify_for(true, Some("none")).unwrap(), "none");
         assert!(notify_for(true, Some("everyone")).is_err());
         assert_eq!(notify_for(false, None).unwrap(), "none");
+    }
+
+    /// The first field run's own bug, pinned: a time-only update must carry
+    /// the title (and its siblings) it never mentioned, because the wire
+    /// reads the whole `EventInput` as the caller's statement and an absent
+    /// summary is honestly a cleared one.
+    #[test]
+    fn an_untouched_field_rides_along_instead_of_clearing() {
+        let kept = merged_field(&None, &Some("CLI field test".into()));
+        assert_eq!(kept.as_deref(), Some("CLI field test"));
+        let changed = merged_field(&Some("Renamed".into()), &Some("Old".into()));
+        assert_eq!(changed.as_deref(), Some("Renamed"));
+        assert_eq!(merged_field(&None, &None), None);
     }
 
     #[test]
