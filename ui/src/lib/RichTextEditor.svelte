@@ -92,6 +92,243 @@
     run('formatBlock', current === 'h3' ? 'p' : 'h3');
   }
 
+  type ListIndent = 'indent' | 'outdent';
+  type ListElement = HTMLUListElement | HTMLOListElement;
+  type ListItemSelection = {
+    first: HTMLLIElement;
+    last: HTMLLIElement;
+    list: ListElement;
+    items: HTMLLIElement[];
+  };
+
+  function listItemAt(node: Node): HTMLLIElement | null {
+    if (!editor) return null;
+    const element = node instanceof Element ? node : node.parentElement;
+    const item = element?.closest('li');
+    return item && editor.contains(item) ? item as HTMLLIElement : null;
+  }
+
+  function outerList(item: HTMLLIElement): ListElement | null {
+    let list = item.closest('ul, ol') as ListElement | null;
+    while (list && editor) {
+      const parent = list.parentElement?.closest('ul, ol') as ListElement | null;
+      if (!parent || !editor.contains(parent)) break;
+      list = parent;
+    }
+    return list;
+  }
+
+  function selectionInsideOneListTree(): boolean {
+    if (!editor) return false;
+    const selection = window.getSelection();
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+    if (!range || !editor.contains(range.commonAncestorContainer)) return false;
+    const first = listItemAt(range.startContainer);
+    const last = listItemAt(range.endContainer);
+    return !!first && !!last && outerList(first) === outerList(last);
+  }
+
+  /** Both ends must be on one list level. A cross-level selection still
+   * belongs to the editor (and consumes Tab), but is left unchanged because
+   * there is no single unambiguous level to move as a unit. */
+  function selectedListItems(): ListItemSelection | null {
+    if (!editor) return null;
+    const selection = window.getSelection();
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+    if (!range || !editor.contains(range.commonAncestorContainer)) return null;
+    const first = listItemAt(range.startContainer);
+    const last = listItemAt(range.endContainer);
+    const list = first?.parentElement;
+    if (!first || !last || list !== last.parentElement || !(list instanceof HTMLUListElement || list instanceof HTMLOListElement)) {
+      return null;
+    }
+    const siblings = Array.from(list.children).filter((child): child is HTMLLIElement => child instanceof HTMLLIElement);
+    const from = siblings.indexOf(first);
+    const through = siblings.indexOf(last);
+    if (from < 0 || through < from) return null;
+    return { first, last, list, items: siblings.slice(from, through + 1) };
+  }
+
+  const listTag = (list: ListElement): 'ul' | 'ol' => list instanceof HTMLOListElement ? 'ol' : 'ul';
+
+  function childList(item: HTMLLIElement, tag: 'ul' | 'ol'): ListElement | null {
+    return Array.from(item.children).find((child) => child.tagName.toLowerCase() === tag) as ListElement | null;
+  }
+
+  type SelectionBookmark = {
+    startContainer: Node;
+    startOffset: number;
+    endContainer: Node;
+    endOffset: number;
+  };
+
+  function selectionBookmark(): SelectionBookmark | null {
+    const selection = window.getSelection();
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+    return range ? {
+      startContainer: range.startContainer,
+      startOffset: range.startOffset,
+      endContainer: range.endContainer,
+      endOffset: range.endOffset,
+    } : null;
+  }
+
+  function restoreSelection(bookmark: SelectionBookmark | null, fallback: HTMLLIElement) {
+    if (!editor) return;
+    const selection = window.getSelection();
+    if (!selection) return;
+    const range = document.createRange();
+    try {
+      if (!bookmark || !editor.contains(bookmark.startContainer) || !editor.contains(bookmark.endContainer)) {
+        throw new Error('selection endpoints left the editor');
+      }
+      range.setStart(bookmark.startContainer, bookmark.startOffset);
+      range.setEnd(bookmark.endContainer, bookmark.endOffset);
+    } catch {
+      range.selectNodeContents(fallback);
+      range.collapse(false);
+    }
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }
+
+  function indentListItems(selected: ListItemSelection) {
+    const previous = selected.first.previousElementSibling;
+    if (!(previous instanceof HTMLLIElement)) return;
+    const tag = listTag(selected.list);
+    let nested = childList(previous, tag);
+    if (!nested) {
+      nested = document.createElement(tag);
+      previous.append(nested);
+    }
+    for (const item of selected.items) nested.append(item);
+  }
+
+  function outdentNestedItems(selected: ListItemSelection, parentItem: HTMLLIElement) {
+    const outer = parentItem.parentElement;
+    if (!(outer instanceof HTMLUListElement || outer instanceof HTMLOListElement)) return;
+
+    // Items that followed the moved run must remain after it in reading
+    // order. Keeping them in the old nested list would render them before the
+    // newly outdented run, so carry them under its final item instead.
+    const following: HTMLLIElement[] = [];
+    let sibling = selected.last.nextElementSibling;
+    while (sibling instanceof HTMLLIElement) {
+      following.push(sibling);
+      sibling = sibling.nextElementSibling;
+    }
+    if (following.length) {
+      const tag = listTag(selected.list);
+      let carried = childList(selected.last, tag);
+      if (!carried) {
+        carried = document.createElement(tag);
+        selected.last.append(carried);
+      }
+      for (const item of following) carried.append(item);
+    }
+
+    let after: Element = parentItem;
+    for (const item of selected.items) {
+      after.after(item);
+      after = item;
+    }
+    if (!Array.from(selected.list.children).some((child) => child instanceof HTMLLIElement)) {
+      selected.list.remove();
+    }
+  }
+
+  function outdentTopLevelItems(selected: ListItemSelection) {
+    if (!editor) return;
+    const browserSelection = window.getSelection();
+    const active = browserSelection?.rangeCount ? browserSelection.getRangeAt(0) : null;
+    const startContainer = active?.startContainer;
+    const startOffset = active?.startOffset ?? 0;
+    const endContainer = active?.endContainer;
+    const endOffset = active?.endOffset ?? 0;
+
+    const trailing: HTMLLIElement[] = [];
+    let sibling = selected.last.nextElementSibling;
+    while (sibling instanceof HTMLLIElement) {
+      trailing.push(sibling);
+      sibling = sibling.nextElementSibling;
+    }
+    const afterList = trailing.length ? document.createElement(listTag(selected.list)) : null;
+    if (afterList) for (const item of trailing) afterList.append(item);
+
+    const replacements = new Map<Node, HTMLDivElement>();
+    const blocks = selected.items.map((item) => {
+      const block = document.createElement('div');
+      replacements.set(item, block);
+      while (item.firstChild) block.append(item.firstChild);
+      item.remove();
+      return block;
+    });
+
+    let after: Element = selected.list;
+    for (const block of blocks) {
+      after.after(block);
+      after = block;
+    }
+    if (afterList) after.after(afterList);
+    if (!Array.from(selected.list.children).some((child) => child instanceof HTMLLIElement)) {
+      selected.list.remove();
+    }
+
+    if (!active || !browserSelection || !startContainer || !endContainer) return;
+    const restored = document.createRange();
+    const restoredStart = replacements.get(startContainer) ?? startContainer;
+    const restoredEnd = replacements.get(endContainer) ?? endContainer;
+    const endpointLength = (node: Node) => node instanceof Text ? node.data.length : node.childNodes.length;
+    try {
+      restored.setStart(restoredStart, Math.min(startOffset, endpointLength(restoredStart)));
+      restored.setEnd(restoredEnd, Math.min(endOffset, endpointLength(restoredEnd)));
+      browserSelection.removeAllRanges();
+      browserSelection.addRange(restored);
+    } catch {
+      const fallback = blocks[0];
+      restored.selectNodeContents(fallback);
+      restored.collapse(true);
+      browserSelection.removeAllRanges();
+      browserSelection.addRange(restored);
+    }
+  }
+
+  /** Returns whether list editing owned the command. Indenting a first item
+   * is deliberately a handled no-op: focus stays in the document instead of
+   * Tab unexpectedly ejecting the user into the next form field. */
+  function changeListIndent(direction: ListIndent): boolean {
+    const selected = selectedListItems();
+    if (!selected) return false;
+    editor?.focus();
+    const bookmark = selectionBookmark();
+    if (direction === 'indent') {
+      if (!(selected.first.previousElementSibling instanceof HTMLLIElement)) return true;
+      indentListItems(selected);
+      restoreSelection(bookmark, selected.last);
+    } else if (selected.list.parentElement instanceof HTMLLIElement) {
+      outdentNestedItems(selected, selected.list.parentElement);
+      restoreSelection(bookmark, selected.last);
+    } else {
+      outdentTopLevelItems(selected);
+    }
+    sync();
+    return true;
+  }
+
+  function listIndentKeydown(event: KeyboardEvent): boolean {
+    let direction: ListIndent | null = null;
+    if (event.key === 'Tab' && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      direction = event.shiftKey ? 'outdent' : 'indent';
+    } else if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey) {
+      if (event.key === ']') direction = 'indent';
+      else if (event.key === '[') direction = 'outdent';
+    }
+    if (!direction || !selectionInsideOneListTree()) return false;
+    event.preventDefault();
+    changeListIndent(direction);
+    return true;
+  }
+
   async function startLink() {
     const selection = window.getSelection();
     const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
@@ -360,6 +597,7 @@
   }
 
   function editorKeydown(event: KeyboardEvent) {
+    if (listIndentKeydown(event)) return;
     if (markdownBlockShortcut(event) || markdownInlineShortcut(event)) return;
     autoLinkBeforeDelimiter(event);
     if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return;
@@ -389,6 +627,12 @@
       onmousedown={(e) => e.preventDefault()} onclick={() => run('insertUnorderedList')}>•</button>
     <button type="button" class="listbutton" aria-label="Numbered list" title="Numbered list (1. then Space)"
       onmousedown={(e) => e.preventDefault()} onclick={() => run('insertOrderedList')}>1.</button>
+    <button type="button" class="indentbutton" aria-label="Outdent list item"
+      aria-keyshortcuts="Shift+Tab Control+[ Meta+[" title="Outdent list item (Shift+Tab or Ctrl+[)"
+      onmousedown={(e) => e.preventDefault()} onclick={() => changeListIndent('outdent')}>←</button>
+    <button type="button" class="indentbutton" aria-label="Indent list item"
+      aria-keyshortcuts="Tab Control+] Meta+]" title="Indent list item (Tab or Ctrl+])"
+      onmousedown={(e) => e.preventDefault()} onclick={() => changeListIndent('indent')}>→</button>
     <button type="button" class="linkbutton" aria-label="Link"
       aria-keyshortcuts="Control+K Meta+K" title="Link (Ctrl+K)"
       onmousedown={(e) => e.preventDefault()} onclick={startLink}>Link</button>
@@ -446,7 +690,7 @@
     color: var(--text); background: color-mix(in srgb, var(--text) 8%, transparent);
   }
   .toolbar .linkbutton { width: auto; padding: 0 5px; }
-  .toolbar .listbutton { width: 27px; }
+  .toolbar .listbutton, .toolbar .indentbutton { width: 27px; }
 
   .linkrow { display: flex; align-items: center; gap: 3px; padding: 4px;
              border-bottom: 1px solid var(--hairline); }
