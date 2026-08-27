@@ -1584,6 +1584,7 @@ pub fn run() {
             settings::set_fallback_reminders,
             settings::set_default_calendar,
             settings::set_default_event_duration,
+            settings::set_appearance_preferences,
             settings::set_time_format,
             settings::set_temperature_unit,
             settings::set_week_start,

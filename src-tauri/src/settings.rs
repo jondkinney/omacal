@@ -28,6 +28,9 @@ pub const HOUR_HEIGHT_MAX: i64 = 160;
 const FALLBACK_KEY: &str = "fallback_reminder_minutes";
 const DEFAULT_CALENDAR_KEY: &str = "default_calendar_id";
 const DEFAULT_EVENT_DURATION_KEY: &str = "default_event_duration_minutes";
+const BACKGROUND_TRANSPARENCY_KEY: &str = "background_transparency";
+const EVENT_TRANSPARENCY_KEY: &str = "event_transparency";
+const EVENT_CORNER_STYLE_KEY: &str = "event_corner_style";
 const TIME_FORMAT_KEY: &str = "time_format";
 const WEEK_START_KEY: &str = "week_start";
 const WEEK_STARTS_TODAY_KEY: &str = "week_starts_today";
@@ -113,6 +116,29 @@ impl TemperatureUnit {
         match self {
             TemperatureUnit::Celsius => "celsius",
             TemperatureUnit::Fahrenheit => "fahrenheit",
+        }
+    }
+}
+
+/// The corner treatment shared by every event shape in the calendar.
+///
+/// The UI presents exactly these two values. Keeping the choice typed here
+/// also makes a hand-written invoke unable to store a spelling no renderer
+/// understands; an unrecognised database row still falls back to `Rounded`
+/// in [`read_settings`] for forwards compatibility and safe hand-editing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EventCornerStyle {
+    #[serde(rename = "rounded")]
+    Rounded,
+    #[serde(rename = "square")]
+    Square,
+}
+
+impl EventCornerStyle {
+    fn as_str(self) -> &'static str {
+        match self {
+            EventCornerStyle::Rounded => "rounded",
+            EventCornerStyle::Square => "square",
         }
     }
 }
@@ -345,6 +371,16 @@ pub struct AppSettings {
     /// Minutes a new timed event lasts when the user names only its start.
     /// Sixty preserves the existing behavior for installs without this row.
     pub default_event_duration_minutes: u32,
+    /// Extra transparency applied by omacal to the calendar canvas. Zero is
+    /// the existing app rendering; a compositor may still apply whole-window
+    /// opacity on top (Omarchy does by default).
+    pub background_transparency: u8,
+    /// Extra transparency applied to event fills only. Text, colour spines,
+    /// outlines and controls stay fully painted so events remain legible.
+    pub event_transparency: u8,
+    /// Rounded preserves the shapes omacal shipped with; square removes the
+    /// corner radius from every event representation, not from other UI.
+    pub event_corner_style: EventCornerStyle,
     /// Whether the system tray icon is shown. **On by default** — the tray is
     /// where Quit lives, and an app that hides its only quit affordance on a
     /// fresh install has made a decision nobody asked it to. Turning it off
@@ -533,6 +569,23 @@ pub async fn read_settings(pool: &SqlitePool) -> AppSettings {
             .and_then(|v| v.parse::<u32>().ok())
             .filter(|&minutes| minutes > 0)
             .unwrap_or(60),
+        // Percentages are bounded on both sides of the IPC boundary. A future
+        // spelling, a typo in sqlite3, or a value over 100 means "none" — the
+        // appearance the app had before these settings existed.
+        background_transparency: read(pool, BACKGROUND_TRANSPARENCY_KEY)
+            .await
+            .and_then(|v| v.parse::<u8>().ok())
+            .filter(|&percent| percent <= 100)
+            .unwrap_or(0),
+        event_transparency: read(pool, EVENT_TRANSPARENCY_KEY)
+            .await
+            .and_then(|v| v.parse::<u8>().ok())
+            .filter(|&percent| percent <= 100)
+            .unwrap_or(0),
+        event_corner_style: match read(pool, EVENT_CORNER_STYLE_KEY).await.as_deref() {
+            Some("square") => EventCornerStyle::Square,
+            _ => EventCornerStyle::Rounded,
+        },
         // `== "12h"` rather than `!= "24h"`, the same polarity `list_mode`
         // takes and for the same reason: absent, garbage, and a value written
         // by some future version all land on the format the app has always
@@ -609,6 +662,9 @@ pub const INTERVAL_TOO_SHORT: &str =
 
 pub const EVENT_DURATION_TOO_SHORT: &str =
     "the default meeting duration must be at least one minute";
+
+pub const TRANSPARENCY_OUT_OF_RANGE: &str =
+    "transparency must be between 0 and 100 percent";
 
 #[tauri::command]
 pub async fn get_settings(state: tauri::State<'_, AppState>) -> Result<AppSettings, String> {
@@ -1037,6 +1093,56 @@ async fn set_default_event_duration_impl(
     Ok(read_settings(pool).await)
 }
 
+/// Stores the three appearance choices as one decision. The two sliders and
+/// the corner picker share one preview, so a crash or database failure must
+/// not leave half of that preview persisted for the next launch.
+#[tauri::command]
+pub async fn set_appearance_preferences(
+    state: tauri::State<'_, AppState>,
+    background_transparency: u8,
+    event_transparency: u8,
+    event_corner_style: EventCornerStyle,
+) -> Result<AppSettings, String> {
+    set_appearance_preferences_impl(
+        &state.pool,
+        background_transparency,
+        event_transparency,
+        event_corner_style,
+    )
+    .await
+    .map_err(|e| crate::errors::user_facing(&e))
+}
+
+async fn set_appearance_preferences_impl(
+    pool: &SqlitePool,
+    background_transparency: u8,
+    event_transparency: u8,
+    event_corner_style: EventCornerStyle,
+) -> anyhow::Result<AppSettings> {
+    if background_transparency > 100 || event_transparency > 100 {
+        anyhow::bail!(TRANSPARENCY_OUT_OF_RANGE);
+    }
+
+    let values = [
+        (BACKGROUND_TRANSPARENCY_KEY, background_transparency.to_string()),
+        (EVENT_TRANSPARENCY_KEY, event_transparency.to_string()),
+        (EVENT_CORNER_STYLE_KEY, event_corner_style.as_str().to_string()),
+    ];
+    let mut tx = pool.begin().await?;
+    for (key, value) in values {
+        sqlx::query(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(key)
+        .bind(value)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(read_settings(pool).await)
+}
+
 /// Stores the filmstrip toggle. Nothing is refused and nothing is clamped —
 /// unlike the sync interval, there is no value of a boolean the app has to
 /// protect Google's quota from.
@@ -1189,6 +1295,13 @@ mod tests {
             60,
             "new events remain one hour long until somebody chooses otherwise",
         );
+        assert_eq!(s.background_transparency, 0, "the existing canvas stays unchanged");
+        assert_eq!(s.event_transparency, 0, "the existing event fills stay unchanged");
+        assert_eq!(
+            s.event_corner_style,
+            EventCornerStyle::Rounded,
+            "existing event shapes stay rounded",
+        );
         assert_eq!(
             s.time_format,
             TimeFormat::H24,
@@ -1328,6 +1441,64 @@ mod tests {
                 read_settings(&p).await.default_event_duration_minutes,
                 60,
                 "{stored:?} is not a usable duration and must fall back",
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn appearance_round_trips_as_one_choice_and_rejects_bad_percentages() {
+        let p = pool().await;
+
+        let s = set_appearance_preferences_impl(&p, 35, 70, EventCornerStyle::Square)
+            .await
+            .unwrap();
+        assert_eq!(s.background_transparency, 35);
+        assert_eq!(s.event_transparency, 70);
+        assert_eq!(s.event_corner_style, EventCornerStyle::Square);
+
+        for (background, events) in [(101, 70), (35, 101)] {
+            let err = set_appearance_preferences_impl(&p, background, events, EventCornerStyle::Rounded)
+                .await
+                .unwrap_err();
+            assert_eq!(err.to_string(), TRANSPARENCY_OUT_OF_RANGE);
+            assert_eq!(crate::errors::user_facing(&err), TRANSPARENCY_OUT_OF_RANGE);
+            let unchanged = read_settings(&p).await;
+            assert_eq!(unchanged.background_transparency, 35);
+            assert_eq!(unchanged.event_transparency, 70);
+            assert_eq!(unchanged.event_corner_style, EventCornerStyle::Square);
+        }
+    }
+
+    #[tokio::test]
+    async fn malformed_appearance_rows_fall_back_to_the_existing_look() {
+        let p = pool().await;
+
+        for stored in ["", "101", "-1", "half", "255"] {
+            write(&p, BACKGROUND_TRANSPARENCY_KEY, stored).await.unwrap();
+            write(&p, EVENT_TRANSPARENCY_KEY, stored).await.unwrap();
+            let s = read_settings(&p).await;
+            assert_eq!(s.background_transparency, 0, "{stored:?} changed the canvas");
+            assert_eq!(s.event_transparency, 0, "{stored:?} changed event fills");
+        }
+
+        write(&p, EVENT_CORNER_STYLE_KEY, "square").await.unwrap();
+        assert_eq!(read_settings(&p).await.event_corner_style, EventCornerStyle::Square);
+        for stored in ["", "Square", "round", "future-style"] {
+            write(&p, EVENT_CORNER_STYLE_KEY, stored).await.unwrap();
+            assert_eq!(
+                read_settings(&p).await.event_corner_style,
+                EventCornerStyle::Rounded,
+                "{stored:?} is not a style this version writes",
+            );
+        }
+    }
+
+    #[test]
+    fn the_corner_styles_stored_spelling_is_its_wire_spelling() {
+        for style in [EventCornerStyle::Rounded, EventCornerStyle::Square] {
+            assert_eq!(
+                serde_json::to_string(&style).unwrap(),
+                format!("\"{}\"", style.as_str()),
             );
         }
     }

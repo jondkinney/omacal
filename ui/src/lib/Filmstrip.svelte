@@ -253,7 +253,7 @@
   .sdate { position: sticky; top: 0; z-index: 1; margin: 0 0 4px;
            font-size: 11px; font-weight: 600; color: var(--muted);
            letter-spacing: .05em; text-transform: uppercase;
-           background: var(--bg); padding: 2px 0;
+           background: var(--calendar-canvas, var(--bg)); padding: 2px 0;
            display: flex; align-items: center; gap: 8px; }
   /* The sky beside the day it belongs to, in the heading's own voice. */
   .sdate .wx { display: inline-flex; align-items: center; gap: 3px;
@@ -267,7 +267,8 @@
      hover wash lives on the li so it still sweeps the full row width; the
      button itself is content-sized, which is what keeps Join in the left
      cluster instead of flushed to the far edge by a stretching sibling. */
-  .srow-li { display: flex; align-items: baseline; border-radius: 4px; }
+  .srow-li { display: flex; align-items: baseline;
+             border-radius: var(--event-chip-radius, 4px); }
   .srow-li:hover, .srow-li:focus-within {
     background: color-mix(in srgb, var(--text) 6%, transparent); }
 
@@ -288,7 +289,8 @@
              Left padding grows by the 2px the border occupied, so nothing
              on the row moves. */
           box-shadow: inset 2px 0 0 0 var(--cal); background: none;
-          color: var(--text); border-radius: 4px; padding: 4px 8px 4px 10px; }
+          color: var(--text); border-radius: var(--event-chip-radius, 4px);
+          padding: 4px 8px 4px 10px; }
   .srow.keyboard { outline: 2px solid var(--accent); outline-offset: 1px; }
 
   /* Tabular figures so the times form a column the eye can run down, and a
