@@ -4294,6 +4294,16 @@ test.describe('EventForm', () => {
     const editor = page.getByLabel('Description', { exact: true });
 
     await editor.pressSequentially('- ');
+    expect(await editor.evaluate((element) => {
+      const item = element.querySelector('ul > li');
+      const selection = window.getSelection();
+      const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+      return {
+        collapsed: range?.collapsed,
+        directlyBeforePlaceholder: range?.startContainer === item && range.startOffset === 0,
+        itemText: item?.textContent,
+      };
+    })).toEqual({ collapsed: true, directlyBeforePlaceholder: true, itemText: '' });
     await page.keyboard.type('Dash item');
     await expect(editor.locator('ul > li')).toHaveText('Dash item');
     await expect(editor).not.toContainText('- Dash item');
@@ -4321,6 +4331,40 @@ test.describe('EventForm', () => {
     await editor.press('Space');
     await expect(editor.locator('ul, ol')).toHaveCount(0);
     await expect(editor).toHaveText('Budget - ');
+  });
+
+  test('a Markdown bullet directly after a heading keeps the caret at the bullet', async ({ page }) => {
+    await open(page, 'create');
+    const editor = page.getByLabel('Description', { exact: true });
+
+    await editor.pressSequentially('# ');
+    await page.keyboard.type('Planning');
+    await editor.press('Enter');
+    await editor.pressSequentially('- ');
+
+    expect(await editor.evaluate((element) => {
+      const heading = element.querySelector('h3');
+      const item = element.querySelector('ul > li');
+      const selection = window.getSelection();
+      const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+      return {
+        headingText: heading?.textContent,
+        listFollowsHeading: heading?.nextElementSibling === item?.parentElement,
+        collapsed: range?.collapsed,
+        directlyBeforePlaceholder: range?.startContainer === item && range.startOffset === 0,
+        itemText: item?.textContent,
+      };
+    })).toEqual({
+      headingText: 'Planning',
+      listFollowsHeading: true,
+      collapsed: true,
+      directlyBeforePlaceholder: true,
+      itemText: '',
+    });
+
+    await page.keyboard.type('First point');
+    await expect(editor.locator('h3')).toHaveText('Planning');
+    await expect(editor.locator('ul > li')).toHaveText('First point');
   });
 
   test('completed inline Markdown-style runs format immediately without retaining markers', async ({ page }) => {
