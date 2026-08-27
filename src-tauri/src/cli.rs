@@ -35,7 +35,8 @@ const EXIT_NO_DB: i32 = 3;
 pub(crate) const EXIT_ERROR: i32 = 4;
 
 const USAGE: &str = "\
-omacal CLI — read the calendar omacal syncs. Read-only.
+omacal CLI — your calendar from the terminal: reads answer offline from
+the synced database; writes execute through the running app's own guards.
 
 USAGE
   omacal agenda [--days N] [--json]        the next N days (default 7)
@@ -49,6 +50,7 @@ USAGE
   omacal skill                             print the agent skill this binary carries
   omacal skill install                     install it for your agents (Claude Code linked
                                            automatically; refreshed on every update)
+  omacal commands [--json]                 every command and flag, machine-readable
   omacal cli-help                          this text
 
 WRITES (the running app executes them, through its own guards)
@@ -99,6 +101,73 @@ pub(crate) enum Command {
     /// binary carries — `cli_skill.rs`, the 37signals pattern. Needs no
     /// database: handled beside Help, before anything is opened.
     Skill { install: bool },
+    /// The machine-readable catalog of every command and flag — agent
+    /// discovery beyond what the skill narrates (basecamp-cli's
+    /// `commands --json`, adopted). No database either.
+    Commands,
+}
+
+/// One catalog row. `writes` means *calendar* writes — the two-tier trust
+/// question an agent asks first — not "touches any file" (`skill install`
+/// writes skill files and is still `false` here; its description says so).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CommandInfo {
+    pub name: &'static str,
+    pub usage: &'static str,
+    pub description: &'static str,
+    pub writes: bool,
+    pub flags: &'static [&'static str],
+}
+
+/// Every command this parser answers to, as data. Hand-kept beside the
+/// parser it describes; `the_catalog_matches_the_parser` holds the two
+/// together, which is this file's version of basecamp-cli's drift check.
+pub(crate) fn command_catalog() -> Vec<CommandInfo> {
+    vec![
+        CommandInfo { name: "agenda", usage: "agenda [--days N]", writes: false,
+            description: "the next N days (default 7), all accounts, offline",
+            flags: &["--days", "--json"] },
+        CommandInfo { name: "events list", usage: "events list --from D --to D", writes: false,
+            description: "expanded occurrences in a date window, ids included",
+            flags: &["--from", "--to", "--json"] },
+        CommandInfo { name: "events show", usage: "events show ID", writes: false,
+            description: "one event whole: guests with answers, organizer, join link",
+            flags: &["--json"] },
+        CommandInfo { name: "events create", usage: "events create --title T --date D …", writes: true,
+            description: "create through the running app's guards",
+            flags: &["--title", "--date", "--start", "--end", "--end-date", "--all-day",
+                     "--last-day", "--calendar", "--location", "--description", "--guest",
+                     "--notify", "--json"] },
+        CommandInfo { name: "events update", usage: "events update ID --occurrence MS …", writes: true,
+            description: "reschedule or retitle; scope and notify never guessed",
+            flags: &["--occurrence", "--scope", "--title", "--date", "--start", "--end",
+                     "--location", "--description", "--notify", "--json"] },
+        CommandInfo { name: "events delete", usage: "events delete ID --occurrence MS", writes: true,
+            description: "delete at a scope, through the app",
+            flags: &["--occurrence", "--scope", "--json"] },
+        CommandInfo { name: "events respond", usage: "events respond ID yes|maybe|no", writes: true,
+            description: "answer an invitation",
+            flags: &["--scope", "--occurrence", "--json"] },
+        CommandInfo { name: "search", usage: "search <query>", writes: false,
+            description: "titles, nearest to today first",
+            flags: &["--json"] },
+        CommandInfo { name: "calendars", usage: "calendars", writes: false,
+            description: "every calendar with ids and accounts",
+            flags: &["--json"] },
+        CommandInfo { name: "doctor", usage: "doctor", writes: false,
+            description: "diagnose this install",
+            flags: &["--json"] },
+        CommandInfo { name: "skill", usage: "skill [install]", writes: false,
+            description: "print the embedded agent skill, or install it for your agents (writes skill files only, never the calendar)",
+            flags: &["--json"] },
+        CommandInfo { name: "commands", usage: "commands", writes: false,
+            description: "this catalog",
+            flags: &["--json"] },
+        CommandInfo { name: "cli-help", usage: "cli-help", writes: false,
+            description: "usage, exit codes, the whole contract",
+            flags: &[] },
+    ]
 }
 
 #[derive(Debug, PartialEq)]
@@ -135,6 +204,7 @@ pub(crate) fn parse(argv: &[String]) -> Option<Result<Invocation, String>> {
 
     match sub.as_str() {
         "cli-help" => build(Command::Help),
+        "commands" => build(Command::Commands),
         "skill" => match rest.iter().find(|a| !a.starts_with("--")).map(|s| s.as_str()) {
             None => build(Command::Skill { install: false }),
             Some("install") => build(Command::Skill { install: true }),
@@ -569,9 +639,41 @@ pub(crate) fn fail(json: bool, code: &str, message: &str, exit: i32) -> i32 {
 /// Runs one invocation to completion and answers with the process exit
 /// code. Its own tokio runtime, because the app's has not been built — and
 /// never will be on this path.
+/// The icon as truecolor half-blocks — generated by
+/// `scripts/generate-cli-logo.py` from the app icon, never hand-edited.
+/// basecamp-cli's welcome wears the same trick, and it earns its bytes:
+/// a CLI that greets a person differently from a pipe is a CLI that knows
+/// which one it is talking to.
+const LOGO: &str = include_str!("cli_logo.ans");
+
+/// The greeting, person-only: the logo and tagline print exactly when
+/// stdout is a real terminal, colour is welcome (`NO_COLOR` unset), and a
+/// dumb terminal is not pretending otherwise. A pipe gets `USAGE` bare —
+/// escape codes in a script's captured help are noise someone greps around.
+fn print_help() {
+    use std::io::IsTerminal;
+    let dumb = std::env::var_os("TERM").is_some_and(|t| t == "dumb");
+    if std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none() && !dumb {
+        println!("\n{LOGO}");
+        println!("  \x1b[1mYour calendar, at your command (line).\x1b[0m\n");
+    }
+    println!("{USAGE}");
+}
+
 pub(crate) fn run(inv: Invocation) -> i32 {
     if matches!(inv.command, Command::Help) {
-        println!("{USAGE}");
+        print_help();
+        return EXIT_OK;
+    }
+    if matches!(inv.command, Command::Commands) {
+        let catalog = command_catalog();
+        if inv.json {
+            print_json(&catalog);
+        } else {
+            for c in &catalog {
+                println!("{:<28} {}", c.usage, c.description);
+            }
+        }
         return EXIT_OK;
     }
 
@@ -657,7 +759,9 @@ pub(crate) fn run(inv: Invocation) -> i32 {
         let result: anyhow::Result<i32> = async {
             match &inv.command {
                 Command::Help | Command::Doctor => unreachable!("handled above"),
-                Command::Skill { .. } => unreachable!("handled above, before the database"),
+                Command::Skill { .. } | Command::Commands => {
+                    unreachable!("handled above, before the database")
+                }
                 Command::Write(_) => unreachable!("taken by value above"),
                 Command::Calendars => {
                     let cals = omacal_store::list_calendars(&pool).await?;
@@ -1024,6 +1128,50 @@ mod tests {
         // A CalDAV calendar's id is a URL; the comparison fails harmlessly
         // and the account address carries the answer.
         assert!(is(Some("ana@fastmail.com"), "ana@fastmail.com", "https://dav.example/cal/"));
+    }
+
+    /// The catalog matches the parser: every top-level word `parse`
+    /// answers to appears exactly once as a catalog name prefix, the four
+    /// write verbs are marked as writes, and nothing else is. Hand-kept on
+    /// both sides — this test is the seam that keeps them one.
+    #[test]
+    fn the_catalog_matches_the_parser() {
+        let catalog = command_catalog();
+        let names: Vec<&str> = catalog.iter().map(|c| c.name).collect();
+        for required in [
+            "agenda", "events list", "events show", "events create", "events update",
+            "events delete", "events respond", "search", "calendars", "doctor",
+            "skill", "commands", "cli-help",
+        ] {
+            assert_eq!(
+                names.iter().filter(|n| **n == required).count(),
+                1,
+                "{required} appears exactly once"
+            );
+        }
+        assert_eq!(names.len(), 13, "nothing in the catalog the parser does not answer");
+        let writers: Vec<&str> =
+            catalog.iter().filter(|c| c.writes).map(|c| c.name).collect();
+        assert_eq!(
+            writers,
+            ["events create", "events update", "events delete", "events respond"],
+            "exactly the four socket verbs write"
+        );
+        assert!(serde_json::to_string(&catalog).is_ok());
+
+        assert_eq!(
+            parse(&argv("commands --json")),
+            Some(Ok(Invocation { command: Command::Commands, json: true }))
+        );
+    }
+
+    /// The embedded logo is the generator's output: truecolor half-blocks,
+    /// nothing else — and present, so a TTY greeting can never be blank.
+    #[test]
+    fn the_logo_is_real_ansi_art() {
+        assert!(LOGO.contains('\u{2580}'), "half-blocks are the medium");
+        assert!(LOGO.contains("\u{1b}[38;2;"), "24-bit colour escapes");
+        assert!(LOGO.lines().count() >= 10, "a logo, not a smudge");
     }
 
     /// The skill commands parse bare and with `install`, and a stray word
