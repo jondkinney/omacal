@@ -18,6 +18,7 @@
     onPrev, onNext, onToday, onSearch, onSignIn, onSync, oncalendarchange,
     onWhatsNew, onRestart, onUpdate,
     invites = [], declines = [], changes = [], oninvitesanswered = () => {},
+    settingsOpen = $bindable(false),
     open = $bindable(false),
   }: {
     status: AppStatus | null;
@@ -75,6 +76,9 @@
     /** Bound through to `CalendarPopover` — lets `App` open the picker
      *  straight after a sign-in, from outside the popover's own trigger. */
     open?: boolean;
+    /** Parent-drivable so the application-wide Ctrl+, chord opens the same
+     *  modal as the menu item, without duplicating Settings outside Header. */
+    settingsOpen?: boolean;
   } = $props();
 
   // The title names the month of whatever unit is actually on screen. Week's
@@ -167,7 +171,6 @@
   /** The hamburger's menu. Everything that used to sit in the header and is
    *  used rarely now lives here (spec §1). */
   let menuOpen = $state(false);
-  let settingsOpen = $state(false);
   let tasksOpen = $state(false);
 
   function openSettings() {
