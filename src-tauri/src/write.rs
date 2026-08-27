@@ -1321,7 +1321,7 @@ mod tests {
             "conference": "googleMeet"
         }))
         .unwrap();
-        let first = fields_from_input(input);
+        let first = fields_from_input(input).unwrap();
         let ConferenceAction::CreateGoogleMeet { request_id } = first.conference.unwrap() else {
             panic!("googleMeet did not become a Meet create request");
         };
@@ -1346,7 +1346,7 @@ mod tests {
         }))
         .unwrap();
         assert!(matches!(
-            fields_from_input(remove).conference,
+            fields_from_input(remove).unwrap().conference,
             Some(ConferenceAction::Remove)
         ));
         assert_eq!(conference_json(&ConferenceAction::Remove), serde_json::Value::Null);
@@ -1359,9 +1359,9 @@ mod tests {
         let mut second = sample_input();
         second.conference = Some(ConferenceInput::GoogleMeet);
         let Some(ConferenceAction::CreateGoogleMeet { request_id: a }) =
-            fields_from_input(first).conference else { panic!("missing first request") };
+            fields_from_input(first).unwrap().conference else { panic!("missing first request") };
         let Some(ConferenceAction::CreateGoogleMeet { request_id: b }) =
-            fields_from_input(second).conference else { panic!("missing second request") };
+            fields_from_input(second).unwrap().conference else { panic!("missing second request") };
         assert_ne!(a, b);
     }
 
