@@ -11,6 +11,12 @@
   let linkDraft = $state('https://');
   let linkError = $state(false);
   let linkRange: Range | null = null;
+  // Chromium may place typing back inside the preceding formatted element
+  // when a collapsed range sits in an empty sibling text node. A temporary
+  // zero-width caret anchor makes the sibling non-empty. It never enters the
+  // bound/saved HTML and is removed from the live DOM when focus leaves.
+  const CARET_ANCHOR = '\u200b';
+  const withoutCaretAnchors = (text: string) => text.split(CARET_ANCHOR).join('');
 
   onMount(() => {
     if (!editor) return;
@@ -23,7 +29,44 @@
   });
 
   function sync() {
-    if (editor) value = sanitizeDescriptionHtml(editor.innerHTML);
+    if (editor) value = sanitizeDescriptionHtml(withoutCaretAnchors(editor.innerHTML));
+  }
+
+  function input() {
+    if (!editor || !editor.textContent?.includes(CARET_ANCHOR)) {
+      sync();
+      return;
+    }
+
+    const selection = window.getSelection();
+    const active = selection?.rangeCount ? selection.getRangeAt(0) : null;
+    const startNode = active?.startContainer instanceof Text ? active.startContainer : null;
+    const endNode = active?.endContainer instanceof Text ? active.endContainer : null;
+    let startOffset = active?.startOffset ?? 0;
+    let endOffset = active?.endOffset ?? 0;
+    const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+    const nodes: Text[] = [];
+    let node: Node | null;
+    while ((node = walker.nextNode())) nodes.push(node as Text);
+
+    for (const textNode of nodes) {
+      if (!textNode.data.includes(CARET_ANCHOR)) continue;
+      if (textNode === startNode) {
+        startOffset -= textNode.data.slice(0, startOffset).split(CARET_ANCHOR).length - 1;
+      }
+      if (textNode === endNode) {
+        endOffset -= textNode.data.slice(0, endOffset).split(CARET_ANCHOR).length - 1;
+      }
+      textNode.data = withoutCaretAnchors(textNode.data);
+    }
+
+    if (active && selection && startNode && endNode) {
+      active.setStart(startNode, Math.max(0, startOffset));
+      active.setEnd(endNode, Math.max(0, endOffset));
+      selection.removeAllRanges();
+      selection.addRange(active);
+    }
+    sync();
   }
 
   // `sync` keeps the bound value safe on every keystroke without moving the
@@ -33,7 +76,7 @@
   function settle(event: FocusEvent) {
     if (!editor) return;
     if (event.relatedTarget instanceof Node && richtext?.contains(event.relatedTarget)) return;
-    const safe = sanitizeDescriptionHtml(editor.innerHTML);
+    const safe = sanitizeDescriptionHtml(withoutCaretAnchors(editor.innerHTML));
     if (editor.innerHTML !== safe) editor.innerHTML = safe;
     value = safe;
   }
@@ -183,7 +226,142 @@
     sync();
   }
 
+  /** Markdown's line-opening shortcuts are useful here as gestures, not as a
+   * storage format. As soon as the marker's trailing space is pressed, remove
+   * the marker and ask the browser to create the same HTML the toolbar does.
+   * Requiring the marker to be the block's entire contents keeps prose such
+   * as "budget - " from unexpectedly turning into a list. */
+  function markdownBlockShortcut(event: KeyboardEvent): boolean {
+    if (event.isComposing || event.ctrlKey || event.metaKey || event.altKey || event.key !== ' ') {
+      return false;
+    }
+    if (!editor) return false;
+
+    const selection = window.getSelection();
+    const caret = selection?.rangeCount ? selection.getRangeAt(0) : null;
+    if (!caret?.collapsed || !editor.contains(caret.commonAncestorContainer)) return false;
+
+    const parent = caret.startContainer instanceof Element
+      ? caret.startContainer
+      : caret.startContainer.parentElement;
+    let block = parent?.closest('li, p, div, h2, h3') as HTMLElement | null;
+    if (!block || !editor.contains(block)) block = editor;
+    // A marker at the beginning of an existing list item is content, not a
+    // request to toggle the surrounding list off.
+    if (block.closest('li')) return false;
+
+    const before = document.createRange();
+    before.selectNodeContents(block);
+    try {
+      before.setEnd(caret.startContainer, caret.startOffset);
+    } catch {
+      return false;
+    }
+
+    const marker = before.toString();
+    if ((block.textContent ?? '') !== marker) return false;
+    const format = marker === '-' || marker === '*'
+      ? { command: 'insertUnorderedList' }
+      : marker === '1.'
+        ? { command: 'insertOrderedList' }
+        : marker === '#'
+          ? { command: 'formatBlock', argument: 'h3' }
+          : null;
+    if (!format) return false;
+
+    event.preventDefault();
+    before.deleteContents();
+    before.collapse(true);
+    selection?.removeAllRanges();
+    selection?.addRange(before);
+    if (format.argument === 'h3') {
+      const heading = document.createElement('h3');
+      heading.append(document.createElement('br'));
+      if (block === editor) editor.replaceChildren(heading);
+      else block.replaceWith(heading);
+      const inside = document.createRange();
+      inside.setStart(heading, 0);
+      inside.collapse(true);
+      selection?.removeAllRanges();
+      selection?.addRange(inside);
+      sync();
+      return true;
+    }
+    document.execCommand(format.command, false, format.argument);
+    sync();
+    return true;
+  }
+
+  /** Replace a just-completed inline Markdown-style run with safe rich HTML.
+   * The closing character is intercepted before it enters the document, and
+   * a temporary caret anchor after the new element gives typing an
+   * unformatted place to continue. Single stars intentionally mean bold here,
+   * matching the compact invocation shown to users; conventional **bold**
+   * works too.
+   * Markdown has no native underline marker, so this editor uses the common
+   * extension spelling ++underline++. */
+  function markdownInlineShortcut(event: KeyboardEvent): boolean {
+    if (event.isComposing || event.ctrlKey || event.metaKey || event.altKey) return false;
+    if (!editor || !['*', '_', '+'].includes(event.key)) return false;
+
+    const selection = window.getSelection();
+    const caret = selection?.rangeCount ? selection.getRangeAt(0) : null;
+    if (!caret?.collapsed || !editor.contains(caret.commonAncestorContainer)) return false;
+    if (!(caret.startContainer instanceof Text)) return false;
+
+    const textNode = caret.startContainer;
+    const before = textNode.data.slice(0, caret.startOffset);
+    const rules: Array<{
+      key: string;
+      pattern: RegExp;
+      openLength: number;
+      partialCloseLength: number;
+      tag: 'strong' | 'em' | 'u';
+    }> = [
+      { key: '*', pattern: /(?:^|[\s([{])\*\*([^*\n]+)\*$/, openLength: 2, partialCloseLength: 1, tag: 'strong' },
+      { key: '*', pattern: /(?:^|[\s([{])\*([^*\n]+)$/, openLength: 1, partialCloseLength: 0, tag: 'strong' },
+      { key: '_', pattern: /(?:^|[\s([{])_([^_\n]+)$/, openLength: 1, partialCloseLength: 0, tag: 'em' },
+      { key: '+', pattern: /(?:^|[\s([{])\+\+([^+\n]+)\+$/, openLength: 2, partialCloseLength: 1, tag: 'u' },
+    ];
+
+    for (const rule of rules) {
+      if (event.key !== rule.key) continue;
+      const match = before.match(rule.pattern);
+      const content = match?.[1];
+      if (!content || content.trim() !== content) continue;
+
+      const markerStart = caret.startOffset
+        - rule.openLength
+        - content.length
+        - rule.partialCloseLength;
+      if (markerStart < 0) continue;
+
+      event.preventDefault();
+      const prefix = withoutCaretAnchors(textNode.data.slice(0, markerStart));
+      const suffix = withoutCaretAnchors(textNode.data.slice(caret.startOffset));
+      const formatted = document.createElement(rule.tag);
+      formatted.textContent = content;
+      const tail = document.createElement('span');
+      const tailText = document.createTextNode(CARET_ANCHOR + suffix);
+      tail.append(tailText);
+      const nodes: Node[] = [];
+      if (prefix) nodes.push(document.createTextNode(prefix));
+      nodes.push(formatted, tail);
+      textNode.replaceWith(...nodes);
+
+      const after = document.createRange();
+      after.setStart(tailText, 1);
+      after.collapse(true);
+      selection?.removeAllRanges();
+      selection?.addRange(after);
+      sync();
+      return true;
+    }
+    return false;
+  }
+
   function editorKeydown(event: KeyboardEvent) {
+    if (markdownBlockShortcut(event) || markdownInlineShortcut(event)) return;
     autoLinkBeforeDelimiter(event);
     if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return;
     const key = event.key.toLowerCase();
@@ -200,14 +378,18 @@
 
 <div class="richtext" bind:this={richtext} data-testid="description-editor" onfocusout={settle}>
   <div class="toolbar" role="toolbar" aria-label="Description formatting">
-    <button type="button" aria-label="Bold" aria-keyshortcuts="Control+B Meta+B" title="Bold (Ctrl+B)"
+    <button type="button" aria-label="Bold" aria-keyshortcuts="Control+B Meta+B" title="Bold (Ctrl+B or *text*)"
       onmousedown={(e) => e.preventDefault()} onclick={() => run('bold')}><b>B</b></button>
-    <button type="button" aria-label="Italic" aria-keyshortcuts="Control+I Meta+I" title="Italic (Ctrl+I)"
+    <button type="button" aria-label="Italic" aria-keyshortcuts="Control+I Meta+I" title="Italic (Ctrl+I or _text_)"
       onmousedown={(e) => e.preventDefault()} onclick={() => run('italic')}><i>I</i></button>
-    <button type="button" aria-label="Underline" aria-keyshortcuts="Control+U Meta+U" title="Underline (Ctrl+U)"
+    <button type="button" aria-label="Underline" aria-keyshortcuts="Control+U Meta+U" title="Underline (Ctrl+U or ++text++)"
       onmousedown={(e) => e.preventDefault()} onclick={() => run('underline')}><u>U</u></button>
-    <button type="button" aria-label="Heading" title="Heading"
+    <button type="button" aria-label="Heading" title="Heading (# then Space)"
       onmousedown={(e) => e.preventDefault()} onclick={heading}><b>H</b></button>
+    <button type="button" class="listbutton" aria-label="Bulleted list" title="Bulleted list (- or * then Space)"
+      onmousedown={(e) => e.preventDefault()} onclick={() => run('insertUnorderedList')}>•</button>
+    <button type="button" class="listbutton" aria-label="Numbered list" title="Numbered list (1. then Space)"
+      onmousedown={(e) => e.preventDefault()} onclick={() => run('insertOrderedList')}>1.</button>
     <button type="button" class="linkbutton" aria-label="Link"
       aria-keyshortcuts="Control+K Meta+K" title="Link (Ctrl+K)"
       onmousedown={(e) => e.preventDefault()} onclick={startLink}>Link</button>
@@ -239,7 +421,7 @@
     aria-label="Description"
     aria-multiline="true"
     data-placeholder="Add notes or an agenda"
-    oninput={sync}
+    oninput={input}
     onpaste={paste}
     ondrop={drop}
     onkeydown={editorKeydown}
@@ -265,6 +447,7 @@
     color: var(--text); background: color-mix(in srgb, var(--text) 8%, transparent);
   }
   .toolbar .linkbutton { width: auto; padding: 0 5px; }
+  .toolbar .listbutton { width: 27px; }
 
   .linkrow { display: flex; align-items: center; gap: 3px; padding: 4px;
              border-bottom: 1px solid var(--hairline); }

@@ -4268,6 +4268,84 @@ test.describe('EventForm', () => {
     expect(saved.fields.description).not.toContain('style=');
   });
 
+  test('the compact toolbar authors bulleted and numbered lists', async ({ page }) => {
+    await open(page, 'create');
+    const box = page.getByTestId('description-editor');
+    const editor = page.getByLabel('Description', { exact: true });
+
+    await editor.fill('Bullet item');
+    await editor.selectText();
+    await box.getByRole('button', { name: 'Bulleted list' }).click();
+    await expect(editor.locator('ul > li')).toHaveText('Bullet item');
+
+    await editor.fill('Numbered item');
+    await editor.selectText();
+    await box.getByRole('button', { name: 'Numbered list' }).click();
+    await expect(editor.locator('ol > li')).toHaveText('Numbered item');
+
+    await page.getByRole('button', { name: 'Create' }).click();
+    const [saved] = await saves(page);
+    expect(saved.fields.description).toContain('<ol>');
+    expect(saved.fields.description).toContain('<li>Numbered item</li>');
+  });
+
+  test('Markdown-style line starters immediately become lists and a heading', async ({ page }) => {
+    await open(page, 'create');
+    const editor = page.getByLabel('Description', { exact: true });
+
+    await editor.pressSequentially('- ');
+    await page.keyboard.type('Dash item');
+    await expect(editor.locator('ul > li')).toHaveText('Dash item');
+    await expect(editor).not.toContainText('- Dash item');
+
+    await open(page, 'create');
+    await editor.pressSequentially('* ');
+    await page.keyboard.type('Star item');
+    await expect(editor.locator('ul > li')).toHaveText('Star item');
+    await expect(editor).not.toContainText('* Star item');
+
+    await open(page, 'create');
+    await editor.pressSequentially('1. ');
+    await page.keyboard.type('Ordered item');
+    await expect(editor.locator('ol > li')).toHaveText('Ordered item');
+    await expect(editor).not.toContainText('1. Ordered item');
+
+    await open(page, 'create');
+    await editor.pressSequentially('# ');
+    await page.keyboard.type('Planning');
+    await expect(editor.getByRole('heading', { name: 'Planning' })).toBeVisible();
+    await expect(editor).not.toContainText('# Planning');
+
+    // Markers only act as a complete line prefix, never in ordinary prose.
+    await editor.fill('Budget -');
+    await editor.press('Space');
+    await expect(editor.locator('ul, ol')).toHaveCount(0);
+    await expect(editor).toHaveText('Budget - ');
+  });
+
+  test('completed inline Markdown-style runs format immediately without retaining markers', async ({ page }) => {
+    await open(page, 'create');
+    const editor = page.getByLabel('Description', { exact: true });
+
+    await editor.pressSequentially('*bold* _italic_ ++underlined++ **also bold**');
+    await expect(editor.locator('strong')).toHaveCount(2);
+    await expect(editor.locator('strong').nth(0)).toHaveText('bold');
+    await expect(editor.locator('strong').nth(1)).toHaveText('also bold');
+    await expect(editor.locator('em')).toHaveText('italic');
+    await expect(editor.locator('u')).toHaveText('underlined');
+    await expect(editor).toHaveText('bold italic underlined also bold');
+
+    await page.getByRole('button', { name: 'Create' }).click();
+    const [saved] = await saves(page);
+    expect(saved.fields.description).toContain('<strong>bold</strong>');
+    expect(saved.fields.description).toContain('<em>italic</em>');
+    expect(saved.fields.description).toContain('<u>underlined</u>');
+    expect(saved.fields.description).not.toContain('*bold*');
+    expect(saved.fields.description).not.toContain('++underlined++');
+    expect(saved.fields.description).not.toContain('\u200b');
+    expect(saved.fields.description).not.toContain('<span');
+  });
+
   test('Ctrl+U underlines the selection without requiring the Linux Unicode chord', async ({ page }) => {
     await open(page, 'create');
     const editor = page.getByLabel('Description', { exact: true });
