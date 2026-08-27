@@ -848,7 +848,10 @@ test.describe('App', () => {
       // A one-off: there is no scope to choose, so the chooser is not offered.
       await expect(movePanel(page).getByRole('radiogroup')).toHaveCount(0);
 
-      await movePanel(page).getByRole('button', { name: 'Move without notifying' }).click();
+      await expect(
+        movePanel(page).getByRole('button', { name: 'Move without notifying' }),
+      ).toBeFocused();
+      await page.keyboard.press('Enter');
 
       await expect.poll(() => callsTo(page, 'update_event')).toHaveLength(1);
       const [args] = await callsTo(page, 'update_event');
@@ -947,10 +950,16 @@ test.describe('App', () => {
         movePanel(page).getByRole('button', { name: 'Move and notify guests' }),
       ).toHaveCount(0);
 
-      await movePanel(page).getByRole('button', { name: 'Move', exact: true }).click();
+      await expect(movePanel(page).getByRole('radio', { name: 'This event' })).toBeFocused();
+      await page.keyboard.press('ArrowDown');
+      await expect(
+        movePanel(page).getByRole('radio', { name: 'This and following' }),
+      ).toBeChecked();
+      await page.keyboard.press('Enter');
       await expect.poll(() => callsTo(page, 'update_event')).toHaveLength(1);
       const [args] = await callsTo(page, 'update_event');
       expect(args.sendUpdates).toBe('none');
+      expect(args.scope).toBe('following');
     });
 
     /** Escape closes a confirmation and writes nothing — the same key that
@@ -1966,11 +1975,12 @@ test.describe('App', () => {
     expect(args.occurrenceStartMs).not.toBe(APP_ALLDAY_SERIES_DTSTART);
   });
 
-  test('cancelling the confirmation deletes nothing', async ({ page }) => {
+  test('cancelling the confirmation with Enter deletes nothing', async ({ page }) => {
     await writable(page);
-    await block(page, 'Standup').click();
+    await block(page, 'Board prep').click();
     await page.getByRole('button', { name: 'Delete' }).click();
-    await confirmPanel(page).getByRole('button', { name: 'Cancel' }).click();
+    await expect(confirmPanel(page).getByRole('button', { name: 'Cancel' })).toBeFocused();
+    await page.keyboard.press('Enter');
     await expect(confirmPanel(page)).toHaveCount(0);
     expect(await callsTo(page, 'delete_event_cmd')).toEqual([]);
   });

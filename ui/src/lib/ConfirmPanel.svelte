@@ -3,6 +3,7 @@
   import { onMount, type Snippet } from 'svelte';
   import { escapeCloses } from './dismiss.svelte';
   import { placePopover, type Rect } from './position';
+  import { focusInitialChoice, handleChoiceKey } from './choicefocus';
 
   let {
     anchor,
@@ -36,6 +37,10 @@
   // open rather than reused, so one placement is all this needs.
   let pos = $state<{ top: number; left: number }>({ top: 0, left: 0 });
 
+  function handlePanelKey(event: KeyboardEvent) {
+    if (panelEl) handleChoiceKey(panelEl, event);
+  }
+
   onMount(() => {
     if (panelEl) {
       const viewport = { width: window.innerWidth, height: window.innerHeight };
@@ -45,13 +50,10 @@
         viewport,
       );
     }
-    // The **safe** control, whichever panel this is. `role="dialog"` plus
-    // `aria-modal` oblige focus to start inside, and the safe end of a dialog
-    // with a write behind it is the one that changes nothing: a stray Return
-    // on a panel the user did not mean to open closes it instead of mailing a
-    // guest list. Found rather than bound, so a caller cannot forget to pass
-    // it and silently land focus on the destructive button.
-    panelEl?.querySelector<HTMLButtonElement>('[data-cancel]')?.focus();
+    // A panel can nominate a meaningful scope or notification choice. Without
+    // one, focus falls back to Cancel: native Enter then activates exactly the
+    // button the user can see is focused, including the safe choice.
+    focusInitialChoice(panelEl);
   });
 
   // Escape closes this panel. `escapeCloses` carries the whole reason it is a
@@ -72,10 +74,11 @@
   tabindex="-1"
   aria-label={label}
   style="top:{pos.top}px; left:{pos.left}px"
+  onkeydown={handlePanelKey}
 >
   <h2>{title}</h2>
   {@render body()}
-  <div class="actions">{@render actions()}</div>
+  <div class="actions" data-choice-group data-confirm-actions>{@render actions()}</div>
 </div>
 
 <style>

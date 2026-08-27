@@ -11,6 +11,7 @@
   import { occurrenceDate, ruleInWords } from './eventform';
   import { isMachineAddress } from './organizer';
   import { respondToEvent, type Attendee, type EventDetail } from './eventdetail';
+  import { focusInitialChoice, handleChoiceKey } from './choicefocus';
 
   let {
     detail,
@@ -213,12 +214,14 @@
    */
   const joinUrl = $derived(detail.conference_uri ?? meetingUrl(detail.location));
 
-  function ask(response: 'accepted' | 'tentative' | 'declined', e: MouseEvent) {
+  async function ask(response: 'accepted' | 'tentative' | 'declined', e: MouseEvent) {
     if (!detail.is_recurring) {
       respond(response, 'this', e);
       return;
     }
     pending = response;
+    await tick();
+    focusInitialChoice(panelEl);
   }
   /** A `Set`, mirroring `CalendarPopover`: today there is only ever one RSVP
    *  target, so it never holds more than one entry, but a plain boolean
@@ -338,9 +341,15 @@
     note = { text: 'Copied — Ctrl+V pastes it as a new event', kind: 'info' };
     oncopy();
   }
+
+  function onPopoverKey(e: KeyboardEvent) {
+    onCopyKey(e);
+    if (e.defaultPrevented) return;
+    if (panelEl) handleChoiceKey(panelEl, e);
+  }
 </script>
 
-<svelte:window onkeydown={onCopyKey} />
+<svelte:window onkeydown={onPopoverKey} />
 
 <!-- A sibling of `.pop`, not a wrapper around it, so a click inside the
      panel — the guest list included — never reaches this button. -->
@@ -422,10 +431,10 @@
       <!-- The scope, asked exactly when it means something: a response has
            been chosen and this event repeats. `.scope` keeps its class so the
            one-off specs ("no scope controls at all") keep their meaning. -->
-      <div class="scope ask" role="group" aria-label="Apply to">
+      <div class="scope ask" role="group" aria-label="Apply to" data-choice-group>
         <span>{STATUS_WORD[pending]} —</span>
-        <button type="button" onclick={(e) => respond(pending!, 'this', e)}>This one</button>
-        <button type="button" onclick={(e) => respond(pending!, 'all', e)}>All of them</button>
+        <button type="button" data-choice data-initial-choice onclick={(e) => respond(pending!, 'this', e)}>This one</button>
+        <button type="button" data-choice onclick={(e) => respond(pending!, 'all', e)}>All of them</button>
         <button type="button" class="back" aria-label="Cancel" onclick={() => (pending = null)}>✕</button>
       </div>
     {/if}

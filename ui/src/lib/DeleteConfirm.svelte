@@ -47,12 +47,14 @@
            no last occurrence to count to, and a number that is only right for the
            rules that happen to end is worse than no number in a dialog with no
            undo. -->
-      <div class="scope" role="radiogroup" aria-label="Delete">
+      <div class="scope" role="radiogroup" aria-label="Delete" data-choice-group>
         <label>
           <input
             type="radio"
             name="delete-scope"
             aria-label="This event"
+            data-choice
+            data-initial-choice
             checked={scope === 'this'}
             onchange={() => (scope = 'this')}
           />
@@ -63,6 +65,7 @@
             type="radio"
             name="delete-scope"
             aria-label="This and following"
+            data-choice
             checked={scope === 'following'}
             onchange={() => (scope = 'following')}
           />
@@ -76,6 +79,7 @@
             type="radio"
             name="delete-scope"
             aria-label="All events"
+            data-choice
             checked={scope === 'all'}
             onchange={() => (scope = 'all')}
           />
@@ -107,7 +111,13 @@
 
   {#snippet actions()}
     <button type="button" class="ghost" data-cancel onclick={oncancel}>Cancel</button>
-    <button type="button" class="primary" onclick={() => onconfirm(scope)}>Delete</button>
+    <button
+      type="button"
+      class="primary"
+      data-choice
+      data-default-choice-action
+      onclick={() => onconfirm(scope)}
+    >Delete</button>
   {/snippet}
 </ConfirmPanel>
 
