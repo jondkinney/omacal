@@ -4,6 +4,7 @@ mod accounts;
 mod browser;
 mod caldav_account;
 mod cli;
+mod cli_write;
 mod caldav_write;
 mod calendars;
 mod commands;
@@ -15,6 +16,7 @@ mod fixtures;
 #[cfg(test)]
 mod golden;
 mod invites;
+mod ipc;
 mod notify;
 #[cfg(target_os = "macos")]
 mod notify_mac;
@@ -1289,6 +1291,13 @@ pub fn run() {
                 app.manage(NotifierHandle(notifier.clone()));
                 notify_loop::spawn(app.handle().clone(), notifier);
             }
+
+            // The CLI write socket (CLI-writes spec §2). After the state is
+            // managed, because every request dispatches through it; bound
+            // even in demo mode, where the bodies' own gates answer each
+            // write with the demo refusal — the same words the form gets.
+            #[cfg(unix)]
+            ipc::spawn(app.handle().clone());
 
             Ok(())
         })

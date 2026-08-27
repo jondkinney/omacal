@@ -29,10 +29,10 @@
 use serde::Serialize;
 use sqlx::SqlitePool;
 
-const EXIT_OK: i32 = 0;
-const EXIT_USAGE: i32 = 2;
+pub(crate) const EXIT_OK: i32 = 0;
+pub(crate) const EXIT_USAGE: i32 = 2;
 const EXIT_NO_DB: i32 = 3;
-const EXIT_ERROR: i32 = 4;
+pub(crate) const EXIT_ERROR: i32 = 4;
 
 const USAGE: &str = "\
 omacal CLI — read the calendar omacal syncs. Read-only.
@@ -45,13 +45,30 @@ USAGE
   omacal doctor [--json]                   diagnose this install
   omacal cli-help                          this text
 
+WRITES (the running app executes them, through its own guards)
+  omacal events create --title T --date D --start HH:MM --end HH:MM
+         [--end-date D] [--all-day --last-day D] [--calendar ID]
+         [--location L] [--description TEXT] [--guest a@b]…
+         [--notify all|none] [--json]
+  omacal events update ID --occurrence MS [--title T] [--date D]
+         [--start HH:MM] [--end HH:MM] [--location L] [--description TEXT]
+         [--scope this|following|all] [--notify all|none] [--json]
+  omacal events delete ID --occurrence MS [--scope this|following|all] [--json]
+  omacal events respond ID yes|maybe|no [--scope this|all] [--occurrence MS] [--json]
+
+  ID and MS are `events list --json`'s own eventId and startMs. Times read
+  in omacal's display zone. A repeating event needs --scope said out loud;
+  an event with guests needs --notify said out loud — neither is guessed.
+
 OUTPUT
   --json prints {\"ok\":true,\"data\":…} on success and
   {\"ok\":false,\"error\":{\"code\",\"message\"}} on failure; nothing prompts.
 
 EXIT CODES
   0 ok · 2 usage error · 3 no database (launch omacal and connect an
-  account first) · 4 internal error";
+  account first) · 4 internal error · 5 omacal is not running (writes
+  need it) · 6 the app refused the write (a conflict, a guard — read the
+  message, change the request; retrying as-is changes nothing)";
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum Command {
@@ -61,6 +78,13 @@ pub(crate) enum Command {
     Calendars,
     Doctor,
     Help,
+    /// The write verbs, whole — parsed, prechecked and executed by
+    /// `cli_write.rs`, over the running app's socket. This module's
+    /// read-only doctrine holds: nothing behind this variant opens the
+    /// database for writing either. Boxed for clippy's variant-size rule:
+    /// a create carries a form's worth of fields and every other variant
+    /// carries a date or two.
+    Write(Box<crate::cli_write::WriteCmd>),
 }
 
 #[derive(Debug, PartialEq)]
@@ -111,8 +135,21 @@ pub(crate) fn parse(argv: &[String]) -> Option<Result<Invocation, String>> {
             build(Command::Agenda { days })
         }
         "events" => {
-            if rest.first().map(|s| s.as_str()) != Some("list") {
-                return Some(Err("usage: omacal events list --from YYYY-MM-DD --to YYYY-MM-DD".into()));
+            // The write verbs live in `cli_write.rs`; `list` stays here.
+            match rest.first().map(|s| s.as_str()) {
+                Some(verb @ ("create" | "update" | "delete" | "respond")) => {
+                    return Some(crate::cli_write::parse_events(verb, &rest[1..]).map(|cmd| {
+                        Invocation { command: Command::Write(Box::new(cmd)), json }
+                    }));
+                }
+                Some("list") => {}
+                _ => {
+                    return Some(Err(
+                        "usage: omacal events list|create|update|delete|respond — \
+                         see omacal cli-help"
+                            .into(),
+                    ));
+                }
             }
             let date = |name: &str| -> Result<jiff::civil::Date, String> {
                 match take(name)? {
@@ -298,7 +335,7 @@ fn print_json<T: Serialize>(data: &T) {
     );
 }
 
-fn fail(json: bool, code: &str, message: &str, exit: i32) -> i32 {
+pub(crate) fn fail(json: bool, code: &str, message: &str, exit: i32) -> i32 {
     if json {
         println!("{}", serde_json::json!({ "ok": false, "error": { "code": code, "message": message } }));
     } else {
@@ -345,9 +382,18 @@ pub(crate) fn run(inv: Invocation) -> i32 {
             Err(e) => return fail(inv.json, "open_failed", &e.to_string(), EXIT_ERROR),
         };
 
+        // The write verbs: prechecked against this same read-only pool —
+        // does it repeat, does it have guests — then executed by the
+        // running app over its socket (`cli_write.rs`). The read-only mode
+        // above is not incidental: it is the module's whole claim.
+        if let Command::Write(cmd) = &inv.command {
+            return crate::cli_write::execute(&pool, cmd, inv.json).await;
+        }
+
         let result: anyhow::Result<i32> = async {
             match &inv.command {
                 Command::Help | Command::Doctor => unreachable!("handled above"),
+                Command::Write(_) => unreachable!("taken by value above"),
                 Command::Calendars => {
                     let cals = omacal_store::list_calendars(&pool).await?;
                     if inv.json {
@@ -597,6 +643,26 @@ mod tests {
         for s in ["", "--sync-now", "--quit", "2026-09-01"] {
             assert_eq!(parse(&argv(s)), None, "{s:?} was claimed by the CLI");
         }
+    }
+
+    /// The write verbs route to `cli_write` and stay inside the CLI's
+    /// claimed territory — a good one parses to `Write`, a bad one is
+    /// usage, and neither can boot a GUI.
+    #[test]
+    fn the_write_verbs_are_claimed_and_routed() {
+        assert!(matches!(
+            parse(&argv(
+                "events create --title Standup --date 2026-09-01 --start 09:00 --end 09:30"
+            )),
+            Some(Ok(Invocation { command: Command::Write(_), json: false }))
+        ));
+        assert!(matches!(
+            parse(&argv("events delete 41 --occurrence 1786352400000 --json")),
+            Some(Ok(Invocation { command: Command::Write(_), json: true }))
+        ));
+        // Recognised verb, used wrongly: usage, never a window.
+        assert!(matches!(parse(&argv("events create")), Some(Err(_))));
+        assert!(matches!(parse(&argv("events respond")), Some(Err(_))));
     }
 
     /// The channel mapping, pinned: AppImage wins over a stray flatpak

@@ -45,7 +45,9 @@ keyring = "4.1.6"
 open = "5.4.0"
 tracing-subscriber = "0.3.23"
 sqlx = { version = "0.8.6", features = ["runtime-tokio", "sqlite"] }
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time"] }
+# `net` + `io-util` joined for the CLI write socket (ipc.rs): a Unix
+# listener and buffered line reads, nothing more.
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time", "net", "io-util"] }
 anyhow.workspace = true
 thiserror.workspace = true
 # The *file watcher* for live theme reload. Not `notify-rust`, which is the
