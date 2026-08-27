@@ -70,7 +70,8 @@
    *  which the template reads as "no marker in this section".
    *
    *  A `ListDay` carries only its midnight, so "today" is `startMs`'s
-   *  24-hour window. */
+   *  24-hour window; DST puts the boundary an hour out twice a year, which
+   *  for a marker between rows is a miss of nothing. */
   function markerIndex(d: ListDay, now: number): number {
     if (now < d.startMs || now >= d.startMs + 24 * 3_600_000) return -1;
     const i = d.events.findIndex((ev) => !ev.is_all_day && ev.start_ms > now);
