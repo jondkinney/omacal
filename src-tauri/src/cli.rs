@@ -43,6 +43,9 @@ USAGE
   omacal search <query> [--json]           titles, nearest to today first
   omacal calendars [--json]                every calendar, with ids
   omacal doctor [--json]                   diagnose this install
+  omacal skill                             print the agent skill this binary carries
+  omacal skill install                     install it for your agents (Claude Code linked
+                                           automatically; refreshed on every update)
   omacal cli-help                          this text
 
 WRITES (the running app executes them, through its own guards)
@@ -85,6 +88,10 @@ pub(crate) enum Command {
     /// a create carries a form's worth of fields and every other variant
     /// carries a date or two.
     Write(Box<crate::cli_write::WriteCmd>),
+    /// Print (`skill`) or install (`skill install`) the agent skill the
+    /// binary carries — `cli_skill.rs`, the 37signals pattern. Needs no
+    /// database: handled beside Help, before anything is opened.
+    Skill { install: bool },
 }
 
 #[derive(Debug, PartialEq)]
@@ -121,6 +128,13 @@ pub(crate) fn parse(argv: &[String]) -> Option<Result<Invocation, String>> {
 
     match sub.as_str() {
         "cli-help" => build(Command::Help),
+        "skill" => match rest.iter().find(|a| !a.starts_with("--")).map(|s| s.as_str()) {
+            None => build(Command::Skill { install: false }),
+            Some("install") => build(Command::Skill { install: true }),
+            Some(other) => Some(Err(format!(
+                "usage: omacal skill [install] — not \"{other}\""
+            ))),
+        },
         "calendars" => build(Command::Calendars),
         "doctor" => build(Command::Doctor),
         "agenda" => {
@@ -353,6 +367,48 @@ pub(crate) fn run(inv: Invocation) -> i32 {
         return EXIT_OK;
     }
 
+    // Every CLI run keeps the installed skill matched to this binary —
+    // silent, marker-guarded, and a no-op within one version (cli_skill.rs).
+    // Before anything else so even a failing command leaves agents current.
+    if let Some(home) = std::env::var_os("HOME") {
+        crate::cli_skill::refresh_if_version_changed(std::path::Path::new(&home));
+    }
+
+    // The skill commands need a $HOME and nothing else — no database, no
+    // runtime: a fresh machine can wire its agent before ever launching
+    // the app.
+    if let Command::Skill { install } = inv.command {
+        let Some(home) = std::env::var_os("HOME") else {
+            return fail(inv.json, "no_home", "HOME is not set", EXIT_ERROR);
+        };
+        let home = std::path::PathBuf::from(home);
+        if !install {
+            // Raw markdown, both registers: this output exists to be piped
+            // into whatever an agent framework wants, and an envelope
+            // around a document would just be bytes to strip.
+            print!("{}", crate::cli_skill::SKILL_MD);
+            return EXIT_OK;
+        }
+        return match crate::cli_skill::install(&home) {
+            Ok(done) => {
+                if inv.json {
+                    print_json(&done);
+                } else {
+                    println!("Skill installed: {}", done.canonical);
+                    if let Some(link) = &done.claude_link {
+                        println!("Claude Code linked: {link}");
+                    }
+                    for old in &done.legacy {
+                        println!("Note: {old} is the old hand-copied skill — this replaces it; remove it when convenient.");
+                    }
+                    println!("It stays current by itself: every omacal run refreshes it after an update.");
+                }
+                EXIT_OK
+            }
+            Err(m) => fail(inv.json, "refused", &m, EXIT_ERROR),
+        };
+    }
+
     let Some(path) = db_path() else {
         return fail(inv.json, "no_home", "HOME is not set", EXIT_ERROR);
     };
@@ -393,6 +449,7 @@ pub(crate) fn run(inv: Invocation) -> i32 {
         let result: anyhow::Result<i32> = async {
             match &inv.command {
                 Command::Help | Command::Doctor => unreachable!("handled above"),
+                Command::Skill { .. } => unreachable!("handled above, before the database"),
                 Command::Write(_) => unreachable!("taken by value above"),
                 Command::Calendars => {
                     let cals = omacal_store::list_calendars(&pool).await?;
@@ -558,6 +615,22 @@ mod doctor {
         };
         push(&mut checks, "keyring", Some(keyring.0), keyring.1);
 
+        // The agent skill: informational, like version — a machine with no
+        // agent has nothing failing. Installed means the canonical copy is
+        // this module's own (the marker is the claim, cli_skill.rs).
+        let skill = std::env::var_os("HOME").map(|h| {
+            std::path::Path::new(&h).join(".agents/skills/omacal/.managed-by-omacal").exists()
+        });
+        push(
+            &mut checks,
+            "agent skill",
+            None,
+            match skill {
+                Some(true) => "installed (~/.agents/skills/omacal, auto-refreshed)".into(),
+                _ => "not installed — `omacal skill install` wires your agents".into(),
+            },
+        );
+
         push(
             &mut checks,
             "custom credentials",
@@ -643,6 +716,21 @@ mod tests {
         for s in ["", "--sync-now", "--quit", "2026-09-01"] {
             assert_eq!(parse(&argv(s)), None, "{s:?} was claimed by the CLI");
         }
+    }
+
+    /// The skill commands parse bare and with `install`, and a stray word
+    /// is usage — never a fall-through to a window.
+    #[test]
+    fn the_skill_commands_are_claimed() {
+        assert_eq!(
+            parse(&argv("skill")),
+            Some(Ok(Invocation { command: Command::Skill { install: false }, json: false }))
+        );
+        assert_eq!(
+            parse(&argv("skill install --json")),
+            Some(Ok(Invocation { command: Command::Skill { install: true }, json: true }))
+        );
+        assert!(matches!(parse(&argv("skill uninstall")), Some(Err(_))));
     }
 
     /// The write verbs route to `cli_write` and stay inside the CLI's

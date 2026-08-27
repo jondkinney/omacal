@@ -132,14 +132,23 @@ result rather than one per occurrence, resolved to the occurrence nearest today.
 It searches only calendars you display: a result on a hidden calendar is one you
 could not land on.
 
-**The CLI** — the same binary reads the calendar from a terminal: `omacal
+**The CLI** — the same binary drives the calendar from a terminal: `omacal
 agenda` for the week ahead, `omacal events list --from … --to …`, `omacal
-search <query>`, `omacal calendars` — each with `--json` for scripts and
-agents (stable envelope, stable exit codes, never prompts, read-only by
-design). `omacal cli-help` has the details, and `skills/omacal-calendar/`
-in this repo is a ready-made agent skill for Claude Code: drop it into
-`~/.claude/skills/` and your agent can answer "what's on my calendar
-Thursday?" from the same data the app draws.
+search <query>`, `omacal calendars` — and since v0.7.0 it writes too:
+`omacal events create/update/delete/respond`, executed by the running app
+through the same guards its form has. Everything speaks `--json` (stable
+envelope, stable exit codes, never prompts); `omacal cli-help` has the
+details.
+
+**Wiring an agent takes one command** — the binary carries its own skill:
+
+    omacal skill install
+
+That installs it to `~/.agents/skills/omacal` and links it for Claude Code,
+and every omacal update silently refreshes it, so your agent never reads
+instructions for a binary that no longer matches. `omacal skill` prints the
+same document for any other agent framework. (The source lives at
+`skills/omacal/` in this repo.)
 
 **Settings** — behind the hamburger, in four tabs. **General** carries the sync
 interval — which used to require editing the database by hand — the calendar new
