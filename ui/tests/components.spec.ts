@@ -2117,6 +2117,74 @@ test.describe('EventPopover', () => {
     await expect(page.locator('.pop')).toBeFocused();
   });
 
+  test('clicking a detail field copies that field rather than the whole event', async ({ page }) => {
+    await page.goto(show('standup'));
+    await page.evaluate(() => {
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: { writeText: async (value: string) => { (window as any).__fieldCopy = value; } },
+      });
+    });
+
+    const title = page.getByRole('button', { name: 'Copy title' });
+    const titleValue = await title.getAttribute('data-copy-value');
+    await title.click();
+    await expect.poll(() => page.evaluate(() => (window as any).__fieldCopy)).toBe(titleValue);
+    await expect(page.locator('.pop .note')).toHaveText('Copied title');
+    expect(await page.evaluate(() => (window as any).__lastCopy)).toBeNull();
+
+    const guest = page.getByRole('button', { name: /Copy guest email for/ }).first();
+    const guestValue = await guest.getAttribute('data-copy-value');
+    await guest.click();
+    await expect.poll(() => page.evaluate(() => (window as any).__fieldCopy)).toBe(guestValue);
+    await expect(page.locator('.pop .note')).toHaveText('Copied guest email');
+  });
+
+  test('Ctrl+C copies the focused detail field and keeps text selection native', async ({ page }) => {
+    await page.goto(show('human-organizer'));
+    await page.evaluate(() => {
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: { writeText: async (value: string) => { (window as any).__fieldCopy = value; } },
+      });
+    });
+
+    const organizer = page.getByRole('button', { name: 'Copy organizer email' });
+    await organizer.focus();
+    await page.keyboard.press('Control+c');
+    await expect.poll(() => page.evaluate(() => (window as any).__fieldCopy))
+      .toBe('plamen@excitel.com');
+    await expect(page.locator('.pop .note')).toHaveText('Copied organizer email');
+
+    await page.evaluate(() => {
+      (window as any).__fieldCopy = null;
+      const text = document.querySelector('.organizer')!.firstChild!;
+      const range = document.createRange();
+      range.selectNodeContents(text);
+      const selection = document.getSelection()!;
+      selection.removeAllRanges();
+      selection.addRange(range);
+    });
+    await page.keyboard.press('Control+c');
+    expect(await page.evaluate(() => (window as any).__fieldCopy)).toBeNull();
+  });
+
+  test('description copy preserves the original description value', async ({ page }) => {
+    await page.goto(show('nasty-description'));
+    await page.evaluate(() => {
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: { writeText: async (value: string) => { (window as any).__fieldCopy = value; } },
+      });
+    });
+
+    const copy = page.getByRole('button', { name: 'Copy description' });
+    const original = await copy.getAttribute('data-copy-value');
+    await copy.click();
+    await expect.poll(() => page.evaluate(() => (window as any).__fieldCopy)).toBe(original);
+    await expect(page.locator('.pop .note')).toHaveText('Copied description');
+  });
+
   test('a description containing markup is shown as text', async ({ page }) => {
     await page.goto(show('nasty-description'));
     await expect(page.locator('.desc')).toContainText('<script>alert(1)</script>');
