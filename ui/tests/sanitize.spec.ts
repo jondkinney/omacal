@@ -1,5 +1,8 @@
 import { test, expect } from '@playwright/test';
-import { descriptionSegments, stripTags, MAX_DESCRIPTION_LENGTH } from '../src/lib/sanitize';
+import {
+  MAX_DESCRIPTION_LENGTH, descriptionSegments, normalizeDescriptionHref,
+  stripTags,
+} from '../src/lib/sanitize';
 
 const text = (raw: string | null) =>
   descriptionSegments(raw).map((s) => s.value).join('');
@@ -109,5 +112,70 @@ test.describe('descriptionSegments', () => {
     // No '>' anywhere in the input, so nothing is a tag — the whole run is
     // kept as literal text, same as the old (slow) implementation produced.
     expect(out).toBe(input);
+  });
+});
+
+test.describe('rich description HTML', () => {
+  const inBrowser = async (
+    page: import('@playwright/test').Page,
+    method: 'sanitizeDescriptionHtml' | 'renderedDescriptionHtml',
+    raw: string,
+  ) => {
+    await page.goto('/tests/harness/index.html');
+    return page.evaluate(async ({ method, raw }) => {
+      const path = '/src/lib/sanitize.ts';
+      const module = await import(path);
+      return module[method](raw) as string;
+    }, { method, raw });
+  };
+
+  test('keeps only the formatting the editor offers', async ({ page }) => {
+    expect(await inBrowser(page, 'sanitizeDescriptionHtml',
+      '<h3>Agenda</h3><p><strong>Bold</strong> <em>italic</em> <u>under</u></p>',
+    )).toBe('<h3>Agenda</h3><p><strong>Bold</strong> <em>italic</em> <u>under</u></p>');
+  });
+
+  test('removes executable and visual payloads while keeping their safe words', async ({ page }) => {
+    const clean = await inBrowser(page, 'sanitizeDescriptionHtml',
+      '<script>alert(1)</script><img src=x onerror=alert(2)>'
+      + '<p style="position:fixed" onclick="alert(3)">Meeting notes</p>',
+    );
+    expect(clean).toBe('<p>Meeting notes</p>');
+    expect(clean).not.toContain('script');
+    expect(clean).not.toContain('onerror');
+    expect(clean).not.toContain('style');
+  });
+
+  test('unwraps unsafe anchors and preserves safe links', async ({ page }) => {
+    expect(await inBrowser(page, 'sanitizeDescriptionHtml', '<a href="javascript:alert(1)">notes</a>'))
+      .toBe('notes');
+    expect(await inBrowser(page, 'sanitizeDescriptionHtml', '<a href="https://example.com/agenda">notes</a>'))
+      .toBe('<a href="https://example.com/agenda">notes</a>');
+  });
+
+  test('read-only HTML linkifies a bare URL and hardens every anchor', async ({ page }) => {
+    const shown = await inBrowser(page, 'renderedDescriptionHtml',
+      '<strong>Join</strong> https://meet.google.com/abc',
+    );
+    expect(shown).toContain('<strong>Join</strong>');
+    expect(shown).toContain(
+      '<a href="https://meet.google.com/abc" target="_blank" rel="noopener noreferrer">'
+      + 'https://meet.google.com/abc</a>',
+    );
+  });
+
+  test('friendly link input supports domains and email but refuses active schemes', () => {
+    expect(normalizeDescriptionHref('example.com/agenda')).toBe('https://example.com/agenda');
+    expect(normalizeDescriptionHref('person@example.com')).toBe('mailto:person@example.com');
+    expect(normalizeDescriptionHref('data:text/html,hello')).toBeNull();
+  });
+
+  test('rich descriptions retain the same hard input bound', async ({ page }) => {
+    const clean = await inBrowser(
+      page,
+      'sanitizeDescriptionHtml',
+      `<strong>${'a'.repeat(MAX_DESCRIPTION_LENGTH * 2)}</strong>`,
+    );
+    expect(clean.length).toBeLessThanOrEqual(MAX_DESCRIPTION_LENGTH + '<strong></strong>'.length);
   });
 });

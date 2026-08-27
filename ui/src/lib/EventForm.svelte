@@ -10,6 +10,7 @@
   import { REMINDER_UNITS, reminderAmountOf, reminderMax, reminderUnitOf } from './reminders';
   import { offerableCalendarId, writableCalendars, type Calendar } from './calendars';
   import SaveConfirm from './SaveConfirm.svelte';
+  import RichTextEditor from './RichTextEditor.svelte';
   import type { SendUpdates } from './eventdetail';
   import {
     CUSTOM_REPEAT, REPEAT_OPTIONS, WEEKDAY_OPTIONS, addGuest, endAfterStart, isAddress,
@@ -647,8 +648,7 @@
          rule; nothing here decides that. The `email` rows are deliberately
          not rendered — Google sends those — but they count toward Google's
          cap of 5, which is why the add control reads the sum. -->
-    <div class="field" role="group" aria-label="Reminders">
-      <span class="lab">Notify</span>
+    <div class="field section-start" role="group" aria-label="Reminders">
       <div class="reminders">
         {#each value.popupReminders as _, i}
           <div class="reminder">
@@ -676,12 +676,12 @@
             <span>before</span>
             <button
               type="button"
-              class="unremind"
+              class="x"
               aria-label="Remove reminder"
               onclick={() => {
                 value.popupReminders = value.popupReminders.filter((_, j) => j !== i);
               }}
-            >⊗</button>
+            >×</button>
           </div>
         {/each}
         {#if value.popupReminders.length + value.emailReminders.length < 5}
@@ -701,17 +701,15 @@
       </div>
     </div>
 
-    <label class="field">
+    <div class="field">
       <span class="lab">Description</span>
-      <!-- A textarea, and never anything rendered. Descriptions arrive from
-           whoever created the event — anyone who knows the user's email can put
-           one on their calendar — and this one round-trips byte for byte:
-           stripping or unescaping it on the way in would quietly rewrite what
-           the user typed and then save the rewrite back. -->
-      <textarea rows="3" bind:value={value.description}></textarea>
-    </label>
+      <!-- The editor only ever receives DOMPurify-cleaned allowlist HTML.
+           Descriptions are invitation-controlled input inside a Tauri webview,
+           so raw calendar markup is never inserted into the DOM. -->
+      <RichTextEditor bind:value={value.description} />
+    </div>
 
-    <label class="field">
+    <label class="field section-start">
       <span class="lab">Calendar</span>
       <!-- `aria-label`, even though the wrapping `<label>` already names it:
            a label that wraps a `<select>` also wraps every `<option>`, so its
@@ -875,6 +873,10 @@
                 aria-label={isSelf ? 'Remove yourself from this event' : `Remove ${g.email}`}
                 onclick={() => (value.guests = removeGuest(value.guests, g.email))}
               >×</button>
+            {:else}
+              <!-- Keep every Optional control on the same column even when
+                   Google forbids removing the organizer. -->
+              <span class="xslot" aria-hidden="true"></span>
             {/if}
           </li>
         {/each}
@@ -992,30 +994,29 @@
          border-radius: 8px; padding: 12px 14px; box-shadow: 0 8px 28px rgba(0, 0, 0, .45);
          font-size: 12px; color: var(--text); }
 
-  form { display: flex; flex-direction: column; gap: 8px; }
+  form { display: flex; flex-direction: column; gap: 11px; }
 
-  .field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+  .section-start { margin-top: 3px; }
   .lab { font-size: 9.5px; color: var(--muted); letter-spacing: .05em; }
 
-  .reminders { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+  .reminders { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
   .reminder { display: flex; align-items: center; gap: 5px; width: 100%; font-size: 12px; }
   .reminder input[type='number'] { width: 56px; flex: none; }
   .reminder select { width: auto; flex: none; }
-  .unremind { font: inherit; font-size: 13px; color: var(--muted); cursor: pointer;
-              background: none; border: 0; padding: 0 2px; margin-left: auto; }
-  .unremind:hover { color: var(--text); }
+  .reminder > .x { margin-left: auto; }
   .remind { font: inherit; font-size: 11px; color: var(--muted); cursor: pointer;
             background: none; border: 1px solid var(--hairline); border-radius: 5px;
             padding: 2px 7px; }
   .remhint { font-size: 10px; color: var(--muted); opacity: .8; }
 
-  input, select, textarea {
+  input, select {
     font: inherit; font-size: 12px; color: var(--text);
     background: color-mix(in srgb, var(--text) 5%, transparent);
     border: 1px solid var(--hairline); border-radius: 5px;
     padding: 4px 6px; min-width: 0; width: 100%; box-sizing: border-box;
   }
-  input:focus, select:focus, textarea:focus { outline: 1px solid var(--accent); outline-offset: -1px; }
+  input:focus, select:focus { outline: 1px solid var(--accent); outline-offset: -1px; }
   /* The appearance/chevron rule is global now — App.svelte, and fix/56's
      commit message for why. Only the background shorthand's reset needs
      compensating here: it clears the global background-image, so the chevron
@@ -1034,7 +1035,6 @@
   .calrow { display: flex; align-items: center; gap: 7px; }
   .calrow select { flex: 1; min-width: 0; }
   .caldot { width: 10px; height: 10px; border-radius: 3px; flex: none; }
-  textarea { resize: vertical; line-height: 1.45; }
   .title { font-size: 13px; }
 
   .weekdayfield { display: flex; flex-direction: column; gap: 4px; }
@@ -1081,10 +1081,11 @@
 
   .hint { font-size: 10px; color: var(--muted); opacity: .85; line-height: 1.45; margin: 0; }
 
-  .guests { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .guests { display: flex; flex-direction: column; gap: 6px; min-width: 0; margin-top: 3px; }
   .guests ul { list-style: none; margin: 0; padding: 0; display: flex;
-               flex-direction: column; gap: 3px; }
-  .guest { display: flex; align-items: center; gap: 6px; font-size: 11px; min-width: 0; }
+               flex-direction: column; gap: 5px; }
+  .guest { display: grid; grid-template-columns: minmax(0, 1fr) auto 16px;
+           align-items: center; gap: 6px; font-size: 11px; min-width: 0; }
   /* The address takes what is left and truncates rather than wrapping: a long
      one would otherwise push the two controls beside it off the panel. */
   .addr { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
@@ -1092,8 +1093,10 @@
   .opt { display: flex; align-items: center; gap: 4px; color: var(--muted);
          font-size: 10px; cursor: pointer; flex: none; }
   .opt input { width: auto; }
-  .x { flex: none; font: inherit; font-size: 13px; line-height: 1; cursor: pointer;
-       background: none; border: 0; color: var(--muted); padding: 0 2px; }
+  .x, .xslot { flex: none; width: 16px; height: 18px; box-sizing: border-box; }
+  .x { display: inline-grid; place-items: center; font: inherit; font-size: 13px;
+       line-height: 1; cursor: pointer; background: none; border: 0;
+       color: var(--muted); padding: 0; }
   .x:hover { color: var(--text); }
 
   .addguest { display: flex; gap: 6px; position: relative; }

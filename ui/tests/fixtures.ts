@@ -2264,13 +2264,19 @@ export const FIXTURES: Record<string, Record<string, any>> = {
       onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
     },
     // The raw description is already entity-encoded, as a hostile calendar
-    // invite's would be — `descriptionSegments` decodes it back to the
-    // literal string `<script>alert(1)</script>` as inert *text*, never as
-    // markup (see sanitize.spec.ts). Rendering that string via `{@html}`
-    // instead of `{#each}` would turn it back into a real (if inert)
-    // `<script>` element — exactly the regression Step 7 breaks on purpose.
+    // invite's would be. The rich renderer must keep it literal while still
+    // allowing real formatting tags in the fixture immediately below.
     'nasty-description': {
       detail: detail({ id: 2, description: '&lt;script&gt;alert(1)&lt;/script&gt;' }),
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, occurrenceEndMs: MON + 9 * H + 30 * 60_000,
+      onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
+    },
+    'rich-description': {
+      detail: detail({
+        id: 3,
+        description: '<h3>Preparation</h3><p>Review the <strong>quarterly numbers</strong> '
+          + 'and <a href="https://example.com/agenda">agenda</a>.</p>',
+      }),
       anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, occurrenceEndMs: MON + 9 * H + 30 * 60_000,
       onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
     },
@@ -2603,15 +2609,20 @@ export const FIXTURES: Record<string, Record<string, any>> = {
       })),
       calendars: FORM_CALENDARS,
     },
-    // A description that is live markup if anything ever renders it, and that
-    // must survive the round trip through the form byte for byte — sanitising
-    // it on the way *in* would silently rewrite what its author typed and then
-    // save the rewrite back over the real event.
+    // A description that is live markup if inserted without sanitising.
     'nasty-description': {
       anchor: ANCHOR,
       initial: editing(detail({
         id: 12, title: 'Notes', can_edit: true,
         description: '<img src=x onerror=alert(1)>',
+      })),
+      calendars: FORM_CALENDARS,
+    },
+    'rich-description': {
+      anchor: ANCHOR,
+      initial: editing(detail({
+        id: 15, title: 'Planning', can_edit: true,
+        description: '<h3>Preparation</h3><p>Review the <strong>quarterly numbers</strong>.</p>',
       })),
       calendars: FORM_CALENDARS,
     },

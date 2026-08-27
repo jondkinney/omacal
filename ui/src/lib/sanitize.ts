@@ -1,9 +1,12 @@
+import DOMPurify from 'dompurify';
+
 // Anyone who knows a user's email address can put an event on their
 // calendar, description included. That description renders inside a webview
 // that can invoke Tauri commands, so it is attacker-controlled input, not
-// display text. This module never produces HTML: it returns segments that
-// the component renders with `{#each}` and a plain `<a>`, so there is no
-// code path where `{@html}` could be reintroduced by a later edit.
+// trusted display markup. This module offers two deliberately safe outputs:
+// plain text/link segments for callers that want no formatting, and a tiny
+// allowlist of DOMPurify-cleaned HTML for the description viewer/editor.
+// Raw calendar HTML must never be handed to `{@html}` directly.
 
 export type Segment = { kind: 'text' | 'link'; value: string };
 
@@ -21,6 +24,88 @@ const URL_RE = /https?:\/\/[^\s<>"']+/gi;
 // function, not only the one found in review (see stripTags). Truncate
 // rather than reject: the popover should still show what fits.
 export const MAX_DESCRIPTION_LENGTH = 32 * 1024;
+
+/** Formatting the compact editor can author and the event reader can show.
+ * No images, media, inline styles, classes or arbitrary attributes: calendar
+ * descriptions are an invitation-sized document, not a miniature web page. */
+const DESCRIPTION_TAGS = [
+  'p', 'div', 'br', 'strong', 'b', 'em', 'i', 'u', 'h2', 'h3', 'a', 'ul', 'ol', 'li',
+];
+const DESCRIPTION_ATTRS = ['href', 'title'];
+
+/** Turn a toolbar/link-dialog value into a link we are prepared to render.
+ * A bare address or domain gets the friendly scheme a person meant; any
+ * explicitly supplied protocol outside http(s)/mailto is refused. */
+export function normalizeDescriptionHref(raw: string): string | null {
+  const value = raw.trim();
+  if (!value) return null;
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) return `mailto:${value}`;
+  if (/^www\./i.test(value)) return `https://${value}`;
+  if (/^[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:[/?#].*)?$/i.test(value)) return `https://${value}`;
+  if (/^https?:\/\/[^\s]+$/i.test(value) || /^mailto:[^\s@]+@[^\s@]+$/i.test(value)) {
+    return value;
+  }
+  return null;
+}
+
+/** DOMPurify is the security boundary; the DOM walk after it narrows links
+ * further and unwraps a rejected anchor without losing its visible words. */
+function descriptionTemplate(raw: string | null): HTMLTemplateElement {
+  const bounded = (raw ?? '').slice(0, MAX_DESCRIPTION_LENGTH);
+  const template = document.createElement('template');
+  template.innerHTML = String(DOMPurify.sanitize(bounded, {
+    ALLOWED_TAGS: DESCRIPTION_TAGS,
+    ALLOWED_ATTR: DESCRIPTION_ATTRS,
+  }));
+  for (const anchor of template.content.querySelectorAll('a')) {
+    const href = normalizeDescriptionHref(anchor.getAttribute('href') ?? '');
+    if (href) anchor.setAttribute('href', href);
+    else anchor.replaceWith(...Array.from(anchor.childNodes));
+  }
+  return template;
+}
+
+/** Safe, compact HTML suitable for saving back to a calendar and loading into
+ * the editor. It intentionally omits browsing-only target/rel attributes. */
+export function sanitizeDescriptionHtml(raw: string | null): string {
+  return descriptionTemplate(raw).innerHTML.trim();
+}
+
+/** Safe HTML for the read-only event popover. Existing and bare http(s) links
+ * open outside the app; unsafe schemes have already been unwrapped above. */
+export function renderedDescriptionHtml(raw: string | null): string {
+  const template = descriptionTemplate(raw);
+  const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_TEXT);
+  const nodes: Text[] = [];
+  let node: Node | null;
+  while ((node = walker.nextNode())) nodes.push(node as Text);
+
+  for (const textNode of nodes) {
+    if (textNode.parentElement?.closest('a')) continue;
+    const source = textNode.data;
+    const url = /https?:\/\/[^\s<>"']+/gi;
+    let match: RegExpExecArray | null;
+    let last = 0;
+    const fragment = document.createDocumentFragment();
+    while ((match = url.exec(source))) {
+      fragment.append(source.slice(last, match.index));
+      const anchor = document.createElement('a');
+      anchor.href = match[0];
+      anchor.textContent = match[0];
+      fragment.append(anchor);
+      last = match.index + match[0].length;
+    }
+    if (last === 0) continue;
+    fragment.append(source.slice(last));
+    textNode.replaceWith(fragment);
+  }
+
+  for (const anchor of template.content.querySelectorAll('a')) {
+    anchor.setAttribute('target', '_blank');
+    anchor.setAttribute('rel', 'noopener noreferrer');
+  }
+  return template.innerHTML.trim();
+}
 
 // Step 2: everything else that looks like a tag is removed outright, in a
 // single forward pass. This runs on the raw markup, before any entity
@@ -42,9 +127,8 @@ export const MAX_DESCRIPTION_LENGTH = 32 * 1024;
 // a fixed scan from a quadratic one that just happens to be fast at 32KB.
 // Its output is plain stripped text — not entity-decoded, not link-checked —
 // so it is *not* a general-purpose safe-HTML utility: never pass its result
-// to `{@html}`. Always render a description through descriptionSegments,
-// which runs this as one step among several and returns segments a
-// component renders with `{#each}` instead.
+// to `{@html}`. Use descriptionSegments for inert text, or one of the
+// DOMPurify-backed HTML functions above when formatting is required.
 export function stripTags(input: string): string {
   let out = '';
   let i = 0;
