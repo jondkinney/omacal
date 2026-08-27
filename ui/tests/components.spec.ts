@@ -4180,6 +4180,74 @@ test.describe('EventForm', () => {
     }
   });
 
+  test('Shift+Tab outdents a nested item from the front, middle, or end of its line', async ({ page }) => {
+    const cases = [
+      { position: 'front', expected: 'XChild' },
+      { position: 'middle', expected: 'ChXild' },
+      { position: 'end', expected: 'ChildX' },
+    ] as const;
+
+    for (const { position, expected } of cases) {
+      await open(page, 'create');
+      const editor = page.getByLabel('Description', { exact: true });
+      await editor.pressSequentially('- ');
+      await page.keyboard.type('Parent');
+      await editor.press('Enter');
+      await page.keyboard.type('Child');
+      await editor.press('Tab');
+
+      await editor.evaluate((element, caretPosition) => {
+        const nestedList = element.querySelector('ul > li > ul');
+        const item = nestedList?.querySelector(':scope > li');
+        const text = item?.firstChild;
+        if (!nestedList || !item || !(text instanceof Text)) throw new Error('expected a nested list item');
+
+        (element as HTMLElement).focus();
+        const range = document.createRange();
+        if (caretPosition === 'front') range.setStart(nestedList, 0);
+        else if (caretPosition === 'middle') range.setStart(text, 2);
+        else range.setStart(nestedList, 1);
+        range.collapse(true);
+        const selection = window.getSelection();
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+      }, position);
+
+      await editor.press('Shift+Tab');
+      await page.keyboard.type('X');
+      const topItems = editor.locator('ul').first().locator(':scope > li');
+      await expect(topItems).toHaveCount(2);
+      await expect(topItems.nth(1)).toHaveText(expected);
+      await expect(editor).toBeFocused();
+    }
+  });
+
+  test('WebKitGTK reverse Tab outdents instead of focusing the formatting toolbar', async ({ page }) => {
+    await open(page, 'create');
+    const editor = page.getByLabel('Description', { exact: true });
+    await editor.pressSequentially('- ');
+    await page.keyboard.type('Parent');
+    await editor.press('Enter');
+    await page.keyboard.type('Child');
+    await editor.press('Tab');
+
+    expect(await editor.evaluate((element) => {
+      const event = new KeyboardEvent('keydown', {
+        key: 'ISO_Left_Tab',
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      return { dispatched: element.dispatchEvent(event), prevented: event.defaultPrevented };
+    })).toEqual({ dispatched: false, prevented: true });
+
+    const topItems = editor.locator('ul').first().locator(':scope > li');
+    await expect(topItems).toHaveCount(2);
+    await expect(topItems.nth(1)).toHaveText('Child');
+    await expect(editor).toBeFocused();
+    await expect(page.getByRole('button', { name: 'Link' })).not.toBeFocused();
+  });
+
   test('list indent controls preserve normal Tab navigation and cannot eject a first item', async ({ page }) => {
     await open(page, 'create');
     const editor = page.getByLabel('Description', { exact: true });
