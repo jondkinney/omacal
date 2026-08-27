@@ -184,18 +184,7 @@ async fn get_week(
     state: tauri::State<'_, AppState>,
     week_start_ms: i64,
 ) -> Result<commands::WeekPayload, String> {
-    let tz = display_tz(&state.pool);
-    // Widen the fetch by a day either side so an event that begins just before
-    // the week (or a DST-lengthened final day) is not missed.
-    const DAY: i64 = 24 * 3_600_000;
-    let events = omacal_store::events_in_window(
-        &state.pool,
-        week_start_ms - DAY,
-        week_start_ms + 8 * DAY,
-    )
-    .await
-    .map_err(|e| e.to_string())?;
-    Ok(commands::assemble_week(&events, week_start_ms, &tz))
+    get_days_impl(&state.pool, week_start_ms, 7).await
 }
 
 #[tauri::command]
@@ -203,18 +192,45 @@ async fn get_day(
     state: tauri::State<'_, AppState>,
     day_start_ms: i64,
 ) -> Result<commands::WeekPayload, String> {
-    let tz = display_tz(&state.pool);
-    // Same widening as `get_week`, for the same reason: an event that begins
-    // just before the day, or a DST-lengthened day, must not be missed.
+    get_days_impl(&state.pool, day_start_ms, 1).await
+}
+
+/// A rolling Week-view window beginning at `day_start_ms`. The settings UI
+/// offers exactly these three sizes; validate again at the command boundary so
+/// a malformed invoke cannot turn one calendar view into an unbounded query.
+#[tauri::command]
+async fn get_range(
+    state: tauri::State<'_, AppState>,
+    day_start_ms: i64,
+    day_count: u8,
+) -> Result<commands::WeekPayload, String> {
+    if !matches!(day_count, 3 | 5 | 7) {
+        return Err("the rolling week can show 3, 5, or 7 days".to_string());
+    }
+    get_days_impl(&state.pool, day_start_ms, day_count as usize).await
+}
+
+async fn get_days_impl(
+    pool: &SqlitePool,
+    day_start_ms: i64,
+    day_count: usize,
+) -> Result<commands::WeekPayload, String> {
+    let tz = display_tz(pool);
+    // Widen by a day either side so an event that begins just before the range
+    // (or a DST-lengthened final day) is not missed.
     const DAY: i64 = 24 * 3_600_000;
     let events = omacal_store::events_in_window(
-        &state.pool,
+        pool,
         day_start_ms - DAY,
-        day_start_ms + 2 * DAY,
+        day_start_ms + (day_count as i64 + 1) * DAY,
     )
     .await
     .map_err(|e| e.to_string())?;
-    Ok(commands::assemble_days(&events, day_start_ms, 1, &tz))
+    Ok(if day_count == 7 {
+        commands::assemble_week(&events, day_start_ms, &tz)
+    } else {
+        commands::assemble_days(&events, day_start_ms, day_count, &tz)
+    })
 }
 
 #[tauri::command]
@@ -1340,6 +1356,7 @@ pub fn run() {
             get_palette,
             get_week,
             get_day,
+            get_range,
             get_month,
             get_year,
             get_big_year,
@@ -1380,6 +1397,8 @@ pub fn run() {
             settings::set_default_event_duration,
             settings::set_time_format,
             settings::set_week_start,
+            settings::set_week_starts_today,
+            settings::set_week_view_days,
             events::event_detail,
             events::respond_to_event,
             events::refresh_event,

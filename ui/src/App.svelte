@@ -3,7 +3,7 @@
   import { listen } from '@tauri-apps/api/event';
   import { applyPalette, setPalette, type Palette } from './lib/theme';
   import {
-    getWeek, getDay, getMonth, getYear, getBigYear, weekStart,
+    getWeek, getDay, getRange, getMonth, getYear, getBigYear, weekStart,
     type WeekPayload, type MonthPayload, type YearPayload, type BigYearPayload, type UiEvent,
   } from './lib/api';
   import { getStatus, installUpdate, openLatestRelease, restartApp, signIn, syncNow, takeOpenDate, type AppStatus } from './lib/status';
@@ -20,7 +20,7 @@
   } from './lib/eventform';
   import type { Rect } from './lib/position';
   import { daysFromMonth, daysFromWeek, listable } from './lib/filmstrip';
-  import { getSettings, setListMode } from './lib/settings';
+  import { getSettings, setListMode, type AppSettings, type WeekViewDays } from './lib/settings';
   import { setClockFormat } from './lib/clock.svelte';
   import { setSecondZone } from './lib/secondzone.svelte';
   import { setWeekStartDay } from './lib/weekstartstore.svelte';
@@ -68,6 +68,11 @@
    *  today observable—the anchor does not change in that case, but the user
    *  still explicitly asked to reveal the current time again. */
   let revealNowRequest = $state(0);
+  /** Week view can either align to the stored concrete weekday or begin on
+   *  the current/anchored day and show a rolling 3/5/7-day range. The fixed
+   *  weekday remains in `weekstartstore` for Month, Year and Big Year. */
+  let weekStartsToday = $state(false);
+  let weekViewDays = $state<WeekViewDays>(7);
 
   // Year and Big Year read a bare calendar year rather than a millisecond
   // anchor — there is no single day inside them for `anchorMs` to name — so
@@ -96,10 +101,12 @@
   const YEAR_MIN = 1970;
   const YEAR_MAX = 9998;
 
-  // Derived purely for Header's title, and only in Week view: the week of Mon
-  // 29 Jan reads "January" even though it runs into February. Day and Month
-  // title themselves from `anchorMs` instead — see `Header`'s own `titleMs`.
-  const weekStartMs = $derived(weekStart(new Date(anchorMs)));
+  // Week's actual first column, for both its fetch and Header title. A fixed
+  // week floors the anchor to its configured weekday; a rolling one preserves
+  // the anchor itself, which is always a day boundary.
+  const weekStartMs = $derived(
+    weekStartsToday ? anchorMs : weekStart(new Date(anchorMs))
+  );
 
   let week = $state<WeekPayload | null>(null);
   let month = $state<MonthPayload | null>(null);
@@ -115,6 +122,24 @@
   let pickerOpen = $state(false);
 
   $effect(() => { applyPalette(); });
+
+  // Keep a rolling view literally anchored on today across midnight and a
+  // laptop wake. A range the user has navigated away from today is left where
+  // they put it: only an anchor that matched the previously-current day moves
+  // with the clock.
+  let trackedTodayMs = dayStart(Date.now());
+  $effect(() => {
+    const snap = () => {
+      const next = dayStart(Date.now());
+      if (weekStartsToday && anchorMs === trackedTodayMs && next !== trackedTodayMs) {
+        anchorMs = next;
+      }
+      trackedTodayMs = next;
+    };
+    const id = setInterval(snap, 60_000);
+    window.addEventListener('focus', snap);
+    return () => { clearInterval(id); window.removeEventListener('focus', snap); };
+  });
 
   // Live theme reload (spec §10): repaint when the Rust watcher notices
   // `omarchy-theme-set` replaced the theme symlink. A no-op off Linux, since
@@ -253,6 +278,9 @@
    * working.
    */
   let listModeChoices = 0;
+  /** Settings-modal writes supersede the startup read for the rolling Week
+   *  controls, just as `listModeChoices` does for the filmstrip toggle. */
+  let weekViewChoices = 0;
 
   /** The stored default for new events, or `null` for the old rule. Seeded
    *  below and kept fresh by `SettingsModal`'s `onsettingschange` — without
@@ -272,15 +300,24 @@
    *  setting: it is a thing you look at, not a thing you configure. */
   let helpOpen = $state(false);
 
+  function applyWeekSettings(s: AppSettings, jumpOnEntry: boolean) {
+    const enteringRolling = !weekStartsToday && s.weekStartsToday;
+    setWeekStartDay(s.weekStart);
+    weekStartsToday = s.weekStartsToday;
+    weekViewDays = s.weekViewDays;
+    if (jumpOnEntry && enteringRolling) anchorMs = dayStart(Date.now());
+  }
+
   $effect(() => {
     const before = listModeChoices;
+    const weekBefore = weekViewChoices;
     getSettings()
       .then((s) => {
         defaultCalendarId = s.defaultCalendarId;
         defaultEventDurationMinutes = s.defaultEventDurationMinutes;
         setClockFormat(s.timeFormat);
-        setWeekStartDay(s.weekStart);
         setSecondZone(s.secondTimezone);
+        if (weekViewChoices === weekBefore) applyWeekSettings(s, false);
         if (listModeChoices !== before) return; // superseded by the user's own choice
         listMode = s.listMode;
       })
@@ -315,6 +352,7 @@
   // anchored — the "$derived picks which loader to call" half of this task.
   type FetchPlan =
     | { kind: 'day' | 'week'; target: number }
+    | { kind: 'range'; target: number; days: WeekViewDays }
     | { kind: 'month'; year: number; monthNum: number }
     | { kind: 'year'; year: number }
     | { kind: 'bigyear'; year: number };
@@ -329,7 +367,11 @@
     // start isn't the browser's local midnight (spec §5's anchor-survival
     // guarantee depends on this value reaching Day view unmodified).
     if (view === 'day') return { kind: 'day', target: anchorMs };
-    if (view === 'week') return { kind: 'week', target: weekStart(new Date(anchorMs)) };
+    if (view === 'week') {
+      return weekStartsToday
+        ? { kind: 'range', target: weekStartMs, days: weekViewDays }
+        : { kind: 'week', target: weekStartMs };
+    }
     if (view === 'month') {
       const d = new Date(anchorMs);
       return { kind: 'month', year: d.getFullYear(), monthNum: d.getMonth() + 1 };
@@ -351,10 +393,14 @@
   let yearReq = 0;
   let bigYearReq = 0;
 
-  async function loadWeek(kind: 'day' | 'week', target: number) {
+  async function loadWeek(kind: 'day' | 'week' | 'range', target: number, days?: WeekViewDays) {
     const req = ++weekReq;
     try {
-      const w = kind === 'day' ? await getDay(target) : await getWeek(target);
+      const w = kind === 'day'
+        ? await getDay(target)
+        : kind === 'range'
+          ? await getRange(target, days ?? 7)
+          : await getWeek(target);
       if (req !== weekReq) return; // superseded while we were awaiting
       week = w;
       error = null;
@@ -407,6 +453,7 @@
     if (plan.kind === 'month') return loadMonth(plan.year, plan.monthNum);
     if (plan.kind === 'year') return loadYear(plan.year);
     if (plan.kind === 'bigyear') return loadBigYear(plan.year);
+    if (plan.kind === 'range') return loadWeek(plan.kind, plan.target, plan.days);
     return loadWeek(plan.kind, plan.target);
   }
 
@@ -554,7 +601,9 @@
     }
     const d = new Date(anchorMs);
     if (view === 'day') d.setDate(d.getDate() + dir);
-    else if (view === 'week') d.setDate(d.getDate() + dir * 7);
+    else if (view === 'week') {
+      d.setDate(d.getDate() + dir * (weekStartsToday ? weekViewDays : 7));
+    }
     else if (view === 'month') {
       // A bare `setMonth` overflows for a day-of-month the target month
       // doesn't have — Jan 31 `+1` rolls past February into Mar 3, not Feb
@@ -1254,7 +1303,8 @@
 >
   <Header
     bind:settingsOpen
-    {status} {anchorMs} {weekStartMs} {busy} {error} {calendars} {view} {listMode}
+    {status} {anchorMs} {weekStartMs} {weekStartsToday} weekDays={weekViewDays}
+    {busy} {error} {calendars} {view} {listMode}
     onToggleList={toggleList}
     onPrev={() => step(-1)}
     onNext={() => step(1)}
@@ -1264,8 +1314,9 @@
       defaultCalendarId = s.defaultCalendarId;
       defaultEventDurationMinutes = s.defaultEventDurationMinutes;
       setClockFormat(s.timeFormat);
-      setWeekStartDay(s.weekStart);
       setSecondZone(s.secondTimezone);
+      weekViewChoices += 1;
+      applyWeekSettings(s, true);
       // The weather toggle lives in the same modal; refetching on every
       // settings change is one cache read, and it is what makes flipping
       // the switch change the headers now rather than within the hour.

@@ -815,6 +815,17 @@ test.describe('AllDayBand', () => {
     await expect(page.locator('.more')).toHaveText('+2 more');
   });
 
+  test('uses the rolling range column count', async ({ page }) => {
+    await page.goto(show('AllDayBand', 'three-days'));
+    const rows = await page.locator('.rows').boundingBox();
+    const spanning = await page.locator('.chip').first().boundingBox();
+    expect(rows).not.toBeNull();
+    expect(spanning).not.toBeNull();
+    // The first fixture chip spans all three days. A band still hard-coded to
+    // seven columns gives it only 3/7 of the row; the real range fills it.
+    expect(spanning!.width / rows!.width).toBeGreaterThan(0.9);
+  });
+
   test('renders nothing when there is nothing to show', async ({ page }) => {
     await page.goto(show('AllDayBand', 'empty'));
     await expect(page.locator('.band')).toHaveCount(0);

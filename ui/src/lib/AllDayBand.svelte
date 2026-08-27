@@ -4,8 +4,8 @@
   import type { Rect } from './position';
   import { gutterWidth } from './secondzone.svelte';
 
-  let { lanes, events, overflow, onopen }:
-    { lanes: Lane[]; events: UiEvent[]; overflow: number[];
+  let { lanes, events, overflow, columns = 7, onopen }:
+    { lanes: Lane[]; events: UiEvent[]; overflow: number[]; columns?: number;
       /** Same contract as `EventBlock`'s, and wired to the same
        *  `WeekGrid.openPopover`. Required rather than optional: every
        *  `is_all_day` event is routed here by `commands::assemble_week`, so a
@@ -33,7 +33,7 @@
 {#if lanes.length || overflow.length}
   <div class="band" style="--gutter:{gutterWidth()}">
     <div class="label">ALL-DAY</div>
-    <div class="rows">
+    <div class="rows" style="--cols:{columns}">
       {#each lanes as lane}
         {@const ev = events[lane.idx]}
         <button
@@ -72,7 +72,7 @@
   /* No gap: a gap here is subtracted from every column, so the band's columns
      drift out of step with the grid below it — by Sunday the chips sit a chip's
      width off their days. The separation lives inside the chip instead. */
-  .rows { display: grid; grid-template-columns: repeat(7, 1fr); }
+  .rows { display: grid; grid-template-columns: repeat(var(--cols), 1fr); }
 
   /* A <button>, like EventBlock, rather than a <div> with a click handler
      bolted on: the role, the tab stop and Enter/Space all come for free and

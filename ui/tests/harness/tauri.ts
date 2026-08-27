@@ -15,6 +15,7 @@ import type { Calendar } from '../../src/lib/calendars';
 import type { EventDetail } from '../../src/lib/eventdetail';
 import type { TimeFormat } from '../../src/lib/timefmt';
 import type { WeekStartDay } from '../../src/lib/weekstart';
+import type { WeekViewDays } from '../../src/lib/settings';
 import {
   labelledWeek, weekLabel, APP_FIVE_MIN_AGO, APP_NOW, APP_SERIES_ID, APP_SERIES_OCCURRENCE,
   APP_ONE_OFF_ID, APP_ONE_OFF_START, APP_GUESTS_ID, APP_SOLO_SERIES_ID,
@@ -377,7 +378,7 @@ const SIGNED_IN_CALENDARS: Calendar[] = [
     access_role: 'reader', provider: 'google' },
 ];
 
-function getWeek(scenario: string, weekStartMs: number): Promise<WeekPayload> {
+function getWeek(scenario: string, weekStartMs: number, dayCount = 7): Promise<WeekPayload> {
   if (failWeekOnce !== null) {
     const message = failWeekOnce;
     failWeekOnce = null;
@@ -409,7 +410,7 @@ function getWeek(scenario: string, weekStartMs: number): Promise<WeekPayload> {
     }
     return Promise.resolve(crossZoneWeek());
   }
-  return Promise.resolve(labelledWeek(weekStartMs));
+  return Promise.resolve(labelledWeek(weekStartMs, dayCount));
 }
 
 const DAY_MS = 24 * 3_600_000;
@@ -514,6 +515,8 @@ type StubSettings = {
   defaultEventDurationMinutes: number;
   timeFormat: TimeFormat;
   weekStart: WeekStartDay;
+  weekStartsToday: boolean;
+  weekViewDays: WeekViewDays;
   displayTimezone: string | null;
   secondTimezone: string | null;
   weatherEnabled: boolean;
@@ -539,6 +542,8 @@ const DEFAULT_SETTINGS: StubSettings = {
   timeFormat: '24h',
   // The week omacal has always drawn, so every golden holds.
   weekStart: 'monday',
+  weekStartsToday: false,
+  weekViewDays: 7,
   displayTimezone: null,
   // Off, the backend's fresh-install default — and what keeps every
   // committed gutter golden describing a 44px ruler with one clock.
@@ -669,6 +674,8 @@ export function installTauriStub(scenario: string): Harness {
         return [];
       case 'get_week':
         return getWeek(scenario, args.weekStartMs);
+      case 'get_range':
+        return getWeek(scenario, args.dayStartMs, args.dayCount);
       case 'get_day':
         return getDay(args.dayStartMs);
       case 'get_month':
@@ -785,7 +792,15 @@ export function installTauriStub(scenario: string): Harness {
         settings = saveSettings({ ...settings, listMode: args.on as boolean });
         return { ...settings };
       case 'set_week_start':
-        settings = saveSettings({ ...settings, weekStart: args.start as WeekStartDay });
+        settings = saveSettings({
+          ...settings, weekStart: args.start as WeekStartDay, weekStartsToday: false,
+        });
+        return { ...settings };
+      case 'set_week_starts_today':
+        settings = saveSettings({ ...settings, weekStartsToday: args.on as boolean });
+        return { ...settings };
+      case 'set_week_view_days':
+        settings = saveSettings({ ...settings, weekViewDays: args.days as WeekViewDays });
         return { ...settings };
       case 'set_time_format':
         settings = saveSettings({ ...settings, timeFormat: args.format as TimeFormat });

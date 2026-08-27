@@ -67,6 +67,10 @@ export function weekStart(d: Date): number {
 export const getWeek = (weekStartMs: number) =>
   invoke<WeekPayload>('get_week', { weekStartMs });
 
+/** A rolling Week-view range beginning on the supplied day. */
+export const getRange = (dayStartMs: number, dayCount: 3 | 5 | 7) =>
+  invoke<WeekPayload>('get_range', { dayStartMs, dayCount });
+
 export const getDay = (dayStartMs: number) =>
   invoke<WeekPayload>('get_day', { dayStartMs });
 
