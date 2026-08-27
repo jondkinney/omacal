@@ -203,12 +203,8 @@ export type Guest = {
 
 const MIN_MS = 60_000;
 const HALF_HOUR_MS = 30 * MIN_MS;
-/** How long a brand-new event is until somebody says otherwise (an hour —
- *  30 minutes until 2026-08-20, by request). The *snap* stays the half hour:
- *  a new event still starts on the next half-hour boundary, it just runs an
- *  hour from there. `ALL_DAY_START`/`ALL_DAY_END` below must keep describing
- *  this same duration — their comment says why. */
-const DEFAULT_EVENT_MS = 60 * MIN_MS;
+/** How long a brand-new event is when no stored preference is available. */
+const DEFAULT_EVENT_MINUTES = 60;
 
 /**
  * The civil times an **all-day** value carries in its (hidden) time fields.
@@ -226,9 +222,8 @@ const DEFAULT_EVENT_MS = 60 * MIN_MS;
  * day, because `end_date` is the inclusive last day: the span came out zero and
  * Save refused a form with nothing on it visibly wrong.
  *
- * An hour apart (`DEFAULT_EVENT_MS`), matching the duration `blankValueAt`
- * gives a new event, so a day becoming timed and a fresh event created on it
- * agree about how long "an event" is by default.
+ * An hour apart, preserving the longstanding all-day-to-timed conversion.
+ * New events may use the duration selected in General settings instead.
  */
 const ALL_DAY_START = '09:00';
 const ALL_DAY_END = '10:00';
@@ -475,7 +470,8 @@ export const nextHalfHour = (nowMs: number): number =>
 
 /**
  * A form value for a brand-new event starting at `startMs`, on `calendarId`,
- * running until `endMs` — or an hour, when nothing names an end.
+ * running until `endMs` — or the requested default duration, when nothing
+ * names an end.
  *
  * The counterpart to `blankValue`: there the *clock* names the time, here the
  * *grid* does. A click on empty space in Day or Week view already knows which
@@ -483,11 +479,10 @@ export const nextHalfHour = (nowMs: number): number =>
  * the event away from where the user pointed.
  *
  * **`endMs` is optional because a click genuinely does not name one.** A click
- * names a moment and the duration is this module's default; a sweep names both
- * ends and the grid's answer is the one that must survive. Defaulting here
- * rather than at each call site keeps "an event is an hour" in the one
- * file that also decides what an all-day event's times become when it is
- * untoggled (see `ALL_DAY_START`), so the two cannot drift apart.
+ * names a moment and the duration is the caller's stored default; a sweep
+ * names both ends and the grid's answer is the one that must survive. Defaulting here
+ * rather than at each call site keeps the fallback and the duration arithmetic
+ * in one place.
  *
  * `endDate` is read off the end instant rather than copied from the start date,
  * which is the whole reason this is one function and not two lines at each call
@@ -496,7 +491,7 @@ export const nextHalfHour = (nowMs: number): number =>
  * wrong.
  *
  * Both instants are kept as well as read, because a create has the same
- * boundary as an edit: an hour from 02:30 lands on a 02:30 that is *later*
+ * boundary as an edit: an hour from 02:30 can land on a 02:30 that is *later*
  * across a fall-back, and re-parsing the pair `dateOf`/`timeOf` just produced
  * puts the end at or before the start — a form that opens already
  * refusing to save with no field on it visibly wrong. See `sourceStartMs`.
@@ -504,8 +499,10 @@ export const nextHalfHour = (nowMs: number): number =>
 export function blankValueAt(
   startMs: number,
   calendarId: number | null,
-  endMs: number = startMs + DEFAULT_EVENT_MS,
+  endMs?: number,
+  durationMinutes: number = DEFAULT_EVENT_MINUTES,
 ): EventFormValue {
+  endMs ??= startMs + durationMinutes * MIN_MS;
   return {
     title: '',
     date: dateOf(startMs),
@@ -537,8 +534,8 @@ export function blankValueAt(
 }
 
 /**
- * A form value for a brand-new event: the next half hour, an hour long,
- * on `calendarId`.
+ * A form value for a brand-new event: the next half hour, using the requested
+ * default duration, on `calendarId`.
  *
  * `dayStartMs` is the day the user was looking at when they asked for a new
  * event. Passing one that is not today keeps the *time* — the next half hour —
@@ -585,10 +582,11 @@ export function blankValue(
   nowMs: number,
   calendarId: number | null,
   dayStartMs?: number,
+  durationMinutes: number = DEFAULT_EVENT_MINUTES,
 ): EventFormValue {
-  const at = blankValueAt(nextHalfHour(nowMs), calendarId);
+  const at = blankValueAt(nextHalfHour(nowMs), calendarId, undefined, durationMinutes);
   if (dayStartMs === undefined) return at;
-  return blankValueAt(toMs(dateOf(dayStartMs), at.start), calendarId);
+  return blankValueAt(toMs(dateOf(dayStartMs), at.start), calendarId, undefined, durationMinutes);
 }
 
 /**

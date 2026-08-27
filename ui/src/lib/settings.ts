@@ -34,6 +34,8 @@ export type AppSettings = {
    *  `null` for the old rule — primary, else first writable. Stored
    *  unvalidated; `offerableCalendarId` guards staleness at every use. */
   defaultCalendarId: number | null;
+  /** Minutes used when a new timed event has a start but no explicit end. */
+  defaultEventDurationMinutes: number;
   /** Whether the app draws `13:30` or `1:30 PM`. Read by `timefmt.ts` through
    *  the `clock.svelte.ts` rune rather than as a prop — six components print a
    *  time and none of them owns the preference. */
@@ -134,6 +136,10 @@ export const setSecondTimezone = (tz: string | null) =>
 
 export const setDefaultCalendar = (id: number | null) =>
   invoke<AppSettings>('set_default_calendar', { id });
+
+/** Stores the free-form default length for new timed events, in minutes. */
+export const setDefaultEventDuration = (minutes: number) =>
+  invoke<AppSettings>('set_default_event_duration', { minutes });
 
 /** Minutes, as the General tab shows them. Stored in milliseconds because
  *  that is what `sync_loop` compares against a clock. */

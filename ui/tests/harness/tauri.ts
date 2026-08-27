@@ -511,6 +511,7 @@ type StubSettings = {
   listMode: boolean;
   fallbackReminderMinutes: number[];
   defaultCalendarId: number | null;
+  defaultEventDurationMinutes: number;
   timeFormat: TimeFormat;
   weekStart: WeekStartDay;
   displayTimezone: string | null;
@@ -531,6 +532,7 @@ const DEFAULT_SETTINGS: StubSettings = {
   // The backend's own shipped default (fallback spec §3).
   fallbackReminderMinutes: [60, 10],
   defaultCalendarId: null,
+  defaultEventDurationMinutes: 60,
   listMode: false,
   // The clock the app has always drawn, so every existing spec and every
   // committed screenshot golden goes on describing the same pixels.
@@ -790,6 +792,9 @@ export function installTauriStub(scenario: string): Harness {
         return { ...settings };
       case 'set_default_calendar':
         settings = saveSettings({ ...settings, defaultCalendarId: (args.id as number | null) ?? null });
+        return { ...settings };
+      case 'set_default_event_duration':
+        settings = saveSettings({ ...settings, defaultEventDurationMinutes: args.minutes as number });
         return { ...settings };
       case 'set_fallback_reminders': {
         const minutes = args.minutes as number[];

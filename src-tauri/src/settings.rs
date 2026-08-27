@@ -16,6 +16,7 @@ const NOTIFICATIONS_KEY: &str = "notifications_enabled";
 const LIST_MODE_KEY: &str = "list_mode";
 const FALLBACK_KEY: &str = "fallback_reminder_minutes";
 const DEFAULT_CALENDAR_KEY: &str = "default_calendar_id";
+const DEFAULT_EVENT_DURATION_KEY: &str = "default_event_duration_minutes";
 const TIME_FORMAT_KEY: &str = "time_format";
 const WEEK_START_KEY: &str = "week_start";
 const TRAY_ICON_KEY: &str = "tray_icon";
@@ -186,6 +187,9 @@ pub struct AppSettings {
     /// an id a create cannot land on) has to exist regardless — and a
     /// write-time check would only duplicate it with a second rule to drift.
     pub default_calendar_id: Option<i64>,
+    /// Minutes a new timed event lasts when the user names only its start.
+    /// Sixty preserves the existing behavior for installs without this row.
+    pub default_event_duration_minutes: u32,
     /// Whether the system tray icon is shown. **On by default** — the tray is
     /// where Quit lives, and an app that hides its only quit affordance on a
     /// fresh install has made a decision nobody asked it to. Turning it off
@@ -303,6 +307,11 @@ pub async fn read_settings(pool: &SqlitePool) -> AppSettings {
         default_calendar_id: read(pool, DEFAULT_CALENDAR_KEY)
             .await
             .and_then(|v| v.parse().ok()),
+        default_event_duration_minutes: read(pool, DEFAULT_EVENT_DURATION_KEY)
+            .await
+            .and_then(|v| v.parse::<u32>().ok())
+            .filter(|&minutes| minutes > 0)
+            .unwrap_or(60),
         // `== "12h"` rather than `!= "24h"`, the same polarity `list_mode`
         // takes and for the same reason: absent, garbage, and a value written
         // by some future version all land on the format the app has always
@@ -337,6 +346,9 @@ pub async fn read_settings(pool: &SqlitePool) -> AppSettings {
 pub const INTERVAL_TOO_SHORT: &str =
     "omacal will not sync more often than once a minute — Google's quota is finite and a \
      desktop app has no business polling faster than that";
+
+pub const EVENT_DURATION_TOO_SHORT: &str =
+    "the default meeting duration must be at least one minute";
 
 #[tauri::command]
 pub async fn get_settings(state: tauri::State<'_, AppState>) -> Result<AppSettings, String> {
@@ -571,6 +583,30 @@ pub async fn set_default_calendar(
     Ok(read_settings(&state.pool).await)
 }
 
+/// Stores the length used when a new event names a start but no explicit end.
+/// Zero is refused rather than repaired: a saved preference must be the value
+/// the user entered, and a zero-length event cannot be created.
+#[tauri::command]
+pub async fn set_default_event_duration(
+    state: tauri::State<'_, AppState>,
+    minutes: u32,
+) -> Result<AppSettings, String> {
+    set_default_event_duration_impl(&state.pool, minutes)
+        .await
+        .map_err(|e| crate::errors::user_facing(&e))
+}
+
+async fn set_default_event_duration_impl(
+    pool: &SqlitePool,
+    minutes: u32,
+) -> anyhow::Result<AppSettings> {
+    if minutes == 0 {
+        anyhow::bail!(EVENT_DURATION_TOO_SHORT);
+    }
+    write(pool, DEFAULT_EVENT_DURATION_KEY, &minutes.to_string()).await?;
+    Ok(read_settings(pool).await)
+}
+
 /// Stores the filmstrip toggle. Nothing is refused and nothing is clamped —
 /// unlike the sync interval, there is no value of a boolean the app has to
 /// protect Google's quota from.
@@ -636,6 +672,11 @@ mod tests {
         );
         assert_eq!(s.default_calendar_id, None, "no choice made is the old rule, not an id");
         assert_eq!(
+            s.default_event_duration_minutes,
+            60,
+            "new events remain one hour long until somebody chooses otherwise",
+        );
+        assert_eq!(
             s.time_format,
             TimeFormat::H24,
             "the clock the app has always drawn, so no installed copy changes under its user"
@@ -659,6 +700,31 @@ mod tests {
 
         write(&p, DEFAULT_CALENDAR_KEY, "").await.unwrap();
         assert_eq!(read_settings(&p).await.default_calendar_id, None);
+    }
+
+    #[tokio::test]
+    async fn the_default_event_duration_round_trips_and_refuses_zero() {
+        let p = pool().await;
+
+        let s = set_default_event_duration_impl(&p, 45).await.unwrap();
+        assert_eq!(s.default_event_duration_minutes, 45);
+        assert_eq!(read_settings(&p).await.default_event_duration_minutes, 45);
+
+        assert!(set_default_event_duration_impl(&p, 0).await.is_err());
+        assert_eq!(
+            read_settings(&p).await.default_event_duration_minutes,
+            45,
+            "a refused duration must leave the stored choice alone",
+        );
+
+        for stored in ["", "0", "-1", "half an hour"] {
+            write(&p, DEFAULT_EVENT_DURATION_KEY, stored).await.unwrap();
+            assert_eq!(
+                read_settings(&p).await.default_event_duration_minutes,
+                60,
+                "{stored:?} is not a usable duration and must fall back",
+            );
+        }
     }
 
     /// `[]` stored is a real choice — the feature off — and must read back as

@@ -1229,6 +1229,29 @@ test.describe('Header', () => {
     expect(calls[0].args.id).toBe(2);
   });
 
+  test('General saves a manually entered default meeting duration', async ({ page }) => {
+    await page.goto(show('Header', 'connected'));
+    const modal = await openSettings(page);
+    const duration = modal.getByRole('spinbutton', { name: 'Default meeting duration' });
+    await expect(duration).toHaveValue('60');
+
+    await duration.fill('45');
+    await modal.getByRole('button', { name: 'Save default meeting duration' }).click();
+
+    const calls = await page.evaluate(
+      () => (window as any).__harness.calls.filter(
+        (c: any) => c.cmd === 'set_default_event_duration'),
+    );
+    expect(calls).toHaveLength(1);
+    expect(calls[0].args.minutes).toBe(45);
+
+    await page.keyboard.press('Escape');
+    const again = await openSettings(page);
+    await expect(
+      again.getByRole('spinbutton', { name: 'Default meeting duration' }),
+    ).toHaveValue('45');
+  });
+
   test('General shows the stored sync interval, in minutes', async ({ page }) => {
     // Until now this was settable only by running `sqlite3` against the
     // database by hand, and both platform guides documented it that way.
@@ -1241,7 +1264,7 @@ test.describe('Header', () => {
     await page.goto(show('Header', 'connected'));
     const modal = await openSettings(page);
     await modal.getByLabel('Sync every').fill('15');
-    await modal.getByRole('button', { name: 'Save' }).click();
+    await modal.getByRole('button', { name: 'Save sync interval' }).click();
 
     // **Beside the button, not the modal-bottom note.** The shared note sits
     // below every tab's content in a modal that scrolls, so "Saved." landed
@@ -1275,7 +1298,7 @@ test.describe('Header', () => {
     await page.goto(show('Header', 'connected'));
     const modal = await openSettings(page);
     await modal.getByLabel('Sync every').fill('0');
-    await modal.getByRole('button', { name: 'Save' }).click();
+    await modal.getByRole('button', { name: 'Save sync interval' }).click();
 
     await expect(page.getByTestId('interval-note')).toContainText('will not sync more often');
     // And nothing was stored: reopening shows what was there before.
