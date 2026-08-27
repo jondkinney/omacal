@@ -17,6 +17,9 @@ form has — the CLI itself never writes the database.
 omacal agenda --json                 # next 7 days
 omacal agenda --days 1 --json        # today
 omacal events list --from 2026-09-01 --to 2026-09-05 --json
+omacal events show 41 --json         # ONE event whole (v0.7.4+): the guest
+                                     # list with each person's answer,
+                                     # organizer, join link, description
 omacal search quarterly review --json
 omacal calendars --json              # every calendar with ids
 omacal cli-help                      # full usage and exit codes
@@ -24,6 +27,11 @@ omacal cli-help                      # full usage and exit codes
 
 Always pass `--json` when consuming programmatically. Success:
 `{"ok":true,"data":[...]}`. Failure: `{"ok":false,"error":{"code","message"}}`.
+
+"Who accepted / who's coming / is X invited?" → `events show ID` is the
+answer (list rows carry only a guest *count*). Its `guests` array gives
+each person's `email`, `response` (same vocabulary as below), `optional`
+and `isSelf` — never guess attendance from the count again.
 
 Each event row: `eventId`, `title`, `startMs`/`endMs` (epoch ms),
 `start`/`end` (RFC 3339 in the user's display zone), `allDay`, `location`,

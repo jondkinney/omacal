@@ -40,6 +40,9 @@ omacal CLI — read the calendar omacal syncs. Read-only.
 USAGE
   omacal agenda [--days N] [--json]        the next N days (default 7)
   omacal events list --from YYYY-MM-DD --to YYYY-MM-DD [--json]
+  omacal events show ID [--json]           one event whole: guest list with
+                                           each person's answer, join link,
+                                           organizer, description
   omacal search <query> [--json]           titles, nearest to today first
   omacal calendars [--json]                every calendar, with ids
   omacal doctor [--json]                   diagnose this install
@@ -77,6 +80,10 @@ EXIT CODES
 pub(crate) enum Command {
     Agenda { days: u32 },
     Events { from: jiff::civil::Date, to: jiff::civil::Date },
+    /// One event, whole — the guest list with each person's answer, which
+    /// the window rows deliberately compress to a count. Read-only like
+    /// every read here, straight off the local database.
+    Show { id: i64 },
     Search { query: String },
     Calendars,
     Doctor,
@@ -155,6 +162,19 @@ pub(crate) fn parse(argv: &[String]) -> Option<Result<Invocation, String>> {
                     return Some(crate::cli_write::parse_events(verb, &rest[1..]).map(|cmd| {
                         Invocation { command: Command::Write(Box::new(cmd)), json }
                     }));
+                }
+                Some("show") => {
+                    let id = rest
+                        .get(1)
+                        .filter(|a| !a.starts_with("--"))
+                        .and_then(|v| v.parse::<i64>().ok());
+                    return Some(match id {
+                        Some(id) => Ok(Invocation { command: Command::Show { id }, json }),
+                        None => Err(
+                            "usage: omacal events show ID — `omacal events list` prints ids"
+                                .into(),
+                        ),
+                    });
                 }
                 Some("list") => {}
                 _ => {
@@ -321,6 +341,148 @@ pub(crate) async fn rows_in_window(
     }
     rows.sort_by_key(|r| (r.start_ms, r.end_ms, r.event_id));
     Ok(rows)
+}
+
+/// One guest on [`Detail`], answer included — the row the window listing
+/// compresses to a count, uncompressed.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DetailGuest {
+    pub email: String,
+    pub name: Option<String>,
+    /// `accepted` | `declined` | `tentative` | `needsAction` — the store's
+    /// own vocabulary, unedited.
+    pub response: String,
+    pub optional: bool,
+    /// The signed-in user's own row, when they are on the list at all.
+    pub is_self: bool,
+}
+
+/// `omacal events show` — one event whole. The same field names [`Row`]
+/// uses wherever the two overlap, so a script that learned the listing
+/// reads this for free.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Detail {
+    pub event_id: i64,
+    pub title: String,
+    pub start_ms: i64,
+    pub end_ms: i64,
+    pub start: String,
+    pub end: String,
+    pub all_day: bool,
+    /// True for a series — and then the times above are the series anchor,
+    /// not any particular occurrence; the window commands expand those.
+    pub recurring: bool,
+    pub location: Option<String>,
+    pub description: Option<String>,
+    pub calendar: String,
+    pub calendar_id: i64,
+    pub organizer: bool,
+    pub organizer_email: Option<String>,
+    pub response: Option<String>,
+    pub conference: Option<String>,
+    pub guests: Vec<DetailGuest>,
+}
+
+/// The event, assembled from the same store read the write path trusts.
+/// `None` when the id names nothing — a usage answer, not an error.
+pub(crate) async fn detail_by_id(pool: &SqlitePool, id: i64) -> anyhow::Result<Option<Detail>> {
+    let Some((ev, _role, _tz)) = omacal_store::event_by_id(pool, id).await? else {
+        return Ok(None);
+    };
+    let (cal_name, account_email, cal_gid): (String, String, String) = sqlx::query_as(
+        "SELECT c.summary, a.email, c.google_id FROM calendars c
+         JOIN accounts a ON a.id = c.account_id WHERE c.id = ?1",
+    )
+    .bind(ev.calendar_id)
+    .fetch_optional(pool)
+    .await
+    .map(|r: Option<(String, String, String)>| r.unwrap_or_default())
+    .map_err(anyhow::Error::from)?;
+
+    let tz = jiff::tz::TimeZone::system();
+    let stamp = |ms: i64| -> String {
+        jiff::Timestamp::from_millisecond(ms)
+            .map(|t| t.to_zoned(tz.clone()).strftime("%Y-%m-%dT%H:%M:%S%:z").to_string())
+            .unwrap_or_default()
+    };
+
+    Ok(Some(Detail {
+        event_id: ev.id,
+        title: ev.summary.clone().unwrap_or_else(|| "(no title)".into()),
+        start_ms: ev.start_utc,
+        end_ms: ev.end_utc,
+        start: stamp(ev.start_utc),
+        end: stamp(ev.end_utc),
+        all_day: ev.is_all_day,
+        recurring: ev.recurrence.is_some() || ev.recurring_event_id.is_some(),
+        location: ev.location.clone(),
+        description: ev.description.clone(),
+        calendar: cal_name,
+        calendar_id: ev.calendar_id,
+        organizer: is_organizer(ev.organizer_email.as_deref(), &account_email, &cal_gid),
+        organizer_email: ev.organizer_email.clone(),
+        response: ev.self_response.clone(),
+        conference: ev
+            .conference_uri
+            .clone()
+            .or_else(|| crate::upcoming::location_meeting_url(ev.location.as_deref())),
+        guests: ev
+            .attendees
+            .iter()
+            .map(|a| DetailGuest {
+                email: a.email.clone(),
+                name: a.display_name.clone(),
+                response: a.response_status.clone(),
+                optional: a.optional,
+                is_self: a.is_self,
+            })
+            .collect(),
+    }))
+}
+
+fn print_detail_human(d: &Detail) {
+    println!("{}", d.title);
+    let tz = jiff::tz::TimeZone::system();
+    let when = jiff::Timestamp::from_millisecond(d.start_ms)
+        .map(|t| t.to_zoned(tz.clone()))
+        .ok();
+    let day = when.as_ref().map(|z| z.strftime("%a, %b %-d").to_string()).unwrap_or_default();
+    if d.all_day {
+        println!("{day}  All day");
+    } else {
+        let start = when.map(|z| z.strftime("%H:%M").to_string()).unwrap_or_default();
+        let end = jiff::Timestamp::from_millisecond(d.end_ms)
+            .map(|t| t.to_zoned(tz).strftime("%H:%M").to_string())
+            .unwrap_or_default();
+        println!("{day}  {start}–{end}{}", if d.recurring { "  (repeats)" } else { "" });
+    }
+    if let Some(loc) = d.location.as_deref().filter(|l| !l.is_empty()) {
+        println!("Where: {loc}");
+    }
+    if let Some(uri) = d.conference.as_deref() {
+        println!("Join: {uri}");
+    }
+    println!(
+        "Calendar: {}{}",
+        d.calendar,
+        if d.organizer { "  · your event" } else { "" }
+    );
+    if d.guests.is_empty() {
+        println!("Guests: none");
+    } else {
+        println!("Guests:");
+        for g in &d.guests {
+            println!(
+                "  {:<12} {}{}{}",
+                g.response,
+                g.email,
+                if g.optional { "  [optional]" } else { "" },
+                if g.is_self { "  (you)" } else { "" },
+            );
+        }
+    }
 }
 
 /// Where the app keeps its database — `app_data_dir` reproduced without an
@@ -534,6 +696,20 @@ pub(crate) fn run(inv: Invocation) -> i32 {
                     let rows = rows_in_window(&pool, from_ms, to_ms).await?;
                     if inv.json { print_json(&rows) } else { print_rows_human(&rows) }
                     Ok(EXIT_OK)
+                }
+                Command::Show { id } => {
+                    match detail_by_id(&pool, *id).await? {
+                        Some(d) => {
+                            if inv.json { print_json(&d) } else { print_detail_human(&d) }
+                            Ok(EXIT_OK)
+                        }
+                        None => Ok(fail(
+                            inv.json,
+                            "usage",
+                            &format!("no event {id} — `omacal events list` prints real ids"),
+                            EXIT_USAGE,
+                        )),
+                    }
                 }
                 Command::Search { query } => {
                     let hits = crate::search::search(&pool, query, crate::now_ms()).await?;
@@ -762,6 +938,73 @@ mod tests {
         for s in ["", "--sync-now", "--quit", "2026-09-01"] {
             assert_eq!(parse(&argv(s)), None, "{s:?} was claimed by the CLI");
         }
+    }
+
+    /// `events show` parses with a numeric id and refuses everything else
+    /// by name — never a fall-through to a window.
+    #[test]
+    fn show_takes_an_id_and_nothing_else() {
+        assert_eq!(
+            parse(&argv("events show 41 --json")),
+            Some(Ok(Invocation { command: Command::Show { id: 41 }, json: true }))
+        );
+        assert!(matches!(parse(&argv("events show")), Some(Err(_))));
+        assert!(matches!(parse(&argv("events show denis")), Some(Err(_))));
+    }
+
+    /// The detail, assembled against a real (in-memory) store: the guest
+    /// list arrives whole with each answer — the fact the window rows
+    /// compress to a count, and the reason this command exists (three
+    /// field sessions in a row asked "who accepted?" and the CLI could
+    /// not say) — and the organizer flag speaks `organizer.self` here
+    /// exactly as it does on the rows.
+    #[tokio::test]
+    async fn show_uncompresses_the_guest_list() {
+        let pool = omacal_store::connect_memory().await.unwrap();
+        sqlx::query(
+            "INSERT INTO accounts (google_sub, email, created_at) VALUES ('s','me@x.test',0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO calendars (account_id, google_id, summary, timezone, access_role)
+             VALUES (1, 'me@x.test', 'Work', 'UTC', 'owner')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO events (calendar_id, google_id, summary, start_utc, end_utc,
+                                 start_tz, end_tz, is_all_day, status, updated_at,
+                                 organizer_email, attendees_json)
+             VALUES (1, 'g1', 'Feedback session', 1786352400000, 1786356000000,
+                     'UTC', 'UTC', 0, 'confirmed', 0, 'me@x.test',
+                     '[{\"email\":\"iskren@x.test\",\"display_name\":null,\"response_status\":\"accepted\",\"optional\":false,\"is_self\":false,\"comment\":null,\"additional_guests\":0},
+                       {\"email\":\"denis@x.test\",\"display_name\":null,\"response_status\":\"needsAction\",\"optional\":true,\"is_self\":false,\"comment\":null,\"additional_guests\":0}]')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let d = detail_by_id(&pool, 1).await.unwrap().expect("the row exists");
+        assert_eq!(d.title, "Feedback session");
+        assert!(d.organizer, "organizer.self: the account's own address");
+        assert_eq!(d.guests.len(), 2);
+        assert_eq!(
+            (d.guests[0].email.as_str(), d.guests[0].response.as_str()),
+            ("iskren@x.test", "accepted"),
+        );
+        assert_eq!(
+            (d.guests[1].response.as_str(), d.guests[1].optional),
+            ("needsAction", true),
+            "the unanswered guest arrives as needsAction, the store's own word",
+        );
+
+        assert!(
+            detail_by_id(&pool, 99).await.unwrap().is_none(),
+            "an unknown id is an answer, not an error",
+        );
     }
 
     /// The comparison behind `Row::organizer`, as a table — Google's
