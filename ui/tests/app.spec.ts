@@ -3346,6 +3346,9 @@ test.describe('App: keyboard event navigation', () => {
 
   const selectedTitle = (page: Page) =>
     page.locator('[data-kbd-selected-event]');
+  const deleteCalls = (page: Page) => page.evaluate(() =>
+    window.__harness.calls.filter((call) => call.cmd === 'delete_event_cmd'),
+  );
 
   test('the cursor appears only after keyboard navigation begins', async ({ page }) => {
     await page.keyboard.press('w');
@@ -3472,6 +3475,31 @@ test.describe('App: keyboard event navigation', () => {
     await expect(dialog).toHaveCount(0);
     await page.keyboard.press('Enter');
     await expect(page.getByRole('dialog', { name: 'Plan the launch' })).toBeVisible();
+  });
+
+  test('Backspace on the selected event asks before deleting', async ({ page }) => {
+    await page.keyboard.press('j');
+    await page.keyboard.press('j');
+    await expect(selectedTitle(page)).toContainText('Review notes');
+    await page.keyboard.press('Backspace');
+
+    const confirm = page.getByRole('dialog', { name: 'Delete event' });
+    await expect(confirm).toBeVisible();
+    await expect(confirm.locator('h2')).toContainText('Review notes');
+    expect(await deleteCalls(page)).toEqual([]);
+  });
+
+  test('Backspace on an open event asks before deleting', async ({ page }) => {
+    await page.keyboard.press('j');
+    await page.keyboard.press('j');
+    await page.keyboard.press('Enter');
+    await expect(page.getByRole('dialog', { name: 'Review notes' })).toBeVisible();
+    await page.keyboard.press('Backspace');
+
+    const confirm = page.getByRole('dialog', { name: 'Delete event' });
+    await expect(confirm).toBeVisible();
+    await expect(confirm.locator('h2')).toContainText('Review notes');
+    expect(await deleteCalls(page)).toEqual([]);
   });
 });
 

@@ -445,6 +445,39 @@
     );
   }
 
+  /** Backspace on the vim-style event cursor takes the same guarded route as
+   * the popover's Delete button: fetch the current detail for permissions,
+   * preserve the selected occurrence's identity, then open `DeleteConfirm`.
+   * Nothing is deleted by the key itself. */
+  async function deleteSelectedEvent() {
+    if (!listable(view)) return;
+    const event = eventAtCursor(keyboardDays, keyboardCursor);
+    if (!event) return;
+    const el = document.querySelector<HTMLElement>('[data-kbd-selected-event]');
+    const r = el?.getBoundingClientRect();
+    const rect = r
+      ? { top: r.top, left: r.left, width: r.width, height: r.height }
+      : keyboardAnchor();
+
+    busy = true;
+    error = null;
+    try {
+      const detail = await getEventDetail(event.id);
+      const stillSelected = eventAtCursor(keyboardDays, keyboardCursor);
+      if (!stillSelected || stillSelected.id !== event.id
+          || stillSelected.start_ms !== event.start_ms) return;
+      if (!detail.can_edit) {
+        error = 'This calendar is read-only, so this event cannot be deleted.';
+        return;
+      }
+      askDelete({ detail, startMs: event.start_ms, endMs: event.end_ms }, rect);
+    } catch (e) {
+      error = String(e);
+    } finally {
+      busy = false;
+    }
+  }
+
   // A boundary key moves the anchor first, then finishes against the payload
   // that contains the destination. Ordinary header navigation is normalized
   // here too: once a new period arrives, selection follows its anchor rather
@@ -1481,6 +1514,7 @@
     search: () => (searchOpen = true),
     quickCreate: openQuickAdd,
     openSelected: openSelectedEvent,
+    deleteSelected: () => { void deleteSelectedEvent(); },
     create: newEventOnAnchor,
     // `F`, joining the same bare-key family as the rest (spec §1). It is a
     // no-op in Year and Big Year, where the control it duplicates is absent —
