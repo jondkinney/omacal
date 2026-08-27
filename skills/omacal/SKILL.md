@@ -22,6 +22,9 @@ omacal events show 41 --json         # ONE event whole (v0.7.4+): the guest
                                      # organizer, join link, description
 omacal search quarterly review --json
 omacal calendars --json              # every calendar with ids
+omacal commands --json               # machine-readable catalog of every
+                                     # command and flag (v0.8.1+) — check
+                                     # here before assuming a flag exists
 omacal cli-help                      # full usage and exit codes
 ```
 
