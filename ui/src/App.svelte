@@ -63,6 +63,11 @@
   // button, and Month's own `ondaypick` ever assign it.
   let anchorMs = $state(dayStart(Date.now()));
   let view = $state<View>('week');
+  /** Monotonic request carried to whichever time-oriented view is mounted.
+   *  A counter rather than a boolean makes a second `T` while already on
+   *  today observable—the anchor does not change in that case, but the user
+   *  still explicitly asked to reveal the current time again. */
+  let revealNowRequest = $state(0);
 
   // Year and Big Year read a bare calendar year rather than a millisecond
   // anchor — there is no single day inside them for `anchorMs` to name — so
@@ -490,7 +495,9 @@
   }
 
   function goToday() {
-    anchorMs = dayStart(Date.now());
+    const today = dayStart(Date.now());
+    anchorMs = today;
+    revealNowRequest += 1;
   }
 
   // The chokepoint both the switcher's buttons and the number keys go
@@ -1271,7 +1278,8 @@
   {#if view === 'month'}
     {#if month}
       {#if listMode}
-        <Filmstrip days={daysFromMonth(month)} {weather} onopen={openGridEvent} />
+        <Filmstrip days={daysFromMonth(month)} {weather} {revealNowRequest}
+                   onopen={openGridEvent} />
       {:else}
         <MonthGrid {month} onopen={openGridEvent} ondaypick={handleDayPick} oncreate={newEventOnDay} />
       {/if}
@@ -1301,9 +1309,11 @@
     {/if}
   {:else if week}
     {#if listMode}
-      <Filmstrip days={daysFromWeek(week)} {weather} onopen={openGridEvent} />
+      <Filmstrip days={daysFromWeek(week)} {weather} {revealNowRequest}
+                 onopen={openGridEvent} />
     {:else}
-      <WeekGrid {week} {weather} {formPreview} oncreate={newEventAt} onedit={openEdit} ondelete={askDelete}
+      <WeekGrid {week} {weather} {formPreview} {revealNowRequest}
+                oncreate={newEventAt} onedit={openEdit} ondelete={askDelete}
                 oncopy={copyOccurrence}
         onmove={moveOccurrence} onresponded={refreshAfterWrite} />
     {/if}

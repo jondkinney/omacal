@@ -16,7 +16,7 @@
     SNAP_MS, beganDrag, colsMoved, edgeAt, spanForMove, spanForResize, spanForSweep,
   } from './drag';
 
-  let { week, weather = null, formPreview = null, oncreate, onedit, ondelete, oncopy, onmove, onresponded }: {
+  let { week, weather = null, formPreview = null, revealNowRequest = 0, oncreate, onedit, ondelete, oncopy, onmove, onresponded }: {
     week: WeekPayload;
     /** The forecast by ISO date (`weather.ts`), or null for none — off, not
      *  yet fetched, or failed all look the same here: a header with no sky,
@@ -26,6 +26,9 @@
      *  ghost so the user watches the event land while typing its times —
      *  create and edit alike. Null draws nothing. */
     formPreview?: { startMs: number; endMs: number } | null;
+    /** Incremented by App for every explicit Today action, including when the
+     *  anchor already names today and therefore no payload navigation occurs. */
+    revealNowRequest?: number;
     /** A click on empty space in a day column, at the half hour it landed in,
      *  or a **sweep** across it, which names an `endMs` as well.
      *  `rect` is the anchor to put the form beside — the column at the height
@@ -129,26 +132,49 @@
     return d.getTime();
   });
 
-  // Opening at midnight puts the working day off-screen. Scroll once on mount so
-  // the current time sits about a third down — near enough to read what is next
-  // without losing what just happened. Weeks without today open at 08:00.
+  // Opening at midnight puts the working day off-screen. Preserve the existing
+  // once-on-mount placement at one third of the viewport; weeks without today
+  // open at 08:00. An explicit Today request instead puts now at 45%, and
+  // repeats even when the anchor was already today—which is why it cannot be
+  // inferred from a `week` prop change.
   //
   // Deliberately once, not on every week change: navigating away and back should
   // keep where you were looking, which is what every desktop calendar does.
   let bodyEl: HTMLDivElement | undefined = $state();
   let hasScrolled = false;
+  let handledRevealNowRequest: number | null = null;
+  const INITIAL_VIEWPORT_FRACTION = 1 / 3;
+  const NOW_VIEWPORT_FRACTION = 0.45;
 
   $effect(() => {
-    if (!bodyEl || hasScrolled || week.days.length === 0) return;
+    if (!bodyEl || week.days.length === 0) return;
     const el = bodyEl;
-    const today = week.days.find((d) => d.start_ms === todayStart);
+    const now = Date.now();
+    const today = week.days.find((d) => now >= d.start_ms && now < d.end_ms);
+    if (handledRevealNowRequest === null) handledRevealNowRequest = revealNowRequest;
+    const revealRequested = revealNowRequest !== handledRevealNowRequest;
+
+    // When Today also navigated from another period, its request reaches this
+    // component before the new payload can. Leave it pending until the payload
+    // containing now arrives; handling it against the old week would scroll an
+    // unrelated 08:00 into view and consume the user's request.
+    if (revealRequested && !today) return;
+    if (!revealRequested && hasScrolled) return;
+
     const frac = today
-      ? (Date.now() - today.start_ms) / (today.end_ms - today.start_ms)
+      ? (now - today.start_ms) / (today.end_ms - today.start_ms)
       : hourFrac(gutterDay, 8);
     hasScrolled = true;
+    if (revealRequested) handledRevealNowRequest = revealNowRequest;
     // After layout: scrollHeight is meaningless until the columns have height.
     requestAnimationFrame(() => {
-      el.scrollTop = Math.max(0, frac * el.scrollHeight - el.clientHeight / 3);
+      const viewportFraction = revealRequested
+        ? NOW_VIEWPORT_FRACTION
+        : INITIAL_VIEWPORT_FRACTION;
+      el.scrollTop = Math.max(
+        0,
+        frac * el.scrollHeight - el.clientHeight * viewportFraction,
+      );
     });
   });
 
