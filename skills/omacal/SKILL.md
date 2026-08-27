@@ -68,6 +68,23 @@ change the request — retrying unchanged does nothing; on a timeout the
 write's fate is UNKNOWN: check with `events list` before any retry, or
 you may create a duplicate.
 
+## Presenting results
+
+When showing the calendar to the user (not piping into a script):
+
+- Prefer a compact list over a table, one line per event, grouped under a
+  bold day header ("**Wed, Aug 27**") — the CLI's own human layout. Tables
+  only for genuine cross-day comparisons.
+- Line shape: `10:30–10:55  Travel to Excitel office` — start–end, then
+  title, then only the details that earn their place: a location, a join
+  link (as a bare URL so it's clickable), "N guests" when more than the
+  user. Omit "accepted" — the user's own yes is not news to them; do call
+  out an *unanswered* invitation or a tentative.
+- All-day events go on one quiet line after the timed ones, never mixed in.
+- Name the timezone once, in the intro sentence, not per line.
+- Lead with what the user asked ("Next free slot is…", "Four things
+  today…"); the list is evidence, not the answer.
+
 ## Rules
 
 - Reads are safe always; writes only through the commands above — never
