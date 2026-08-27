@@ -94,4 +94,6 @@ objc2-user-notifications = { version = "0.3", default-features = false, features
 
 [dev-dependencies]
 wiremock = "0.6.5"
+# The skill installer's tests own a throwaway $HOME each (cli_skill.rs).
+tempfile = "3"
 

@@ -4,6 +4,7 @@ mod accounts;
 mod browser;
 mod caldav_account;
 mod cli;
+mod cli_skill;
 mod cli_write;
 mod caldav_write;
 mod calendars;
@@ -1298,6 +1299,14 @@ pub fn run() {
             // write with the demo refusal — the same words the form gets.
             #[cfg(unix)]
             ipc::spawn(app.handle().clone());
+
+            // The installed agent skill follows the binary (cli_skill.rs).
+            // Here as well as in the CLI path, because the user who updates
+            // through the header's button may never run a CLI command — and
+            // their agent must not keep reading last version's instructions.
+            if let Some(home) = std::env::var_os("HOME") {
+                cli_skill::refresh_if_version_changed(std::path::Path::new(&home));
+            }
 
             Ok(())
         })
