@@ -11,15 +11,17 @@ Run from the repo root after any icon change:
     python3 scripts/generate-cli-logo.py
 
 Requires ImageMagick (`magick`), which the icon pipeline needs anyway.
-26px wide — 13 text rows — matches what basecamp-cli's welcome does and
-stays modest in an 80-column terminal.
+36px wide — 18 text rows — stays modest in an 80-column terminal.
+Edge pixels composite over black rather than snapping to solid or
+transparent, so the rounded corners anti-alias on dark terminals
+instead of stair-stepping.
 """
 
 import re
 import subprocess
 import sys
 
-SIZE = 26
+SIZE = 36
 PAD = "  "  # left margin, so the logo does not hug the terminal edge
 SRC = "src-tauri/icons/128x128.png"
 OUT = "src-tauri/src/cli_logo.ans"
@@ -34,31 +36,36 @@ for line in txt.splitlines():
     m = re.match(r"^(\d+),(\d+): \((\d+),(\d+),(\d+)(?:,(\d+))?\)", line)
     if not m:
         continue
-    x, y, r, g, b = (int(m.group(i)) for i in range(1, 6))
-    a = int(m.group(6)) if m.group(6) is not None else 255
+    x, y = int(m.group(1)), int(m.group(2))
+    # Lanczos overshoots on sharp edges; magick emits the raw >255 values.
+    r, g, b = (min(255, int(m.group(i))) for i in (3, 4, 5))
+    a = min(255, int(m.group(6))) if m.group(6) is not None else 255
     pixels[(x, y)] = (r, g, b, a)
 
-def solid(p):
-    return p is not None and p[3] >= 128
+def shade(p):
+    """Composite over black; None when effectively transparent."""
+    if p is None or p[3] < 64:
+        return None
+    r, g, b, a = p
+    return (r * a // 255, g * a // 255, b * a // 255)
 
 rows = []
 for y in range(0, SIZE, 2):
     cells = []
     for x in range(SIZE):
-        top = pixels.get((x, y))
-        bot = pixels.get((x, y + 1))
-        t, b = solid(top), solid(bot)
-        if not t and not b:
+        t = shade(pixels.get((x, y)))
+        b = shade(pixels.get((x, y + 1)))
+        if t is None and b is None:
             cells.append(" ")
-        elif t and b:
+        elif t is not None and b is not None:
             cells.append(
-                f"\x1b[38;2;{top[0]};{top[1]};{top[2]}m"
-                f"\x1b[48;2;{bot[0]};{bot[1]};{bot[2]}m▀\x1b[0m"
+                f"\x1b[38;2;{t[0]};{t[1]};{t[2]}m"
+                f"\x1b[48;2;{b[0]};{b[1]};{b[2]}m▀\x1b[0m"
             )
-        elif t:
-            cells.append(f"\x1b[38;2;{top[0]};{top[1]};{top[2]}m▀\x1b[0m")
+        elif t is not None:
+            cells.append(f"\x1b[38;2;{t[0]};{t[1]};{t[2]}m▀\x1b[0m")
         else:
-            cells.append(f"\x1b[38;2;{bot[0]};{bot[1]};{bot[2]}m▄\x1b[0m")
+            cells.append(f"\x1b[38;2;{b[0]};{b[1]};{b[2]}m▄\x1b[0m")
     rows.append(PAD + "".join(cells).rstrip())
 
 with open(OUT, "w") as f:
