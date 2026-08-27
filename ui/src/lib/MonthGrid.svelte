@@ -23,14 +23,10 @@
   // placed on the track just past the last lane a bar can occupy.
   //
   // It does *not* fix the bar strip's height: `.bars` is content-sized, so a
-  // row with no bars gets a 4px strip and a two-lane row gets 36px, and the
-  // cells below them are correspondingly 90px and 58px. `BigYearRibbon`
-  // reserves its lanes with `grid-template-rows` to keep its day strips level;
-  // the same change here is not a one-liner, because a month row has only
-  // ~95px to divide and a reserved 53px strip leaves 41px of cell — measured,
-  // that squeezes all three timed lines to 0.05px and the event titles
-  // disappear. Levelling these strips needs a real height budget for the
-  // cell, which is a Month-view change, not a Big-Year one.
+  // row with no bars gets a 4px strip and a two-lane row gets 36px. The cells
+  // now keep their own reading budget and a busier row makes the grid scroll
+  // sooner rather than taking that space from its timed lines. Unlike
+  // `BigYearRibbon`, Month view therefore pays only for lanes a week uses.
   const MAX_BAR_LANES = 3;
   // How many timed lines a cell shows before folding the rest into "+N more".
   // Matches `pack_lanes`'s own lane cap for bars — three is what a narrow
@@ -159,12 +155,12 @@
                letter-spacing: .05em; }
 
   /* `flex: 1` against App's `main`, not a guess at what surrounds it — the
-     day-name row above is content-sized, so this takes the rest. No
-     `min-height: 0`: every `.mrow` below already carries one, which makes this
-     box's own min-content height zero, so it shrinks freely on a short window
-     without one. Measured at 400px. */
-  .grid { display: flex; flex-direction: column; flex: 1; }
-  .mrow { flex: 1; display: flex; flex-direction: column; min-height: 0;
+     day-name row above is content-sized, so this takes the rest. The grid is
+     the scrollport: rows may grow to share a tall window, but never shrink
+     below the reading budget carried by `.cells`. */
+  .grid { display: flex; flex-direction: column; flex: 1; min-height: 0;
+          overflow-y: auto; }
+  .mrow { flex: 1 0 auto; display: flex; flex-direction: column;
           border-top: 1px solid var(--hairline); }
   .mrow:first-child { border-top: 0; }
 
@@ -180,7 +176,11 @@
   .bar.cl { border-top-left-radius: 0; border-bottom-left-radius: 0; border-left-style: dashed; }
   .bar.cr { border-top-right-radius: 0; border-bottom-right-radius: 0; }
 
-  .cells { flex: 1; display: grid; grid-template-columns: repeat(7, 1fr); min-height: 0; }
+  /* Date + three timed lines + the cell's `+N more`, including their gaps and
+     padding. A row with all-day lanes adds those above this budget instead of
+     stealing height from it; once six rows no longer fit, `.grid` scrolls. */
+  .cells { flex: 1 0 76px; display: grid; grid-template-columns: repeat(7, 1fr);
+           min-height: 76px; }
 
   .mcell { display: flex; flex-direction: column; gap: 1px; padding: 3px 4px;
            border-left: 1px solid var(--hairline); min-width: 0;
@@ -209,18 +209,19 @@
   .num { appearance: none; -webkit-appearance: none; font: inherit; cursor: pointer;
          border: 0; background: transparent; padding: 0; margin: 0; align-self: flex-start;
          font-size: 12px; color: var(--text); font-variant-numeric: tabular-nums;
-         position: relative; z-index: 1; }
+         position: relative; z-index: 1; flex: none; }
   .mcell.today .num { color: var(--accent); font-weight: 600; }
 
   .timed { appearance: none; -webkit-appearance: none; font: inherit;
            display: flex; align-items: center; gap: 4px; text-align: left; cursor: pointer;
            border: 0; background: transparent; padding: 0; margin: 0;
            font-size: 10.5px; color: var(--text); white-space: nowrap; overflow: hidden;
-           text-overflow: ellipsis; position: relative; z-index: 1; }
+           text-overflow: ellipsis; position: relative; z-index: 1; flex: none; }
   .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
 
-  .more { font-size: 10px; color: var(--muted); opacity: .8; padding: 0; background: transparent;
-          border: 0; text-align: left; font: inherit; position: relative; z-index: 1; }
+  .more { font: inherit; font-size: 10px; line-height: 1.2; color: var(--muted); opacity: .8;
+          padding: 0; background: transparent; border: 0; text-align: left;
+          position: relative; z-index: 1; flex: none; }
   /* Only the cell-level `+N more` is a button. The row-level one is a `div`
      covering several days at once, with no single day to hand the parent, so
      it does nothing when clicked — and must not invite the click. */

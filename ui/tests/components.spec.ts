@@ -2406,16 +2406,33 @@ test.describe('MonthGrid', () => {
   });
 
   test('a timed line keeps a real, readable height', async ({ page }) => {
-    // `MAX_BAR_LANES`'s own comment explains why: unlike `BigYearRibbon`,
-    // `.bars` here is deliberately content-sized rather than reserving
-    // `MAX_BAR_LANES` fixed tracks with `grid-template-rows` — a month row
-    // has only ~95px to divide, and a reserved bar strip leaves too little
-    // for the cell below, measured to squeeze every timed line down to
-    // 0.05px. Healthy is ~10px; 4px sits with margin on both sides of that
-    // gap without pinning to the exact pixel value.
+    // The cell's reading budget and the line's non-shrinking flex basis are
+    // separate guards. Healthy is ~10px; 4px sits with margin on both sides
+    // of the old near-zero collapse without pinning to an engine's exact
+    // font metrics.
     await page.goto(show('busy-day'));
     const line = page.locator('.mcell .timed').first();
     expect((await line.boundingBox())!.height).toBeGreaterThan(4);
+  });
+
+  test('a short month scrolls before timed lines collapse', async ({ page }) => {
+    await page.goto(show('busy-day'));
+    await page.locator('#app').evaluate((app) => {
+      app.style.height = '320px';
+    });
+
+    const grid = page.locator('.grid');
+    await expect.poll(() => grid.evaluate((el) => el.scrollHeight > el.clientHeight)).toBe(true);
+
+    const line = page.locator('.mcell .timed').first();
+    expect((await line.boundingBox())!.height).toBeGreaterThan(10);
+  });
+
+  test('the cell overflow label stays compact', async ({ page }) => {
+    await page.goto(show('busy-day'));
+    const more = page.locator('button.more');
+    await expect(more).toHaveText('+1 more');
+    expect(await more.evaluate((el) => getComputedStyle(el).fontSize)).toBe('10px');
   });
 });
 
