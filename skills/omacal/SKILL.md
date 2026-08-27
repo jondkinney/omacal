@@ -80,6 +80,12 @@ When showing the calendar to the user (not piping into a script):
   link (as a bare URL so it's clickable), "N guests" when more than the
   user. Omit "accepted" — the user's own yes is not news to them; do call
   out an *unanswered* invitation or a tentative.
+- Reading the `response` field: `"needsAction"` is a real unanswered
+  invitation — call it out. `"tentative"` is worth a mention. `"accepted"`
+  is not news. **`null` is not "unanswered"** — it means no RSVP applies
+  to the user at all, typically their own event or one without guests;
+  never flag it. (Field lesson, 2026-08-27: an agent read null as
+  unanswered and told an organizer to RSVP to their own meeting.)
 - All-day events go on one quiet line after the timed ones, never mixed in.
 - Name the timezone once, in the intro sentence, not per line.
 - Lead with what the user asked ("Next free slot is…", "Four things
