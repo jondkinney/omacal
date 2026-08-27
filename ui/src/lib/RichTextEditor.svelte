@@ -135,7 +135,56 @@
     insertTransferred(event.dataTransfer);
   }
 
-  function formatShortcut(event: KeyboardEvent) {
+  /** Turn the token immediately behind a collapsed caret into the same safe
+   * HTML `sync` would save, before the browser inserts its delimiter. Because
+   * the replacement has identical visible text and the selection is moved
+   * after its final node, Space/Enter lands outside the new anchor instead of
+   * extending it. A URL split across formatting nodes is left for blur/save —
+   * there is no single text token to replace without rewriting the selection. */
+  function autoLinkBeforeDelimiter(event: KeyboardEvent) {
+    if (event.isComposing || event.ctrlKey || event.metaKey || event.altKey) return;
+    if (event.key !== ' ' && event.key !== 'Enter') return;
+    if (!editor) return;
+
+    const selection = window.getSelection();
+    const caret = selection?.rangeCount ? selection.getRangeAt(0) : null;
+    if (!caret?.collapsed || !editor.contains(caret.commonAncestorContainer)) return;
+    if (!(caret.startContainer instanceof Text)) return;
+    const textNode = caret.startContainer;
+    if (textNode.parentElement?.closest('a')) return;
+
+    const before = textNode.data.slice(0, caret.startOffset);
+    const token = before.match(/\S+$/)?.[0];
+    if (!token) return;
+
+    // Start from textContent so characters such as `<` can never become HTML
+    // during detection. The sanitizer performs both conservative recognition
+    // and the final protocol allowlist.
+    const plain = document.createElement('span');
+    plain.textContent = token;
+    const linked = sanitizeDescriptionHtml(plain.innerHTML);
+    const template = document.createElement('template');
+    template.innerHTML = linked;
+    if (!template.content.querySelector('a')) return;
+
+    const replacement = document.createRange();
+    replacement.setStart(textNode, caret.startOffset - token.length);
+    replacement.setEnd(textNode, caret.startOffset);
+    replacement.deleteContents();
+    const last = template.content.lastChild;
+    if (!last) return;
+    replacement.insertNode(template.content);
+
+    const after = document.createRange();
+    after.setStartAfter(last);
+    after.collapse(true);
+    selection?.removeAllRanges();
+    selection?.addRange(after);
+    sync();
+  }
+
+  function editorKeydown(event: KeyboardEvent) {
+    autoLinkBeforeDelimiter(event);
     if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return;
     const key = event.key.toLowerCase();
     const command = { b: 'bold', i: 'italic', u: 'underline' }[key];
@@ -193,7 +242,7 @@
     oninput={sync}
     onpaste={paste}
     ondrop={drop}
-    onkeydown={formatShortcut}
+    onkeydown={editorKeydown}
   ></div>
 </div>
 

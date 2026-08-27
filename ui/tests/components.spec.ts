@@ -4040,6 +4040,36 @@ test.describe('EventForm', () => {
     expect(saved.fields.description).not.toContain('href="javascript:');
   });
 
+  test('Space and Enter link a completed safe URL immediately and leave the caret after it', async ({ page }) => {
+    await open(page, 'create');
+    const editor = page.getByLabel('Description', { exact: true });
+
+    await editor.fill('extremelabs.io/docs');
+    await editor.press('Space');
+    const domain = editor.getByRole('link', { name: 'extremelabs.io/docs' });
+    await expect(domain).toHaveAttribute('href', 'https://extremelabs.io/docs');
+    await page.keyboard.type('after');
+    await expect(domain).toHaveText('extremelabs.io/docs');
+    await expect(editor).toContainText('extremelabs.io/docs after');
+
+    await editor.fill('https://example.com/agenda');
+    await editor.press('Enter');
+    const explicit = editor.getByRole('link', { name: 'https://example.com/agenda' });
+    await expect(explicit).toHaveAttribute('href', 'https://example.com/agenda');
+    await page.keyboard.type('Next line');
+    await expect(explicit).toHaveText('https://example.com/agenda');
+    await expect(editor).toContainText('Next line');
+  });
+
+  test('Space does not link a domain-shaped fragment inside an unsafe scheme', async ({ page }) => {
+    await open(page, 'create');
+    const editor = page.getByLabel('Description', { exact: true });
+    await editor.fill('javascript:example.com');
+    await editor.press('Space');
+    await expect(editor.locator('a')).toHaveCount(0);
+    await expect(editor).toContainText('javascript:example.com ');
+  });
+
   test('dropped rich text is sanitised before it enters the editor', async ({ page }) => {
     await open(page, 'create');
     const editor = page.getByLabel('Description', { exact: true });
