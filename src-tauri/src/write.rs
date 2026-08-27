@@ -461,18 +461,13 @@ pub(crate) enum WeekdayCode {
 /// unbounded case. Internally tagged so malformed combinations (a date on an
 /// `after`, a count on an `on`) fail at the command boundary rather than being
 /// guessed at while building an RRULE.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum RepeatEnd {
+    #[default]
     Never,
     On { date: String },
     After { count: u32 },
-}
-
-impl Default for RepeatEnd {
-    fn default() -> Self {
-        Self::Never
-    }
 }
 
 impl WeekdayCode {
