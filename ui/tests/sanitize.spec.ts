@@ -164,6 +164,28 @@ test.describe('rich description HTML', () => {
     );
   });
 
+  test('saved HTML auto-links safe URL shapes and leaves active schemes inert', async ({ page }) => {
+    const clean = await inBrowser(page, 'sanitizeDescriptionHtml',
+      'See extremelabs.io/docs, www.example.com, https://example.org/a_(b), '
+      + 'or person@example.com. Never javascript:example.net, '
+      + 'data:text/html,example.edu, or vbscript:www.example.gov.',
+    );
+    expect(clean).toContain('<a href="https://extremelabs.io/docs">extremelabs.io/docs</a>,');
+    expect(clean).toContain('<a href="https://www.example.com">www.example.com</a>,');
+    expect(clean).toContain('<a href="https://example.org/a_(b)">https://example.org/a_(b)</a>,');
+    expect(clean).toContain('<a href="mailto:person@example.com">person@example.com</a>.');
+    expect(clean).toContain('javascript:example.net');
+    expect(clean).toContain('data:text/html,example.edu');
+    expect(clean).toContain('vbscript:www.example.gov');
+    expect(clean).not.toContain('href="javascript:');
+    expect(clean).not.toContain('href="data:');
+  });
+
+  test('auto-linking is stable when sanitised more than once', async ({ page }) => {
+    const once = await inBrowser(page, 'sanitizeDescriptionHtml', 'Visit https://example.com/docs');
+    expect(await inBrowser(page, 'sanitizeDescriptionHtml', once)).toBe(once);
+  });
+
   test('friendly link input supports domains and email but refuses active schemes', () => {
     expect(normalizeDescriptionHref('example.com/agenda')).toBe('https://example.com/agenda');
     expect(normalizeDescriptionHref('person@example.com')).toBe('mailto:person@example.com');

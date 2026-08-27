@@ -4,6 +4,7 @@
 
   let { value = $bindable('') }: { value: string } = $props();
 
+  let richtext = $state<HTMLDivElement>();
   let editor = $state<HTMLDivElement>();
   let linkInput = $state<HTMLInputElement>();
   let linking = $state(false);
@@ -23,6 +24,18 @@
 
   function sync() {
     if (editor) value = sanitizeDescriptionHtml(editor.innerHTML);
+  }
+
+  // `sync` keeps the bound value safe on every keystroke without moving the
+  // caret. Once focus leaves the whole editor, it is safe to reflect the
+  // auto-linked value back into the contenteditable as well. Moving from the
+  // document to the link row is internal and must preserve its saved range.
+  function settle(event: FocusEvent) {
+    if (!editor) return;
+    if (event.relatedTarget instanceof Node && richtext?.contains(event.relatedTarget)) return;
+    const safe = sanitizeDescriptionHtml(editor.innerHTML);
+    if (editor.innerHTML !== safe) editor.innerHTML = safe;
+    value = safe;
   }
 
   function run(command: string, argument?: string) {
@@ -121,19 +134,33 @@
     }
     insertTransferred(event.dataTransfer);
   }
+
+  function formatShortcut(event: KeyboardEvent) {
+    if (!(event.ctrlKey || event.metaKey) || event.altKey || event.shiftKey) return;
+    const key = event.key.toLowerCase();
+    const command = { b: 'bold', i: 'italic', u: 'underline' }[key];
+    if (command) {
+      event.preventDefault();
+      run(command);
+    } else if (key === 'k') {
+      event.preventDefault();
+      void startLink();
+    }
+  }
 </script>
 
-<div class="richtext" data-testid="description-editor">
+<div class="richtext" bind:this={richtext} data-testid="description-editor" onfocusout={settle}>
   <div class="toolbar" role="toolbar" aria-label="Description formatting">
-    <button type="button" aria-label="Bold" title="Bold"
+    <button type="button" aria-label="Bold" aria-keyshortcuts="Control+B Meta+B" title="Bold (Ctrl+B)"
       onmousedown={(e) => e.preventDefault()} onclick={() => run('bold')}><b>B</b></button>
-    <button type="button" aria-label="Italic" title="Italic"
+    <button type="button" aria-label="Italic" aria-keyshortcuts="Control+I Meta+I" title="Italic (Ctrl+I)"
       onmousedown={(e) => e.preventDefault()} onclick={() => run('italic')}><i>I</i></button>
-    <button type="button" aria-label="Underline" title="Underline"
+    <button type="button" aria-label="Underline" aria-keyshortcuts="Control+U Meta+U" title="Underline (Ctrl+U)"
       onmousedown={(e) => e.preventDefault()} onclick={() => run('underline')}><u>U</u></button>
     <button type="button" aria-label="Heading" title="Heading"
       onmousedown={(e) => e.preventDefault()} onclick={heading}><b>H</b></button>
-    <button type="button" class="linkbutton" aria-label="Link" title="Link (Ctrl+K)"
+    <button type="button" class="linkbutton" aria-label="Link"
+      aria-keyshortcuts="Control+K Meta+K" title="Link (Ctrl+K)"
       onmousedown={(e) => e.preventDefault()} onclick={startLink}>Link</button>
   </div>
   {#if linking}
@@ -166,12 +193,7 @@
     oninput={sync}
     onpaste={paste}
     ondrop={drop}
-    onkeydown={(e) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
-        e.preventDefault();
-        void startLink();
-      }
-    }}
+    onkeydown={formatShortcut}
   ></div>
 </div>
 
