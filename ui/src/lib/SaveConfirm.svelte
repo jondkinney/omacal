@@ -65,7 +65,7 @@
     <button type="button" class="ghost" data-choice onclick={() => onconfirm('all')}>
       {verb} and notify guests
     </button>
-    <button type="button" class="primary" data-choice data-initial-choice onclick={() => onconfirm('none')}>
+    <button type="button" class="primary" data-choice onclick={() => onconfirm('none')}>
       {verb} without notifying
     </button>
   {/snippet}

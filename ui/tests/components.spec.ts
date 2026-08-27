@@ -4141,8 +4141,10 @@ test.describe('EventForm', () => {
   test('Save without notifying sends none', async ({ page }) => {
     await open(page, 'with-guests');
     await page.getByRole('button', { name: 'Save', exact: true }).click();
-    await expect(page.getByRole('button', { name: 'Save without notifying' })).toBeFocused();
-    await page.keyboard.press('Enter');
+    await expect(
+      page.getByRole('dialog', { name: 'Save event' }).getByRole('button', { name: 'Cancel' }),
+    ).toBeFocused();
+    await page.getByRole('button', { name: 'Save without notifying' }).click();
 
     const [saved] = await saves(page);
     expect(saved.notify).toBe('none');
@@ -4275,13 +4277,14 @@ test.describe('DeleteConfirm', () => {
     expect(await confirms(page)).toEqual(['following']);
   });
 
-  test('a one-off focuses Cancel while Enter accepts the action', async ({ page }) => {
+  test('a one-off focuses Cancel and Enter cancels without deleting', async ({ page }) => {
     await open(page, 'one-off');
     await expect(
       page.getByRole('dialog', { name: 'Delete event' }).getByRole('button', { name: 'Cancel' }),
     ).toBeFocused();
     await page.keyboard.press('Enter');
-    expect(await confirms(page)).toEqual(['this']);
+    await expect(page.getByRole('dialog', { name: 'Delete event' })).toHaveCount(0);
+    expect(await confirms(page)).toEqual([]);
   });
 
   // Each radio bound to the scope it actually sends, one spec per option, so

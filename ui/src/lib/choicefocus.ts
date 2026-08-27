@@ -15,7 +15,8 @@ export function focusInitialChoice(root: ParentNode | null | undefined): void {
   if (!root) return;
   const initial = root.querySelector<HTMLElement>(
     '[data-initial-choice]:not(:disabled)',
-  ) ?? enabledChoices(root)[0];
+  ) ?? root.querySelector<HTMLElement>('[data-cancel]:not(:disabled)')
+    ?? enabledChoices(root)[0];
   initial?.focus();
 }
 

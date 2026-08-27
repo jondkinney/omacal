@@ -37,34 +37,7 @@
   // open rather than reused, so one placement is all this needs.
   let pos = $state<{ top: number; left: number }>({ top: 0, left: 0 });
 
-  /** A confirmation with only Cancel and one action has deliberately asymmetric
-   *  keyboard behavior: focus begins on the safe choice, Space activates that
-   *  focused button normally, and Enter accepts the action. Panels with scope
-   *  or notification choices keep their existing first-choice behavior. */
-  function cancelActionPair(root: HTMLElement | undefined) {
-    if (!root) return undefined;
-
-    const hasBodyChoices = [...root.querySelectorAll<HTMLElement>('[data-choice]:not(:disabled)')]
-      .some((choice) => !choice.closest('[data-confirm-actions]'));
-    if (hasBodyChoices) return undefined;
-
-    const buttons = [...root.querySelectorAll<HTMLButtonElement>(
-      '[data-confirm-actions] button:not(:disabled)',
-    )];
-    if (buttons.length !== 2) return undefined;
-
-    const cancel = buttons.find((button) => button.hasAttribute('data-cancel'));
-    const action = buttons.find((button) => button.hasAttribute('data-default-choice-action'));
-    return cancel && action ? { cancel, action } : undefined;
-  }
-
   function handlePanelKey(event: KeyboardEvent) {
-    const pair = cancelActionPair(panelEl);
-    if (pair && event.key === 'Enter') {
-      event.preventDefault();
-      pair.action.click();
-      return;
-    }
     if (panelEl) handleChoiceKey(panelEl, event);
   }
 
@@ -77,11 +50,10 @@
         viewport,
       );
     }
-    // A simple Cancel/Action question begins on its safe choice. More involved
-    // questions begin on their first/default scope or notification choice.
-    const pair = cancelActionPair(panelEl);
-    if (pair) pair.cancel.focus();
-    else focusInitialChoice(panelEl);
+    // A panel can nominate a meaningful scope or notification choice. Without
+    // one, focus falls back to Cancel: native Enter then activates exactly the
+    // button the user can see is focused, including the safe choice.
+    focusInitialChoice(panelEl);
   });
 
   // Escape closes this panel. `escapeCloses` carries the whole reason it is a
