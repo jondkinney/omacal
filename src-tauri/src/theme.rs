@@ -68,6 +68,7 @@ struct ColorsFile {
     background: Option<String>,
     foreground: Option<String>,
     muted: Option<String>,
+    light_foreground: Option<String>,
     blue: Option<String>,
 }
 
@@ -102,12 +103,19 @@ pub fn parse_colors(toml_src: &str) -> Option<Palette> {
         .map(format_hex)
         .unwrap_or_else(|| format_hex(text_bytes));
 
-    let muted = file
-        .muted
+    // Omarchy's `muted` is a quiet palette swatch, not necessarily readable
+    // text: Nord puts it at 1.69:1 against its background, and most stock
+    // themes make the same distinction. `light_foreground` is the secondary
+    // text tier and is the right first choice for the labels omacal publishes
+    // as `--muted`. Older themes may not have it, so retain the historical
+    // `muted`/derived chain and make whichever candidate wins readable.
+    let muted_bytes = file
+        .light_foreground
         .as_deref()
         .and_then(parse_hex)
-        .map(format_hex)
-        .unwrap_or_else(|| shift(text_bytes, if is_dark { -0.25 } else { 0.25 }));
+        .or_else(|| file.muted.as_deref().and_then(parse_hex))
+        .unwrap_or_else(|| shifted(text_bytes, if is_dark { -0.25 } else { 0.25 }));
+    let muted = format_hex(ensure_text_contrast(muted_bytes, bg_bytes, text_bytes));
 
     Some(Palette {
         bg: format_hex(bg_bytes),
@@ -158,14 +166,68 @@ fn luminance(bytes: [u8; 3]) -> f32 {
     (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0
 }
 
+/// WCAG relative luminance, for contrast between text and its surface.
+///
+/// This is deliberately separate from [`luminance`]: that function preserves
+/// the app's historical light/dark classification, while contrast ratios need
+/// the standard's linear-light conversion rather than a weighted sRGB byte.
+fn relative_luminance(bytes: [u8; 3]) -> f32 {
+    let channel = |byte: u8| {
+        let value = byte as f32 / 255.0;
+        if value <= 0.04045 {
+            value / 12.92
+        } else {
+            ((value + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * channel(bytes[0]) + 0.7152 * channel(bytes[1]) + 0.0722 * channel(bytes[2])
+}
+
+fn contrast_ratio(a: [u8; 3], b: [u8; 3]) -> f32 {
+    let a = relative_luminance(a);
+    let b = relative_luminance(b);
+    let (lighter, darker) = if a >= b { (a, b) } else { (b, a) };
+    (lighter + 0.05) / (darker + 0.05)
+}
+
+/// Moves a secondary-text candidate toward the theme's primary foreground
+/// only as far as needed to reach WCAG AA contrast for ordinary text.
+///
+/// Theme authors still choose the hue and starting weight. The guard matters
+/// for older and custom themes that do not carry Omarchy 4's readable
+/// `light_foreground`; if even the primary foreground is low-contrast, it is
+/// still the best theme-consistent answer available.
+fn ensure_text_contrast(candidate: [u8; 3], background: [u8; 3], text: [u8; 3]) -> [u8; 3] {
+    const MIN_RATIO: f32 = 4.5;
+    if contrast_ratio(candidate, background) >= MIN_RATIO {
+        return candidate;
+    }
+
+    for percent in 1..=100u16 {
+        let mixed = std::array::from_fn(|i| {
+            let candidate = candidate[i] as u16;
+            let text = text[i] as u16;
+            ((candidate * (100 - percent) + text * percent + 50) / 100) as u8
+        });
+        if contrast_ratio(mixed, background) >= MIN_RATIO {
+            return mixed;
+        }
+    }
+
+    text
+}
+
+fn shifted(bytes: [u8; 3], amount: f32) -> [u8; 3] {
+    std::array::from_fn(|i| {
+        let value = bytes[i] as f32;
+        (value + 255.0 * amount).clamp(0.0, 255.0) as u8
+    })
+}
+
 /// Lightens or darkens RGB by `amount` (-1.0..=1.0), used to derive a surface
 /// colour one step away from the background.
 fn shift(bytes: [u8; 3], amount: f32) -> String {
-    let ch = |i: usize| -> u8 {
-        let v = bytes[i] as f32;
-        (v + 255.0 * amount).clamp(0.0, 255.0) as u8
-    };
-    format!("#{:02x}{:02x}{:02x}", ch(0), ch(1), ch(2))
+    format_hex(shifted(bytes, amount))
 }
 
 /// Parses an Alacritty theme into a palette. Returns `None` when the file is
@@ -192,13 +254,13 @@ pub fn parse_alacritty(toml_src: &str) -> Option<Palette> {
         .map(format_hex)
         .unwrap_or_else(|| text.clone());
 
-    let muted = colors
+    let muted_bytes = colors
         .normal
         .as_ref()
         .and_then(|n| n.white.as_ref())
         .and_then(|white_str| parse_hex(white_str))
-        .map(format_hex)
-        .unwrap_or_else(|| shift(text_bytes, if is_dark { -0.25 } else { 0.25 }));
+        .unwrap_or_else(|| shifted(text_bytes, if is_dark { -0.25 } else { 0.25 }));
+    let muted = format_hex(ensure_text_contrast(muted_bytes, bg_bytes, text_bytes));
 
     Some(Palette {
         surface: shift(bg_bytes, if is_dark { 0.03 } else { -0.03 }),
@@ -446,6 +508,7 @@ foreground = "#c0caf5""##, "8 digits instead of 6"),
 mode = "dark"
 accent = "#7aa2f7"
 muted = "#414868"
+light_foreground = "#b4bee6"
 background = "#1a1b26"
 foreground = "#a9b1d6"
 blue = "#7aa2f7"
@@ -454,9 +517,47 @@ blue = "#7aa2f7"
         assert_eq!(p.bg, "#1a1b26");
         assert_eq!(p.text, "#a9b1d6");
         assert_eq!(p.accent, "#7aa2f7");
-        assert_eq!(p.muted, "#414868");
+        assert_eq!(p.muted, "#b4bee6");
         assert!(p.is_dark);
         assert_ne!(p.surface, p.bg, "surface should differ from bg");
+    }
+
+    /// Omarchy's quiet `muted` swatch is often deliberately close to the
+    /// background. It remains a valid palette colour, but it is not readable
+    /// secondary text; omacal's `--muted` is text, so the foreground tier wins.
+    #[test]
+    fn light_foreground_outranks_the_quiet_muted_swatch_for_secondary_text() {
+        let src = r##"
+mode = "dark"
+background = "#2e3440"
+foreground = "#d8dee9"
+muted = "#4c566a"
+light_foreground = "#adb5c4"
+"##;
+        let p = parse_colors(src).unwrap();
+        assert_eq!(p.muted, "#adb5c4");
+        assert!(contrast_ratio(parse_hex(&p.muted).unwrap(), parse_hex(&p.bg).unwrap()) >= 4.5);
+    }
+
+    /// Pre-Omarchy-4 and custom themes may have no `light_foreground`. Preserve
+    /// their muted hue, but move it toward their own foreground just enough to
+    /// make ordinary secondary labels readable.
+    #[test]
+    fn low_contrast_legacy_muted_text_is_lifted_to_wcag_aa() {
+        let src = r##"
+mode = "dark"
+background = "#2e3440"
+foreground = "#d8dee9"
+muted = "#4c566a"
+"##;
+        let p = parse_colors(src).unwrap();
+        assert_ne!(p.muted, "#4c566a");
+        assert!(
+            contrast_ratio(parse_hex(&p.muted).unwrap(), parse_hex(&p.bg).unwrap()) >= 4.5,
+            "secondary text resolved to {} on {}",
+            p.muted,
+            p.bg,
+        );
     }
 
     /// The author's `mode` outranks luminance — a deliberately dark-looking
@@ -492,7 +593,7 @@ blue = "#7aa2f7"
         .unwrap();
         std::fs::write(
             temp_dir.join("colors.toml"),
-            "mode = \"dark\"\naccent = \"#e0af68\"\nmuted = \"#414868\"\nbackground = \"#1a1b26\"\nforeground = \"#a9b1d6\"",
+            "mode = \"dark\"\naccent = \"#e0af68\"\nmuted = \"#414868\"\nlight_foreground = \"#b4bee6\"\nbackground = \"#1a1b26\"\nforeground = \"#a9b1d6\"",
         )
         .unwrap();
 
@@ -500,7 +601,7 @@ blue = "#7aa2f7"
         assert_eq!(p.bg, "#1a1b26");
         assert_eq!(p.text, "#a9b1d6");
         assert_eq!(p.accent, "#e0af68");
-        assert_eq!(p.muted, "#414868");
+        assert_eq!(p.muted, "#b4bee6");
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
