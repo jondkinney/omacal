@@ -164,8 +164,8 @@ modules:
       - install -Dm644 ${FLATPAK_ID}.metainfo.xml /app/share/metainfo/${FLATPAK_ID}.metainfo.xml
     sources:
       - type: file
-        url: https://github.com/x3me/omacal/releases/download/v0.7.0/omacal_0.7.0_amd64.deb
-        sha256: b2d04cd7fed32abb99651572e62750923c2b9fb4f37160c27c4131f7055b9fa3
+        url: https://github.com/x3me/omacal/releases/download/v0.7.1/omacal_0.7.1_amd64.deb
+        sha256: e60ccd02570275e2724aad076c2d255ec36e7fb66445223d6457a8851da015d9
         dest-filename: omacal.deb
         # flatpak-external-data-checker reads this and opens the version-bump
         # pull request by itself once the app is on Flathub. Until then,
