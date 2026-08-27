@@ -4,9 +4,12 @@
   import { weekStartDay } from './weekstartstore.svelte';
   import type { MonthPayload, UiEvent } from './api';
   import type { Rect } from './position';
+  import { cursorNamesEvent, type KeyboardCursor } from './keyboardnav';
+  import { MONTH_GRID_TIMED_LIMIT } from './filmstrip';
 
-  let { month, onopen, ondaypick, oncreate }: {
+  let { month, keyboardCursor = null, onopen, ondaypick, oncreate }: {
     month: MonthPayload;
+    keyboardCursor?: KeyboardCursor | null;
     /** Same contract as `WeekGrid`'s: an anchor rect plus the clicked event,
      *  handed straight to `EventPopover` via `placePopover`. */
     onopen: (event: UiEvent, rect: Rect) => void;
@@ -30,8 +33,8 @@
   const MAX_BAR_LANES = 3;
   // How many timed lines a cell shows before folding the rest into "+N more".
   // Matches `pack_lanes`'s own lane cap for bars — three is what a narrow
-  // cell has room for before a title stops being legible.
-  const MAX_LINES = 3;
+  // cell has room for before a title stops being legible. The value lives in
+  // `filmstrip.ts` because App's keyboard cursor must share this exact limit.
 
   // Written Monday-first and rotated, never rewritten per setting: one
   // spelling of the seven names, and `rotate` is tested on its own.
@@ -77,6 +80,14 @@
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
     oncreate(dayStartMs, { top: r.top, left: r.left, width: r.width, height: r.height });
   }
+
+  function isBarSelected(lane: { start_col: number; end_col: number }, event: UiEvent,
+                         cells: { start_ms: number }[]): boolean {
+    if (!keyboardCursor) return false;
+    const column = cells.findIndex((cell) => cell.start_ms === keyboardCursor.dayStartMs);
+    return column >= lane.start_col && column <= lane.end_col
+      && cursorNamesEvent(keyboardCursor, keyboardCursor.dayStartMs, event);
+  }
 </script>
 
 <div class="head">
@@ -89,10 +100,13 @@
       <div class="bars">
         {#each row.bars as lane (`${lane.idx}:${lane.lane}`)}
           {@const ev = row.bar_events[lane.idx]}
+          {@const keyboardSelected = isBarSelected(lane, ev, row.cells)}
           <button
             class="bar"
             class:cl={lane.cont_left}
             class:cr={lane.cont_right}
+            class:keyboard={keyboardSelected}
+            data-kbd-selected-event={keyboardSelected ? '' : undefined}
             style="
               grid-row:{lane.lane + 1};
               grid-column:{lane.start_col + 1} / {lane.end_col + 2};
@@ -116,7 +130,9 @@
           <!-- `data-start-ms` on every view's day element, uniformly: it is
                how App's paste finds the day under the mouse. -->
           <div class="mcell" class:out={!cell.in_month} class:today={cell.start_ms === todayStart}
-               data-start-ms={cell.start_ms}>
+               class:keyboard={keyboardCursor?.dayStartMs === cell.start_ms}
+               data-start-ms={cell.start_ms}
+               data-kbd-selected-day={keyboardCursor?.dayStartMs === cell.start_ms ? '' : undefined}>
             <!-- Empty cell space, as a real control — same reasoning as
                  `WeekGrid`'s own `.newhere`, including the `tabindex="-1"`:
                  42 invisible tab stops per month would be noise, and `n`
@@ -130,16 +146,21 @@
             <button class="num" onclick={() => pickDay(cell.start_ms)}>
               {new Date(cell.start_ms).getDate()}
             </button>
-            {#each cell.timed.slice(0, MAX_LINES) as ev}
+            {#each cell.timed.slice(0, MONTH_GRID_TIMED_LIMIT) as ev}
               <button
                 class="timed"
+                class:keyboard={keyboardCursor
+                  ? cursorNamesEvent(keyboardCursor, cell.start_ms, ev)
+                  : false}
+                data-kbd-selected-event={keyboardCursor
+                  && cursorNamesEvent(keyboardCursor, cell.start_ms, ev) ? '' : undefined}
                 style="--cal:{ev.color}"
                 onclick={(e) => openEvent(ev, e)}
               ><i class="dot" style="background:{ev.color}"></i>{ev.title}</button>
             {/each}
-            {#if cell.timed.length > MAX_LINES}
+            {#if cell.timed.length > MONTH_GRID_TIMED_LIMIT}
               <button class="more" onclick={() => pickDay(cell.start_ms)}>
-                +{cell.timed.length - MAX_LINES} more
+                +{cell.timed.length - MONTH_GRID_TIMED_LIMIT} more
               </button>
             {/if}
           </div>
@@ -175,6 +196,7 @@
          color: color-mix(in srgb, var(--cal) 60%, var(--text)); }
   .bar.cl { border-top-left-radius: 0; border-bottom-left-radius: 0; border-left-style: dashed; }
   .bar.cr { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+  .bar.keyboard { outline: 2px solid var(--accent); outline-offset: 1px; }
 
   /* Date + three timed lines + the cell's `+N more`, including their gaps and
      padding. A row with all-day lanes adds those above this budget instead of
@@ -201,6 +223,8 @@
 
   .mcell:first-child { border-left: 0; }
   .mcell.today { background: var(--today-tint); border-radius: 6px; }
+  .mcell.keyboard { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+                    border-radius: 6px; }
   .mcell.out .num { color: var(--muted); opacity: .6; }
   .mcell.out .timed { opacity: .55; }
 
@@ -218,6 +242,8 @@
            font-size: 10.5px; color: var(--text); white-space: nowrap; overflow: hidden;
            text-overflow: ellipsis; position: relative; z-index: 1; flex: none; }
   .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+  .timed.keyboard { border-radius: 3px;
+                    outline: 2px solid var(--accent); outline-offset: 1px; }
 
   .more { font: inherit; font-size: 10px; line-height: 1.2; color: var(--muted); opacity: .8;
           padding: 0; background: transparent; border: 0; text-align: left;

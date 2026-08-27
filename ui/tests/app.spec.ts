@@ -4,7 +4,9 @@
 // stubbed IPC layer (tests/harness/tauri.ts).
 
 import { test, expect, type Page } from '@playwright/test';
-import { CHORDS, SHORTCUT_LIST, SHORTCUT_TEXT } from '../src/lib/shortcuts';
+import {
+  CHORDS, EVENT_SHORTCUT_LIST, SHORTCUT_LIST, SHORTCUT_TEXT,
+} from '../src/lib/shortcuts';
 import {
   APP_MON, APP_NOW, weekLabel,
   APP_SOLO_SERIES_ID,
@@ -1118,6 +1120,24 @@ test.describe('App', () => {
     // Both halves asserted, because a form that took the whole instant from the
     // anchor would open at midnight and look almost right.
     await expect(newForm(page).getByLabel('Start', { exact: true })).toHaveValue('12:30');
+  });
+
+  test('n is consumed instead of becoming the new event title', async ({ page }) => {
+    await writable(page);
+    // WebKitGTK applies a keydown's default insertion after the shortcut has
+    // mounted and focused the title field. A synthetic cancelable event makes
+    // that contract observable in Playwright; the empty title confirms the
+    // form itself still opens cleanly.
+    const prevented = await page.evaluate(() => {
+      const event = new KeyboardEvent('keydown', {
+        key: 'n', cancelable: true, bubbles: true,
+      });
+      window.dispatchEvent(event);
+      return event.defaultPrevented;
+    });
+    expect(prevented, 'an unconsumed n is typed into the title it just focused').toBe(true);
+    await expect(newForm(page)).toBeVisible();
+    await expect(newForm(page).getByLabel('Title', { exact: true })).toHaveValue('');
   });
 
   test('clicking empty grid space opens the form at that time', async ({ page }) => {
@@ -3308,6 +3328,153 @@ test.describe('App: the clock format', () => {
  * What is left for a spec is the other end — that the sheet prints every row,
  * and that the keys it prints are the keys that work.
  */
+test.describe('App: keyboard event navigation', () => {
+  test.beforeEach(async ({ page }) => {
+    // Before the first event, so the ordinary traversal specs still start at
+    // the top. The late-today spec below advances this same clock to exercise
+    // the time-aware entrance separately.
+    await page.clock.setFixedTime(APP_MON + 8 * 3_600_000);
+    await page.goto(app('keyboard-navigation'));
+    // Gate on App having mounted before asserting the cursor's absence. An
+    // empty pre-mount document also has no cursor, but does not yet have the
+    // window key handler the next line of each test needs.
+    await expect(page.locator('.vswitch button.active')).toBeVisible();
+    await expect(page.locator('[data-kbd-selected-day]')).toHaveCount(0);
+    await expect(page.locator('[data-kbd-selected-event]')).toHaveCount(0);
+    await expect(page.locator('.kbd-status')).toHaveCount(0);
+  });
+
+  const selectedTitle = (page: Page) =>
+    page.locator('[data-kbd-selected-event]');
+
+  test('the cursor appears only after keyboard navigation begins', async ({ page }) => {
+    await page.keyboard.press('w');
+    await expect(page.locator('[data-kbd-selected-day]')).toBeVisible();
+    await expect(page.locator('.kbd-status')).toContainText('Selected Tuesday');
+  });
+
+  test('w and b select adjacent days', async ({ page }) => {
+    await page.keyboard.press('w');
+    await expect(page.locator('[data-kbd-selected-day]'))
+      .toHaveAttribute('data-start-ms', String(APP_MON + 24 * 3_600_000));
+
+    await page.keyboard.press('b');
+    await expect(page.locator('[data-kbd-selected-day]'))
+      .toHaveAttribute('data-start-ms', String(APP_MON));
+  });
+
+  test('j and k cross day boundaries in event order', async ({ page }) => {
+    await page.keyboard.press('j');
+    await expect(selectedTitle(page)).toContainText('Plan the launch');
+    await page.keyboard.press('j');
+    await expect(selectedTitle(page)).toContainText('Review notes');
+    await page.keyboard.press('j');
+    await expect(selectedTitle(page)).toContainText('Tuesday brief');
+    await expect(page.locator('[data-kbd-selected-day]'))
+      .toHaveAttribute('data-start-ms', String(APP_MON + 24 * 3_600_000));
+
+    await page.keyboard.press('k');
+    await expect(selectedTitle(page)).toContainText('Review notes');
+    await page.keyboard.press('k');
+    await expect(selectedTitle(page)).toContainText('Plan the launch');
+  });
+
+  test('entering a day through its first all-day item reveals its first timed event one hour down', async ({ page }) => {
+    await page.keyboard.press('w');
+    await page.keyboard.press('j');
+    await expect(selectedTitle(page)).toContainText('Tuesday brief');
+    await page.keyboard.press('k');
+    await expect(selectedTitle(page)).toContainText('Review notes');
+    await page.keyboard.press('k');
+    await expect(selectedTitle(page)).toContainText('Plan the launch');
+
+    const body = page.getByTestId('week-body');
+    await body.evaluate((el) => { el.scrollTop = el.scrollHeight; });
+    expect(await body.evaluate((el) => el.scrollTop)).toBeGreaterThan(0);
+
+    await page.keyboard.press('k');
+    await expect(selectedTitle(page)).toContainText('All-day planning');
+    await expect.poll(() => page.evaluate(() => {
+      const viewport = document.querySelector<HTMLElement>('[data-testid="week-body"]')!;
+      const firstTimed = [...viewport.querySelectorAll<HTMLElement>('.ev')]
+        .find((event) => event.textContent?.includes('Plan the launch'))!;
+      const oneHour = viewport.scrollHeight / 24;
+      return Math.abs(firstTimed.getBoundingClientRect().top
+        - viewport.getBoundingClientRect().top - oneHour);
+    })).toBeLessThan(4);
+  });
+
+  test('j late today begins with tomorrow instead of replaying past events', async ({ page }) => {
+    await page.clock.setFixedTime(APP_MON + 22 * 3_600_000);
+    // This row is still visibly part of today, but has no clock position. It
+    // must not keep the time-aware entrance on today after every timed event
+    // has ended.
+    await expect(page.getByText('All-day planning', { exact: true })).toBeVisible();
+
+    await page.keyboard.press('j');
+    await expect(selectedTitle(page)).toContainText('Tuesday brief');
+    await expect(page.locator('[data-kbd-selected-day]'))
+      .toHaveAttribute('data-start-ms', String(APP_MON + 24 * 3_600_000));
+  });
+
+  test('j on a future day starts with that day’s first event', async ({ page }) => {
+    for (let i = 0; i < 3; i++) await page.keyboard.press('w');
+
+    await page.keyboard.press('j');
+    await expect(selectedTitle(page)).toContainText('Off-site');
+    await expect(page.locator('[data-kbd-selected-day]'))
+      .toHaveAttribute('data-start-ms', String(APP_MON + 3 * 24 * 3_600_000));
+  });
+
+  test('k from a selected day begins at its last event, then crosses backward', async ({ page }) => {
+    await page.keyboard.press('w');
+    await page.keyboard.press('k');
+    await expect(selectedTitle(page)).toContainText('Tuesday brief');
+    await page.keyboard.press('k');
+    await expect(selectedTitle(page)).toContainText('Review notes');
+  });
+
+  test('j continues into the first event of the next loaded period', async ({ page }) => {
+    for (let i = 0; i < 5; i++) await page.keyboard.press('j');
+    await expect(selectedTitle(page)).toContainText('All-day planning');
+    await expect(page.locator('[data-kbd-selected-day]'))
+      .toHaveAttribute('data-start-ms', String(APP_MON + WEEK));
+  });
+
+  test('o and Enter open details, whose own keyboard interaction stays native', async ({ page }) => {
+    await page.keyboard.press('j');
+    await page.keyboard.press('o');
+
+    const dialog = page.getByRole('dialog', { name: 'Plan the launch' });
+    await expect(dialog).toBeVisible();
+    await expect(dialog).toBeFocused();
+
+    const join = dialog.getByRole('link', { name: 'Join video call' });
+    await join.focus();
+    await page.keyboard.press('Enter');
+    await expect.poll(() => page.evaluate(() =>
+      window.__harness.calls.filter((call) => call.cmd === 'open_conference').length,
+    )).toBe(1);
+
+    // `j` belongs to the dialog while its focus is inside: it must not move
+    // the calendar cursor behind the still-open details.
+    await page.keyboard.press('j');
+    await expect(selectedTitle(page)).toContainText('Plan the launch');
+
+    // A disabled control can briefly leave focus on body. The still-open
+    // dialog owns bare keys even then; `n` must not create a form behind it.
+    await page.evaluate(() => (document.activeElement as HTMLElement)?.blur());
+    await page.keyboard.press('n');
+    await expect(page.getByRole('dialog', { name: 'New event' })).toHaveCount(0);
+    await expect(dialog).toBeVisible();
+
+    await page.keyboard.press('Escape');
+    await expect(dialog).toHaveCount(0);
+    await page.keyboard.press('Enter');
+    await expect(page.getByRole('dialog', { name: 'Plan the launch' })).toBeVisible();
+  });
+});
+
 test.describe('App: the keyboard sheet', () => {
   test.beforeEach(async ({ page }) => {
     await page.clock.setFixedTime(APP_NOW);
@@ -3380,7 +3547,7 @@ test.describe('App: the keyboard sheet', () => {
 
     for (const s of SHORTCUT_LIST) {
       await expect(
-        sheet(page).locator('dt', { hasText: literal(s.label) }),
+        sheet(page).locator('[data-shortcut-scope="calendar"] dt', { hasText: literal(s.label) }),
         `${s.label} (${s.id}) is bound but not listed`,
       ).toHaveCount(1);
       await expect(
@@ -3393,6 +3560,17 @@ test.describe('App: the keyboard sheet', () => {
         sheet(page).locator('dt', { hasText: literal(c.label) }),
       ).toHaveCount(1);
       await expect(sheet(page).locator('.what', { hasText: literal(c.text) })).toHaveCount(1);
+    }
+
+    for (const s of EVENT_SHORTCUT_LIST) {
+      await expect(
+        sheet(page).locator('[data-shortcut-scope="event"] dt', { hasText: literal(s.label) }),
+        `${s.label} (${s.id}) is scoped to event details but not listed`,
+      ).toHaveCount(1);
+      await expect(
+        sheet(page).locator('.what', { hasText: literal(s.text) }),
+        `${s.id} is listed under a key but not described`,
+      ).toHaveCount(1);
     }
   });
 

@@ -3,9 +3,12 @@
   import type { Lane, UiEvent } from './api';
   import type { Rect } from './position';
   import { gutterWidth } from './secondzone.svelte';
+  import { cursorNamesEvent, type KeyboardCursor } from './keyboardnav';
 
-  let { lanes, events, overflow, columns = 7, onopen }:
+  let { lanes, events, overflow, columns = 7, dayStarts = [], keyboardCursor = null, onopen }:
     { lanes: Lane[]; events: UiEvent[]; overflow: number[]; columns?: number;
+      dayStarts?: number[];
+      keyboardCursor?: KeyboardCursor | null;
       /** Same contract as `EventBlock`'s, and wired to the same
        *  `WeekGrid.openPopover`. Required rather than optional: every
        *  `is_all_day` event is routed here by `commands::assemble_week`, so a
@@ -28,6 +31,13 @@
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
     onopen(event, { top: r.top, left: r.left, width: r.width, height: r.height });
   }
+
+  function isKeyboardSelected(lane: Lane, event: UiEvent): boolean {
+    if (!keyboardCursor) return false;
+    const column = dayStarts.indexOf(keyboardCursor.dayStartMs);
+    return column >= lane.start_col && column <= lane.end_col
+      && cursorNamesEvent(keyboardCursor, keyboardCursor.dayStartMs, event);
+  }
 </script>
 
 {#if lanes.length || overflow.length}
@@ -36,10 +46,13 @@
     <div class="rows" style="--cols:{columns}">
       {#each lanes as lane}
         {@const ev = events[lane.idx]}
+        {@const keyboardSelected = isKeyboardSelected(lane, ev)}
         <button
           class="chip"
           class:cl={lane.cont_left}
           class:cr={lane.cont_right}
+          class:keyboard={keyboardSelected}
+          data-kbd-selected-event={keyboardSelected ? '' : undefined}
           style="
             grid-row:{lane.lane + 1};
             grid-column:{lane.start_col + 1} / {lane.end_col + 2};
@@ -107,6 +120,7 @@
   /* Flat edges mark a span continuing beyond this week. */
   .chip.cl { border-top-left-radius: 0; border-bottom-left-radius: 0; border-left-style: dashed; }
   .chip.cr { border-top-right-radius: 0; border-bottom-right-radius: 0; }
+  .chip.keyboard { outline: 2px solid var(--accent); outline-offset: 1px; }
 
   .more { font-size: 10px; color: var(--muted); opacity: .7; padding: 2px 4px; }
 </style>

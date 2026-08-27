@@ -28,6 +28,9 @@ export type Shortcut = {
    *  is what makes `H` step like `h` (the old `switch` did the same), and it
    *  leaves digits and punctuation alone: `'?'.toLowerCase()` is `'?'`. */
   key: string;
+  /** Other `KeyboardEvent.key` spellings for the same action. Kept off the
+   * printed label so `Enter` can share `o` without becoming a duplicate row. */
+  aliases?: readonly string[];
   /** What the sheet prints in the key column. Usually the key itself; spelled
    *  out where the character is not what you press (`⇧/` would be a lie about
    *  a layout we do not know). */
@@ -40,8 +43,9 @@ export type Shortcut = {
    *  than in a second map beside it — that map was `KEY_VIEW`, and a table
    *  that lists a key without saying what it does is half the drift back. */
   view?: View;
-  /** Whether the handler must consume the keystroke. `/` and `q` protect the
-   * fields they mount and focus in WebKitGTK. */
+  /** Whether the handler must consume the keystroke. `/`, `n`, and `q`
+   * protect the fields they mount and focus in WebKitGTK; open protects its
+   * calendar surface. */
   consumes?: true;
 };
 
@@ -56,10 +60,20 @@ export const SHORTCUTS = [
     hint: 'a day, a week, a month — whatever the view shows' },
   { id: 'next',     key: 'l', label: 'l', group: 'Getting around',
     hint: 'a day, a week, a month — whatever the view shows' },
+  { id: 'prevDay',  key: 'b', label: 'b', group: 'Getting around',
+    hint: 'select the previous day' },
+  { id: 'nextDay',  key: 'w', label: 'w', group: 'Getting around',
+    hint: 'select the next day' },
+  { id: 'prevEvent', key: 'k', label: 'k', group: 'Getting around',
+    hint: 'up, then into the previous day' },
+  { id: 'nextEvent', key: 'j', label: 'j', group: 'Getting around',
+    hint: 'down, then into the next day' },
   { id: 'today',    key: 't', label: 't', group: 'Getting around' },
   { id: 'search',   key: '/', label: '/', group: 'Getting around', consumes: true },
 
-  { id: 'create',   key: 'n', label: 'n', group: 'Doing things' },
+  { id: 'openSelected', key: 'o', aliases: ['enter'], label: 'o / Enter',
+    group: 'Doing things', consumes: true },
+  { id: 'create',   key: 'n', label: 'n', group: 'Doing things', consumes: true },
   { id: 'quickCreate', key: 'q', label: 'q', group: 'Doing things', consumes: true },
   { id: 'list',     key: 'f', label: 'f', group: 'Doing things' },
   { id: 'help',     key: '?', label: '?', group: 'Doing things' },
@@ -88,9 +102,14 @@ export const SHORTCUT_TEXT: Record<ShortcutId, string> = {
   bigyear: 'Big Year',
   prev: 'Back one step',
   next: 'Forward one step',
+  prevDay: 'Previous day',
+  nextDay: 'Next day',
+  prevEvent: 'Previous event',
+  nextEvent: 'Next event',
   today: 'Back to today',
   search: 'Search',
   quickCreate: 'Quick add from natural language',
+  openSelected: 'Open the selected event',
   create: 'New event',
   list: 'Switch between the grid and the list',
   help: 'This list',
@@ -124,6 +143,32 @@ export const CHORDS: { label: string; text: string; hint?: string }[] = [
   { label: `${MOD_LABEL} V`, text: 'Paste as a new event',
     hint: 'opens the form on the day you are looking at, to fine-tune first' },
 ];
+
+/** Bare keys that belong to an open event rather than to the calendar.
+ *
+ * Kept out of `SHORTCUTS` because `App` deliberately ignores every key whose
+ * target is inside a dialog. `EventPopover` dispatches this table itself, and
+ * the shortcut sheet renders these same rows, preserving the binding-and-docs
+ * invariant without making `n` both "new event" and "RSVP no" globally. */
+export type EventShortcut = {
+  id: string;
+  key: string;
+  label: string;
+  text: string;
+};
+
+export const EVENT_SHORTCUTS = [
+  { id: 'edit',   key: 'e',     label: 'e',     text: 'Edit event' },
+  { id: 'delete', key: 'd',     label: 'd',     text: 'Delete event' },
+  { id: 'yes',    key: 'y',     label: 'y',     text: 'RSVP yes' },
+  { id: 'maybe',  key: 'm',     label: 'm',     text: 'RSVP maybe' },
+  { id: 'no',     key: 'n',     label: 'n',     text: 'RSVP no' },
+  { id: 'join',   key: 'enter', label: 'Enter', text: 'Join meeting' },
+] as const satisfies readonly EventShortcut[];
+
+export type EventShortcutId = (typeof EVENT_SHORTCUTS)[number]['id'];
+export const EVENT_SHORTCUT_LIST: readonly (EventShortcut & { id: EventShortcutId })[] =
+  EVENT_SHORTCUTS;
 
 /** The table in the order the sheet draws it. A group with no shortcuts is
  *  dropped rather than drawn empty, so `SHORTCUT_GROUPS` can name a heading

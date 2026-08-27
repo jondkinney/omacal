@@ -2131,6 +2131,91 @@ test.describe('EventPopover', () => {
       .toBe('all');
   });
 
+  test('e edits and d deletes an event the user can change', async ({ page }) => {
+    await page.goto(show('editable'));
+    await expect(page.locator('.pop')).toBeFocused();
+
+    await page.keyboard.press('e');
+    expect(await page.evaluate(() => (window as any).__lastEdit)).toEqual({ edited: true });
+    expect(await page.evaluate(() => (window as any).__lastDelete)).toBeNull();
+
+    await page.keyboard.press('d');
+    expect(await page.evaluate(() => (window as any).__lastDelete)).toEqual({ deleted: true });
+  });
+
+  test('edit and delete keys do nothing when the event is read-only', async ({ page }) => {
+    await page.goto(show('standup'));
+    await expect(page.locator('.pop')).toBeFocused();
+
+    await page.keyboard.press('e');
+    await page.keyboard.press('d');
+    expect(await page.evaluate(() => (window as any).__lastEdit)).toBeNull();
+    expect(await page.evaluate(() => (window as any).__lastDelete)).toBeNull();
+  });
+
+  test('y, m and n answer Yes, Maybe and No', async ({ page }) => {
+    for (const [key, response] of [
+      ['y', 'accepted'],
+      ['m', 'tentative'],
+      ['n', 'declined'],
+    ] as const) {
+      await page.goto(show('standup'));
+      await expect(page.locator('.pop')).toBeFocused();
+      await page.keyboard.press(key);
+      await expect.poll(() => page.evaluate(() => (window as any).__lastRespondCall?.response))
+        .toBe(response);
+    }
+  });
+
+  test('an RSVP key on a recurring event opens the existing scope choice', async ({ page }) => {
+    await page.goto(show('recurring'));
+    await expect(page.locator('.pop')).toBeFocused();
+
+    await page.keyboard.press('n');
+    await expect(page.locator('.scope')).toBeVisible();
+    expect(await page.evaluate(() => (window as any).__lastRespondCall ?? null)).toBeNull();
+  });
+
+  test('RSVP keys do nothing when the event cannot be answered', async ({ page }) => {
+    await page.goto(show('readonly'));
+    await expect(page.locator('.pop')).toBeFocused();
+
+    await page.keyboard.press('y');
+    await page.keyboard.press('m');
+    await page.keyboard.press('n');
+    expect(await page.evaluate(() => (window as any).__lastRespondCall ?? null)).toBeNull();
+  });
+
+  test('Enter joins the meeting when the panel itself has focus', async ({ page }) => {
+    await page.goto(show('location-holds-a-real-zoom-link'));
+    await expect(page.locator('.pop')).toBeFocused();
+
+    await page.keyboard.press('Enter');
+    const calls = await page.evaluate(() => (window as any).__harness.calls);
+    expect(calls.filter((c: any) => c.cmd === 'open_conference')).toEqual([
+      expect.objectContaining({ args: { id: 64 } }),
+    ]);
+  });
+
+  test('Enter keeps the focused control native instead of joining twice', async ({ page }) => {
+    await page.goto(show('location-holds-a-real-zoom-link'));
+    const join = page.getByRole('link', { name: 'Join video call' });
+    await join.focus();
+
+    await page.keyboard.press('Enter');
+    const calls = await page.evaluate(() => (window as any).__harness.calls);
+    expect(calls.filter((c: any) => c.cmd === 'open_conference')).toHaveLength(1);
+  });
+
+  test('Enter does nothing when the event has no meeting', async ({ page }) => {
+    await page.goto(show('standup'));
+    await expect(page.locator('.pop')).toBeFocused();
+
+    await page.keyboard.press('Enter');
+    const calls = await page.evaluate(() => (window as any).__harness.calls);
+    expect(calls.filter((c: any) => c.cmd === 'open_conference')).toHaveLength(0);
+  });
+
   test('a description containing markup is shown as text', async ({ page }) => {
     await page.goto(show('nasty-description'));
     await expect(page.locator('.desc')).toContainText('<script>alert(1)</script>');

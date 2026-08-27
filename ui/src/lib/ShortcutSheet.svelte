@@ -1,7 +1,9 @@
 <!-- ui/src/lib/ShortcutSheet.svelte -->
 <script lang="ts">
   import { escapeCloses } from './dismiss.svelte';
-  import { CHORDS, groupedShortcuts, SHORTCUT_TEXT } from './shortcuts';
+  import {
+    CHORDS, EVENT_SHORTCUT_LIST, groupedShortcuts, SHORTCUT_TEXT,
+  } from './shortcuts';
 
   let { onclose }: { onclose: () => void } = $props();
 
@@ -24,7 +26,7 @@
 
   {#each groups as g (g.group)}
     <h3>{g.group}</h3>
-    <dl>
+    <dl data-shortcut-scope="calendar">
       {#each g.items as s (s.id)}
         <!-- `<kbd>` is the element for this and it is not decoration: a
              screen reader announces it as a key rather than reading the
@@ -53,6 +55,14 @@
       {/if}
     </dl>
   {/each}
+
+  <h3>Event details</h3>
+  <dl data-shortcut-scope="event">
+    {#each EVENT_SHORTCUT_LIST as s (s.id)}
+      <dt><kbd>{s.label}</kbd></dt>
+      <dd><span class="what">{s.text}</span></dd>
+    {/each}
+  </dl>
 
   <p class="foot">Escape closes this.</p>
 </div>

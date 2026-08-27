@@ -32,13 +32,20 @@ import type { Lane, MonthPayload, UiEvent, WeekPayload } from './api';
 export const LISTABLE_VIEWS = ['day', 'week', 'month'] as const;
 export type ListableView = (typeof LISTABLE_VIEWS)[number];
 
+/** Month's timed-event reading budget. Shared with keyboard navigation so a
+ * cursor can never name a row the grid has already folded into `+N more`. */
+export const MONTH_GRID_TIMED_LIMIT = 3;
+
 export function listable(view: string): view is ListableView {
   return (LISTABLE_VIEWS as readonly string[]).includes(view);
 }
 
-/** One day of a list: the day it is, and every event on it in draw order.
- *  Only days that carry something are ever built — see `daysFromWeek`. */
-export type ListDay = { startMs: number; events: UiEvent[] };
+/** One day of a period: its exact display-zone interval, and every event on it in draw order.
+ * `allDaysFrom*` retains blank days for keyboard navigation; `daysFrom*`
+ * removes them for the filmstrip's ordinary rendering. `endMs` is carried
+ * from the backend rather than guessed as 24 hours so navigation still knows
+ * which day contains the current instant across DST and differing zones. */
+export type ListDay = { startMs: number; endMs: number; events: UiEvent[] };
 
 /**
  * The all-day events of one lane-packed row, grouped by the column they cover.
@@ -107,11 +114,18 @@ function rowsForDay(allDay: UiEvent[], timed: UiEvent[]): UiEvent[] {
  * that changes per view is one nobody can predict, and the gap in a week is
  * visible from the dates themselves.
  */
-export function daysFromWeek(week: WeekPayload): ListDay[] {
+export function allDaysFromWeek(week: WeekPayload): ListDay[] {
   const allDay = allDayByColumn(week.all_day, week.all_day_events, week.days.length);
   return week.days
-    .map((d, i) => ({ startMs: d.start_ms, events: rowsForDay(allDay[i], d.events) }))
-    .filter((d) => d.events.length > 0);
+    .map((d, i) => ({
+      startMs: d.start_ms,
+      endMs: d.end_ms,
+      events: rowsForDay(allDay[i], d.events),
+    }));
+}
+
+export function daysFromWeek(week: WeekPayload): ListDay[] {
+  return allDaysFromWeek(week).filter((d) => d.events.length > 0);
 }
 
 /**
@@ -126,14 +140,18 @@ export function daysFromWeek(week: WeekPayload): ListDay[] {
  * Each row is lane-packed independently by `assemble_month`, so a bar crossing
  * a row boundary is two segments and each row places its own half.
  */
-export function daysFromMonth(month: MonthPayload): ListDay[] {
+export function allDaysFromMonth(month: MonthPayload): ListDay[] {
   const out: ListDay[] = [];
   for (const row of month.rows) {
     const allDay = allDayByColumn(row.bars, row.bar_events, row.cells.length);
     row.cells.forEach((cell, i) => {
       const events = rowsForDay(allDay[i], cell.timed);
-      if (events.length > 0) out.push({ startMs: cell.start_ms, events });
+      out.push({ startMs: cell.start_ms, endMs: cell.end_ms, events });
     });
   }
   return out;
+}
+
+export function daysFromMonth(month: MonthPayload): ListDay[] {
+  return allDaysFromMonth(month).filter((d) => d.events.length > 0);
 }

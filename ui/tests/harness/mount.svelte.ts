@@ -320,12 +320,20 @@ if (name === 'App') {
       // closes it" would have nothing to observe: the fixture's own
       // `onclose` is a no-op, since it can't know about this harness.
       (window as any).__lastCopy = null;
+      (window as any).__lastEdit = null;
+      (window as any).__lastDelete = null;
       let app: object;
       app = mount(EventPopover, {
         target,
         props: {
           ...props,
           onclose: () => unmount(app),
+          onedit: () => {
+            (window as any).__lastEdit = { edited: true };
+          },
+          ondelete: () => {
+            (window as any).__lastDelete = { deleted: true };
+          },
           oncopy: () => {
             (window as any).__lastCopy = { copied: true };
           },
