@@ -467,7 +467,20 @@ pub async fn respond_to_event(
     scope: String,
     occurrence_start_ms: i64,
 ) -> Result<EventDetail, String> {
-    respond_to_event_impl(&state, id, &response, &scope, occurrence_start_ms)
+    respond_event_body(&state, id, &response, &scope, occurrence_start_ms).await
+}
+
+/// The whole of `respond_to_event` minus the Tauri `State` wrapper — see
+/// [`create_event_body`]. `respond_to_event_impl` already sanitizes its own
+/// errors, so this adds only the widget refresh.
+pub(crate) async fn respond_event_body(
+    state: &AppState,
+    id: i64,
+    response: &str,
+    scope: &str,
+    occurrence_start_ms: i64,
+) -> Result<EventDetail, String> {
+    respond_to_event_impl(state, id, response, scope, occurrence_start_ms)
         .await
         .inspect(|_| crate::upcoming::refresh_soon(state.pool.clone(), state.demo))
 }
@@ -740,7 +753,22 @@ pub async fn create_event(
     fields: crate::write::EventInput,
     send_updates: String,
 ) -> Result<EventDetail, String> {
-    create_impl(&state, calendar_id, crate::write::fields_from_input(fields), &send_updates)
+    create_event_body(&state, calendar_id, fields, &send_updates).await
+}
+
+/// The whole of `create_event` minus the Tauri `State` wrapper — guards,
+/// sanitizer and the widget refresh included. The IPC surface (`ipc.rs`)
+/// executes through this exact function, which is the CLI-writes spec's §6
+/// made structural: there is one code path from any surface to any provider,
+/// so an agent's create is indistinguishable from the form's from every seat
+/// in the house.
+pub(crate) async fn create_event_body(
+    state: &AppState,
+    calendar_id: i64,
+    fields: crate::write::EventInput,
+    send_updates: &str,
+) -> Result<EventDetail, String> {
+    create_impl(state, calendar_id, crate::write::fields_from_input(fields), send_updates)
         .await
         .map_err(|e| crate::errors::user_facing(&e))
         .inspect(|_| crate::upcoming::refresh_soon(state.pool.clone(), state.demo))
@@ -1253,13 +1281,27 @@ pub async fn update_event(
     fields: crate::write::EventInput,
     send_updates: String,
 ) -> Result<EventDetail, String> {
+    update_event_body(&state, id, &scope, occurrence_start_ms, fields, &send_updates).await
+}
+
+/// The whole of `update_event` minus the Tauri `State` wrapper — see
+/// [`create_event_body`] for why the IPC surface runs through this exact
+/// function rather than a parallel one.
+pub(crate) async fn update_event_body(
+    state: &AppState,
+    id: i64,
+    scope: &str,
+    occurrence_start_ms: i64,
+    fields: crate::write::EventInput,
+    send_updates: &str,
+) -> Result<EventDetail, String> {
     update_impl(
-        &state,
+        state,
         id,
-        &scope,
+        scope,
         occurrence_start_ms,
         crate::write::fields_from_input(fields),
-        &send_updates,
+        send_updates,
     )
     .await
     .map_err(|e| crate::errors::user_facing(&e))
@@ -2011,10 +2053,21 @@ pub async fn delete_event_cmd(
     scope: String,
     occurrence_start_ms: i64,
 ) -> Result<(), String> {
+    delete_event_body(&state, id, &scope, occurrence_start_ms).await
+}
+
+/// The whole of `delete_event_cmd` minus the Tauri `State` wrapper — see
+/// [`create_event_body`]. The ledger-forgetting lives here, in the shared
+/// body, deliberately: a departure the user chose over the socket must not
+/// come back through the change ledger as "cancelled" news any more than a
+/// clicked one may.
+pub(crate) async fn delete_event_body(
+    state: &AppState,
+    id: i64,
+    scope: &str,
+    occurrence_start_ms: i64,
+) -> Result<(), String> {
     // Captured before the delete — afterwards there may be no row to ask.
-    // A departure the user chose must not come back through the change
-    // ledger as "cancelled" news, so a successful delete erases the
-    // meeting's ledger memory (series root, exceptions included).
     let target: Option<(i64, String, Option<String>)> = sqlx::query_as(
         "SELECT calendar_id, google_id, recurring_event_id FROM events WHERE id = ?1",
     )
@@ -2024,7 +2077,7 @@ pub async fn delete_event_cmd(
     .ok()
     .flatten();
 
-    delete_impl(&state, id, &scope, occurrence_start_ms)
+    delete_impl(state, id, scope, occurrence_start_ms)
         .await
         .map_err(|e| crate::errors::user_facing(&e))
         .inspect(|_| {

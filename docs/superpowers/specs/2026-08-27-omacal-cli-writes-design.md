@@ -84,9 +84,18 @@ omacal events create   --title T --date D --start HH:MM --end HH:MM
 omacal events update   ID --occurrence MS [changed fields…]
                        [--scope this|following|all] [--notify all|none]
 omacal events delete   ID --occurrence MS [--scope this|following|all]
-                       [--notify all|none]
 omacal events respond  ID yes|maybe|no [--scope this|all] [--occurrence MS]
 ```
+
+> **Amended at implementation (2026-08-27).** `delete` carries no
+> `--notify`: the app's own delete has never sent one (`delete_impl` calls
+> the client with no sendUpdates), and the CLI may not offer a choice the
+> app cannot honour — the flag arrives if and when the app itself learns
+> it. And *editing* an all-day event is refused for now ("the app's form
+> is") — the wire requires a whole `when`, and reconstructing an all-day
+> span's exclusive end from a stored row is exactly the kind of second
+> derivation this design exists to refuse; create/delete/respond handle
+> all-day events fine.
 
 - **Occurrence identity is the app's own pair** — event id plus occurrence
   start in ms — exactly as phase 1 prints it in `events list`, `agenda` and
@@ -131,11 +140,17 @@ Phase 1's contract extends; nothing existing changes meaning.
   etag conflict, a validation the form would also have shown, an unwritable
   calendar. The distinction 4/6 is the one an agent acts on — retry nothing
   on 6, read the message, change the request.
-- `--json` prints the envelope relayed from the app, `kind` set to
-  `"usage" | "not-running" | "refused" | "error" | "timeout"`. The human
+- `--json` prints the envelope relayed from the app, its error carrying
+  phase 1's own field — `code`, not a new word — set to
+  `"usage" | "not_running" | "refused" | "timeout" | "io"`. The human
   register prints the same fact as a sentence — which is already the app's
   sanitized `user_facing` string, because the handler answers with nothing
-  else (§6).
+  else (§6). One honest blur, accepted at implementation: `refused` covers
+  *everything the app answered no to*, guard and provider failure alike,
+  because the bodies return one sanitized string and rebuilding a taxonomy
+  from message text would be the fragile kind of cleverness. Exit 6
+  therefore means "the app answered; read the message" — still the
+  distinction an agent acts on, since transport trouble stays 4 and 5.
 - The CLI waits for the app synchronously — a write goes to Google or a
   CalDAV server before it answers — with a 60-second cap: past it,
   `kind:"timeout"`, exit 4, and the truth that the write's fate is unknown
