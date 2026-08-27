@@ -11,6 +11,7 @@
   let linkDraft = $state('https://');
   let linkError = $state(false);
   let linkRange: Range | null = null;
+  let rememberedListRange: Range | null = null;
   // Chromium may place typing back inside the preceding formatted element
   // when a collapsed range sits in an empty sibling text node. A temporary
   // zero-width caret anchor makes the sibling non-empty. It never enters the
@@ -20,12 +21,15 @@
 
   onMount(() => {
     if (!editor) return;
+    const rememberSelection = () => rememberListSelection();
+    document.addEventListener('selectionchange', rememberSelection);
     const safe = sanitizeDescriptionHtml(value);
     editor.innerHTML = safe;
     // Once this is an HTML editor, saving the original hostile markup while
     // displaying a cleaned version would be a trap. The visible, sanitised
     // document is the value from the moment the editor opens.
     value = safe;
+    return () => document.removeEventListener('selectionchange', rememberSelection);
   });
 
   function sync() {
@@ -76,6 +80,7 @@
   function settle(event: FocusEvent) {
     if (!editor) return;
     if (event.relatedTarget instanceof Node && richtext?.contains(event.relatedTarget)) return;
+    rememberedListRange = null;
     const safe = sanitizeDescriptionHtml(withoutCaretAnchors(editor.innerHTML));
     if (editor.innerHTML !== safe) editor.innerHTML = safe;
     value = safe;
@@ -119,7 +124,7 @@
    * line as a boundary on the surrounding list instead of a point inside
    * the li. Resolve that boundary to the item the caret visually belongs to. */
   function listItemAtBoundary(container: Node, offset: number, preferFollowing: boolean): HTMLLIElement | null {
-    if ((container instanceof HTMLUListElement || container instanceof HTMLOListElement) && editor?.contains(container)) {
+    if (container instanceof Element && editor?.contains(container)) {
       const following = boundaryChildListItem(container.childNodes[offset], true);
       const preceding = boundaryChildListItem(container.childNodes[offset - 1], false);
       const boundaryItem = preferFollowing ? following ?? preceding : preceding ?? following;
@@ -167,6 +172,33 @@
     const through = siblings.indexOf(last);
     if (from < 0 || through < from) return null;
     return { first, last, list, items: siblings.slice(from, through + 1) };
+  }
+
+  function rememberListSelection() {
+    if (!editor) return;
+    const selection = window.getSelection();
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+    // An outside selection can be WebKit temporarily displacing the caret
+    // while the contenteditable still owns focus. Keep the last good list
+    // caret for that case; settle() clears it once focus genuinely leaves.
+    if (!range || !editor.contains(range.commonAncestorContainer)) return;
+    rememberedListRange = selectedListItems() ? range.cloneRange() : null;
+  }
+
+  function restoreRememberedListSelection(): boolean {
+    if (!editor || document.activeElement !== editor || !rememberedListRange) return false;
+    const selection = window.getSelection();
+    const current = selection?.rangeCount ? selection.getRangeAt(0) : null;
+    // A real caret in ordinary editor text must retain normal form traversal.
+    // The fallback is only for a selection WebKit moved outside the editor.
+    if (current && editor.contains(current.commonAncestorContainer)) return false;
+    if (!editor.contains(rememberedListRange.startContainer) || !editor.contains(rememberedListRange.endContainer)) {
+      rememberedListRange = null;
+      return false;
+    }
+    selection?.removeAllRanges();
+    selection?.addRange(rememberedListRange.cloneRange());
+    return selectionInsideOneListTree();
   }
 
   const listTag = (list: ListElement): 'ul' | 'ol' => list instanceof HTMLOListElement ? 'ol' : 'ul';
@@ -357,13 +389,15 @@
       outdentTopLevelItems(selected);
     }
     sync();
+    rememberListSelection();
     return true;
   }
 
   function listIndentKeydown(event: KeyboardEvent): boolean {
     let direction: ListIndent | null = null;
     const reverseTab = event.key === 'ISO_Left_Tab' || event.key === 'BackTab';
-    if ((event.key === 'Tab' || reverseTab) && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    const tabKey = event.key === 'Tab' || reverseTab || event.code === 'Tab' || event.keyCode === 9;
+    if (tabKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
       // WebKitGTK may expose Shift+Tab using GTK's reverse-tab key name,
       // with or without also retaining the Shift modifier.
       direction = event.shiftKey || reverseTab ? 'outdent' : 'indent';
@@ -371,7 +405,7 @@
       if (event.key === ']') direction = 'indent';
       else if (event.key === '[') direction = 'outdent';
     }
-    if (!direction || !selectionInsideOneListTree()) return false;
+    if (!direction || (!selectionInsideOneListTree() && !restoreRememberedListSelection())) return false;
     event.preventDefault();
     changeListIndent(direction);
     return true;
