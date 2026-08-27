@@ -4107,6 +4107,109 @@ test.describe('EventForm', () => {
     await expect(editor.locator('ul > li')).toHaveText('First point');
   });
 
+  test('Tab and bracket shortcuts indent and outdent list items without leaving the editor', async ({ page }) => {
+    await open(page, 'create');
+    const editor = page.getByLabel('Description', { exact: true });
+    await editor.pressSequentially('- ');
+    await page.keyboard.type('Parent');
+    await editor.press('Enter');
+    await page.keyboard.type('Child');
+
+    const topItems = editor.locator('ul').first().locator(':scope > li');
+    const nestedItem = editor.locator('ul > li > ul > li');
+    await editor.press('Tab');
+    await expect(topItems).toHaveCount(1);
+    await expect(nestedItem).toHaveText('Child');
+    await expect(editor).toBeFocused();
+
+    await editor.press('Shift+Tab');
+    await expect(topItems).toHaveCount(2);
+    await expect(topItems.nth(1)).toHaveText('Child');
+    await expect(editor).toBeFocused();
+
+    await editor.press('Control+]');
+    await expect(topItems).toHaveCount(1);
+    await expect(nestedItem).toHaveText('Child');
+    await editor.press('Control+[');
+    await expect(topItems).toHaveCount(2);
+    await expect(topItems.nth(1)).toHaveText('Child');
+
+    await editor.press('Control+]');
+    await page.getByRole('button', { name: 'Create' }).click();
+    const [saved] = await saves(page);
+    expect(saved.fields.description).toContain('<li>Parent<ul><li>Child</li></ul></li>');
+    expect(saved.fields.description).not.toContain('style=');
+  });
+
+  test('list indent controls preserve normal Tab navigation and cannot eject a first item', async ({ page }) => {
+    await open(page, 'create');
+    const editor = page.getByLabel('Description', { exact: true });
+    const box = page.getByTestId('description-editor');
+    await editor.pressSequentially('- ');
+    const before = await editor.evaluate((element) => element.innerHTML);
+
+    // There is no preceding item to nest under. The command is owned by the
+    // editor but deliberately changes nothing and does not move form focus.
+    await editor.press('Tab');
+    await expect(editor).toBeFocused();
+    expect(await editor.evaluate((element) => element.innerHTML)).toBe(before);
+    expect(await editor.evaluate((element) => {
+      const item = element.querySelector('li');
+      const range = window.getSelection()?.getRangeAt(0);
+      return range?.startContainer === item && range.startOffset === 0;
+    })).toBe(true);
+
+    await page.keyboard.type('Parent');
+    await editor.press('Enter');
+    await page.keyboard.type('Child');
+    const topItems = editor.locator('ul').first().locator(':scope > li');
+    await box.getByRole('button', { name: 'Indent list item' }).click();
+    await expect(topItems).toHaveCount(1);
+    await expect(editor.locator('ul > li > ul > li')).toHaveText('Child');
+    await box.getByRole('button', { name: 'Outdent list item' }).click();
+    await expect(topItems).toHaveCount(2);
+
+    // Ordered lists use the same semantic nesting, preserving their type.
+    await open(page, 'create');
+    await editor.pressSequentially('1. ');
+    await page.keyboard.type('One');
+    await editor.press('Enter');
+    await page.keyboard.type('Two');
+    await editor.press('Tab');
+    await expect(editor.locator('ol > li > ol > li')).toHaveText('Two');
+
+    // In ordinary description text, Tab still belongs to the form.
+    await open(page, 'create');
+    await editor.fill('Plain description');
+    await editor.press('Tab');
+    await expect(page.getByLabel('Calendar', { exact: true })).toBeFocused();
+  });
+
+  test('outdenting a top-level item exits the list and keeps its caret', async ({ page }) => {
+    await open(page, 'create');
+    const editor = page.getByLabel('Description', { exact: true });
+    await editor.pressSequentially('- ');
+    await page.keyboard.type('First');
+    await editor.press('Enter');
+    await page.keyboard.type('Second');
+
+    await editor.press('Shift+Tab');
+    expect(await editor.evaluate((element) => Array.from(element.children).map((child) => ({
+      tag: child.tagName,
+      text: child.textContent,
+    })))).toEqual([
+      { tag: 'UL', text: 'First' },
+      { tag: 'DIV', text: 'Second' },
+    ]);
+    await expect(editor).toBeFocused();
+
+    await page.keyboard.type(' continued');
+    await expect(editor.locator('ul > li')).toHaveText('First');
+    await expect(editor.locator(':scope > div')).toHaveText('Second continued');
+    await editor.press('Tab');
+    await expect(page.getByLabel('Calendar', { exact: true })).toBeFocused();
+  });
+
   test('completed inline Markdown-style runs format immediately without retaining markers', async ({ page }) => {
     await open(page, 'create');
     const editor = page.getByLabel('Description', { exact: true });
