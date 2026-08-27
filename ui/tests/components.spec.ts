@@ -4268,6 +4268,38 @@ test.describe('EventForm', () => {
     expect(saved.fields.description).not.toContain('style=');
   });
 
+  test('Ctrl+U underlines the selection without requiring the Linux Unicode chord', async ({ page }) => {
+    await open(page, 'create');
+    const editor = page.getByLabel('Description', { exact: true });
+    await editor.fill('Agenda');
+    await editor.selectText();
+    await page.keyboard.press('Control+u');
+    await expect(editor.locator('u')).toHaveText('Agenda');
+  });
+
+  test('safe typed URLs auto-link while active schemes remain plain text', async ({ page }) => {
+    await open(page, 'create');
+    const editor = page.getByLabel('Description', { exact: true });
+    await editor.fill(
+      'Docs: extremelabs.io/docs, https://example.com/agenda. Do not link javascript:alert(1).',
+    );
+
+    // Leaving the whole rich editor reflects the already-safe bound value
+    // back into the contenteditable without disrupting an active caret.
+    await page.getByLabel('Title', { exact: true }).focus();
+    await expect(editor.getByRole('link', { name: 'extremelabs.io/docs' }))
+      .toHaveAttribute('href', 'https://extremelabs.io/docs');
+    await expect(editor.getByRole('link', { name: 'https://example.com/agenda' }))
+      .toHaveAttribute('href', 'https://example.com/agenda');
+    await expect(editor.locator('a[href^="javascript:"]')).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Create' }).click();
+    const [saved] = await saves(page);
+    expect(saved.fields.description).toContain('href="https://extremelabs.io/docs"');
+    expect(saved.fields.description).toContain('href="https://example.com/agenda"');
+    expect(saved.fields.description).not.toContain('href="javascript:');
+  });
+
   test('dropped rich text is sanitised before it enters the editor', async ({ page }) => {
     await open(page, 'create');
     const editor = page.getByLabel('Description', { exact: true });
