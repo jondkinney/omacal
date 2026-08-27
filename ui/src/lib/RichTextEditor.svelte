@@ -119,14 +119,13 @@
    * line as a boundary on the surrounding list instead of a point inside
    * the li. Resolve that boundary to the item the caret visually belongs to. */
   function listItemAtBoundary(container: Node, offset: number, preferFollowing: boolean): HTMLLIElement | null {
-    const direct = listItemAt(container);
-    if (direct) return direct;
-    if (!(container instanceof HTMLUListElement || container instanceof HTMLOListElement) || !editor?.contains(container)) {
-      return null;
+    if ((container instanceof HTMLUListElement || container instanceof HTMLOListElement) && editor?.contains(container)) {
+      const following = boundaryChildListItem(container.childNodes[offset], true);
+      const preceding = boundaryChildListItem(container.childNodes[offset - 1], false);
+      const boundaryItem = preferFollowing ? following ?? preceding : preceding ?? following;
+      if (boundaryItem) return boundaryItem;
     }
-    const following = boundaryChildListItem(container.childNodes[offset], true);
-    const preceding = boundaryChildListItem(container.childNodes[offset - 1], false);
-    return preferFollowing ? following ?? preceding : preceding ?? following;
+    return listItemAt(container);
   }
 
   function outerList(item: HTMLLIElement): ListElement | null {
@@ -363,8 +362,11 @@
 
   function listIndentKeydown(event: KeyboardEvent): boolean {
     let direction: ListIndent | null = null;
-    if (event.key === 'Tab' && !event.ctrlKey && !event.metaKey && !event.altKey) {
-      direction = event.shiftKey ? 'outdent' : 'indent';
+    const reverseTab = event.key === 'ISO_Left_Tab' || event.key === 'BackTab';
+    if ((event.key === 'Tab' || reverseTab) && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      // WebKitGTK may expose Shift+Tab using GTK's reverse-tab key name,
+      // with or without also retaining the Shift modifier.
+      direction = event.shiftKey || reverseTab ? 'outdent' : 'indent';
     } else if ((event.ctrlKey || event.metaKey) && !event.altKey && !event.shiftKey) {
       if (event.key === ']') direction = 'indent';
       else if (event.key === '[') direction = 'outdent';
