@@ -215,7 +215,34 @@ pub(crate) struct Row {
     pub attendees: u32,
     pub recurring: bool,
     pub response: Option<String>,
+    /// Whether this is the user's own event — the organizer's address
+    /// matching the owning account's. Explicit so an agent never has to
+    /// infer it: `response: null` on 2026-08-27 was read as "unanswered
+    /// invitation" and an organizer was told to RSVP to their own meeting.
+    /// `false` also covers "organizer unstated", which is not a claim the
+    /// user is a guest — `response` still carries that story.
+    pub organizer: bool,
     pub conference: Option<String>,
+}
+
+/// The comparison behind [`Row::organizer`], pure for its table below —
+/// **Google's own `organizer.self` semantics**, learned from the first live
+/// row that disproved the naive version: the organizer matches the account
+/// *or the calendar itself*. An event created on a calendar shared into
+/// this account carries the calendar's address as organizer (the Denis
+/// session: organizer `plamen@x3me.net`, calendar `plamen@x3me.net`,
+/// account `marlowbg@…`), and it is still the user's own event from every
+/// seat that matters. Case-insensitive; `None` is `false`, an absence,
+/// never a claim.
+pub(crate) fn is_organizer(
+    organizer_email: Option<&str>,
+    account_email: &str,
+    calendar_google_id: &str,
+) -> bool {
+    organizer_email.is_some_and(|o| {
+        (!account_email.is_empty() && o.eq_ignore_ascii_case(account_email))
+            || (!calendar_google_id.is_empty() && o.eq_ignore_ascii_case(calendar_google_id))
+    })
 }
 
 /// The window's occurrences, expanded and honest: the same suppression,
@@ -229,11 +256,22 @@ pub(crate) async fn rows_in_window(
     to_ms: i64,
 ) -> anyhow::Result<Vec<Row>> {
     let stored = omacal_store::events_in_window(pool, from_ms, to_ms).await?;
-    let names: std::collections::HashMap<i64, String> = omacal_store::list_calendars(pool)
-        .await?
-        .into_iter()
-        .map(|c| (c.id, c.summary))
-        .collect();
+    // Per calendar: its name for the row, and its account's address for the
+    // organizer comparison — one map, one walk.
+    let names: std::collections::HashMap<i64, (String, String)> =
+        omacal_store::list_calendars(pool)
+            .await?
+            .into_iter()
+            .map(|c| (c.id, (c.summary, c.account_email)))
+            .collect();
+    // The calendars' own ids, for `organizer.self`'s second half — a shared
+    // calendar's events are organized as the *calendar*, not the account.
+    let cal_gids: std::collections::HashMap<i64, String> =
+        sqlx::query_as::<_, (i64, String)>("SELECT id, google_id FROM calendars")
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .collect();
     let suppressed = crate::commands::suppressed_slots(&stored);
 
     let tz = jiff::tz::TimeZone::system();
@@ -261,11 +299,19 @@ pub(crate) async fn rows_in_window(
                 end: stamp(iv.end_ms),
                 all_day: src.is_all_day,
                 location: src.location.clone(),
-                calendar: names.get(&src.calendar_id).cloned().unwrap_or_default(),
+                calendar: names
+                    .get(&src.calendar_id)
+                    .map(|(summary, _)| summary.clone())
+                    .unwrap_or_default(),
                 calendar_id: src.calendar_id,
                 attendees: src.attendees.len() as u32,
                 recurring: src.recurrence.is_some() || src.recurring_event_id.is_some(),
                 response: src.self_response.clone(),
+                organizer: is_organizer(
+                    src.organizer_email.as_deref(),
+                    names.get(&src.calendar_id).map(|(_, email)| email.as_str()).unwrap_or(""),
+                    cal_gids.get(&src.calendar_id).map(String::as_str).unwrap_or(""),
+                ),
                 conference: src
                     .conference_uri
                     .clone()
@@ -716,6 +762,25 @@ mod tests {
         for s in ["", "--sync-now", "--quit", "2026-09-01"] {
             assert_eq!(parse(&argv(s)), None, "{s:?} was claimed by the CLI");
         }
+    }
+
+    /// The comparison behind `Row::organizer`, as a table — Google's
+    /// `organizer.self`: the account's address OR the calendar's own id,
+    /// case-insensitive; absences match nothing, ever.
+    #[test]
+    fn the_organizer_flag_speaks_organizer_self() {
+        let is = is_organizer;
+        assert!(is(Some("plamen@excitel.com"), "plamen@excitel.com", "plamen@excitel.com"));
+        assert!(is(Some("Plamen@Excitel.COM"), "plamen@excitel.com", ""));
+        // The live row that disproved the account-only rule: an event on a
+        // calendar shared into another account is organized as the calendar.
+        assert!(is(Some("plamen@x3me.net"), "marlowbg@gmail.com", "plamen@x3me.net"));
+        assert!(!is(Some("denis@x.com"), "plamen@excitel.com", "plamen@excitel.com"));
+        assert!(!is(None, "plamen@excitel.com", "x"), "unstated is not a claim");
+        assert!(!is(Some("a@b.c"), "", ""), "an orphaned calendar organizes nothing");
+        // A CalDAV calendar's id is a URL; the comparison fails harmlessly
+        // and the account address carries the answer.
+        assert!(is(Some("ana@fastmail.com"), "ana@fastmail.com", "https://dav.example/cal/"));
     }
 
     /// The skill commands parse bare and with `install`, and a stray word

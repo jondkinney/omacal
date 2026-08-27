@@ -28,8 +28,9 @@ Always pass `--json` when consuming programmatically. Success:
 Each event row: `eventId`, `title`, `startMs`/`endMs` (epoch ms),
 `start`/`end` (RFC 3339 in the user's display zone), `allDay`, `location`,
 `calendar`, `calendarId`, `attendees` (count, organizer included; 0 = solo),
-`recurring`, `response` (the user's own RSVP), `conference` (join URL when
-the meeting has one).
+`recurring`, `response` (the user's own RSVP), `organizer` (v0.7.3+: true =
+this is the user's own event — trust it over any inference), `conference`
+(join URL when the meeting has one).
 
 ## Writing (requires the app to be running; omacal v0.7+)
 
@@ -85,7 +86,9 @@ When showing the calendar to the user (not piping into a script):
   is not news. **`null` is not "unanswered"** — it means no RSVP applies
   to the user at all, typically their own event or one without guests;
   never flag it. (Field lesson, 2026-08-27: an agent read null as
-  unanswered and told an organizer to RSVP to their own meeting.)
+  unanswered and told an organizer to RSVP to their own meeting.) Since
+  v0.7.3 the row also says it directly: `organizer: true` means it is the
+  user's own event — no RSVP talk applies, ever.
 - All-day events go on one quiet line after the timed ones, never mixed in.
 - Name the timezone once, in the intro sentence, not per line.
 - Lead with what the user asked ("Next free slot is…", "Four things
