@@ -3325,16 +3325,25 @@ test.describe('App: keyboard event navigation', () => {
     // the time-aware entrance separately.
     await page.clock.setFixedTime(APP_MON + 8 * 3_600_000);
     await page.goto(app('keyboard-navigation'));
-    await expect(page.locator('[data-kbd-selected-day]')).toBeVisible();
+    // Gate on App having mounted before asserting the cursor's absence. An
+    // empty pre-mount document also has no cursor, but does not yet have the
+    // window key handler the next line of each test needs.
+    await expect(page.locator('.vswitch button.active')).toBeVisible();
+    await expect(page.locator('[data-kbd-selected-day]')).toHaveCount(0);
+    await expect(page.locator('[data-kbd-selected-event]')).toHaveCount(0);
+    await expect(page.locator('.kbd-status')).toHaveCount(0);
   });
 
   const selectedTitle = (page: Page) =>
     page.locator('[data-kbd-selected-event]');
 
-  test('w and b select adjacent days', async ({ page }) => {
-    await expect(page.locator('[data-kbd-selected-day]'))
-      .toHaveAttribute('data-start-ms', String(APP_MON));
+  test('the cursor appears only after keyboard navigation begins', async ({ page }) => {
+    await page.keyboard.press('w');
+    await expect(page.locator('[data-kbd-selected-day]')).toBeVisible();
+    await expect(page.locator('.kbd-status')).toContainText('Selected Tuesday');
+  });
 
+  test('w and b select adjacent days', async ({ page }) => {
     await page.keyboard.press('w');
     await expect(page.locator('[data-kbd-selected-day]'))
       .toHaveAttribute('data-start-ms', String(APP_MON + 24 * 3_600_000));
@@ -3430,24 +3439,8 @@ test.describe('App: keyboard event navigation', () => {
     await expect(dialog).toBeVisible();
     await expect(dialog).toBeFocused();
 
-    await page.keyboard.press('Tab');
-    await expect(dialog.getByRole('button', { name: 'Copy title' })).toBeFocused();
-    await page.evaluate(() => {
-      Object.defineProperty(navigator, 'clipboard', {
-        configurable: true,
-        value: { writeText: async (value: string) => { (window as any).__fieldCopy = value; } },
-      });
-    });
-    await page.keyboard.press('Control+c');
-    await expect.poll(() => page.evaluate(() => (window as any).__fieldCopy))
-      .toBe('Plan the launch');
-    await expect(dialog.locator('.note')).toHaveText('Copied title');
-
-    await page.keyboard.press('Tab');
-    await expect(dialog.getByRole('button', { name: 'Copy date and time' })).toBeFocused();
-    await page.keyboard.press('Tab');
     const join = dialog.getByRole('link', { name: 'Join video call' });
-    await expect(join).toBeFocused();
+    await join.focus();
     await page.keyboard.press('Enter');
     await expect.poll(() => page.evaluate(() =>
       window.__harness.calls.filter((call) => call.cmd === 'open_conference').length,

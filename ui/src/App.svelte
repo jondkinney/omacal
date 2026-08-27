@@ -125,6 +125,11 @@
    * rather than a grid so switching between grid and list preserves the same
    * selection, and `o`/Enter always reaches the shared detail popover. */
   let keyboardCursor = $state<KeyboardCursor>(dayCursor(dayStart(Date.now())));
+  /** Visual selection is opt-in. The cursor still tracks payload and view
+   * changes before then, but ordinary mouse users never inherit a permanent
+   * accent ring merely because keyboard navigation exists. */
+  let keyboardActive = $state(false);
+  const visibleKeyboardCursor = $derived(keyboardActive ? keyboardCursor : null);
   /** A `j`/`k` that crossed the loaded payload. The adjacent period is fetched
    * by moving `anchorMs`; once it lands, this finishes the move at its first or
    * last event. One hop is deliberate: an empty Day view remains selected and
@@ -305,7 +310,7 @@
   });
 
   const keyboardStatus = $derived.by(() => {
-    if (!listable(view) || keyboardDays.length === 0) return '';
+    if (!keyboardActive || !listable(view) || keyboardDays.length === 0) return '';
     const day = new Date(keyboardCursor.dayStartMs).toLocaleDateString(undefined, {
       weekday: 'long', month: 'long', day: 'numeric',
     });
@@ -383,7 +388,7 @@
 
   function selectKeyboard(cursor: KeyboardCursor) {
     keyboardCursor = cursor;
-    revealKeyboardCursor();
+    if (keyboardActive) revealKeyboardCursor();
   }
 
   function loadKeyboardDay(startMs: number, eventDir: -1 | 1 | null) {
@@ -395,6 +400,7 @@
 
   function navigateSelectedDay(dir: -1 | 1) {
     if (!listable(view)) return;
+    keyboardActive = true;
     const moved = moveDay(keyboardDays, keyboardCursor, dir);
     if (moved.overflow) {
       loadKeyboardDay(shiftKeyboardDay(keyboardCursor.dayStartMs, dir), null);
@@ -407,6 +413,7 @@
 
   function navigateSelectedEvent(dir: -1 | 1) {
     if (!listable(view)) return;
+    keyboardActive = true;
     const now = Date.now();
     const moved = moveEvent(
       keyboardDays, keyboardCursor, dir, { nowMs: now },
@@ -425,7 +432,7 @@
   }
 
   function openSelectedEvent() {
-    if (!listable(view)) return;
+    if (!keyboardActive || !listable(view)) return;
     const event = eventAtCursor(keyboardDays, keyboardCursor);
     if (!event) return;
     const el = document.querySelector<HTMLElement>('[data-kbd-selected-event]');
@@ -1612,10 +1619,11 @@
   {#if view === 'month'}
     {#if month}
       {#if listMode}
-        <Filmstrip days={daysFromMonth(month)} {weather} {revealNowRequest} {keyboardCursor}
+        <Filmstrip days={daysFromMonth(month)} {weather} {revealNowRequest}
+                   keyboardCursor={visibleKeyboardCursor}
                    onopen={openGridEvent} />
       {:else}
-        <MonthGrid {month} {keyboardCursor} onopen={openGridEvent}
+        <MonthGrid {month} keyboardCursor={visibleKeyboardCursor} onopen={openGridEvent}
                    ondaypick={handleDayPick} oncreate={newEventOnDay} />
       {/if}
     {/if}
@@ -1644,10 +1652,12 @@
     {/if}
   {:else if week}
     {#if listMode}
-      <Filmstrip days={daysFromWeek(week)} {weather} {revealNowRequest} {keyboardCursor}
+      <Filmstrip days={daysFromWeek(week)} {weather} {revealNowRequest}
+                 keyboardCursor={visibleKeyboardCursor}
                  onopen={openGridEvent} />
     {:else}
-      <WeekGrid {week} {weather} {formPreview} {revealNowRequest} {keyboardCursor}
+      <WeekGrid {week} {weather} {formPreview} {revealNowRequest}
+                keyboardCursor={visibleKeyboardCursor}
                 oncreate={newEventAt} onedit={openEdit} ondelete={askDelete}
                 oncopy={copyOccurrence}
         onmove={moveOccurrence} onresponded={refreshAfterWrite} />

@@ -67,9 +67,8 @@
      *  by clicking this: the caller owns the confirmation, which has three
      *  scopes, a guest count and no undo behind it. */
     ondelete: () => void;
-    /** Ctrl+C (⌘C) landed on the popover itself rather than one of its
-     *  focusable copy fields: the caller should remember this occurrence as
-     *  what Ctrl+V will paste. Living here rather
+    /** Ctrl+C (⌘C) landed while this popover was open: the caller should
+     *  remember this occurrence as what Ctrl+V will paste. Living here rather
      *  than in `App`'s key handler because *here* is the only place that
      *  knows a popover is open at all for Day and Week — `WeekGrid` owns that
      *  popover end-to-end, and `App` never sees its occurrence. One listener
@@ -133,10 +132,6 @@
       ? dayOfDate(occurrenceDate(detail.start_date, detail.start_ms, occurrenceStartMs))
       : dayOfInstant(occurrenceStartMs),
   );
-  const whenLine = $derived(
-    detail.is_all_day ? day : `${day} · ${hhmm(occurrenceStartMs)}–${hhmm(occurrenceEndMs)}`,
-  );
-
   // A neutral default so `.pop` renders (and so `offsetWidth`/`offsetHeight`
   // are measurable at all) before `onMount` below can place it for real.
   // `anchor` never changes for this component's lifetime — WeekGrid mounts a
@@ -322,17 +317,13 @@
    *  ordinary sense — pasteable into a chat as text. The same formatters the
    *  panel renders with, so the text says what the screen says. */
   const clipboardLine = () => {
-    return [detail.title ?? '(no title)', whenLine, detail.location ?? ''].filter(Boolean).join('\n');
+    const when = detail.is_all_day ? day : `${day} ${hhmm(occurrenceStartMs)}–${hhmm(occurrenceEndMs)}`;
+    return [detail.title ?? '(no title)', when, detail.location ?? ''].filter(Boolean).join('\n');
   };
 
-  function copyField(value: string, label: string) {
-    try { navigator.clipboard?.writeText(value).catch(() => {}); } catch { /* no clipboard here */ }
-    note = { text: `Copied ${label}`, kind: 'info' };
-  }
-
-  // Ctrl+C — ⌘C on a Mac — copies the focused field when it has one, otherwise
-  // the event this popover is about. On `window` for the same reason Escape
-  // is, and with one yield: a real text selection in the panel keeps native
+  // Ctrl+C — ⌘C on a Mac — copies the event this popover is about. On
+  // `window` for the same reason Escape is, and with one yield: a real text
+  // selection in the panel keeps native
   // copy, because taking the chord away from selected text would break the
   // older meaning of the key to serve the newer one. Shift and Alt variants
   // pass through untouched — Ctrl+Shift+C is a devtools chord in the webview.
@@ -340,11 +331,6 @@
     if (e.key.toLowerCase() !== 'c' || !(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
     if (document.getSelection()?.toString()) return;
     e.preventDefault();
-    const field = (e.target as HTMLElement | null)?.closest<HTMLElement>('[data-copy-value]');
-    if (field) {
-      copyField(field.dataset.copyValue ?? '', field.dataset.copyLabel ?? 'field');
-      return;
-    }
     // Fire-and-forget: the buffer `oncopy` fills is what paste reads, and a
     // webview denying clipboard access must not turn the copy into an error.
     try { navigator.clipboard?.writeText(clipboardLine()).catch(() => {}); } catch { /* no clipboard here */ }
@@ -385,8 +371,8 @@
   };
 
   /** An open event owns these bare keys. Focused controls keep Enter's native
-   * meaning — a focused Join link joins once, an RSVP button answers, and a
-   * copy field copies — while Enter on the panel itself joins immediately. */
+   * meaning — a focused Join link joins once and an RSVP button answers —
+   * while Enter on the panel itself joins immediately. */
   function onPopoverKey(e: KeyboardEvent) {
     onCopyKey(e);
     if (e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
@@ -426,36 +412,23 @@
   aria-label={detail.title ?? '(no title)'}
   style="top:{pos.top}px; left:{pos.left}px"
 >
-  <h2 aria-label={detail.title ?? '(no title)'}><button type="button" class="copyfield"
-      aria-label="Copy title" data-copy-label="title"
-      data-copy-value={detail.title ?? '(no title)'}
-      onclick={() => copyField(detail.title ?? '(no title)', 'title')}
-      >{detail.title ?? '(no title)'}</button></h2>
-  <p class="when"><button type="button" class="copyfield" aria-label="Copy date and time"
-     data-copy-label="date and time"
-     data-copy-value={whenLine} onclick={() => copyField(whenLine, 'date and time')}
-     >{whenLine}</button></p>
-  {#if cadence}<p class="cadence"><button type="button" class="copyfield" aria-label="Copy repeat schedule"
-                       data-copy-label="repeat schedule" data-copy-value={cadence}
-                       onclick={() => copyField(cadence!, 'repeat schedule')}
-                       >{cadence}</button></p>{/if}
+  <h2>{detail.title ?? '(no title)'}</h2>
+  <p class="when">
+    {day}{#if !detail.is_all_day}
+      &nbsp;· {hhmm(occurrenceStartMs)}–{hhmm(occurrenceEndMs)}{/if}
+  </p>
+  {#if cadence}<p class="cadence">{cadence}</p>{/if}
 
   {#if segments.length}
-    <div class="desc">
-      <button type="button" class="copydesc" data-copy-label="description"
-              data-copy-value={detail.description ?? ''}
-              onclick={() => copyField(detail.description ?? '', 'description')}>Copy</button>
-      <p>{#each segments as s}{#if s.kind === 'link'}<a
-              href={s.value} target="_blank" rel="noopener noreferrer"
-              data-copy-label="link" data-copy-value={s.value}>{s.value}</a
-          >{:else}{s.value}{/if}{/each}</p>
-    </div>
+    <p class="desc">
+      {#each segments as s}
+        {#if s.kind === 'link'}<a href={s.value} target="_blank" rel="noopener noreferrer">{s.value}</a
+          >{:else}{s.value}{/if}
+      {/each}
+    </p>
   {/if}
 
-  {#if locationShown}<p class="loc"><button type="button" class="copyfield" aria-label="Copy location"
-                            data-copy-label="location" data-copy-value={locationShown}
-                            onclick={() => copyField(locationShown!, 'location')}
-                            >{locationShown}</button></p>{/if}
+  {#if locationShown}<p class="loc">{locationShown}</p>{/if}
   {#if joinUrl}
     <!-- The `href` stays for what an anchor gives away free — copy-link,
          middle-click, the status-bar preview — but a plain left click is
@@ -464,7 +437,6 @@
          crashes it (issue #1, `browser::open_external`). The backend
          re-derives the URL from its store rather than trusting this one. -->
     <a class="conf" href={joinUrl} target="_blank" rel="noopener noreferrer"
-       data-copy-label="meeting link" data-copy-value={joinUrl}
        onclick={(e) => { e.preventDefault(); void openConference(detail.id); }}>Join video call</a>
   {/if}
   <!-- Suppressed for the addresses Google mints for shared calendars and
@@ -472,10 +444,7 @@
        than nothing, and there is no name to fall back to — `EventDetail`
        carries no `organizer.displayName`. See `organizer.ts`. -->
   {#if detail.organizer_email && !isMachineAddress(detail.organizer_email)}
-    <p class="organizer"><button type="button" class="copyfield" aria-label="Copy organizer email"
-       data-copy-label="organizer email" data-copy-value={detail.organizer_email}
-       onclick={() => copyField(detail.organizer_email!, 'organizer email')}
-       >Organized by {detail.organizer_email}</button></p>
+    <p class="organizer">Organized by {detail.organizer_email}</p>
   {/if}
 
   {#if shownAttendees.length}
@@ -484,15 +453,8 @@
         <!-- `title` says the word on hover: a tilde in a 13px ring was read as
              "no idea what that is" (Omarchy, 2026-08-10), and the sighted had
              no equivalent of `.sr` to fall back on. -->
-        <button
-          type="button"
-          class="guest copyfield {a.response_status}"
-          data-copy-label="guest email"
-          data-copy-value={a.email}
-          onclick={() => copyField(a.email, 'guest email')}
-          aria-label="Copy guest email for {a.display_name ?? a.email}. {a.response_status === 'needsAction'
-            ? 'Awaiting response'
-            : STATUS_WORD[a.response_status] ?? 'Awaiting response'}"
+        <div
+          class="guest {a.response_status}"
           title={STATUS_WORD[a.response_status] ?? STATUS_WORD.needsAction}
         >
           <!-- The glyph carries the status, not the colour. This app takes its
@@ -503,7 +465,7 @@
           <i class="mark" aria-hidden="true">{MARK[a.response_status] ?? MARK.needsAction}</i>
           <span class="who">{a.display_name ?? a.email}{a.is_self ? ' (you)' : ''}</span>
           <span class="sr">{STATUS_WORD[a.response_status] ?? STATUS_WORD.needsAction}</span>
-        </button>
+        </div>
       {/each}
     </div>
   {/if}
@@ -592,23 +554,11 @@
      itself operable — a ring around the whole popover would only be noise.
      The controls inside keep theirs. */
   .pop:focus { outline: none; }
-  .copyfield { appearance: none; -webkit-appearance: none; font: inherit; color: inherit;
-               background: none; border: 0; padding: 0; margin: 0; text-align: left;
-               cursor: copy; }
-  .copyfield:focus-visible, .copydesc:focus-visible {
-    outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px;
-  }
-
   h2 { font-size: 14px; font-weight: 600; margin: 0 0 4px; letter-spacing: -.01em; }
   .when { color: var(--muted); font-size: 11px; margin: 0 0 8px; }
 
-  .desc { position: relative; white-space: pre-wrap; word-break: break-word; line-height: 1.5;
-          margin: 0 0 10px; padding-right: 38px; }
-  .desc p { margin: 0; }
-  .copydesc { appearance: none; -webkit-appearance: none; position: absolute; top: 0; right: 0;
-              font: inherit; font-size: 9.5px; color: var(--muted); cursor: copy;
-              border: 0; border-radius: 3px; background: none; padding: 1px 3px; }
-  .copydesc:hover { color: var(--text); }
+  .desc { white-space: pre-wrap; word-break: break-word; line-height: 1.5;
+          margin: 0 0 10px; }
   .desc a { color: var(--accent); }
 
   .loc, .organizer { color: var(--muted); font-size: 11px; margin: 0 0 4px; }
