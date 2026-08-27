@@ -216,7 +216,11 @@ pub(crate) async fn run_once(
             continue;
         }
 
-        if let Err(e) = notifier.post(&crate::notify::notification_for(&d, tz)) {
+        if let Err(e) = notifier.post(&crate::notify::notification_for_format(
+            &d,
+            tz,
+            settings.time_format,
+        )) {
             // Logged and dropped. Never a banner, never a retry — see this
             // function's own doc comment for why the reminder is still
             // recorded below.
@@ -410,6 +414,20 @@ mod tests {
             vec![(1, T0900Z, 10)],
             "posting without recording re-posts on the next pass"
         );
+    }
+
+    #[tokio::test]
+    async fn the_pass_applies_the_stored_clock_format_to_notifications() {
+        let pool = seeded("UTC", "[]").await;
+        sqlx::query("INSERT INTO settings (key, value) VALUES ('time_format', '12h')")
+            .execute(&pool).await.unwrap();
+        omacal_store::upsert_event(&pool, &event("e1", T0900Z, T0900Z + HOUR, own(10)))
+            .await.unwrap();
+
+        let fake = crate::notify::RecordingNotifier::default();
+        pass_with(&pool, T0900Z - 10 * MINUTE, &fake).await;
+
+        assert_eq!(fake.posted()[0].body, "12:00 PM");
     }
 
     /// A fire-time still ahead is scheduled, not posted. `due_reminders` hands
