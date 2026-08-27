@@ -5,7 +5,7 @@
 
 import { test, expect, type Page } from '@playwright/test';
 import {
-  CHORDS, EVENT_SHORTCUT_LIST, SHORTCUT_LIST, SHORTCUT_TEXT,
+  CHORDS, EDIT_CHORDS, EVENT_SHORTCUT_LIST, SHORTCUT_LIST, SHORTCUT_TEXT,
 } from '../src/lib/shortcuts';
 import {
   APP_MON, APP_NOW, weekLabel,
@@ -3599,6 +3599,13 @@ test.describe('App: the keyboard sheet', () => {
         sheet(page).locator('.what', { hasText: literal(s.text) }),
         `${s.id} is listed under a key but not described`,
       ).toHaveCount(1);
+    }
+
+    for (const c of EDIT_CHORDS) {
+      await expect(
+        sheet(page).locator('[data-shortcut-scope="edit"] dt', { hasText: literal(c.label) }),
+      ).toHaveCount(1);
+      await expect(sheet(page).locator('.what', { hasText: literal(c.text) })).toHaveCount(1);
     }
   });
 

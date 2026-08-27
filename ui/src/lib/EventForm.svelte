@@ -259,6 +259,7 @@
   );
 
   let panelEl: HTMLDivElement | undefined = $state();
+  let formEl: HTMLFormElement | undefined = $state();
   let titleEl: HTMLInputElement | undefined = $state();
   // A neutral default so the panel renders — and is measurable — before
   // `onMount` places it. `anchor` never changes for this component's lifetime
@@ -442,6 +443,17 @@
     asking = { result };
   }
 
+  /** Save an edit from whichever field has focus. `requestSubmit` is the
+   * important part: it takes the form's ordinary submit handler, so validation
+   * and the guest-notification choice cannot be skipped by the shortcut. */
+  function saveEditKey(e: KeyboardEvent) {
+    if (!initial.isEdit || asking || e.defaultPrevented
+        || e.key !== 'Enter' || !(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+    if (!(e.target instanceof Node) || !panelEl?.contains(e.target)) return;
+    e.preventDefault();
+    formEl?.requestSubmit();
+  }
+
   /** The answer. The save happens here and nowhere else, which is what makes
    *  Cancel witnessable by the absence of one. */
   function confirmSave(notify: SendUpdates) {
@@ -485,6 +497,8 @@
   escapeCloses(() => !asking, () => oncancel());
 </script>
 
+<svelte:window onkeydown={saveEditKey} />
+
 <!-- A sibling of `.pop`, not a wrapper, so a click inside the panel never
      reaches this button. -->
 <button class="scrim" aria-label="Cancel" onclick={oncancel}></button>
@@ -498,6 +512,7 @@
   style="top:{pos.top}px; left:{pos.left}px"
 >
   <form
+    bind:this={formEl}
     onsubmit={(e) => {
       e.preventDefault();
       save();
@@ -899,7 +914,7 @@
             // on an event with guests opening the notify choice for a change
             // nobody had finished making. With a row highlighted, Return is
             // that row; otherwise it is whatever was typed, as ever.
-            if (e.key === 'Enter') {
+            if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
               e.preventDefault();
               const picked = hi >= 0 ? guestMatches[hi] : undefined;
               if (picked) pickGuest(picked);

@@ -3982,6 +3982,24 @@ test.describe('EventForm', () => {
     await expect(page.getByTestId('all-events-note')).toContainText('every occurrence an hour later');
   });
 
+  test('Ctrl+Enter saves an edit from inside a text field', async ({ page }) => {
+    await open(page, 'custom-repeat');
+    await page.getByLabel('Description', { exact: true }).fill('Ready to send');
+
+    await page.keyboard.press('Control+Enter');
+    const [saved] = await saves(page);
+    expect(saved.fields.description).toBe('Ready to send');
+    expect(await saves(page)).toHaveLength(1);
+  });
+
+  test('Ctrl+Enter keeps the guest notification choice in the save path', async ({ page }) => {
+    await open(page, 'with-guests');
+
+    await page.keyboard.press('Control+Enter');
+    await expect(page.getByRole('dialog', { name: 'Save event' })).toBeVisible();
+    expect(await saves(page)).toEqual([]);
+  });
+
   test('a one-off event offers no scope choice', async ({ page }) => {
     // Without this the scope spec above passes on a form that always shows
     // three radios, whatever it was given.

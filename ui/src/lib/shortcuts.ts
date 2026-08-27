@@ -147,6 +147,13 @@ export const CHORDS: { label: string; text: string; hint?: string }[] = [
     hint: 'opens the form on the day you are looking at, to fine-tune first' },
 ];
 
+/** A form chord rather than a bare key: it bubbles from any field to the form
+ * and submits through the same validation and guest-notification path as its
+ * Save button. */
+export const EDIT_CHORDS: { label: string; text: string; hint?: string }[] = [
+  { label: `${MOD_LABEL} Enter`, text: 'Save edits', hint: 'from anywhere in the edit form' },
+];
+
 /** Bare keys that belong to an open event rather than to the calendar.
  *
  * Kept out of `SHORTCUTS` because `App` deliberately ignores every key whose

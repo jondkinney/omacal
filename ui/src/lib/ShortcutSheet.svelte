@@ -2,7 +2,7 @@
 <script lang="ts">
   import { escapeCloses } from './dismiss.svelte';
   import {
-    CHORDS, EVENT_SHORTCUT_LIST, groupedShortcuts, SHORTCUT_TEXT,
+    CHORDS, EDIT_CHORDS, EVENT_SHORTCUT_LIST, groupedShortcuts, SHORTCUT_TEXT,
   } from './shortcuts';
 
   let { onclose }: { onclose: () => void } = $props();
@@ -61,6 +61,17 @@
     {#each EVENT_SHORTCUT_LIST as s (s.id)}
       <dt><kbd>{s.label}</kbd></dt>
       <dd><span class="what">{s.text}</span></dd>
+    {/each}
+  </dl>
+
+  <h3>Editing an event</h3>
+  <dl data-shortcut-scope="edit">
+    {#each EDIT_CHORDS as c (c.label)}
+      <dt><kbd>{c.label}</kbd></dt>
+      <dd>
+        <span class="what">{c.text}</span>
+        {#if c.hint}<em>{c.hint}</em>{/if}
+      </dd>
     {/each}
   </dl>
 
