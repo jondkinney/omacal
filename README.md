@@ -1,246 +1,105 @@
 # omacal
 
-A minimal desktop calendar client. Five views, live background sync, and
-full create/edit/delete against your real calendar — **Google Calendar,
-iCloud, or any CalDAV server**, including CalDAV **task lists** (VTODO)
-with tasks fully manageable (complete, add, delete) from the app. Meeting
-**invitations announce themselves** and can be accepted with one click, and
-the header's tray keeps score of everything that changed around your
-meetings: who declined, what moved, what was cancelled. A **read-only CLI**
-rides in the same binary — `omacal agenda --json` — with a shipped agent
-skill, so your terminal and your coding agent read the same calendar the
-app draws. Built with Tauri v2, Rust and Svelte 5, for Omarchy Linux
-first — with a signed, notarized macOS build alongside.
-
-iCloud connects with an app-specific password from appleid.apple.com — no
-OAuth dance. Edits on CalDAV events are etag-guarded (a change that raced
-another device tells you instead of clobbering); the one thing CalDAV
-calendars don't do yet is guest management, which stays a Google feature
-for now. Note that iCloud's CalDAV carries calendars and legacy task lists
-only — Apple's own Reminders app moved to a private store in 2019 and no
-third-party app can reach it.
-
-Colour comes from your Omarchy theme and follows `omarchy-theme-set` live, with
-no restart.
+A desktop calendar for Omarchy Linux — **Google Calendar, iCloud, or any
+CalDAV server**, with full create/edit/RSVP including recurring events at
+all three scopes, and a signed, notarized macOS build for the days you're
+not at the Arch machine. Tauri v2, Rust, Svelte 5. **No servers**: your
+events live in a local database, your tokens in your keyring, and nothing
+of yours passes through us.
 
 ![omacal's Week view on Omarchy](docs/images/omacal-week.webp)
+
+Most of what a calendar must do, every calendar does. What earns omacal
+its place:
+
+## Your terminal and your agent read the same calendar
+
+The app binary is also a CLI. Reads come straight off the local database —
+no network, no re-auth, working offline:
+
+    omacal agenda --json
+    omacal events list --from 2026-09-01 --to 2026-09-05 --json
+    omacal search quarterly review
+
+Writes — `events create / update / delete / respond` — are executed by the
+running app over a local socket, behind the same guards its own form has:
+the CLI **refuses to guess** which occurrences of a repeating event you
+mean, or whether guests get emailed. Stable JSON envelope, stable exit
+codes, never prompts.
+
+And wiring a coding agent is one command:
+
+    omacal skill install
+
+The agent skill ships inside the binary and **every update silently
+refreshes the installed copy**, so your agent never reads instructions for
+a binary that no longer matches. `omacal skill` prints it for any other
+framework; `omacal commands --json` is the machine-readable catalog.
+
+## Built into Omarchy, not just running on it
+
+Colours come from your Omarchy theme and follow `omarchy-theme-set` live,
+no restart. Installing also installs (and keeps updated) the
+`omacal.upcoming` bar widget: what's running now, today's remaining
+meetings, due tasks.
+
+## An invitation cannot slip past you
+
+A new invitation posts a desktop notification the moment sync sees it, and
+it **stays on screen until you deal with it** — click accepts the series.
+Miss it anyway and the header's envelope tray still holds it, with
+Yes / Maybe / No — alongside the rest of your meetings' news: who declined
+a meeting you organize, what got rescheduled ("Tue 15:30 → Wed 15:30"),
+what was cancelled. Deliberately quiet: only the invitation itself
+notifies; everything else is news in the app, not an interruption.
+
+## It never emails people on your behalf
+
+Dragging an event with guests asks first — *Move without notifying* is the
+default. Saving an edit **asks who to tell** rather than mailing the room;
+fixing a typo in an address notifies nobody. On CalDAV, edits are
+etag-guarded: a change that raced another device tells you instead of
+clobbering.
+
+## Sign-in with nothing to configure
+
+**No API key, no Google Cloud project, nothing to create.** Installed
+builds carry omacal's own Google-verified client — connecting is the
+ordinary consent screen and that's it. iCloud connects with an
+app-specific password from appleid.apple.com; any other CalDAV server
+with its own URL. CalDAV **task lists** (VTODO) come along, manageable
+from the app.
 
 ## Install
 
     curl -fsSL https://extremelabs.io/omacal/install.sh | sh
 
-Linux, x86_64. The latest release AppImage lands in `~/.local/bin/omacal` with
-a desktop entry. When a newer release exists the app says so in its header,
-and on this install path the notice carries an **Update button** — one click
-downloads the signed release, verifies it, and restarts. (Re-running the line
-above still works too.) The AppImage needs FUSE2 — stock Ubuntu 24.04+
-doesn't ship it, and the installer offers to add it there.
+Linux x86_64 — the AppImage lands in `~/.local/bin` with a desktop entry,
+and from then on the app updates itself: when a release exists, the header
+grows an **Update** button. A native `.deb` and `.rpm` are on the
+[releases page](https://github.com/x3me/omacal/releases).
 
-**On Debian/Ubuntu**, the `.deb` from the [releases
-page](https://github.com/x3me/omacal/releases) is the native path — no FUSE
-needed, dependencies resolved by apt:
-
-    sudo apt install ./omacal_<version>_amd64.deb
-
-The `.rpm` on the same page covers Fedora-family the same way.
-
-**On macOS** (Apple Silicon): [download the
+**macOS** (Apple Silicon): [download the
 .dmg](https://github.com/x3me/omacal/releases/latest/download/omacal.dmg),
-drag omacal to Applications, double-click — the build is signed with a
-Developer ID certificate and notarized by Apple, so there is no
-right-click ritual and no warning. From v0.5.0 on it updates itself the
-same way the AppImage does: the header's notice carries an Update button.
-(A build older than 0.5.0 is unsigned — update it by hand once via
-right-click → Open, and the button takes over.)
+drag to Applications, double-click — signed and notarized, no right-click
+ritual, same self-update.
 
-Then run `omacal` and click **Connect Google Calendar** — and that is the
-whole setup. **You do not need your own Google credentials, an API key, or a
-Google Cloud project. Nothing to create, nothing to configure.** Installed
-builds ship with omacal's own Google-verified sign-in, so connecting is the
-ordinary Google consent screen and nothing else. (There is an optional
-power-user section near the bottom about using your own credentials — if
-you're wondering whether it applies to you, it doesn't.)
+First sign-in stores the token in your keyring, so a minimal Hyprland
+session needs gnome-keyring, KeePassXC or kwallet running.
 
-One thing worth knowing on first sign-in: the token lands in your keyring,
-so a minimal Hyprland session needs gnome-keyring, KeePassXC or kwallet
-running.
+## The rest, briefly
 
-## What it does
+Five views (Day to a whole-year 14-row ribbon), keyboard-first — press
+`?` for every key. A list mode that **leaves empty days out**: a quiet
+month is four rows, not thirty-one headers. Search that resolves a
+recurring event to one result. Multiple accounts; per-calendar colours
+that stay local and never touch Google. Reminders that mirror what your
+phone fires, with editable fallbacks for shared calendars that have none.
 
-**Five views** — Day, Week, Month, Year (12-up) and Big Year (a 14-row ribbon of
-the whole year). Keys `1`–`5` switch between them; `h`/`l` step back and forward,
-`t` returns to today, `n` starts a new event, `/` opens search, `f` switches
-between grid and list, and `Escape` closes whatever is open. **Press `?` for the
-full list** — you never have to remember which key does what.
-
-| Month | Big Year |
-| --- | --- |
-| ![Month view](docs/images/omacal-month.webp) | ![Big Year view](docs/images/omacal-bigyear.webp) |
-
-**List mode** — the `▦`/`☰` control beside the view switcher, or `f`. It draws
-Day, Week and Month as a list of days rather than a grid, showing the time,
-title, calendar colour and location of each event, with all-day events first on
-their day. **Days with nothing on them are left out**, which is the point: a
-quiet month is four rows, not thirty-one headers. The choice sticks across views
-and restarts. Year and Big Year keep their shape — they exist to be scanned
-across a whole year, and the control is simply not there rather than there and
-doing nothing. Dragging is a grid gesture, so it is absent in a list; `n` and the
-event form still create.
-
-**Multiple Google accounts**, with per-calendar control over what is *displayed*
-and what is *fetched* — two separate switches, deliberately.
-
-**Events** — click one for its details: guest list with each person's answer,
-description, location, and a conferencing link when there is one. RSVP from the
-popover. Create, edit and delete, including recurring events at three scopes:
-this occurrence, this and following, all events.
-
-**Drag** to move an event, resize it by an edge, or sweep empty grid to start a
-new one. A drag never emails anybody by itself: moving an event with guests asks
-first, and *Move without notifying* is the default answer. Sweeping opens the
-event form pre-filled with the span rather than creating something untitled.
-
-**Guests** — add somebody by address, remove them, mark them optional. A
-brand-new event can carry guests from the start now, the same as one already on
-your calendar — omacal used to refuse that. **Save asks who to tell** rather
-than always mailing the room, which is the change worth knowing about if you
-used an earlier build: correcting a typo in an address no longer notifies
-everyone. The organizer cannot be removed, and removing *yourself* is offered
-but is not the same as declining — that is what the RSVP buttons are for.
-
-**Invitations** — a new invitation posts a desktop notification the moment
-sync sees it, and the notification **stays on screen until you deal with it**:
-on Omarchy, clicking it accepts the whole series (right-click dismisses
-without answering). The header shows an envelope badge while anything awaits
-you, opening a tray with Yes / Maybe / No on every unanswered invitation —
-so a missed notification is never a missed invitation. The same tray carries
-the rest of a meeting's news: **who declined** a meeting you organize, and
-meetings you attend that were **rescheduled** ("Tue 15:30 → Wed 15:30") or
-**cancelled** — each with an acknowledge ×, each section with Dismiss all.
-Deliberately quiet: only the invitation itself notifies; everything else is
-news in the app, not an interruption.
-
-**The Omarchy bar widget** — installing omacal on Omarchy 4 also installs
-(and keeps updated) an `omacal.upcoming` bar widget: a popup with what is
-running now, today's remaining meetings, all-day spans, and due tasks, plus
-Sync and Quit. Click its Open button and you land on the app wherever it
-lives, workspaces notwithstanding.
-
-**Search** — `/`, or the magnifier in the header. Titles only, results as you
-type, nearest to today first in either direction. A recurring event is one
-result rather than one per occurrence, resolved to the occurrence nearest today.
-It searches only calendars you display: a result on a hidden calendar is one you
-could not land on.
-
-**The CLI** — the same binary drives the calendar from a terminal: `omacal
-agenda` for the week ahead, `omacal events list --from … --to …`, `omacal
-search <query>`, `omacal calendars` — and since v0.7.0 it writes too:
-`omacal events create/update/delete/respond`, executed by the running app
-through the same guards its form has. Everything speaks `--json` (stable
-envelope, stable exit codes, never prompts); `omacal cli-help` has the
-details.
-
-**Wiring an agent takes one command** — the binary carries its own skill:
-
-    omacal skill install
-
-That installs it to `~/.agents/skills/omacal` and links it for Claude Code,
-and every omacal update silently refreshes it, so your agent never reads
-instructions for a binary that no longer matches. `omacal skill` prints the
-same document for any other agent framework. (The source lives at
-`skills/omacal/` in this repo.)
-
-**Settings** — behind the hamburger, in four tabs. **General** carries the sync
-interval — which used to require editing the database by hand — the calendar new
-events land on, and whether times read as `13:30` or `1:30 PM` (the hour ruler
-down the side of Day and Week follows the same choice). **Calendars** holds the same rows as the header's
-picker, each with a **colour** you choose from a curated set — *local to
-omacal*, never written to Google, so your phone, the web UI and anyone sharing
-the calendar are untouched. **Accounts** lists what is connected, each with a
-**Sign out** that removes the account's local data and, for Google, revokes
-omacal's own access server-side. **Notifications** turns reminders on and off,
-and holds the fallback reminders described below.
-
-**Sync** runs every five minutes, on window focus, and after every write. Its
-state is a small dot in the header rather than a sentence: quiet when everything
-is current, and hovering says exactly when.
-
-**Notifications** come from each event's own Google reminders, falling back to
-the calendar's defaults, so what fires here matches what your phone does — and
-the event form shows those reminders and lets you edit them, on create and on
-edit. On a shared calendar where your account has no reminders at all, omacal's
-own **fallback reminders** step in — 60 and 10 minutes out of the box, editable
-in Settings → Notifications — never overriding an event's or a calendar's real
-reminders, and never touching all-day events. Only `popup` reminders fire —
-Google sends the email ones itself. One missed while
-the app was shut fires at the next launch if the meeting has not ended yet.
-There is a tray and start-on-login, and closing the window hides it rather than
-quitting, because a closed window that stopped firing reminders would be a bug.
-On macOS this needs a signed bundle to be reliable and omacal is unsigned, so
-the path is wired but allowed to fail quietly; Omarchy is where it is built to
-work, over D-Bus.
-
-## What is not built
-
-**Offline writes** — a save needs the network, and says so rather than queueing.
-
-**Reliable notifications on macOS**, which needs a signed bundle; see above.
-Click-to-accept on invitation notifications is likewise Omarchy's — macOS
-still gets the tray.
-
-All three residuals recorded in §7 of
-[`docs/superpowers/specs/2026-08-08-omacal-form-time-boundary-design.md`](docs/superpowers/specs/2026-08-08-omacal-form-time-boundary-design.md)
-are now closed. All-day events are placed by their own calendar's date rather
-than your system zone (§7.1). Toggling **All day** off no longer lands on a span
-Save refuses, and no longer quietly writes times invented from the calendar's
-UTC offset (§7.2). A time typed into an hour that does not exist — a
-daylight-saving spring-forward — is still refused, which is correct, but the
-form now names it and says why instead of leaving Save dead with no field
-looking wrong (§7.3).
-
-## Building from source
-
-    npm --prefix ui install               # once, after cloning
-    OMACAL_SEED_DEMO=1 cargo tauri dev   # look at it now, with synthetic data
-    cargo tauri dev                       # your real calendar (needs setup — see the guides)
-    cargo test --workspace                # Rust suite
-    npm --prefix ui run test:ui           # UI suite
-
-A source build signs in with your own Google Cloud credentials via
-`~/.config/omacal/config.toml`, which always wins over anything embedded.
-Setup: [`docs/running-on-macos.md`](docs/running-on-macos.md) ·
-[`docs/running-on-omarchy.md`](docs/running-on-omarchy.md)
-
-## Optional: your own Google credentials
-
-**Most people should skip this section — the installed app needs nothing
-from it.** Sign-in works out of the box with omacal's own verified client,
-as the Install section says. This exists for exactly two audiences: people
-**building from source** (a source build carries no embedded client, so it
-needs yours — see above), and power users who *prefer* their sign-in to run
-under their own Google Cloud project, on their own quota, with us entirely
-out of the loop. If neither is you, there is nothing to do here.
-
-For those two: create a free Google Cloud project with the Calendar API and
-a Desktop OAuth client, and put the pair in `~/.config/omacal/config.toml`:
-
-    client_id = "YOUR_ID.apps.googleusercontent.com"
-    client_secret = "..."
-
-A present config file **always wins** over the shipped credentials — the
-precedence is pinned by tests. Either way the token only ever lands in your
-keyring and your calendar data stays in a local database: there are no
-servers behind this app. Setup walkthrough:
-[`docs/running-on-macos.md`](docs/running-on-macos.md) (the Cloud-project
-steps are the same on Linux).
-
-## Design and history
-
-Specs and implementation plans live under
-[`docs/superpowers/`](docs/superpowers/). They are the real record of why things
-are the way they are — particularly the recurring-event write path, where the
-difference between "this occurrence" and "the whole series" is the difference
-between one edit and an email to everybody on the invitation.
+Building from source and using your own Google credentials:
+[`docs/running-on-omarchy.md`](docs/running-on-omarchy.md) ·
+[`docs/running-on-macos.md`](docs/running-on-macos.md). The design record
+lives under [`docs/superpowers/`](docs/superpowers/).
 
 ## License
 
