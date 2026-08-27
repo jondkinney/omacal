@@ -4508,6 +4508,75 @@ test.describe('EventForm', () => {
     await expect(page.getByRole('button', { name: 'Link' })).not.toBeFocused();
   });
 
+  test('Shift+Tab resolves list carets exposed at parent and editor boundaries', async ({ page }) => {
+    for (const boundary of ['parent', 'editor'] as const) {
+      await open(page, 'create');
+      const editor = page.getByLabel('Description', { exact: true });
+      await editor.evaluate((element, kind) => {
+        element.innerHTML = '<h3>Heading</h3><ul><li id="parent">Parent<ul><li>Child</li></ul></li></ul>';
+        const parent = element.querySelector('#parent');
+        if (!parent) throw new Error('expected a parent list item');
+        (element as HTMLElement).focus();
+        const range = document.createRange();
+        if (kind === 'parent') range.setStart(parent, 1);
+        else range.setStart(element, 2);
+        range.collapse(true);
+        const selection = window.getSelection();
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+      }, boundary);
+
+      await editor.press('Shift+Tab');
+      const topItems = editor.locator('ul').first().locator(':scope > li');
+      await expect(topItems).toHaveCount(2);
+      await expect(topItems.nth(1)).toHaveText('Child');
+      await expect(editor).toBeFocused();
+      await expect(page.getByRole('button', { name: 'Link' })).not.toBeFocused();
+    }
+  });
+
+  test('Shift+Tab restores a displaced WebKit list caret while Description still owns focus', async ({ page }) => {
+    await open(page, 'create');
+    const editor = page.getByLabel('Description', { exact: true });
+    await editor.pressSequentially('- ');
+    await page.keyboard.type('Parent');
+    await editor.press('Enter');
+    await page.keyboard.type('Child');
+    await editor.press('Tab');
+
+    const result = await editor.evaluate((element) => {
+      const childText = element.querySelector('ul > li > ul > li')?.firstChild;
+      const outsideText = document.querySelector('[aria-label="Link"]')?.firstChild;
+      if (!(childText instanceof Text) || !(outsideText instanceof Text)) throw new Error('expected probe text nodes');
+      const selection = window.getSelection();
+      const listCaret = document.createRange();
+      listCaret.setStart(childText, 2);
+      listCaret.collapse(true);
+      selection?.removeAllRanges();
+      selection?.addRange(listCaret);
+      document.dispatchEvent(new Event('selectionchange'));
+
+      // Match WebKit's observed transient state: the contenteditable remains
+      // focused but the document Selection points at text outside it.
+      const displaced = document.createRange();
+      displaced.setStart(outsideText, 0);
+      displaced.collapse(true);
+      selection?.removeAllRanges();
+      selection?.addRange(displaced);
+      document.dispatchEvent(new Event('selectionchange'));
+      const event = new KeyboardEvent('keydown', {
+        key: 'Unidentified', code: 'Tab', shiftKey: true, bubbles: true, cancelable: true,
+      });
+      element.dispatchEvent(event);
+      return { dispatched: !event.defaultPrevented, active: document.activeElement?.getAttribute('aria-label') };
+    });
+
+    expect(result).toEqual({ dispatched: false, active: 'Description' });
+    const topItems = editor.locator('ul').first().locator(':scope > li');
+    await expect(topItems).toHaveCount(2);
+    await expect(topItems.nth(1)).toHaveText('Child');
+  });
+
   test('list indent controls preserve normal Tab navigation and cannot eject a first item', async ({ page }) => {
     await open(page, 'create');
     const editor = page.getByLabel('Description', { exact: true });
