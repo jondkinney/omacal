@@ -9,6 +9,7 @@
   import { placePopover, type Rect } from './position';
   import { REMINDER_UNITS, reminderAmountOf, reminderMax, reminderUnitOf } from './reminders';
   import { offerableCalendarId, writableCalendars, type Calendar } from './calendars';
+  import CalendarPicker from './CalendarPicker.svelte';
   import SaveConfirm from './SaveConfirm.svelte';
   import type { SendUpdates } from './eventdetail';
   import {
@@ -248,15 +249,10 @@
    *  whether other people are about to be mailed. */
   const verb = $derived<'Save' | 'Create'>(initial.isEdit ? 'Save' : 'Create');
   const showScope = $derived(initial.isEdit && initial.isRecurring);
-  const accounts = $derived(new Set(offerable.map((c) => c.account_email)).size);
 
-  // The chosen calendar's colour, worn beside the picker: names identify
-  // calendars to a reader who knows them, colour to everyone (2026-08-10, by
-  // request). `color_hex` is already the effective colour — the store
-  // COALESCEs the local override in — so this cannot disagree with the grid.
-  const chosenColor = $derived(
-    offerable.find((c) => c.id === value.calendarId)?.color_hex ?? 'var(--accent)',
-  );
+  /** Whether the calendar dot's list is open — bindable into the picker so
+   *  the Escape guard below can subordinate the form to it. */
+  let calOpen = $state(false);
 
   let panelEl: HTMLDivElement | undefined = $state();
   let formEl: HTMLFormElement | undefined = $state();
@@ -494,7 +490,18 @@
   // to, so without this one Escape would dismiss the choice *and* close the
   // form behind it — losing everything typed into it, for a keystroke that
   // meant "not that dialog".
-  escapeCloses(() => !asking, () => oncancel());
+  // One listener owns both layers. Splitting this across the form and the
+  // picker was tried and is exactly the double-close the dismiss module
+  // warns about: the child's effect flushes before the parent's, so its
+  // listener ran first, closed the picker, and this guard — reading state,
+  // not history — then closed the form off the same press.
+  escapeCloses(() => !asking, () => {
+    if (calOpen) {
+      calOpen = false;
+      return;
+    }
+    oncancel();
+  });
 </script>
 
 <svelte:window onkeydown={saveEditKey} />
@@ -522,11 +529,24 @@
       invalidField = null;
     }}
   >
-    <label class="field">
-      <span class="lab">Title</span>
-      <input class="title" bind:this={titleEl} bind:value={value.title} placeholder="Add a title" />
-    </label>
+    <!-- The reference's headline gesture (macOS Calendar, 2026-08-28): the
+         title reads as a heading and the calendar is the colour dot at its
+         right, expanding to the account-grouped list. `aria-label` keeps the
+         name the visible "Title" label used to provide. -->
+    <div class="titlerow">
+      <input class="title" aria-label="Title" bind:this={titleEl} bind:value={value.title}
+             placeholder="Add a title" />
+      <CalendarPicker
+        calendars={offerable}
+        value={value.calendarId}
+        disabled={initial.isEdit}
+        disabledReason="An event cannot be moved between calendars from omacal"
+        bind:open={calOpen}
+        onpick={(id) => (value.calendarId = id)}
+      />
+    </div>
 
+    <div class="card">
     <label class="allday">
       <!-- Not `bind:checked`: what a flick does is a rule with specs on it,
            and it lives in `toggledAllDay` so those specs exercise the real
@@ -595,7 +615,9 @@
         {zwhen.start}–{zwhen.end} <span>{zwhen.label}</span>
       </p>
     {/if}
+    </div>
 
+    <div class="card">
     <label class="field">
       <span class="lab">Location</span>
       <input bind:value={value.location} placeholder="Add a location" />
@@ -641,13 +663,14 @@
         <p class="videohint">This event’s existing video call will be preserved.</p>
       {/if}
     </div>
+    </div>
 
     <!-- The event's popup reminders, as rows (reminders spec §3). Whether a
          save carries them at all is `toEventInput`'s unchanged-means-absent
          rule; nothing here decides that. The `email` rows are deliberately
          not rendered — Google sends those — but they count toward Google's
          cap of 5, which is why the add control reads the sum. -->
-    <div class="field" role="group" aria-label="Reminders">
+    <div class="field card" role="group" aria-label="Reminders">
       <span class="lab">Notify</span>
       <div class="reminders">
         {#each value.popupReminders as _, i}
@@ -701,7 +724,7 @@
       </div>
     </div>
 
-    <label class="field">
+    <label class="field card">
       <span class="lab">Description</span>
       <!-- A textarea, and never anything rendered. Descriptions arrive from
            whoever created the event — anyone who knows the user's email can put
@@ -711,32 +734,11 @@
       <textarea rows="3" bind:value={value.description}></textarea>
     </label>
 
+    <div class="card">
     <label class="field">
-      <span class="lab">Calendar</span>
       <!-- `aria-label`, even though the wrapping `<label>` already names it:
            a label that wraps a `<select>` also wraps every `<option>`, so its
-           text content is "Calendar Personal Team" and the accessible name
-           would carry the whole list with it. The same applies to Repeat
-           below; the plain inputs need nothing, having no text of their own. -->
-      <div class="calrow">
-        <span class="caldot" aria-hidden="true" style="background:{chosenColor}"></span>
-        <select
-          aria-label="Calendar"
-          bind:value={value.calendarId}
-          disabled={initial.isEdit}
-          title={initial.isEdit ? 'An event cannot be moved between calendars from omacal' : undefined}
-        >
-          {#each offerable as c (c.id)}
-            <!-- The option text tinted too, where the engine honours it in
-                 the dropped-down list; the dot above is the guarantee. -->
-            <option value={c.id} style="color: {c.color_hex ?? 'inherit'}"
-              >{accounts > 1 ? `${c.summary} · ${c.account_email}` : c.summary}</option>
-          {/each}
-        </select>
-      </div>
-    </label>
-
-    <label class="field">
+           text content would carry the whole list with it. -->
       <span class="lab">Repeat</span>
       <select aria-label="Repeat" bind:value={value.repeat}>
         {#if isCustom}
@@ -810,6 +812,7 @@
         omacal cannot write this rule. Choosing any other option replaces it.
       </p>
     {/if}
+    </div>
 
     {#if showScope}
       <div class="scope" role="radiogroup" aria-label="Apply to">
@@ -846,7 +849,7 @@
          appears. All three are right — there is no organizer row and no self
          row on an event that does not exist yet. -->
     {#if provider === 'google'}
-    <div class="guests" data-testid="guests">
+    <div class="guests card" data-testid="guests">
       <span class="lab">Guests</span>
       <ul>
         {#each value.guests as g (g.email)}
@@ -989,10 +992,33 @@
 
   .pop { position: fixed; z-index: 41; width: 320px; max-height: 80vh; overflow-y: auto;
          background: var(--surface); border: 1px solid var(--hairline);
-         border-radius: 8px; padding: 12px 14px; box-shadow: 0 8px 28px rgba(0, 0, 0, .45);
+         border-radius: 10px; padding: 12px 14px; box-shadow: 0 8px 28px rgba(0, 0, 0, .45);
          font-size: 12px; color: var(--text); }
 
+  /* A brief entrance, not a production: the panel settles rather than pops.
+     Transform only, so the placement measured in onMount is never disturbed. */
+  @media (prefers-reduced-motion: no-preference) {
+    .pop { animation: pop-in .12s ease-out; }
+  }
+  @keyframes pop-in {
+    from { opacity: 0; transform: scale(.98) translateY(3px); }
+  }
+
   form { display: flex; flex-direction: column; gap: 8px; }
+
+  /* The reference's grouped blocks: each card is one question the form asks
+     — when, where, notify, what, how often, who. Wrappers and paint only;
+     every control inside keeps its name and its rules. */
+  .card { display: flex; flex-direction: column; gap: 8px; padding: 9px 10px;
+          border-radius: 8px;
+          background: color-mix(in srgb, var(--text) 4%, transparent); }
+
+  .titlerow { display: flex; align-items: center; gap: 8px; }
+  .titlerow .title { flex: 1; font-size: 15px; font-weight: 600;
+                     background: none; border: 0; border-radius: 0;
+                     padding: 2px 0; }
+  .titlerow .title:focus { outline: none;
+                           box-shadow: inset 0 -1.5px 0 var(--accent); }
 
   .field { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
   .lab { font-size: 9.5px; color: var(--muted); letter-spacing: .05em; }
@@ -1031,11 +1057,7 @@
   }
   select:disabled { opacity: .6; }
 
-  .calrow { display: flex; align-items: center; gap: 7px; }
-  .calrow select { flex: 1; min-width: 0; }
-  .caldot { width: 10px; height: 10px; border-radius: 3px; flex: none; }
   textarea { resize: vertical; line-height: 1.45; }
-  .title { font-size: 13px; }
 
   .weekdayfield { display: flex; flex-direction: column; gap: 4px; }
   .weekdayrow { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }

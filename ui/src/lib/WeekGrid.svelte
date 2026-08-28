@@ -17,8 +17,12 @@
   } from './drag';
   import { cursorNamesEvent, type KeyboardCursor } from './keyboardnav';
 
-  let { week, weather = null, formPreview = null, revealNowRequest = 0, keyboardCursor = null, oncreate, onedit, ondelete, oncopy, onmove, onresponded }: {
+  let { week, weather = null, formPreview = null, revealNowRequest = 0, keyboardCursor = null, onpan = null, oncreate, onedit, ondelete, oncopy, onmove, onresponded }: {
     week: WeekPayload;
+    /** A horizontal wheel/trackpad gesture asking the window to slide by
+     *  whole days — positive is forward. Optional: a grid without it (a
+     *  future embedding) simply keeps the wheel native. */
+    onpan?: ((days: number) => void) | null;
     /** The forecast by ISO date (`weather.ts`), or null for none — off, not
      *  yet fetched, or failed all look the same here: a header with no sky,
      *  which is what this header looked like for its whole life until now. */
@@ -825,9 +829,29 @@
     // The override bridges the visible gap; this is what closes it for real.
     onresponded?.();
   }
+
+  /** Horizontal panning (spec 2026-08-28 §3): 90px of deltaX per day, the
+   *  residue decaying after a 250ms lull so one gesture never leaks into the
+   *  next. Only a dominantly horizontal wheel is consumed — vertical
+   *  scrolling through the hours stays entirely native. */
+  const PAN_STEP_PX = 90;
+  let panAccum = 0;
+  let panDecay: ReturnType<typeof setTimeout> | undefined;
+  function wheelPan(e: WheelEvent) {
+    if (!onpan || Math.abs(e.deltaX) <= Math.abs(e.deltaY)) return;
+    e.preventDefault();
+    panAccum += e.deltaX;
+    const days = Math.trunc(panAccum / PAN_STEP_PX);
+    if (days !== 0) {
+      panAccum -= days * PAN_STEP_PX;
+      onpan(days);
+    }
+    clearTimeout(panDecay);
+    panDecay = setTimeout(() => (panAccum = 0), 250);
+  }
 </script>
 
-<div class="grid" style="--cols:{week.days.length}; --gutter:{gutterWidth()}">
+<div class="grid" style="--cols:{week.days.length}; --gutter:{gutterWidth()}" onwheel={wheelPan}>
   <div class="gutter head">
     {#if secondZone()}
       <!-- Which clock is which, Google's own layout: the convenience zone in
@@ -877,7 +901,7 @@
   onopen={openPopover}
 />
 
-<div class="grid body" style="--cols:{week.days.length}; --gutter:{gutterWidth()}" bind:this={bodyEl} data-testid="week-body">
+<div class="grid body" style="--cols:{week.days.length}; --gutter:{gutterWidth()}" bind:this={bodyEl} data-testid="week-body" onwheel={wheelPan}>
   <div class="gutter">
     {#each HOURS as h}
       {#if secondZone()}

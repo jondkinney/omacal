@@ -1751,7 +1751,9 @@ test.describe('App', () => {
 
     await page.keyboard.press('n');
     await expect(newForm(page)).toBeVisible();
-    await expect(newForm(page).getByLabel('Calendar')).toHaveValue('8');
+    await newForm(page).getByRole('button', { name: 'Calendar' }).click();
+    await expect(newForm(page).getByRole('option', { name: 'Team' }))
+      .toHaveAttribute('aria-selected', 'true');
   });
 
   test('a default meeting duration chosen in Settings is used by n immediately', async ({ page }) => {
@@ -1783,9 +1785,10 @@ test.describe('App', () => {
     await page.keyboard.press('n');
     await expect(newForm(page)).toBeVisible();
 
-    const dot = newForm(page).locator('.caldot');
+    const dot = newForm(page).getByRole('button', { name: 'Calendar' }).locator('i');
     await expect(dot).toHaveCSS('background-color', 'rgb(91, 141, 239)'); // Personal #5b8def
-    await newForm(page).getByLabel('Calendar').selectOption('8');
+    await newForm(page).getByRole('button', { name: 'Calendar' }).click();
+    await newForm(page).getByRole('option', { name: 'Team' }).click();
     await expect(dot).toHaveCSS('background-color', 'rgb(47, 191, 113)'); // Team #2fbf71
   });
 
@@ -1824,7 +1827,7 @@ test.describe('App', () => {
     await page.keyboard.press('n');
     await expect(newForm(page)).toBeVisible();
     const appearance = await newForm(page)
-      .getByLabel('Calendar')
+      .getByLabel('Repeat', { exact: true })
       .evaluate((el) => getComputedStyle(el).appearance);
     expect(appearance).toBe('none');
   });
@@ -3500,6 +3503,58 @@ test.describe('App: keyboard event navigation', () => {
     await expect(confirm).toBeVisible();
     await expect(confirm.locator('h2')).toContainText('Review notes');
     expect(await deleteCalls(page)).toEqual([]);
+  });
+});
+
+test.describe('App: week panning', () => {
+  const callsTo = (page: Page, cmd: string): Promise<any[]> =>
+    page.evaluate(
+      (c) => window.__harness.calls.filter((call) => call.cmd === c).map((call) => call.args),
+      cmd,
+    );
+
+  test.beforeEach(async ({ page }) => {
+    await page.goto(app('writable'));
+    await expect(page.locator('[data-testid="week-body"]')).toBeVisible();
+  });
+
+  test('a horizontal wheel slides the week by days and Today re-aligns it', async ({ page }) => {
+    // The aligned start is whatever the app itself first fetched — the
+    // writable fixture runs on the real clock, so a pinned constant here
+    // would be asserting somebody else's week (it was, and failed).
+    const [first] = await callsTo(page, 'get_week');
+    const aligned = first.weekStartMs;
+
+    await page.locator('[data-testid="week-body"]').hover();
+    // 180px at 90px/day = exactly two days forward, in one gesture. The
+    // test environment's zone is UTC, so day arithmetic by constant is safe
+    // *here*; the app's own arithmetic goes through Date, as the spec asks.
+    await page.mouse.wheel(180, 0);
+    await expect
+      .poll(async () => (await callsTo(page, 'get_range')).map((a) => a.dayStartMs))
+      .toContain(aligned + 2 * 86_400_000);
+    const ranges = await callsTo(page, 'get_range');
+    // A panned fixed week still shows its full seven days (spec §3).
+    expect(ranges[ranges.length - 1].dayCount).toBe(7);
+
+    // Today ends the peek: the very next week fetch is the aligned Monday
+    // again, through get_week — the pre-pan path, byte for byte.
+    const weeksBefore = (await callsTo(page, 'get_week')).length;
+    await page.keyboard.press('t');
+    await expect
+      .poll(async () => (await callsTo(page, 'get_week')).length)
+      .toBeGreaterThan(weeksBefore);
+    const weeks = await callsTo(page, 'get_week');
+    expect(weeks[weeks.length - 1].weekStartMs).toBe(aligned);
+  });
+
+  test('a vertical wheel scrolls and never pans', async ({ page }) => {
+    await page.locator('[data-testid="week-body"]').hover();
+    await page.mouse.wheel(0, 240);
+    // Absence needs a beat to be meaningful — a fetch would have been issued
+    // synchronously with the effect flush this wait outlives.
+    await page.waitForTimeout(200);
+    expect(await callsTo(page, 'get_range')).toEqual([]);
   });
 });
 

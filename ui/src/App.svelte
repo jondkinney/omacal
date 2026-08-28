@@ -116,6 +116,26 @@
     weekStartsToday ? anchorMs : weekStart(new Date(anchorMs))
   );
 
+  /** Days the Week window is slid off its configured alignment by the
+   *  horizontal-pan gesture (spec 2026-08-28 §3). `h`/`l` step with the
+   *  offset kept — a window shifted two days stays shifted while stepping
+   *  weeks — and Today zeroes it: the gesture peeks ahead, Today restores
+   *  the settings-standard view. Day arithmetic, never ±86400000. */
+  let weekPanDays = $state(0);
+  const pannedWeekStartMs = $derived(
+    weekPanDays === 0 ? weekStartMs : shiftKeyboardDay(weekStartMs, weekPanDays)
+  );
+
+  /** The wheel gesture, from WeekGrid. In Day view there is no alignment to
+   *  preserve — the day itself moves; anywhere else the offset absorbs it. */
+  function panView(days: number) {
+    if (view === 'day') {
+      anchorMs = shiftKeyboardDay(anchorMs, days);
+      return;
+    }
+    weekPanDays += days;
+  }
+
   let week = $state<WeekPayload | null>(null);
   let month = $state<MonthPayload | null>(null);
   let year = $state<YearPayload | null>(null);
@@ -318,9 +338,9 @@
     return event ? `Selected ${event.title} on ${day}` : `Selected ${day}`;
   });
 
-  function shiftKeyboardDay(startMs: number, dir: -1 | 1): number {
+  function shiftKeyboardDay(startMs: number, days: number): number {
     const d = new Date(startMs);
-    d.setDate(d.getDate() + dir);
+    d.setDate(d.getDate() + days);
     d.setHours(0, 0, 0, 0);
     return d.getTime();
   }
@@ -612,9 +632,13 @@
     // guarantee depends on this value reaching Day view unmodified).
     if (view === 'day') return { kind: 'day', target: anchorMs };
     if (view === 'week') {
-      return weekStartsToday
-        ? { kind: 'range', target: weekStartMs, days: weekViewDays }
-        : { kind: 'week', target: weekStartMs };
+      // A panned week is by definition unaligned, so it fetches through the
+      // same arbitrary-start range the rolling week uses — a fixed week that
+      // slides shows its full 7 days, just starting where the pan left it.
+      return weekStartsToday || weekPanDays !== 0
+        ? { kind: 'range', target: pannedWeekStartMs,
+            days: weekStartsToday ? weekViewDays : 7 }
+        : { kind: 'week', target: pannedWeekStartMs };
     }
     if (view === 'month') {
       const d = new Date(anchorMs);
@@ -792,6 +816,8 @@
 
   function goToday() {
     const today = dayStart(Date.now());
+    // The pan is a peek; Today is the contract that ends it (spec §3).
+    weekPanDays = 0;
     pendingKeyboardDay = null;
     pendingEventMove = null;
     selectKeyboard(dayCursor(today));
@@ -1609,7 +1635,7 @@
 >
   <Header
     bind:settingsOpen
-    {status} {anchorMs} {weekStartMs} {weekStartsToday} weekDays={weekViewDays}
+    {status} {anchorMs} weekStartMs={pannedWeekStartMs} {weekStartsToday} weekDays={weekViewDays}
     {busy} {error} {calendars} {view} {listMode}
     onToggleList={toggleList}
     onPrev={() => step(-1)}
@@ -1692,6 +1718,7 @@
     {:else}
       <WeekGrid {week} {weather} {formPreview} {revealNowRequest}
                 keyboardCursor={visibleKeyboardCursor}
+                onpan={panView}
                 oncreate={newEventAt} onedit={openEdit} ondelete={askDelete}
                 oncopy={copyOccurrence}
         onmove={moveOccurrence} onresponded={refreshAfterWrite} />

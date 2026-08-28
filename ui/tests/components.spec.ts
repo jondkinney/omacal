@@ -3742,12 +3742,30 @@ test.describe('EventForm', () => {
     // either produces a Save that can only fail. Two unwritable roles, not
     // one, so a filter written as "anything but reader" is caught too.
     await open(page, 'create');
-    const select = page.getByLabel('Calendar', { exact: true });
-    await expect(select.locator('option')).toHaveCount(2);
-    await expect(select.locator('option')).toHaveText(['Personal', 'Team']);
+    await page.getByRole('button', { name: 'Calendar' }).click();
+    const list = page.getByRole('listbox', { name: 'Calendar' });
+    await expect(list.getByRole('option')).toHaveCount(2);
+    await expect(list.getByRole('option', { name: 'Personal' })).toBeVisible();
+    await expect(list.getByRole('option', { name: 'Team' })).toBeVisible();
     for (const name of FORM_UNWRITABLE_NAMES) {
-      await expect(select.locator('option').filter({ hasText: name })).toHaveCount(0);
+      await expect(list.getByRole('option').filter({ hasText: name })).toHaveCount(0);
     }
+    // One account offers every row, so no account heading earns its place —
+    // the single-account rule the old select's `summary · email` suffix had.
+    await expect(list.locator('.acct')).toHaveCount(0);
+  });
+
+  test('Escape closes the calendar list and not the form under it', async ({ page }) => {
+    // The layering property every stacked panel here relies on: the form's
+    // escape guard is registered first and checks the picker's own state, so
+    // one press peels one layer. Both halves asserted — the list gone, the
+    // dialog still standing — because closing both also "closes the list".
+    await open(page, 'create');
+    await page.getByRole('button', { name: 'Calendar' }).click();
+    await expect(page.getByRole('listbox', { name: 'Calendar' })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('listbox', { name: 'Calendar' })).toHaveCount(0);
+    await expect(page.getByRole('dialog', { name: 'New event' })).toBeVisible();
   });
 
   test('a create seeded with a calendar it cannot write to falls back to one it can', async ({ page }) => {
@@ -3756,9 +3774,10 @@ test.describe('EventForm', () => {
     // then sent that id with nothing on screen to say so. Task 10 chooses this
     // seed, so the shape is reachable from the next task rather than theoretical.
     await open(page, 'create-seeded-unwritable');
-    const select = page.getByLabel('Calendar', { exact: true });
-    await expect(select).not.toHaveValue('');
-    await expect(select).toHaveValue(String(FORM_FALLBACK_ID));
+    await page.getByRole('button', { name: 'Calendar' }).click();
+    await expect(page.getByRole('option', { name: 'Personal' }))
+      .toHaveAttribute('aria-selected', 'true'); // FORM_FALLBACK_ID's summary
+    await page.keyboard.press('Escape');
 
     await page.getByRole('button', { name: 'Create' }).click();
     const [saved] = await saves(page);
@@ -3774,10 +3793,10 @@ test.describe('EventForm', () => {
     // discards the choice. Both arms in one spec: `disabled={true}` always
     // would pass the edit half on its own.
     await open(page, 'create');
-    await expect(page.getByLabel('Calendar', { exact: true })).toBeEnabled();
+    await expect(page.getByRole('button', { name: 'Calendar' })).toBeEnabled();
 
     await open(page, 'with-guests');
-    await expect(page.getByLabel('Calendar', { exact: true })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Calendar' })).toBeDisabled();
   });
 
   test('moving the start date takes the end date with it', async ({ page }) => {
