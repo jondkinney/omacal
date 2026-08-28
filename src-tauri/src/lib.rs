@@ -160,6 +160,24 @@ fn get_palette() -> theme::Palette {
     theme::resolve(theme::omarchy_theme_dir().as_deref())
 }
 
+/// WebKitGTK draws its form-control popups — the `<select>` menu, the date
+/// picker's calendar — with the **GTK theme**, not the page's `color-scheme`,
+/// so the webview's own dark declaration (theme.ts) never reaches them and
+/// they open white over a dark app. GTK has to be told separately. Main
+/// thread only: GTK settings are not Send, so the theme watcher routes its
+/// calls through `run_on_main_thread`.
+pub(crate) fn apply_gtk_dark_hint(is_dark: bool) {
+    #[cfg(target_os = "linux")]
+    {
+        use gtk::prelude::GtkSettingsExt;
+        if let Some(settings) = gtk::Settings::default() {
+            settings.set_gtk_application_prefer_dark_theme(is_dark);
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = is_dark;
+}
+
 /// The date this process was launched to show, if any — and taking it *is*
 /// the read, so a remount can never replay it. See `AppState::open_date`.
 #[tauri::command]
@@ -1225,6 +1243,10 @@ pub fn run() {
                 open_date: std::sync::Mutex::new(open_date),
             });
             sync_loop::spawn(app.handle().clone());
+            // Setup runs on the main thread, and the palette is resolved the
+            // same way get_palette resolves it for the page — the two answers
+            // cannot disagree on which side of dark the theme is.
+            apply_gtk_dark_hint(theme::resolve(theme::omarchy_theme_dir().as_deref()).is_dark);
             theme_watch::spawn(app.handle().clone());
             #[cfg(target_os = "linux")]
             tz_watch::spawn(app.handle().clone());

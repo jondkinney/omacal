@@ -51,6 +51,11 @@ pub fn spawn(app: AppHandle) {
             let next = crate::theme::resolve(crate::theme::omarchy_theme_dir().as_deref());
             if next != last {
                 tracing::info!("theme changed, repainting");
+                // GTK's dark hint follows the palette so the webview's native
+                // popups flip with the page. Through the main thread — GTK
+                // settings must not be touched from this watcher thread.
+                let dark = next.is_dark;
+                let _ = app.run_on_main_thread(move || crate::apply_gtk_dark_hint(dark));
                 let _ = app.emit("theme-changed", next.clone());
                 last = next;
             }

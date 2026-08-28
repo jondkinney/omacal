@@ -3087,6 +3087,7 @@ dependencies = [
  "anyhow",
  "block2",
  "futures-util",
+ "gtk",
  "jiff",
  "keyring",
  "libc",
