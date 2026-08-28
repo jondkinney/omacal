@@ -1,4 +1,4 @@
-//! Opening a URL in the user's browser — without handing the browser this
+//! Opening an external URL — without handing the target application this
 //! process's AppImage environment.
 //!
 //! The AppImage runtime exports `LD_LIBRARY_PATH` (and friends) pointing at
@@ -79,14 +79,63 @@ fn sanitize(cmd: &mut Command, appdir: &OsStr) {
     }
 }
 
-/// Opens `url` with the default handler, the AppImage's environment stripped
+/// Turns the ordinary Zoom links calendars carry into the protocol handled by
+/// Zoom itself. On Omarchy that handler opens the meeting directly in the Zoom
+/// web app; a native Zoom installation can own the same protocol. Vanity URLs
+/// stay in the browser because they do not contain the meeting number the
+/// protocol requires.
+fn zoom_join_uri(raw: &str) -> Option<String> {
+    let url = reqwest::Url::parse(raw).ok()?;
+    let host = url.host_str()?;
+    if url.scheme() != "https"
+        || !(host.eq_ignore_ascii_case("zoom.us")
+            || host.to_ascii_lowercase().ends_with(".zoom.us"))
+    {
+        return None;
+    }
+
+    let segments: Vec<_> = url.path_segments()?.filter(|s| !s.is_empty()).collect();
+    let meeting = match segments.as_slice() {
+        ["j" | "w", meeting, ..] | ["wc", "join", meeting, ..] => *meeting,
+        _ => return None,
+    };
+    if !meeting.chars().all(|c| c.is_ascii_digit() || c == '-') {
+        return None;
+    }
+    // Emptiness is asked of the *digits*, not of the segment they came from:
+    // `/j/---` passes a dash-tolerant check and then filters down to nothing,
+    // which built a join URI with `confno=` empty and handed it to Zoom
+    // instead of falling back to the link the calendar actually carried.
+    let meeting: String = meeting.chars().filter(char::is_ascii_digit).collect();
+    if meeting.is_empty() {
+        return None;
+    }
+    let password = url
+        .query_pairs()
+        .find(|(key, _)| key == "pwd")
+        .map(|(_, value)| value.into_owned());
+
+    let mut deep = reqwest::Url::parse("zoommtg://zoom.us/join").expect("static Zoom URI");
+    {
+        let mut query = deep.query_pairs_mut();
+        query
+            .append_pair("action", "join")
+            .append_pair("confno", &meeting);
+        if let Some(password) = password.filter(|p| !p.is_empty()) {
+            query.append_pair("pwd", &password);
+        }
+    }
+    Some(deep.to_string())
+}
+
+/// Opens one URI with the default handler, the AppImage's environment stripped
 /// from the launcher when this process runs out of one.
 ///
 /// The same launcher list and first-success-wins loop as `open::that`, which
 /// this replaces at every call site; the one addition is [`sanitize`]. A
 /// launcher that exits non-zero is a failure worth reporting — issue #1's
 /// exact symptom was `xdg-open` exiting 4 with nothing on screen.
-pub(crate) fn open_external(url: &str) -> std::io::Result<()> {
+fn open_one(url: &str) -> std::io::Result<()> {
     let appdir = std::env::var_os("APPDIR");
     let mut last_err = None;
     for mut cmd in open::commands(url) {
@@ -108,9 +157,54 @@ pub(crate) fn open_external(url: &str) -> std::io::Result<()> {
     Err(last_err.unwrap_or_else(|| std::io::Error::other("no launcher available")))
 }
 
+/// Opens a URL with its preferred application. Zoom meeting links first try
+/// Zoom's registered protocol, avoiding the disposable browser handoff page;
+/// if no protocol handler is installed, the original HTTPS link is the safe
+/// fallback. All other URLs take their existing path unchanged.
+pub(crate) fn open_external(url: &str) -> std::io::Result<()> {
+    if let Some(direct) = zoom_join_uri(url) {
+        if open_one(&direct).is_ok() {
+            return Ok(());
+        }
+    }
+    open_one(url)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zoom_meetings_use_the_registered_protocol() {
+        assert_eq!(
+            zoom_join_uri("https://us02web.zoom.us/j/123456789?pwd=x%2By%2Fz").as_deref(),
+            Some("zoommtg://zoom.us/join?action=join&confno=123456789&pwd=x%2By%2Fz"),
+        );
+        assert_eq!(
+            zoom_join_uri("https://zoom.us/wc/join/123-456-789").as_deref(),
+            Some("zoommtg://zoom.us/join?action=join&confno=123456789"),
+        );
+        assert_eq!(
+            zoom_join_uri("https://zoom.us/w/987654321?pwd=secret").as_deref(),
+            Some("zoommtg://zoom.us/join?action=join&confno=987654321&pwd=secret"),
+        );
+    }
+
+    #[test]
+    fn only_numbered_https_zoom_meetings_are_rewritten() {
+        for url in [
+            "https://meet.google.com/abc-defg-hij",
+            "https://zoom.us/oauth/authorize",
+            "https://zoom.us/my/team-room",
+            "https://zoom.us.evil.example/j/123456789",
+            "http://zoom.us/j/123456789",
+            // Dash-tolerant, then filtered to nothing: this used to build a
+            // join URI with an empty `confno` rather than fall back.
+            "https://zoom.us/j/---",
+        ] {
+            assert_eq!(zoom_join_uri(url), None, "rewrote {url}");
+        }
+    }
 
     /// The exact shape issue #1 reproduced: the AppDir's `usr/bin` prepended
     /// to an otherwise ordinary PATH. Only the AppDir components go.

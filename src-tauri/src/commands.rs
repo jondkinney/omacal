@@ -794,8 +794,8 @@ pub fn assemble_big_year(
     BigYearPayload { year, rows, legend }
 }
 
-/// Opens an event's meeting link in the browser — the Join control, moved
-/// backend-side.
+/// Opens an event's meeting link with its preferred application — the Join
+/// control, moved backend-side.
 ///
 /// The webview's `<a target="_blank">` used to carry this click, which
 /// routed it through the opener plugin's raw spawn — inside an AppImage,
