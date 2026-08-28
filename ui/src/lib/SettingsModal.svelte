@@ -1089,8 +1089,8 @@
           </output>
         </div>
         <p class="hint">
-          0% adds no app-level transparency. Your window manager can still
-          make the whole window translucent; that effect is applied afterward.
+          4% matches the previous Omarchy window baseline. 0% is fully opaque;
+          100% makes the calendar canvas clear.
         </p>
       </section>
 
@@ -1117,8 +1117,8 @@
           </output>
         </div>
         <p class="hint">
-          Fades event fills only. Titles, calendar-colour spines, outlines and
-          controls remain fully visible.
+          4% matches the previous Omarchy window baseline. Only event fills
+          fade; titles, colour spines, outlines and controls remain visible.
         </p>
 
         <fieldset class="shape" disabled={!settings}>

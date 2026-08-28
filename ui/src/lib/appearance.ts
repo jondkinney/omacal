@@ -8,12 +8,12 @@ export type AppearancePreferences = {
 };
 
 /**
- * Applies only the transparency omacal owns.
+ * Applies absolute transparency: 0 is opaque and 100 is clear.
  *
- * A compositor can still multiply the completed window afterwards (Omarchy's
- * default-opacity rule does exactly that). Keeping that separate is what lets
- * these controls fade the canvas and event fills independently without also
- * fading their text, outlines, menus, or dialogs.
+ * Omacal opts out of Omarchy's whole-window opacity when these controls are
+ * installed, then reproduces that former baseline in the stored defaults.
+ * Keeping alpha on the two painted surfaces is what lets them move
+ * independently without fading text, outlines, menus, or dialogs.
  */
 export function applyAppearance(
   preferences: AppearancePreferences,
@@ -49,11 +49,6 @@ function setTransparency(
   property: string,
   transparency: number,
 ): void {
-  if (transparency === 0) {
-    delete root.dataset[dataKey];
-    root.style.removeProperty(property);
-    return;
-  }
   root.dataset[dataKey] = String(transparency);
   root.style.setProperty(property, `${100 - transparency}%`);
 }

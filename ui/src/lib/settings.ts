@@ -92,10 +92,9 @@ export type AppSettings = {
   defaultCalendarId: number | null;
   /** Minutes used when a new timed event has a start but no explicit end. */
   defaultEventDurationMinutes: number;
-  /** Extra transparency omacal applies to the calendar canvas, 0–100. A
-   *  compositor may still apply whole-window opacity after this. */
+  /** Absolute calendar-canvas transparency, 0 (opaque) through 100 (clear). */
   backgroundTransparency: number;
-  /** Extra transparency applied to event fills, without fading their text. */
+  /** Absolute event-fill transparency, without fading event text or outlines. */
   eventTransparency: number;
   /** The shared corner treatment for every event representation. */
   eventCornerStyle: EventCornerStyle;

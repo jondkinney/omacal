@@ -31,6 +31,12 @@ const DEFAULT_EVENT_DURATION_KEY: &str = "default_event_duration_minutes";
 const BACKGROUND_TRANSPARENCY_KEY: &str = "background_transparency";
 const EVENT_TRANSPARENCY_KEY: &str = "event_transparency";
 const EVENT_CORNER_STYLE_KEY: &str = "event_corner_style";
+const APPEARANCE_TRANSPARENCY_SEMANTICS_KEY: &str = "appearance_transparency_semantics";
+const ABSOLUTE_TRANSPARENCY_SEMANTICS: &str = "absolute-v1";
+/// Omarchy previously multiplied the whole inactive window by 0.96. The app
+/// now opts out of that compositor rule and owns the alpha itself, so the
+/// ranges start at the same visible baseline while 0 can finally mean opaque.
+pub const DEFAULT_APPEARANCE_TRANSPARENCY: u8 = 4;
 const TIME_FORMAT_KEY: &str = "time_format";
 const WEEK_START_KEY: &str = "week_start";
 const WEEK_STARTS_TODAY_KEY: &str = "week_starts_today";
@@ -371,12 +377,11 @@ pub struct AppSettings {
     /// Minutes a new timed event lasts when the user names only its start.
     /// Sixty preserves the existing behavior for installs without this row.
     pub default_event_duration_minutes: u32,
-    /// Extra transparency applied by omacal to the calendar canvas. Zero is
-    /// the existing app rendering; a compositor may still apply whole-window
-    /// opacity on top (Omarchy does by default).
+    /// Absolute transparency of the calendar canvas. Zero is fully opaque;
+    /// the default reproduces Omarchy's former whole-window baseline.
     pub background_transparency: u8,
-    /// Extra transparency applied to event fills only. Text, colour spines,
-    /// outlines and controls stay fully painted so events remain legible.
+    /// Absolute transparency of event fills only. Zero is fully opaque; text,
+    /// colour spines, outlines and controls stay fully painted throughout.
     pub event_transparency: u8,
     /// Rounded preserves the shapes omacal shipped with; square removes the
     /// corner radius from every event representation, not from other UI.
@@ -506,11 +511,36 @@ pub(crate) async fn write(pool: &SqlitePool, key: &str, value: &str) -> anyhow::
     Ok(())
 }
 
+/// Reads one percentage under either side of the one-time semantics change.
+///
+/// Legacy values were extra transparency multiplied after the compositor's
+/// 4% baseline. Preserve their effective alpha with
+/// `4 + round(legacy * 96 / 100)`. New rows are already absolute. Garbage on
+/// either side lands on the old visible baseline, never on an extreme.
+fn appearance_transparency(stored: Option<String>, absolute: bool) -> u8 {
+    let fallback = if absolute { DEFAULT_APPEARANCE_TRANSPARENCY } else { 0 };
+    let value = stored
+        .and_then(|v| v.parse::<u8>().ok())
+        .filter(|&percent| percent <= 100)
+        .unwrap_or(fallback);
+    if absolute {
+        value
+    } else {
+        let remaining = 100_u16 - u16::from(DEFAULT_APPEARANCE_TRANSPARENCY);
+        DEFAULT_APPEARANCE_TRANSPARENCY
+            + ((u16::from(value) * remaining + 50) / 100) as u8
+    }
+}
+
 /// The settings as stored, with defaults for anything absent.
 ///
 /// Absent is the ordinary case on a fresh install and is not an error:
 /// nothing writes these until the user opens the modal.
 pub async fn read_settings(pool: &SqlitePool) -> AppSettings {
+    let absolute_transparency = read(pool, APPEARANCE_TRANSPARENCY_SEMANTICS_KEY)
+        .await
+        .as_deref()
+        == Some(ABSOLUTE_TRANSPARENCY_SEMANTICS);
     AppSettings {
         sync_interval_ms: read(pool, SYNC_INTERVAL_KEY)
             .await
@@ -569,19 +599,18 @@ pub async fn read_settings(pool: &SqlitePool) -> AppSettings {
             .and_then(|v| v.parse::<u32>().ok())
             .filter(|&minutes| minutes > 0)
             .unwrap_or(60),
-        // Percentages are bounded on both sides of the IPC boundary. A future
-        // spelling, a typo in sqlite3, or a value over 100 means "none" — the
-        // appearance the app had before these settings existed.
-        background_transparency: read(pool, BACKGROUND_TRANSPARENCY_KEY)
-            .await
-            .and_then(|v| v.parse::<u8>().ok())
-            .filter(|&percent| percent <= 100)
-            .unwrap_or(0),
-        event_transparency: read(pool, EVENT_TRANSPARENCY_KEY)
-            .await
-            .and_then(|v| v.parse::<u8>().ok())
-            .filter(|&percent| percent <= 100)
-            .unwrap_or(0),
+        // These are absolute percentages now. Before `absolute-v1`, stored
+        // values meant "extra alpha after Omarchy's 4% baseline"; lazily
+        // translate those rows so an old 0 opens at 4 instead of changing the
+        // user's appearance. The next write stores the marker atomically.
+        background_transparency: appearance_transparency(
+            read(pool, BACKGROUND_TRANSPARENCY_KEY).await,
+            absolute_transparency,
+        ),
+        event_transparency: appearance_transparency(
+            read(pool, EVENT_TRANSPARENCY_KEY).await,
+            absolute_transparency,
+        ),
         event_corner_style: match read(pool, EVENT_CORNER_STYLE_KEY).await.as_deref() {
             Some("square") => EventCornerStyle::Square,
             _ => EventCornerStyle::Rounded,
@@ -1127,6 +1156,10 @@ async fn set_appearance_preferences_impl(
         (BACKGROUND_TRANSPARENCY_KEY, background_transparency.to_string()),
         (EVENT_TRANSPARENCY_KEY, event_transparency.to_string()),
         (EVENT_CORNER_STYLE_KEY, event_corner_style.as_str().to_string()),
+        (
+            APPEARANCE_TRANSPARENCY_SEMANTICS_KEY,
+            ABSOLUTE_TRANSPARENCY_SEMANTICS.to_string(),
+        ),
     ];
     let mut tx = pool.begin().await?;
     for (key, value) in values {
@@ -1295,8 +1328,16 @@ mod tests {
             60,
             "new events remain one hour long until somebody chooses otherwise",
         );
-        assert_eq!(s.background_transparency, 0, "the existing canvas stays unchanged");
-        assert_eq!(s.event_transparency, 0, "the existing event fills stay unchanged");
+        assert_eq!(
+            s.background_transparency,
+            DEFAULT_APPEARANCE_TRANSPARENCY,
+            "the slider names the former Omarchy baseline instead of calling it zero",
+        );
+        assert_eq!(
+            s.event_transparency,
+            DEFAULT_APPEARANCE_TRANSPARENCY,
+            "event alpha starts at the same former whole-window baseline",
+        );
         assert_eq!(
             s.event_corner_style,
             EventCornerStyle::Rounded,
@@ -1470,6 +1511,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn legacy_extra_transparency_is_migrated_to_the_same_absolute_alpha() {
+        let p = pool().await;
+
+        // No semantics row is the additive version. Its 0 was really the
+        // compositor's 4%; 50 was 50% alpha multiplied by 96%, or 52% total.
+        write(&p, BACKGROUND_TRANSPARENCY_KEY, "0").await.unwrap();
+        write(&p, EVENT_TRANSPARENCY_KEY, "50").await.unwrap();
+        let legacy = read_settings(&p).await;
+        assert_eq!(legacy.background_transparency, 4);
+        assert_eq!(legacy.event_transparency, 52);
+
+        // Any new write marks the whole tuple absolute, including a real 0.
+        let absolute = set_appearance_preferences_impl(&p, 0, 50, EventCornerStyle::Rounded)
+            .await
+            .unwrap();
+        assert_eq!(absolute.background_transparency, 0);
+        assert_eq!(absolute.event_transparency, 50);
+        assert_eq!(
+            read(&p, APPEARANCE_TRANSPARENCY_SEMANTICS_KEY).await.as_deref(),
+            Some(ABSOLUTE_TRANSPARENCY_SEMANTICS),
+        );
+    }
+
+    #[tokio::test]
     async fn malformed_appearance_rows_fall_back_to_the_existing_look() {
         let p = pool().await;
 
@@ -1477,8 +1542,16 @@ mod tests {
             write(&p, BACKGROUND_TRANSPARENCY_KEY, stored).await.unwrap();
             write(&p, EVENT_TRANSPARENCY_KEY, stored).await.unwrap();
             let s = read_settings(&p).await;
-            assert_eq!(s.background_transparency, 0, "{stored:?} changed the canvas");
-            assert_eq!(s.event_transparency, 0, "{stored:?} changed event fills");
+            assert_eq!(
+                s.background_transparency,
+                DEFAULT_APPEARANCE_TRANSPARENCY,
+                "{stored:?} changed the canvas",
+            );
+            assert_eq!(
+                s.event_transparency,
+                DEFAULT_APPEARANCE_TRANSPARENCY,
+                "{stored:?} changed event fills",
+            );
         }
 
         write(&p, EVENT_CORNER_STYLE_KEY, "square").await.unwrap();

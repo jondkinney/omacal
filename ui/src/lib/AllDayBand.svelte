@@ -150,7 +150,10 @@
           border-radius: var(--event-chip-radius, 4px); padding: 2px 7px; white-space: nowrap;
           overflow: hidden; text-overflow: ellipsis;
           margin: 0 2px 2px 0;
-          --event-fill: color-mix(in srgb, var(--cal) 16%, transparent);
+          /* The old 16% wash is precomposited over the calendar background,
+             so it becomes genuinely opaque at 0%. The plain background stays
+             as the legacy fallback until startup applies the preference. */
+          --event-fill: color-mix(in srgb, var(--cal) 16%, var(--bg));
           background: color-mix(in srgb, var(--cal) 16%, transparent);
           color: color-mix(in srgb, var(--cal) 60%, var(--text)); }
   :global(:root[data-event-transparency]) .chip {

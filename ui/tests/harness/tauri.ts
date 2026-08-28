@@ -601,10 +601,10 @@ const DEFAULT_SETTINGS: StubSettings = {
   fallbackReminderMinutes: [60, 10],
   defaultCalendarId: null,
   defaultEventDurationMinutes: 60,
-  // No app-level alpha at first: Omarchy's compositor opacity, when present,
-  // remains a separate whole-window effect outside this stub.
-  backgroundTransparency: 0,
-  eventTransparency: 0,
+  // The app now owns the old 4% Omarchy baseline so the ranges are absolute:
+  // 0 is genuinely opaque and the shipped appearance is honestly labelled 4.
+  backgroundTransparency: 4,
+  eventTransparency: 4,
   eventCornerStyle: 'rounded',
   listMode: false,
   // The grid's own 70, so every column golden holds.

@@ -111,6 +111,39 @@ test.describe('App', () => {
     await expect(event.locator('b')).toHaveCSS('opacity', '1');
   });
 
+  test('the former 4% baseline can be previewed all the way down to opaque', async ({ page }) => {
+    await page.goto(app());
+    await expect.poll(() => page.evaluate(() => ({
+      background: document.documentElement.dataset.backgroundTransparency,
+      events: document.documentElement.dataset.eventTransparency,
+    }))).toEqual({ background: '4', events: '4' });
+    expect(colourAlpha(await page.locator('body').evaluate(
+      (el) => getComputedStyle(el).backgroundColor,
+    ))).toBeCloseTo(0.96, 2);
+
+    await page.getByRole('button', { name: 'Menu' }).click();
+    await page.getByRole('button', { name: 'Settings…' }).click();
+    const modal = page.getByRole('dialog', { name: 'Settings' });
+    await modal.getByRole('tab', { name: 'Appearance' }).click();
+    for (const name of ['Background transparency', 'Event transparency']) {
+      await modal.getByRole('slider', { name }).evaluate((el) => {
+        (el as HTMLInputElement).value = '0';
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+    }
+
+    expect(await page.evaluate(() => ({
+      background: document.documentElement.style.getPropertyValue('--background-fill-opacity'),
+      events: document.documentElement.style.getPropertyValue('--event-fill-opacity'),
+    }))).toEqual({ background: '100%', events: '100%' });
+    expect(colourAlpha(await page.locator('body').evaluate(
+      (el) => getComputedStyle(el).backgroundColor,
+    ))).toBe(1);
+    expect(colourAlpha(await page.locator('.ev').first().evaluate(
+      (el) => getComputedStyle(el).backgroundColor,
+    ))).toBe(1);
+  });
+
   test('navigating forward loads the next week', async ({ page }) => {
     await page.goto(app());
     await expect(page.locator('.ev b')).toHaveText(weekLabel(W1));

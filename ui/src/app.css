@@ -21,10 +21,9 @@ select {
 }
 
 /* The webview backing store is transparent on Linux; this is the calendar
-   canvas painted over it. Absent at 0%, so every existing theme keeps its
-   exact `var(--bg)` rendering instead of taking an unnecessary color-mix
-   round trip. Dialogs and popovers deliberately keep their own opaque
-   `--surface` backgrounds. */
+   canvas painted over it. At 0% the mix is exactly `var(--bg)` and therefore
+   opaque. Dialogs and popovers deliberately keep their own opaque `--surface`
+   backgrounds while the calendar canvas follows the absolute range. */
 :root[data-background-transparency] {
   --calendar-canvas: color-mix(
     in srgb,

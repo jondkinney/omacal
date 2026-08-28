@@ -839,9 +839,17 @@ test.describe('event appearance reaches every calendar representation', () => {
       await page.goto(route);
       const event = page.locator(selector).first();
       await expect(event).toBeVisible();
-      const before = hasFill
-        ? colourAlpha(await event.evaluate((el) => getComputedStyle(el).backgroundColor))
-        : null;
+
+      if (hasFill) {
+        await page.evaluate(() => {
+          const root = document.documentElement;
+          root.dataset.eventTransparency = '0';
+          root.style.setProperty('--event-fill-opacity', '100%');
+        });
+        expect(colourAlpha(
+          await event.evaluate((el) => getComputedStyle(el).backgroundColor),
+        ), `${name} must be genuinely opaque at 0%`).toBe(1);
+      }
 
       await page.evaluate(() => {
         const root = document.documentElement;
@@ -857,11 +865,12 @@ test.describe('event appearance reaches every calendar representation', () => {
         .toBe('0px');
       await expect.poll(() => event.evaluate((el) => getComputedStyle(el).opacity))
         .toBe('1');
-      if (before !== null) {
+      if (hasFill) {
         const after = colourAlpha(
           await event.evaluate((el) => getComputedStyle(el).backgroundColor),
         );
-        expect(after, `${name} fill should become more transparent`).toBeLessThan(before);
+        expect(after, `${name} fill should follow the absolute 70% setting`)
+          .toBeCloseTo(0.3, 2);
       }
     });
   }
@@ -1240,18 +1249,22 @@ test.describe('Header', () => {
     return modal;
   };
 
-  test('Appearance previews independently, persists on commit, and names compositor opacity', async ({ page }) => {
+  test('Appearance starts at the former baseline and persists absolute values', async ({ page }) => {
     await page.goto(show('Header', 'connected'));
     let modal = await openSettings(page, 'Appearance');
     const background = modal.getByRole('slider', { name: 'Background transparency' });
     const events = modal.getByRole('slider', { name: 'Event transparency' });
 
-    await expect(background).toHaveValue('0');
-    await expect(events).toHaveValue('0');
+    await expect(background).toHaveValue('4');
+    await expect(events).toHaveValue('4');
     await expect(modal.getByRole('radio', { name: 'Rounded' })).toBeChecked();
-    await expect(modal).toContainText('window manager can still make the whole window translucent');
-    expect(await page.evaluate(() => document.documentElement.dataset.backgroundTransparency))
-      .toBeUndefined();
+    await expect(modal).toContainText('4% matches the previous Omarchy window baseline');
+    expect(await page.evaluate(() => ({
+      data: document.documentElement.dataset.backgroundTransparency,
+      fill: document.documentElement.style.getPropertyValue('--background-fill-opacity'),
+      eventData: document.documentElement.dataset.eventTransparency,
+      eventFill: document.documentElement.style.getPropertyValue('--event-fill-opacity'),
+    }))).toEqual({ data: '4', fill: '96%', eventData: '4', eventFill: '96%' });
 
     // `input` is the live preview and deliberately makes no database call.
     await background.evaluate((el) => {
