@@ -157,13 +157,45 @@ fn open_one(url: &str) -> std::io::Result<()> {
     Err(last_err.unwrap_or_else(|| std::io::Error::other("no launcher available")))
 }
 
-/// Opens a URL with its preferred application. Zoom meeting links first try
-/// Zoom's registered protocol, avoiding the disposable browser handoff page;
-/// if no protocol handler is installed, the original HTTPS link is the safe
-/// fallback. All other URLs take their existing path unchanged.
+/// Whether anything on this system actually claims `scheme`.
+///
+/// **The question has to be asked before the rewrite, not inferred after it.**
+/// `xdg-open`'s own `open_generic` looks the scheme up, misses, and then falls
+/// through to `$BROWSER` — so it hands `zoommtg://…` to a browser that cannot
+/// open it and *exits 0*. Verified on this Hyprland box: an unregistered
+/// scheme returns 0. A launcher's exit status therefore cannot tell "the app
+/// took it" from "a browser shrugged at it", and a fallback conditioned on
+/// that status never runs for exactly the people who need it — the ones
+/// without the app installed.
+#[cfg(target_os = "linux")]
+fn scheme_has_handler(scheme: &str) -> bool {
+    let mut cmd = Command::new("xdg-mime");
+    cmd.args(["query", "default", &format!("x-scheme-handler/{scheme}")]);
+    if let Some(dir) = std::env::var_os("APPDIR") {
+        sanitize(&mut cmd, &dir);
+    }
+    // Empty stdout *with* a zero status is the "nothing claims it" answer;
+    // the status alone says only that the query ran.
+    match cmd.output() {
+        Ok(out) => out.status.success() && !out.stdout.iter().all(u8::is_ascii_whitespace),
+        Err(_) => false,
+    }
+}
+
+/// macOS `open` refuses an unhandled scheme with a non-zero status, so there
+/// the attempt is its own test and the try-then-fall-back shape is honest.
+#[cfg(not(target_os = "linux"))]
+fn scheme_has_handler(_scheme: &str) -> bool {
+    true
+}
+
+/// Opens a URL with its preferred application. Zoom meeting links go to Zoom's
+/// own protocol when something claims it, avoiding the disposable browser
+/// handoff page; otherwise — and if the handler still fails — the original
+/// HTTPS link is the fallback. All other URLs take their existing path.
 pub(crate) fn open_external(url: &str) -> std::io::Result<()> {
     if let Some(direct) = zoom_join_uri(url) {
-        if open_one(&direct).is_ok() {
+        if scheme_has_handler("zoommtg") && open_one(&direct).is_ok() {
             return Ok(());
         }
     }
@@ -204,6 +236,15 @@ mod tests {
         ] {
             assert_eq!(zoom_join_uri(url), None, "rewrote {url}");
         }
+    }
+
+    /// A scheme nothing will ever claim is reported unclaimed — the property
+    /// `open_external` leans on, and the one an exit-status check got wrong:
+    /// `xdg-open` returns 0 for this URI after handing it to a browser.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_unclaimed_scheme_is_reported_unclaimed() {
+        assert!(!scheme_has_handler("omacal-no-such-scheme-exists"));
     }
 
     /// The exact shape issue #1 reproduced: the AppDir's `usr/bin` prepended
