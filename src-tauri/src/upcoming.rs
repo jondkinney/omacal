@@ -280,10 +280,13 @@ pub fn refresh_soon(pool: SqlitePool, demo: bool) {
     tauri::async_runtime::spawn(async move { refresh(&pool, demo).await });
 }
 
-async fn refresh_impl(pool: &SqlitePool, now_ms: i64) -> anyhow::Result<()> {
-    let Some(path) = feed_path() else {
-        return Ok(()); // No HOME: nowhere agreed to put it, nothing to do.
-    };
+/// The snapshot itself, before anyone decides what to do with it.
+///
+/// Factored out of [`refresh_impl`] when the macOS menu bar became a second
+/// reader (spec 2026-08-29): the tray needs this in-process rather than
+/// parsed back out of the JSON it would otherwise race, and two call sites
+/// assembling their own "upcoming" would be two definitions of it.
+pub(crate) async fn current(pool: &SqlitePool, now_ms: i64) -> anyhow::Result<Feed> {
     let stored =
         omacal_store::events_in_window(pool, now_ms, now_ms.saturating_add(HORIZON_MS)).await?;
     let names: HashMap<i64, String> = omacal_store::list_calendars(pool)
@@ -296,6 +299,14 @@ async fn refresh_impl(pool: &SqlitePool, now_ms: i64) -> anyhow::Result<()> {
     // without a single CalDAV account contributes an empty list for free.
     let task_rows = omacal_store::tasks_for_ui(pool, now_ms).await?;
     feed.tasks = assemble_tasks(&task_rows, now_ms);
+    Ok(feed)
+}
+
+async fn refresh_impl(pool: &SqlitePool, now_ms: i64) -> anyhow::Result<()> {
+    let Some(path) = feed_path() else {
+        return Ok(()); // No HOME: nowhere agreed to put it, nothing to do.
+    };
+    let feed = current(pool, now_ms).await?;
     write_atomic(&path, &serde_json::to_vec_pretty(&feed)?)
 }
 

@@ -98,6 +98,9 @@ async fn sync_and_report(app: &AppHandle) {
             }
             let _ = app.emit("sync-finished", serde_json::json!({ "upserted": n }));
             crate::upcoming::refresh(&state.pool, state.demo).await;
+            // The bar widget re-reads the file above by itself; the tray is
+            // in this process and has to be told (spec 2026-08-29 §3).
+            crate::tray::refresh(app);
             crate::invites::after_sync(app).await;
         }
         // No token yet, offline, revoked consent — all normal. Retry next tick.

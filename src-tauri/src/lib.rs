@@ -1089,6 +1089,16 @@ fn single_instance_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
                 tray::TrayAction::Quit => app.exit(0),
                 tray::TrayAction::SyncNow => sync_loop::request_now(app),
                 tray::TrayAction::OpenAt(ymd) => tray::open_at(app, &ymd),
+                // Unreachable from argv — `instance_action` has no join
+                // flag to return it — but honoured rather than discarded,
+                // for the reason the tray's own match says: an arm that
+                // throws an action away is how a future caller clicks
+                // something that does nothing.
+                tray::TrayAction::Join(url) => {
+                    if let Err(e) = browser::open_external(&url) {
+                        tracing::warn!(%e, "could not open the meeting link");
+                    }
+                }
                 tray::TrayAction::Open => tray::show_main_window(app),
             }
         },
@@ -1260,6 +1270,11 @@ pub fn run() {
                 #[cfg(target_os = "linux")]
                 omarchy_plugin::spawn(state.pool.clone(), state.demo);
             }
+            // The same snapshot, dressed onto the tray: on macOS that is the
+            // menu bar item the Omarchy bar widget has always been (spec
+            // 2026-08-29). Once now, then on its own minute tick.
+            tray::refresh(app.handle());
+            tray::spawn_ticker(app.handle().clone());
             update::spawn(app.handle().clone());
             // The forecast for the day headers — same demo gate as every
             // other loop, applied inside.
