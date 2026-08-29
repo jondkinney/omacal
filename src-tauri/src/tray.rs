@@ -133,12 +133,18 @@ pub(crate) fn hide_instead_of_closing() -> bool {
 /// The tray icon's id, shared by [`build`] and [`set_visible`].
 const TRAY_ID: &str = "omacal-tray";
 
-/// How much of a title the macOS menu bar gets before an ellipsis. The
-/// scarcest space in the app: a long meeting name pushes every other menu
-/// extra off the right-hand side, so this errs short.
-const TITLE_CAP: usize = 24;
+/// How much of a title the macOS menu bar gets before an ellipsis.
+///
+/// The scarcest space in the app — a long meeting name pushes every other
+/// menu extra off the right-hand side — so this errs short, shorter than the
+/// dropdown below it, where a row has the whole menu width to itself.
+const TITLE_CAP: usize = 18;
+/// A dropdown row's own cap. Wider than the bar, still not the calendar.
+const ROW_CAP: usize = 32;
 /// A dropdown is a glance, not the calendar.
 const EVENT_ROWS: usize = 8;
+/// All-day spans are context, not the next hour: a couple, no more.
+const ALLDAY_ROWS: usize = 3;
 const TASK_ROWS: usize = 4;
 
 /// `s` cut to `cap` *characters* with an ellipsis, or unchanged.
@@ -163,6 +169,50 @@ fn running(ev: &crate::upcoming::FeedEvent, now_ms: i64) -> bool {
     ev.start_ms <= now_ms && now_ms < ev.end_ms
 }
 
+/// `ms` as a zoned instant in `tz`, never panicking.
+fn zoned(ms: i64, tz: &jiff::tz::TimeZone) -> jiff::Zoned {
+    jiff::Timestamp::from_millisecond(ms)
+        .unwrap_or(jiff::Timestamp::UNIX_EPOCH)
+        .to_zoned(tz.clone())
+}
+
+/// The clock omacal shows, in **one** zone for every row.
+///
+/// Emphatically not each event's own calendar zone, which is what this read
+/// before and what made the menu lie: with calendars in Europe/Sofia and
+/// Asia/Kolkata, a 05:30 meeting rendered "08:00" beside a genuine 08:00 one
+/// and the list looked randomly ordered because the clocks came from
+/// different zones (field-reported 2026-08-29, with a screenshot of exactly
+/// that). A menu bar shows the wearer's own clock or it shows nothing
+/// trustworthy. The process's zone already honours the display-timezone
+/// setting — `apply_display_tz_early` exports `TZ` before anything renders —
+/// so the system zone *is* the user's chosen zone.
+fn clock(ms: i64, tz: &jiff::tz::TimeZone, fmt: crate::settings::TimeFormat) -> String {
+    let z = zoned(ms, tz);
+    match fmt {
+        crate::settings::TimeFormat::H24 => format!("{:02}:{:02}", z.hour(), z.minute()),
+        crate::settings::TimeFormat::H12 => {
+            let hour = z.hour();
+            let dial = if hour % 12 == 0 { 12 } else { hour % 12 };
+            format!("{dial}:{:02}{}", z.minute(), if hour < 12 { "am" } else { "pm" })
+        }
+    }
+}
+
+/// `Mon `, or nothing when `ms` falls on the same day as `now_ms`.
+///
+/// The feed runs past midnight, so without this tomorrow's 07:00 sits under
+/// today's 15:00 looking like a sorting bug — which is exactly how it read
+/// in the field.
+fn day_prefix(ms: i64, now_ms: i64, tz: &jiff::tz::TimeZone) -> String {
+    let (a, b) = (zoned(ms, tz), zoned(now_ms, tz));
+    if a.date() == b.date() {
+        String::new()
+    } else {
+        format!("{} ", a.strftime("%a"))
+    }
+}
+
 /// The macOS menu bar's text, or `None` for the icon alone.
 ///
 /// The event running now wins over the next one — knowing you are *in*
@@ -179,6 +229,7 @@ fn running(ev: &crate::upcoming::FeedEvent, now_ms: i64) -> bool {
 pub(crate) fn menu_title(
     feed: &crate::upcoming::Feed,
     now_ms: i64,
+    tz: &jiff::tz::TimeZone,
     fmt: crate::settings::TimeFormat,
 ) -> Option<String> {
     let timed = || feed.events.iter().filter(|e| !e.all_day);
@@ -189,8 +240,7 @@ pub(crate) fn menu_title(
     Some(if now.is_some() {
         format!("▸ {title}")
     } else {
-        let clock = crate::notify::time_in_zone_with_format(ev.start_ms, &ev.tz, fmt);
-        format!("{clock}  {title}")
+        format!("{}{}  {title}", day_prefix(ev.start_ms, now_ms, tz), clock(ev.start_ms, tz, fmt))
     })
 }
 
@@ -202,37 +252,40 @@ pub(crate) struct Row {
     pub label: String,
 }
 
-/// The day an instant falls on in `tz`, as the `YYYY-MM-DD` `OpenAt` speaks.
-/// The *event's* zone rather than this machine's, matching what the
-/// notification text already does with the same instants.
-fn day_in_zone(ms: i64, tz: &str) -> String {
-    let ts = jiff::Timestamp::from_millisecond(ms).unwrap_or(jiff::Timestamp::UNIX_EPOCH);
-    let z = ts.in_tz(tz).unwrap_or_else(|_| ts.in_tz("UTC").expect("UTC always resolves"));
-    z.date().to_string()
+/// The day an instant falls on, as the `YYYY-MM-DD` `OpenAt` speaks — in the
+/// display zone, so a row opens the day the row said it was on.
+fn day_key(ms: i64, tz: &jiff::tz::TimeZone) -> String {
+    zoned(ms, tz).date().to_string()
 }
 
-/// The live rows, in the bar widget's own order: what is on, what is next,
-/// a Join for the meeting at hand, then what is due.
+/// The live rows: what is next, a Join for the meeting at hand, the all-day
+/// context, then what is due.
+///
+/// **Timed events lead.** All-day entries used to sit on top because the feed
+/// sorts by instant and a months-long leave marker starts earliest — so two
+/// rows of "who is on holiday until December" pushed the next actual meeting
+/// down the menu. What a menu bar is for is the next hour.
 ///
 /// Pure, and that is the point — everything this decides is decided here,
 /// leaving [`apply`] with nothing but Tauri calls.
 pub(crate) fn rows(
     feed: &crate::upcoming::Feed,
     now_ms: i64,
+    tz: &jiff::tz::TimeZone,
     fmt: crate::settings::TimeFormat,
 ) -> Vec<Row> {
     let mut out = Vec::new();
-    for ev in feed.events.iter().take(EVENT_ROWS) {
-        let title = ellipsize(ev.title.as_deref().unwrap_or(UNTITLED), TITLE_CAP);
-        let when = if ev.all_day {
-            "all day".to_string()
-        } else {
-            crate::notify::time_in_zone_with_format(ev.start_ms, &ev.tz, fmt)
-        };
+
+    for ev in feed.events.iter().filter(|e| !e.all_day).take(EVENT_ROWS) {
+        let title = ellipsize(ev.title.as_deref().unwrap_or(UNTITLED), ROW_CAP);
         let mark = if running(ev, now_ms) { "▸ " } else { "" };
         out.push(Row {
-            id: format!("{AT_PREFIX}{}", day_in_zone(ev.start_ms, &ev.tz)),
-            label: format!("{mark}{when}  {title}"),
+            id: format!("{AT_PREFIX}{}", day_key(ev.start_ms, tz)),
+            label: format!(
+                "{mark}{}{}  {title}",
+                day_prefix(ev.start_ms, now_ms, tz),
+                clock(ev.start_ms, tz, fmt)
+            ),
         });
     }
 
@@ -242,16 +295,28 @@ pub(crate) fn rows(
     let at_hand = feed
         .events
         .iter()
+        .filter(|e| !e.all_day)
         .find(|e| running(e, now_ms))
-        .or_else(|| feed.events.iter().find(|e| e.start_ms > now_ms));
+        .or_else(|| feed.events.iter().filter(|e| !e.all_day).find(|e| e.start_ms > now_ms));
     if let Some(url) = at_hand.and_then(|e| e.conference.as_deref()) {
         if url.starts_with("https://") || url.starts_with("http://") {
             out.push(Row { id: format!("{JOIN_PREFIX}{url}"), label: "Join meeting".into() });
         }
     }
 
+    // All-day context, after the clock. No running marker: a leave span that
+    // covers five months is not a thing you are "in" the way a meeting is,
+    // and the ▸ beside it said nothing true.
+    for ev in feed.events.iter().filter(|e| e.all_day).take(ALLDAY_ROWS) {
+        let title = ellipsize(ev.title.as_deref().unwrap_or(UNTITLED), ROW_CAP);
+        out.push(Row {
+            id: format!("{AT_PREFIX}{}", day_key(ev.start_ms.max(now_ms), tz)),
+            label: format!("all day  {title}"),
+        });
+    }
+
     for task in feed.tasks.iter().take(TASK_ROWS) {
-        let title = ellipsize(&task.title, TITLE_CAP);
+        let title = ellipsize(&task.title, ROW_CAP);
         // Tasks have no row of their own to open — the app's task list is
         // one window away, so every task row simply opens omacal.
         out.push(Row {
@@ -265,6 +330,7 @@ pub(crate) fn rows(
     }
     out
 }
+
 
 /// Shows or hides the tray icon on a running app — the live half of the
 /// `tray_icon` setting. A no-op when the tray never built (macOS refusals,
@@ -335,7 +401,11 @@ fn apply(app: &AppHandle, feed: &crate::upcoming::Feed, now_ms: i64,
         return Ok(()); // Tray turned off, or never built. Nothing to dress.
     };
 
-    let live = rows(feed, now_ms, fmt);
+    // One zone for the whole menu, resolved once: the process's own, which
+    // `apply_display_tz_early` has already pointed at the display-timezone
+    // setting when there is one.
+    let tz = jiff::tz::TimeZone::system();
+    let live = rows(feed, now_ms, &tz, fmt);
     let mut items: Vec<MenuItem<_>> = Vec::new();
     for r in &live {
         items.push(MenuItem::with_id(app, &r.id, &r.label, true, None::<&str>)?);
@@ -367,7 +437,8 @@ fn apply(app: &AppHandle, feed: &crate::upcoming::Feed, now_ms: i64,
     // The decision itself: macOS shows the title, Linux does not. There the
     // same string costs panel width next to a bar widget already saying
     // more, and Tauri's own note says the title needs the icon shown anyway.
-    let title = if cfg!(target_os = "macos") { menu_title(feed, now_ms, fmt) } else { None };
+    let title =
+        if cfg!(target_os = "macos") { menu_title(feed, now_ms, &tz, fmt) } else { None };
     tray.set_title(title)?;
 
     Ok(())
@@ -446,6 +517,7 @@ pub(crate) fn open_at(app: &AppHandle, ymd: &str) {
     let _ = app.emit(OPEN_DATE_EVENT, ymd.to_string());
 }
 
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -476,6 +548,12 @@ mod tests {
         Feed { version: 1, generated_ms: T0, events, tasks: Vec::new() }
     }
 
+    /// The wearer's zone. Fixed rather than `TimeZone::system()` so these
+    /// assertions mean the same thing on every machine that runs them.
+    fn sofia() -> jiff::tz::TimeZone {
+        jiff::tz::TimeZone::get("Europe/Sofia").expect("a zone jiff ships")
+    }
+
     /// The running meeting outranks the next one: being *in* something is
     /// the more useful fact, and the marker is what tells the two apart.
     #[test]
@@ -484,7 +562,7 @@ mod tests {
             ev("Standup", T0 - 600_000, T0 + 600_000),
             ev("Review", T0 + 3_600_000, T0 + 7_200_000),
         ]);
-        assert_eq!(menu_title(&f, T0, TimeFormat::H24).as_deref(), Some("▸ Standup"));
+        assert_eq!(menu_title(&f, T0, &sofia(), TimeFormat::H24).as_deref(), Some("▸ Standup"));
     }
 
     /// With nothing running, the next one — and it carries the start time,
@@ -492,7 +570,7 @@ mod tests {
     #[test]
     fn the_title_falls_to_the_next_meeting_with_its_clock() {
         let f = feed(vec![ev("Review", T0 + 3_600_000, T0 + 7_200_000)]);
-        assert_eq!(menu_title(&f, T0, TimeFormat::H24).as_deref(), Some("10:00  Review"));
+        assert_eq!(menu_title(&f, T0, &sofia(), TimeFormat::H24).as_deref(), Some("13:00  Review"));
     }
 
     /// An event that ended exactly now has ended — the half-open rule every
@@ -500,7 +578,7 @@ mod tests {
     #[test]
     fn a_meeting_ending_now_is_not_the_one_you_are_in() {
         let f = feed(vec![ev("Standup", T0 - 600_000, T0)]);
-        assert_eq!(menu_title(&f, T0, TimeFormat::H24), None);
+        assert_eq!(menu_title(&f, T0, &sofia(), TimeFormat::H24), None);
     }
 
     /// All-day entries never claim the width: a day-long trip would sit
@@ -510,14 +588,14 @@ mod tests {
         let mut trip = ev("Trip to Sofia", T0 - 3_600_000, T0 + 80_000_000);
         trip.all_day = true;
         let f = feed(vec![trip]);
-        assert_eq!(menu_title(&f, T0, TimeFormat::H24), None);
+        assert_eq!(menu_title(&f, T0, &sofia(), TimeFormat::H24), None);
     }
 
     /// `None`, not `Some("")` — AppKit treats the two differently, and a
     /// stale title after the meeting is worse than no title at all.
     #[test]
     fn an_empty_calendar_gets_no_title_rather_than_an_empty_one() {
-        assert_eq!(menu_title(&feed(vec![]), T0, TimeFormat::H24), None);
+        assert_eq!(menu_title(&feed(vec![]), T0, &sofia(), TimeFormat::H24), None);
     }
 
     /// Cut by characters, never bytes: this calendar is full of Cyrillic,
@@ -526,7 +604,7 @@ mod tests {
     fn a_long_cyrillic_title_is_cut_without_panicking() {
         let long = "Консулски услуги в посолството на Република България";
         let f = feed(vec![ev(long, T0 + 60_000, T0 + 600_000)]);
-        let title = menu_title(&f, T0, TimeFormat::H24).expect("a next meeting");
+        let title = menu_title(&f, T0, &sofia(), TimeFormat::H24).expect("a next meeting");
         assert!(title.ends_with('…'), "{title}");
         assert!(title.chars().count() <= TITLE_CAP + 8, "{title}");
     }
@@ -536,8 +614,8 @@ mod tests {
     #[test]
     fn a_row_id_round_trips_to_the_day_its_event_is_on() {
         let f = feed(vec![ev("Standup", T0, T0 + 600_000)]);
-        let r = rows(&f, T0 - 60_000, TimeFormat::H24);
-        assert_eq!(r[0].label, "09:00  Standup");
+        let r = rows(&f, T0 - 60_000, &sofia(), TimeFormat::H24);
+        assert_eq!(r[0].label, "12:00  Standup");
         assert_eq!(action_for(&r[0].id), Some(TrayAction::OpenAt("2026-08-29".into())));
     }
 
@@ -549,7 +627,7 @@ mod tests {
         now.conference = Some("https://meet.google.com/abc-defg-hij".into());
         let mut later = ev("Review", T0 + 3_600_000, T0 + 7_200_000);
         later.conference = Some("https://zoom.us/j/999".into());
-        let r = rows(&feed(vec![now, later]), T0, TimeFormat::H24);
+        let r = rows(&feed(vec![now, later]), T0, &sofia(), TimeFormat::H24);
         let joins: Vec<_> = r.iter().filter(|x| x.label == "Join meeting").collect();
         assert_eq!(joins.len(), 1);
         assert_eq!(
@@ -579,10 +657,58 @@ mod tests {
             FeedTask { title: "Renew domain".into(), due_ms: T0 + 3_600_000, all_day: false,
                        overdue: false, list: None, color: None, priority: 0 },
         ];
-        let r = rows(&f, T0, TimeFormat::H24);
+        let r = rows(&f, T0, &sofia(), TimeFormat::H24);
         assert_eq!(r[0].label, "⚠  Pay Unicredit");
         assert_eq!(r[1].label, "due  Renew domain");
         assert_eq!(r[0].id, "open", "a task row has no day of its own to open");
+    }
+
+
+    /// **The bug the screenshot caught (2026-08-29).** Two calendars, two
+    /// zones, one menu: an Asia/Kolkata meeting and a Europe/Sofia one an
+    /// hour apart both rendered "08:00" because each was drawn in its own
+    /// calendar's zone. The menu showed the same clock for different hours
+    /// and the list read as unsorted. Every row is the wearer's clock now.
+    #[test]
+    fn two_calendars_in_two_zones_still_share_one_clock() {
+        let mut kolkata = ev("Kids: Squash", T0, T0 + 1_800_000);
+        kolkata.tz = "Asia/Kolkata".into();
+        let sofia_ev = ev("Meet Tzveti", T0 + 3_600_000, T0 + 7_200_000);
+        let r = rows(&feed(vec![kolkata, sofia_ev]), T0 - 60_000, &sofia(), TimeFormat::H24);
+        // 09:00 UTC and 10:00 UTC, an hour apart, read an hour apart.
+        assert_eq!(r[0].label, "12:00  Kids: Squash");
+        assert_eq!(r[1].label, "13:00  Meet Tzveti");
+    }
+
+    /// The feed runs past midnight, so a row on another day says which —
+    /// without it tomorrow's 07:00 sat under today's 15:00 looking like a
+    /// sorting bug, which is how the field report read.
+    #[test]
+    fn a_row_on_another_day_names_its_weekday() {
+        let tomorrow = ev("travel to excitel office", T0 + 22 * 3_600_000, T0 + 23 * 3_600_000);
+        let r = rows(&feed(vec![tomorrow]), T0, &sofia(), TimeFormat::H24);
+        assert!(r[0].label.starts_with("Sun 10:00"), "{}", r[0].label);
+    }
+
+    /// All-day spans are context and come after the clock — a leave marker
+    /// running to December used to sit above the next actual meeting — and
+    /// they never wear the running marker, which claimed something untrue.
+    #[test]
+    fn all_day_spans_follow_the_meetings_and_are_never_marked_running() {
+        let mut leave = ev("Plamen 17.07 - 12.12 (TK)", T0 - 40 * 86_400_000, T0 + 100 * 86_400_000);
+        leave.all_day = true;
+        let meeting = ev("Meet Tzveti", T0 + 3_600_000, T0 + 7_200_000);
+        let r = rows(&feed(vec![leave, meeting]), T0, &sofia(), TimeFormat::H24);
+        assert!(r[0].label.contains("Meet Tzveti"), "meetings lead: {}", r[0].label);
+        assert!(r[1].label.starts_with("all day"), "{}", r[1].label);
+        assert!(!r[1].label.contains('▸'), "an all-day span is not a meeting you are in");
+    }
+
+    /// The 12-hour setting reaches the menu bar too.
+    #[test]
+    fn the_twelve_hour_setting_is_honoured() {
+        let f = feed(vec![ev("Review", T0 + 3_600_000, T0 + 7_200_000)]);
+        assert_eq!(menu_title(&f, T0, &sofia(), TimeFormat::H12).as_deref(), Some("1:00pm  Review"));
     }
 
     /// Open, Sync now, Quit — in that order, and Quit present at all.
