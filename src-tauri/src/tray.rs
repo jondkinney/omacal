@@ -244,12 +244,53 @@ pub(crate) fn menu_title(
     })
 }
 
+/// What a row *is*, so [`apply`] can dress it without deciding anything.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Kind {
+    /// A greyed heading — "Today", "Tomorrow", "Fri 5 Sep". Disabled, so it
+    /// never emits a click and never needs an action.
+    Heading,
+    /// A clickable row, wearing its calendar's colour when it has one. The
+    /// dot is the same language the grid and the event form's picker speak,
+    /// and the thing a native calendar menu is expected to show.
+    Item(Option<String>),
+    /// A rule between sections.
+    Rule,
+}
+
 /// One row of the tray's live section: the menu id that names its action,
-/// and the label the user reads.
+/// the label the user reads, and how to draw it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Row {
     pub id: String,
     pub label: String,
+    pub kind: Kind,
+}
+
+impl Row {
+    fn heading(label: impl Into<String>) -> Row {
+        Row { id: HEADING_ID.into(), label: label.into(), kind: Kind::Heading }
+    }
+    fn rule() -> Row {
+        Row { id: HEADING_ID.into(), label: String::new(), kind: Kind::Rule }
+    }
+}
+
+/// Headings and rules share one id and no action: disabled items emit no
+/// click, so nothing ever asks what it means.
+const HEADING_ID: &str = "section";
+
+/// How a day is announced above its events.
+fn heading_for(ms: i64, now_ms: i64, tz: &jiff::tz::TimeZone) -> String {
+    let (day, today) = (zoned(ms, tz), zoned(now_ms, tz));
+    let delta = day.date().since(today.date()).map(|s| s.get_days()).unwrap_or(0);
+    match delta {
+        0 => "Today".to_string(),
+        1 => "Tomorrow".to_string(),
+        // "Fri 5 Sep" — assembled rather than `strftime`'d so no
+        // padding flag has to behave the same across jiff versions.
+        _ => format!("{} {} {}", day.strftime("%a"), day.day(), day.strftime("%b")),
+    }
 }
 
 /// The day an instant falls on, as the `YYYY-MM-DD` `OpenAt` speaks — in the
@@ -274,63 +315,117 @@ pub(crate) fn rows(
     tz: &jiff::tz::TimeZone,
     fmt: crate::settings::TimeFormat,
 ) -> Vec<Row> {
-    let mut out = Vec::new();
+    let mut out: Vec<Row> = Vec::new();
 
+    // Timed events, under a heading per day. The heading is what lets a row
+    // read as plain "07:00" — before this each row had to carry its own
+    // weekday, and a menu of "Mon 07:00" repeated down the column is a table
+    // nobody asked for.
+    let mut day = String::new();
     for ev in feed.events.iter().filter(|e| !e.all_day).take(EVENT_ROWS) {
+        let key = day_key(ev.start_ms, tz);
+        if key != day {
+            out.push(Row::heading(heading_for(ev.start_ms, now_ms, tz)));
+            day = key.clone();
+        }
         let title = ellipsize(ev.title.as_deref().unwrap_or(UNTITLED), ROW_CAP);
         let mark = if running(ev, now_ms) { "▸ " } else { "" };
         out.push(Row {
-            id: format!("{AT_PREFIX}{}", day_key(ev.start_ms, tz)),
-            label: format!(
-                "{mark}{}{}  {title}",
-                day_prefix(ev.start_ms, now_ms, tz),
-                clock(ev.start_ms, tz, fmt)
-            ),
+            id: format!("{AT_PREFIX}{key}"),
+            label: format!("{mark}{}  {title}", clock(ev.start_ms, tz, fmt)),
+            kind: Kind::Item(ev.color.clone()),
         });
     }
 
     // One Join, for the meeting at hand — the running one, else the next.
     // Not one per row: a dropdown of Join buttons is a way to join the
     // wrong call, and the feed's later rows are hours away.
-    let at_hand = feed
-        .events
-        .iter()
-        .filter(|e| !e.all_day)
-        .find(|e| running(e, now_ms))
-        .or_else(|| feed.events.iter().filter(|e| !e.all_day).find(|e| e.start_ms > now_ms));
+    let timed = || feed.events.iter().filter(|e| !e.all_day);
+    let at_hand = timed().find(|e| running(e, now_ms)).or_else(|| timed().find(|e| e.start_ms > now_ms));
     if let Some(url) = at_hand.and_then(|e| e.conference.as_deref()) {
         if url.starts_with("https://") || url.starts_with("http://") {
-            out.push(Row { id: format!("{JOIN_PREFIX}{url}"), label: "Join meeting".into() });
+            out.push(Row {
+                id: format!("{JOIN_PREFIX}{url}"),
+                label: "Join meeting".into(),
+                kind: Kind::Item(None),
+            });
         }
     }
 
-    // All-day context, after the clock. No running marker: a leave span that
-    // covers five months is not a thing you are "in" the way a meeting is,
-    // and the ▸ beside it said nothing true.
-    for ev in feed.events.iter().filter(|e| e.all_day).take(ALLDAY_ROWS) {
-        let title = ellipsize(ev.title.as_deref().unwrap_or(UNTITLED), ROW_CAP);
-        out.push(Row {
-            id: format!("{AT_PREFIX}{}", day_key(ev.start_ms.max(now_ms), tz)),
-            label: format!("all day  {title}"),
-        });
+    // All-day context, after the clock and behind its own rule. No running
+    // marker: a leave span covering five months is not something you are
+    // "in" the way a meeting is, and the ▸ beside it said nothing true.
+    let all_day: Vec<_> = feed.events.iter().filter(|e| e.all_day).take(ALLDAY_ROWS).collect();
+    if !all_day.is_empty() {
+        out.push(Row::rule());
+        out.push(Row::heading("All day"));
+        for ev in all_day {
+            out.push(Row {
+                id: format!("{AT_PREFIX}{}", day_key(ev.start_ms.max(now_ms), tz)),
+                label: ellipsize(ev.title.as_deref().unwrap_or(UNTITLED), ROW_CAP),
+                kind: Kind::Item(ev.color.clone()),
+            });
+        }
     }
 
-    for task in feed.tasks.iter().take(TASK_ROWS) {
-        let title = ellipsize(&task.title, ROW_CAP);
-        // Tasks have no row of their own to open — the app's task list is
-        // one window away, so every task row simply opens omacal.
-        out.push(Row {
-            id: "open".into(),
-            label: if task.overdue {
-                format!("⚠  {title}")
-            } else {
-                format!("due  {title}")
-            },
-        });
+    let tasks: Vec<_> = feed.tasks.iter().take(TASK_ROWS).collect();
+    if !tasks.is_empty() {
+        out.push(Row::rule());
+        out.push(Row::heading("Due"));
+        for task in tasks {
+            let title = ellipsize(&task.title, ROW_CAP);
+            // Tasks have no day of their own to open — the app's task list
+            // is one window away, so every task row simply opens omacal.
+            out.push(Row {
+                id: "open".into(),
+                label: if task.overdue { format!("⚠  {title}") } else { title },
+                kind: Kind::Item(task.color.clone()),
+            });
+        }
     }
     out
 }
 
+/// A filled dot in `hex`, as a menu-item icon.
+///
+/// Drawn here rather than shipped as assets because the colour is the
+/// user's: calendars carry their own, and omacal lets them be recoloured
+/// locally. Supersampled 3×3 so the circle has a soft edge instead of the
+/// staircase a 16px hard-edged circle shows at menu size.
+fn swatch(hex: &str) -> Option<tauri::image::Image<'static>> {
+    let h = hex.trim().strip_prefix('#')?;
+    if h.len() != 6 || !h.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let c = |i: usize| u8::from_str_radix(&h[i..i + 2], 16).ok();
+    let (r, g, b) = (c(0)?, c(2)?, c(4)?);
+
+    const N: u32 = 16;
+    const S: u32 = 3; // samples per axis
+    let centre = (N as f32 - 1.0) / 2.0;
+    let radius = N as f32 * 0.34;
+    let mut rgba = Vec::with_capacity((N * N * 4) as usize);
+    for y in 0..N {
+        for x in 0..N {
+            let mut hits = 0u32;
+            for sy in 0..S {
+                for sx in 0..S {
+                    let px = x as f32 + (sx as f32 + 0.5) / S as f32 - 0.5;
+                    let py = y as f32 + (sy as f32 + 0.5) / S as f32 - 0.5;
+                    if (px - centre).powi(2) + (py - centre).powi(2) <= radius * radius {
+                        hits += 1;
+                    }
+                }
+            }
+            let a = (hits * 255 / (S * S)) as u8;
+            // Premultiplied is not wanted here; straight alpha with the
+            // colour carried into fully transparent pixels keeps edges from
+            // fringing toward black.
+            rgba.extend_from_slice(&[r, g, b, a]);
+        }
+    }
+    Some(tauri::image::Image::new_owned(rgba, N, N))
+}
 
 /// Shows or hides the tray icon on a running app — the live half of the
 /// `tray_icon` setting. A no-op when the tray never built (macOS refusals,
@@ -406,9 +501,33 @@ fn apply(app: &AppHandle, feed: &crate::upcoming::Feed, now_ms: i64,
     // setting when there is one.
     let tz = jiff::tz::TimeZone::system();
     let live = rows(feed, now_ms, &tz, fmt);
-    let mut items: Vec<MenuItem<_>> = Vec::new();
+
+    // Three shapes, built up front so the borrows outlive the reference
+    // list below: a menu is assembled from `&dyn IsMenuItem`, and every
+    // item has to still be alive when `Menu::with_items` reads them.
+    enum Built<R: tauri::Runtime> {
+        Plain(MenuItem<R>),
+        Icon(tauri::menu::IconMenuItem<R>),
+        Rule(tauri::menu::PredefinedMenuItem<R>),
+    }
+    let mut built: Vec<Built<_>> = Vec::new();
     for r in &live {
-        items.push(MenuItem::with_id(app, &r.id, &r.label, true, None::<&str>)?);
+        built.push(match &r.kind {
+            Kind::Rule => Built::Rule(tauri::menu::PredefinedMenuItem::separator(app)?),
+            // Disabled: a heading is a label, and a disabled item emits no
+            // click, which is why headings need no action.
+            Kind::Heading => {
+                Built::Plain(MenuItem::with_id(app, &r.id, &r.label, false, None::<&str>)?)
+            }
+            Kind::Item(color) => match color.as_deref().and_then(swatch) {
+                Some(dot) => Built::Icon(tauri::menu::IconMenuItem::with_id(
+                    app, &r.id, &r.label, true, Some(dot), None::<&str>,
+                )?),
+                None => {
+                    Built::Plain(MenuItem::with_id(app, &r.id, &r.label, true, None::<&str>)?)
+                }
+            },
+        });
     }
     let fixed: Vec<MenuItem<_>> = MENU
         .iter()
@@ -417,10 +536,14 @@ fn apply(app: &AppHandle, feed: &crate::upcoming::Feed, now_ms: i64,
 
     let sep = tauri::menu::PredefinedMenuItem::separator(app)?;
     let mut refs: Vec<&dyn tauri::menu::IsMenuItem<_>> = Vec::new();
-    for i in &items {
-        refs.push(i);
+    for b in &built {
+        refs.push(match b {
+            Built::Plain(i) => i,
+            Built::Icon(i) => i,
+            Built::Rule(i) => i,
+        });
     }
-    if !items.is_empty() {
+    if !built.is_empty() {
         refs.push(&sep);
     }
     for i in &fixed {
@@ -554,6 +677,23 @@ mod tests {
         jiff::tz::TimeZone::get("Europe/Sofia").expect("a zone jiff ships")
     }
 
+    /// Just the clickable rows — what a reader clicks, without the
+    /// headings and rules that structure them.
+    fn items(rows: &[Row]) -> Vec<&Row> {
+        rows.iter().filter(|r| matches!(r.kind, Kind::Item(_))).collect()
+    }
+
+    /// Every row's label in order, headings included, for the tests whose
+    /// subject is the shape of the menu rather than one entry in it.
+    fn shape(rows: &[Row]) -> Vec<String> {
+        rows.iter()
+            .map(|r| match r.kind {
+                Kind::Rule => "──".to_string(),
+                _ => r.label.clone(),
+            })
+            .collect()
+    }
+
     /// The running meeting outranks the next one: being *in* something is
     /// the more useful fact, and the marker is what tells the two apart.
     #[test]
@@ -615,8 +755,9 @@ mod tests {
     fn a_row_id_round_trips_to_the_day_its_event_is_on() {
         let f = feed(vec![ev("Standup", T0, T0 + 600_000)]);
         let r = rows(&f, T0 - 60_000, &sofia(), TimeFormat::H24);
-        assert_eq!(r[0].label, "12:00  Standup");
-        assert_eq!(action_for(&r[0].id), Some(TrayAction::OpenAt("2026-08-29".into())));
+        let it = items(&r);
+        assert_eq!(it[0].label, "12:00  Standup");
+        assert_eq!(action_for(&it[0].id), Some(TrayAction::OpenAt("2026-08-29".into())));
     }
 
     /// One Join, for the meeting at hand — a dropdown of them is a way to
@@ -658,9 +799,11 @@ mod tests {
                        overdue: false, list: None, color: None, priority: 0 },
         ];
         let r = rows(&f, T0, &sofia(), TimeFormat::H24);
-        assert_eq!(r[0].label, "⚠  Pay Unicredit");
-        assert_eq!(r[1].label, "due  Renew domain");
-        assert_eq!(r[0].id, "open", "a task row has no day of its own to open");
+        let it = items(&r);
+        assert_eq!(it[0].label, "⚠  Pay Unicredit");
+        assert_eq!(it[1].label, "Renew domain");
+        assert_eq!(it[0].id, "open", "a task row has no day of its own to open");
+        assert!(shape(&r).contains(&"Due".to_string()));
     }
 
 
@@ -675,19 +818,48 @@ mod tests {
         kolkata.tz = "Asia/Kolkata".into();
         let sofia_ev = ev("Meet Tzveti", T0 + 3_600_000, T0 + 7_200_000);
         let r = rows(&feed(vec![kolkata, sofia_ev]), T0 - 60_000, &sofia(), TimeFormat::H24);
+        let it = items(&r);
         // 09:00 UTC and 10:00 UTC, an hour apart, read an hour apart.
-        assert_eq!(r[0].label, "12:00  Kids: Squash");
-        assert_eq!(r[1].label, "13:00  Meet Tzveti");
+        assert_eq!(it[0].label, "12:00  Kids: Squash");
+        assert_eq!(it[1].label, "13:00  Meet Tzveti");
     }
 
-    /// The feed runs past midnight, so a row on another day says which —
-    /// without it tomorrow's 07:00 sat under today's 15:00 looking like a
-    /// sorting bug, which is how the field report read.
+    /// The feed runs past midnight, so each day is announced — without it
+    /// tomorrow's 07:00 sat under today's 15:00 looking like a sorting bug,
+    /// which is how the field report read. A heading says it once instead
+    /// of every row carrying a weekday of its own.
     #[test]
-    fn a_row_on_another_day_names_its_weekday() {
+    fn each_day_is_announced_once_above_its_events() {
+        let today = ev("Meet Tzveti", T0 + 3_600_000, T0 + 7_200_000);
         let tomorrow = ev("travel to excitel office", T0 + 22 * 3_600_000, T0 + 23 * 3_600_000);
-        let r = rows(&feed(vec![tomorrow]), T0, &sofia(), TimeFormat::H24);
-        assert!(r[0].label.starts_with("Sun 10:00"), "{}", r[0].label);
+        let r = rows(&feed(vec![today, tomorrow]), T0, &sofia(), TimeFormat::H24);
+        assert_eq!(
+            shape(&r),
+            ["Today", "13:00  Meet Tzveti", "Tomorrow", "10:00  travel to excitel office"]
+        );
+        assert!(matches!(r[0].kind, Kind::Heading));
+    }
+
+    /// A day further out is named, since "Tomorrow" stops being useful.
+    #[test]
+    fn a_day_beyond_tomorrow_is_named() {
+        let later = ev("Board", T0 + 4 * 86_400_000, T0 + 4 * 86_400_000 + 3_600_000);
+        let r = rows(&feed(vec![later]), T0, &sofia(), TimeFormat::H24);
+        assert_eq!(r[0].label, "Wed 2 Sep");
+    }
+
+    /// The dot is the calendar's own colour — the same language the grid
+    /// and the event form's picker speak — and a row without one still
+    /// renders rather than vanishing.
+    #[test]
+    fn a_row_carries_its_calendars_colour() {
+        let mut coloured = ev("Standup", T0 + 3_600_000, T0 + 7_200_000);
+        coloured.color = Some("#5b8def".into());
+        let r = rows(&feed(vec![coloured]), T0, &sofia(), TimeFormat::H24);
+        assert_eq!(items(&r)[0].kind, Kind::Item(Some("#5b8def".into())));
+        assert!(swatch("#5b8def").is_some());
+        assert!(swatch("not a colour").is_none(), "garbage never becomes an icon");
+        assert!(swatch("#5b8de").is_none(), "a short hex is not a colour");
     }
 
     /// All-day spans are context and come after the clock — a leave marker
@@ -699,9 +871,11 @@ mod tests {
         leave.all_day = true;
         let meeting = ev("Meet Tzveti", T0 + 3_600_000, T0 + 7_200_000);
         let r = rows(&feed(vec![leave, meeting]), T0, &sofia(), TimeFormat::H24);
-        assert!(r[0].label.contains("Meet Tzveti"), "meetings lead: {}", r[0].label);
-        assert!(r[1].label.starts_with("all day"), "{}", r[1].label);
-        assert!(!r[1].label.contains('▸'), "an all-day span is not a meeting you are in");
+        let it = items(&r);
+        assert!(it[0].label.contains("Meet Tzveti"), "meetings lead: {}", it[0].label);
+        assert!(it[1].label.contains("Plamen"), "{}", it[1].label);
+        assert!(!it[1].label.contains('▸'), "an all-day span is not a meeting you are in");
+        assert!(shape(&r).contains(&"All day".to_string()), "under its own heading");
     }
 
     /// The 12-hour setting reaches the menu bar too.
