@@ -209,15 +209,15 @@
   });
 
   /**
-   * The meeting to join, from Google's structured conference data if it is
-   * there and from the location field if it is not.
-   *
-   * One control, not two: an event carries at most one meeting, and a second
-   * Join button for the second place a link can hide would make the popover
-   * argue with itself about which is the real one. Google's own field wins
-   * because it is the only one that cannot be a coincidence.
+   * The meeting to join: Google's structured conference data, then the
+   * location field, then the description — plenty of invites put their join
+   * link only in the description ("Join Zoom Meeting: https://…") and leave
+   * `location` for a room or nothing at all. One control, not three: the
+   * first field holding a recognised link wins.
    */
-  const joinUrl = $derived(detail.conference_uri ?? meetingUrl(detail.location));
+  const joinUrl = $derived(
+    detail.conference_uri ?? meetingUrl(detail.location) ?? meetingUrl(detail.description),
+  );
 
   async function ask(response: 'accepted' | 'tentative' | 'declined', e: MouseEvent) {
     if (!detail.is_recurring) {

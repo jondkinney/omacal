@@ -2082,6 +2082,25 @@ test.describe('EventPopover', () => {
     await expect(page.locator('.pop .loc')).toBeVisible();
   });
 
+  test('a meeting link only in the description still becomes a Join button', async ({ page }) => {
+    // Not every provider's invite puts its link in `location` — plenty put it
+    // only in the description, and until now nothing looked there at all.
+    await page.goto(show('description-holds-a-real-zoom-link'));
+    const conf = page.locator('.pop .conf');
+    await expect(conf).toBeVisible();
+    await expect(conf).toHaveText('Join video call');
+    await expect(conf).toHaveAttribute('href', 'https://us02web.zoom.us/j/123456?pwd=x');
+    // The location is an ordinary room, not the link, so it is still shown.
+    await expect(page.locator('.pop .loc')).toHaveText('Room 4A');
+  });
+
+  test('a meeting link in the location wins over a different one in the description', async ({ page }) => {
+    await page.goto(show('location-and-description-both-hold-a-meeting-link'));
+    const conf = page.locator('.pop .conf');
+    await expect(conf).toBeVisible();
+    await expect(conf).toHaveAttribute('href', 'https://meet.google.com/abc-defg-hij');
+  });
+
   test('a generated calendar address is not shown as the organizer', async ({ page }) => {
     // "Organized by" followed by forty hex characters names no one. `.pop` is
     // asserted visible first so this cannot pass by the popover having failed
