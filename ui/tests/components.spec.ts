@@ -3715,6 +3715,61 @@ test.describe('EventForm', () => {
     expect(await saves(page)).toEqual([]);
   });
 
+  /**
+   * "If autocomplete shows 1 entry, ENTER key should select it and apply it"
+   * (2026-08-31, by request). Before this, Return on a name fragment took the
+   * fragment: `shwet` is not an address, so the form refused it and the person
+   * whose row was on screen went uninvited.
+   */
+  test('Return takes the only offer, without walking the list first', async ({ page }) => {
+    await open(page, 'create');
+    const input = page.getByLabel('Add guest');
+    await input.fill('iskren');
+    await expect(page.getByRole('listbox', { name: 'People you have met with' }))
+      .toHaveCount(1);
+
+    await input.press('Enter');
+    await expect(page.locator('.guests')).toContainText('iskren.h@x3me.net');
+    await expect(input).toHaveValue('');
+    // A fragment is not an address, so the old answer was an error — there
+    // must be none, and no save either.
+    await expect(page.getByTestId('form-error')).toHaveCount(0);
+    expect(await saves(page)).toEqual([]);
+  });
+
+  test('two offers still wait to be told which, and Add agrees with Return', async ({ page }) => {
+    await open(page, 'create');
+    const input = page.getByLabel('Add guest');
+    // `x3me` matches both of the harness's people: picking one of them would
+    // be the form deciding who gets invited.
+    await input.fill('x3me');
+    await input.press('Enter');
+    await expect(page.getByTestId('form-error')).toBeVisible();
+    await expect(page.locator('[data-guest]')).toHaveCount(0);
+
+    // The button is the same rule, not a second one: narrowed to one person,
+    // it takes that person rather than refusing the fragment again.
+    await input.fill('eva');
+    await page.getByRole('button', { name: 'Add', exact: true }).click();
+    await expect(page.locator('.guests')).toContainText('eva.m@x3me.net');
+  });
+
+  test('a whole address beats a row that merely contains it', async ({ page }) => {
+    // `eva.m@x3me.net` typed in full offers nothing (a picked value has no
+    // list). The case that matters is an address that is a *prefix* of a
+    // known one: the user spelled out somebody real, and Return must invite
+    // who they wrote rather than the longer address underneath.
+    await open(page, 'create');
+    const input = page.getByLabel('Add guest');
+    await input.fill('eva.m@x3me.ne');
+    await expect(page.getByRole('listbox', { name: 'People you have met with' }))
+      .toHaveCount(1);
+    await input.press('Enter');
+    // Not `eva.m@x3me.net`: what was typed is itself an address.
+    await expect(page.locator('[data-guest="eva.m@x3me.ne"]')).toHaveCount(1);
+    await expect(page.locator('[data-guest="eva.m@x3me.net"]')).toHaveCount(0);
+  });
+
   /** The time fields speak the app's clock, not the engine's: they are
    *  text now (the native input rendered the system locale's AM/PM over a
    *  24h grid), rendered through `displayClock` and parsed through

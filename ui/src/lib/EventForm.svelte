@@ -201,6 +201,22 @@
       .slice(0, 6);
   });
 
+  /**
+   * The one person on offer, when there is exactly one — what Return (and
+   * Add) take without the user first walking the list, because there is
+   * nothing to choose between: "if autocomplete shows 1 entry, ENTER key
+   * should select it and apply it" (2026-08-31, by request).
+   *
+   * `undefined` while several are offered — picking one of those would be
+   * this form deciding who gets invited — and `undefined` when what is typed
+   * is *already* a whole address: the row under it is then some other address
+   * that merely contains what was typed, and a Return that swapped the
+   * user's own spelling for it would invite the wrong person.
+   */
+  const soleMatch = $derived(
+    guestMatches.length === 1 && !isAddress(draft.trim()) ? guestMatches[0] : undefined,
+  );
+
   function pickGuest(p: KnownGuest) {
     value.guests = addGuest(value.guests, p.email);
     draft = '';
@@ -464,10 +480,18 @@
   // are addresses, what a duplicate does, who cannot be removed. Nothing below
   // decides any of that — it renders the answers and hands the clicks on.
 
-  /** Adds whatever is in the box, or explains why it cannot. */
+  /** Adds whatever is in the box — or the one person it completes to — or
+   *  explains why it cannot. */
   function addTyped() {
     const typed = draft.trim();
     if (typed === '') return;
+    // A fragment with exactly one person under it *is* that person. Both this
+    // form's ways of saying "add" go through here, so Return and the Add
+    // button cannot come to mean different things about the same list.
+    if (soleMatch) {
+      pickGuest(soleMatch);
+      return;
+    }
     // §5: refused **here**, before Save, the way every other invalid field is —
     // never by a 400 coming back from Google after the user has stopped
     // looking.
@@ -916,7 +940,8 @@
             // submits it — saving an event with a half-typed guest list, and
             // on an event with guests opening the notify choice for a change
             // nobody had finished making. With a row highlighted, Return is
-            // that row; otherwise it is whatever was typed, as ever.
+            // that row; otherwise `addTyped` decides — the sole offer if
+            // there is one, and what was typed if there is not.
             if (e.key === 'Enter' && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
               e.preventDefault();
               const picked = hi >= 0 ? guestMatches[hi] : undefined;
