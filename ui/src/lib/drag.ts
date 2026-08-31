@@ -268,6 +268,64 @@ export function spanForSweep(
   return { startMs, endMs: Math.max(Math.max(a, b), startMs + snapInterval) };
 }
 
+/**
+ * What a sweep across the grid is asking for.
+ *
+ * One shape with two arms rather than a span plus a flag: the two ends of an
+ * all-day span are *days*, not instants, and the form takes them as dates —
+ * carrying them as a `Span` would invite somebody to read a wall clock off a
+ * value that never had one.
+ */
+export type SweepAsk =
+  | { kind: 'timed'; startMs: number; endMs: number }
+  | { kind: 'allDay'; firstDayMs: number; lastDayMs: number };
+
+/**
+ * A sweep's ask, from how far the hand travelled in each direction.
+ *
+ * **Sideways wins.** Cross a column boundary and this stops being a meeting
+ * and becomes an all-day span over the days the hand crossed — first to last
+ * inclusive, in either direction, because a sweep that ends left of where it
+ * began still names the same set of days (requested 2026-08-31). Staying in
+ * one column keeps the old behaviour exactly: a timed event, and only the
+ * vertical travel is read.
+ *
+ * This overturns an earlier deliberate rule — sideways travel used to count
+ * toward the drag threshold and nothing else, on the grounds that a sweep
+ * silently producing a three-day event would be a nasty surprise. The
+ * surprise was the *silence*: `WeekGrid` now ghosts every covered column for
+ * the whole of its height, so what will be created is on screen before the
+ * button comes up.
+ *
+ * `days` is the visible day list; `from` indexes the column the press landed
+ * in. The far column is clamped into the list, so sweeping off the edge of
+ * the week stops at the week's edge rather than naming a day nobody can see.
+ */
+export function sweepAsk(
+  days: readonly { start_ms: number; end_ms: number }[],
+  from: number,
+  cols: number,
+  fromFrac: number,
+  toFrac: number,
+  snapInterval: number,
+): SweepAsk | null {
+  const origin = days[from];
+  if (!origin) return null;
+  if (cols === 0) {
+    const { startMs, endMs } = spanForSweep(
+      origin.start_ms,
+      origin.end_ms - origin.start_ms,
+      fromFrac,
+      toFrac,
+      snapInterval,
+    );
+    return { kind: 'timed', startMs, endMs };
+  }
+  const to = clamp(from + cols, 0, days.length - 1);
+  const [a, b] = from <= to ? [from, to] : [to, from];
+  return { kind: 'allDay', firstDayMs: days[a].start_ms, lastDayMs: days[b].start_ms };
+}
+
 /** `n` whole **civil** days on from `ms`, keeping the local wall-clock time. */
 function addDays(ms: number, n: number): number {
   if (n === 0) return ms;

@@ -611,6 +611,30 @@ export const nextHalfHour = (nowMs: number): number =>
  * puts the end at or before the start — a form that opens already
  * refusing to save with no field on it visibly wrong. See `sourceStartMs`.
  */
+/**
+ * A blank **all-day** event over `firstDayMs`..`lastDayMs`, last day
+ * inclusive — what a sweep across day columns asks for.
+ *
+ * Built beside `blankValueAt` rather than as a flag on it: an all-day value
+ * differs in what its fields *mean*, not merely in one boolean. `endDate` is
+ * the last day the event covers (see `EventFormValue.endDate`), which is the
+ * same reading the grid drew, so the ghost and the saved event agree.
+ *
+ * The times are still filled in, from the same default a timed create would
+ * have used. They are not shown while All day is ticked, but un-ticking it
+ * must land on a sane hour rather than midnight-to-midnight — the boundary
+ * `toggledAllDay` exists to protect.
+ */
+export function blankAllDayValue(
+  firstDayMs: number,
+  lastDayMs: number,
+  calendarId: number | null,
+  durationMinutes: number = DEFAULT_EVENT_MINUTES,
+): EventFormValue {
+  const base = blankValueAt(firstDayMs, calendarId, undefined, durationMinutes);
+  return { ...base, isAllDay: true, date: dateOf(firstDayMs), endDate: dateOf(lastDayMs) };
+}
+
 export function blankValueAt(
   startMs: number,
   calendarId: number | null,

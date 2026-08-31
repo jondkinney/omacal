@@ -177,6 +177,7 @@ if (name === 'App') {
       // same way `MonthGrid`'s `onopen` is, so a spec can read exactly what it
       // was handed.
       (window as any).__lastCreate = null;
+      (window as any).__lastAllDayCreate = null;
       // How many forms have been asked for. `__lastCreate` alone cannot see a
       // *second* create arriving right behind the first, which is exactly what
       // a sweep produces if the click the browser dispatches after its
@@ -199,6 +200,11 @@ if (name === 'App') {
           // a clicked create to the form's own default.
           oncreate: (startMs: unknown, rect: unknown, endMs?: unknown) => {
             (window as any).__lastCreate = { startMs, rect, endMs };
+            (window as any).__createCount += 1;
+          },
+          // A sweep that crossed columns: days, not instants.
+          oncreateallday: (firstDayMs: unknown, lastDayMs: unknown, rect: unknown) => {
+            (window as any).__lastAllDayCreate = { firstDayMs, lastDayMs, rect };
             (window as any).__createCount += 1;
           },
           onedit: (occurrence: unknown, rect: unknown) => {

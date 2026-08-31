@@ -442,6 +442,74 @@ test.describe('sweeping out a new span', () => {
       snap: SNAP,
     });
 
+  /** `sweepAsk` in the page, over a week of ordinary days from `DAY_START`. */
+  const ask = (
+    page: import('@playwright/test').Page,
+    args: { from: number; cols: number; fromFrac?: number; toFrac?: number },
+  ): Promise<any> =>
+    page.evaluate((a) => {
+      const days = Array.from({ length: 7 }, (_, i) => ({
+        start_ms: a.dayStart + i * a.dayMs,
+        end_ms: a.dayStart + (i + 1) * a.dayMs,
+      }));
+      return (window as any).__drag.sweepAsk(
+        days, a.from, a.cols, a.fromFrac, a.toFrac, a.snap,
+      );
+    }, {
+      dayStart: DAY_START, dayMs: DAY, snap: SNAP,
+      from: args.from, cols: args.cols,
+      fromFrac: args.fromFrac ?? at(9), toFrac: args.toFrac ?? at(10),
+    });
+
+  test('staying in one column is still a timed event', async ({ page }) => {
+    await page.goto(PURE);
+    expect(await ask(page, { from: 1, cols: 0 })).toEqual({
+      kind: 'timed',
+      startMs: DAY_START + DAY + 9 * HOUR,
+      endMs: DAY_START + DAY + 10 * HOUR,
+    });
+  });
+
+  /** The requested gesture (2026-08-31): cross a column and the sweep names
+   *  days rather than hours. Last day inclusive — the form's own reading. */
+  test('crossing columns asks for an all-day span, last day inclusive', async ({ page }) => {
+    await page.goto(PURE);
+    expect(await ask(page, { from: 1, cols: 2 })).toEqual({
+      kind: 'allDay',
+      firstDayMs: DAY_START + DAY,
+      lastDayMs: DAY_START + 3 * DAY,
+    });
+  });
+
+  /** Right-to-left names the same days: a set has no direction. */
+  test('sweeping backwards names the same days as sweeping forwards', async ({ page }) => {
+    await page.goto(PURE);
+    const forward = await ask(page, { from: 1, cols: 3 });
+    const back = await ask(page, { from: 4, cols: -3 });
+    expect(back).toEqual(forward);
+  });
+
+  /** Off the edge of the week stops at the week's edge — a sweep cannot name
+   *  a day the grid is not showing. */
+  test('a sweep past the last column stops at it', async ({ page }) => {
+    await page.goto(PURE);
+    expect(await ask(page, { from: 5, cols: 9 })).toEqual({
+      kind: 'allDay',
+      firstDayMs: DAY_START + 5 * DAY,
+      lastDayMs: DAY_START + 6 * DAY,
+    });
+  });
+
+  /** Vertical travel is irrelevant once a column has been crossed: the ask is
+   *  about days, and reading an hour off it would be reading something the
+   *  gesture never named. */
+  test('an all-day ask ignores how far the hand went vertically', async ({ page }) => {
+    await page.goto(PURE);
+    const flat = await ask(page, { from: 0, cols: 1, fromFrac: at(9), toFrac: at(9) });
+    const steep = await ask(page, { from: 0, cols: 1, fromFrac: at(1), toFrac: at(23) });
+    expect(steep).toEqual(flat);
+  });
+
   test('a downward sweep is the span it swept', async ({ page }) => {
     await page.goto(PURE);
     const got = await sweep(page, { from: at(14), to: at(15) });
@@ -585,6 +653,6 @@ test('the module exports the geometry the plan names, and the gesture constants'
   // undefined in a gesture spec rather than as a failure here.
   expect((await drag(page)).sort()).toEqual(
     ['DRAG_THRESHOLD_PX', 'RESIZE_EDGE_PX', 'SNAP_MS', 'beganDrag', 'colsMoved', 'edgeAt',
-     'snapMs', 'spanForMove', 'spanForResize', 'spanForSweep'],
+     'snapMs', 'spanForMove', 'spanForResize', 'spanForSweep', 'sweepAsk'],
   );
 });

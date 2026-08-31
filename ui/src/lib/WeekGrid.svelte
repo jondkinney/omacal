@@ -13,11 +13,11 @@
   import EventPopover from './EventPopover.svelte';
   import { getEventDetail, refreshEvent, type EventDetail, type Occurrence } from './eventdetail';
   import {
-    SNAP_MS, beganDrag, colsMoved, edgeAt, spanForMove, spanForResize, spanForSweep,
+    SNAP_MS, beganDrag, colsMoved, edgeAt, spanForMove, spanForResize, sweepAsk,
   } from './drag';
   import { cursorNamesEvent, type KeyboardCursor } from './keyboardnav';
 
-  let { week, weather = null, formPreview = null, revealNowRequest = 0, keyboardCursor = null, onpan = null, oncreate, onedit, ondelete, oncopy, onmove, onresponded }: {
+  let { week, weather = null, formPreview = null, revealNowRequest = 0, keyboardCursor = null, onpan = null, oncreate, oncreateallday, onedit, ondelete, oncopy, onmove, onresponded }: {
     week: WeekPayload;
     /** A horizontal wheel/trackpad gesture asking the window to slide by
      *  whole days — positive is forward. Optional: a grid without it (a
@@ -35,6 +35,11 @@
      *  anchor already names today and therefore no payload navigation occurs. */
     revealNowRequest?: number;
     keyboardCursor?: KeyboardCursor | null;
+    /** A sweep that crossed day columns: an all-day span, first day to last
+     *  inclusive. Separate from `oncreate` rather than a flag on it — the two
+     *  ends here are *days*, and a caller reading a wall clock off them would
+     *  be reading something that was never there. */
+    oncreateallday: (firstDayMs: number, lastDayMs: number, rect: Rect) => void;
     /** A click on empty space in a day column, at the half hour it landed in,
      *  or a **sweep** across it, which names an `endMs` as well.
      *  `rect` is the anchor to put the form beside — the column at the height
@@ -599,16 +604,21 @@
    * has a column, and only one of them can be in flight at a time anyway. A
    * union would have made every field of both optional.
    *
-   * **One column.** Only the vertical travel is read; sideways movement counts
-   * towards the threshold and nothing else. Spec §1 keeps this pass to timed
-   * events in a single day, and a sweep that silently produced a three-day
-   * meeting would be the same class of surprise the all-day boundary is
-   * deliberately being kept away from.
+   * **Sideways is a different event.** Stay in one column and this is a timed
+   * event, exactly as it always was. Cross a boundary and it becomes an
+   * all-day span over the days crossed (requested 2026-08-31). The rule this
+   * replaces refused sideways travel precisely to avoid a sweep "silently"
+   * producing a three-day event — so the ghost below stops it being silent:
+   * every covered column is lit for its whole height while the button is
+   * down, and the form then opens with All day already ticked.
    */
   type Sweep = {
     /** The day swept in — both the arithmetic and which column draws it. */
     dayStartMs: number;
     dayMs: number;
+    /** Its index in `effectiveDays`, so sideways travel can name the days it
+     *  crosses without re-measuring anything. */
+    dayIndex: number;
     /** The column's box at the press. `colHeight` is what the pointer's travel
      *  is divided by; the other two only place the form. */
     colHeight: number;
@@ -624,18 +634,19 @@
     clientY: number;
     /** Past the threshold. Below it this is still a click. */
     sweeping: boolean;
-    /** The span the form would open on. `null` until it has moved at all. */
-    span: { startMs: number; endMs: number } | null;
+    /** What the form would open on. `null` until the hand has moved at all. */
+    ask: import('./drag').SweepAsk | null;
   };
   let sweep = $state<Sweep | null>(null);
 
-  function startSweep(day: { start_ms: number; end_ms: number }, e: PointerEvent) {
+  function startSweep(day: { start_ms: number; end_ms: number }, dayIndex: number, e: PointerEvent) {
     // Primary button only, for the same reason `startDrag` says so.
     if (e.button !== 0) return;
     const box = (e.currentTarget as HTMLElement).getBoundingClientRect();
     sweep = {
       dayStartMs: day.start_ms,
       dayMs: day.end_ms - day.start_ms,
+      dayIndex,
       colHeight: box.height,
       colLeft: box.left,
       colWidth: box.width,
@@ -644,7 +655,7 @@
       fromFrac: box.height === 0 ? 0 : (e.clientY - box.top) / box.height,
       clientY: e.clientY,
       sweeping: false,
-      span: null,
+      ask: null,
     };
 
     window.addEventListener('pointermove', onSweepMove);
@@ -674,7 +685,16 @@
     // The geometry itself is `drag.ts`'s: the snap, the direction rule and the
     // minimum span all live there with a table each.
     const toFrac = sweep.colHeight === 0 ? 0 : sweep.fromFrac + dy / sweep.colHeight;
-    sweep.span = spanForSweep(sweep.dayStartMs, sweep.dayMs, sweep.fromFrac, toFrac, SNAP_MS);
+    // Sideways is read the same way a move-drag reads it, by whole columns,
+    // so the two gestures agree about when a column has been crossed.
+    sweep.ask = sweepAsk(
+      effectiveDays,
+      sweep.dayIndex,
+      colsMoved(dx, sweep.colWidth),
+      sweep.fromFrac,
+      toFrac,
+      SNAP_MS,
+    );
   }
 
   function onSweepEnd() {
@@ -687,12 +707,13 @@
     // the whole question: a press that never became a sweep has none, and the
     // `click` behind this release is what creates. Asking `sweeping` as well
     // would read as prudent and be dead — the two are set on the same line.
-    if (!s.span) return;
-    oncreate(
-      s.span.startMs,
-      { top: s.clientY, left: s.colLeft, width: s.colWidth, height: 0 },
-      s.span.endMs,
-    );
+    if (!s.ask) return;
+    const rect = { top: s.clientY, left: s.colLeft, width: s.colWidth, height: 0 };
+    if (s.ask.kind === 'allDay') {
+      oncreateallday(s.ask.firstDayMs, s.ask.lastDayMs, rect);
+    } else {
+      oncreate(s.ask.startMs, rect, s.ask.endMs);
+    }
   }
 
   function onSweepKey(e: KeyboardEvent) {
@@ -762,10 +783,20 @@
   }
 
   function sweepStyle(day: { start_ms: number; end_ms: number }): string | null {
-    if (!sweep?.span || sweep.dayStartMs !== day.start_ms) return null;
+    const ask = sweep?.ask;
+    if (!ask) return null;
+    // An all-day sweep lights each day it covers, top to bottom. Whole
+    // columns are the point: what is being drawn is *these days*, and a
+    // partial-height ghost would keep suggesting a time nobody chose.
+    if (ask.kind === 'allDay') {
+      return day.start_ms >= ask.firstDayMs && day.start_ms <= ask.lastDayMs
+        ? 'top:0;height:100%'
+        : null;
+    }
+    if (sweep!.dayStartMs !== day.start_ms) return null;
     const span = day.end_ms - day.start_ms;
-    const top = ((sweep.span.startMs - day.start_ms) / span) * 100;
-    const height = ((sweep.span.endMs - sweep.span.startMs) / span) * 100;
+    const top = ((ask.startMs - day.start_ms) / span) * 100;
+    const height = ((ask.endMs - ask.startMs) / span) * 100;
     return `top:${top}%;height:${height}%`;
   }
 
@@ -915,7 +946,7 @@
     {/each}
   </div>
 
-  {#each effectiveDays as day}
+  {#each effectiveDays as day, dayIndex}
     {@const isToday = day.start_ms === todayStart}
     {@const ghost = sweepStyle(day)}
     <div class="col" class:today={isToday}
@@ -949,7 +980,7 @@
             rightPress = { x: e.clientX, y: e.clientY };
             return;
           }
-          startSweep(day, e);
+          startSweep(day, dayIndex, e);
         }}
         onpointerup={(e) => {
           if (e.button !== 2 || !rightPress) return;

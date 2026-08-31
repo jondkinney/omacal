@@ -17,6 +17,7 @@
   } from './lib/eventdetail';
   import {
     blankValue, blankValueAt, dateOf, pastedValue, previewSpan, timeOf, toEventInput,
+    blankAllDayValue,
     valueFromDetail, type EventFormResult, type EventFormValue, type Scope,
   } from './lib/eventform';
   import type { Rect } from './lib/position';
@@ -1187,6 +1188,17 @@
    * a second way to make an event is a second thing to keep correct, and the
    * less-used one rots.
    */
+  /** A sweep that crossed day columns: the form opens as an all-day event
+   *  over those days, last day **inclusive** — the same reading the form's
+   *  own "Last day" field has, so what was drawn is what is saved. */
+  function newAllDayEventOver(firstDayMs: number, lastDayMs: number, rect: Rect) {
+    form = {
+      mode: 'create',
+      anchor: rect,
+      initial: blankAllDayValue(firstDayMs, lastDayMs, createCalendarId),
+    };
+  }
+
   function newEventAt(startMs: number, rect: Rect, endMs?: number) {
     form = {
       mode: 'create',
@@ -1719,7 +1731,8 @@
       <WeekGrid {week} {weather} {formPreview} {revealNowRequest}
                 keyboardCursor={visibleKeyboardCursor}
                 onpan={panView}
-                oncreate={newEventAt} onedit={openEdit} ondelete={askDelete}
+                oncreate={newEventAt} oncreateallday={newAllDayEventOver}
+                onedit={openEdit} ondelete={askDelete}
                 oncopy={copyOccurrence}
         onmove={moveOccurrence} onresponded={refreshAfterWrite} />
     {/if}

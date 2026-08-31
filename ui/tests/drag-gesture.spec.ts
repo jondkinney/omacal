@@ -670,6 +670,85 @@ test.describe('creating by sweeping empty grid', () => {
   const created = (page: Page) => page.evaluate(() => (window as any).__lastCreate);
   const createCount = (page: Page) => page.evaluate(() => (window as any).__createCount);
 
+  /** Presses in the first column and drags `cols` columns sideways, button
+   *  still down. The vertical position stays put: the gesture under test is
+   *  the horizontal one. */
+  const sweepAcross = async (page: Page, cols: number) => {
+    const c = await emptyColumn(page, 9);
+    await overEmptyGrid(page, c.cx, c.at(9));
+    await page.mouse.move(c.cx, c.at(9));
+    await page.mouse.down();
+    await page.mouse.move(c.cx + cols * c.b.width, c.at(9), { steps: 8 });
+    return c;
+  };
+
+  const allDayCreated = (page: Page) =>
+    page.evaluate(() => (window as any).__lastAllDayCreate);
+
+  /**
+   * The gesture requested on 2026-08-31: drag sideways across day columns and
+   * get an all-day event over those days, rather than the sideways travel
+   * being thrown away.
+   */
+  test('a sweep across columns asks for an all-day span over those days', async ({ page }) => {
+    await open(page, 'empty');
+    const c = await sweepAcross(page, 2);
+    await page.mouse.up();
+
+    const got = await allDayCreated(page);
+    expect(got, 'a sideways sweep must ask for an all-day event').not.toBeNull();
+    expect(got.firstDayMs).toBe(c.startMs);
+    // Third column, last day inclusive — read off the DOM so a DST week
+    // cannot make this a wrong multiple of 86_400_000.
+    const third = Number(
+      await page.locator('.col').nth(2).getAttribute('data-start-ms'),
+    );
+    expect(got.lastDayMs).toBe(third);
+    expect(await created(page), 'and never also a timed one').toBeNull();
+  });
+
+  /**
+   * **Not silent.** The rule this gesture replaced refused sideways travel on
+   * the grounds that a multi-day event appearing from nowhere would be a
+   * surprise — so every day the sweep covers is lit while the button is still
+   * down, and the count is exactly the days named.
+   */
+  test('every day the sweep covers is ghosted before the button comes up', async ({ page }) => {
+    await open(page, 'empty');
+    await sweepAcross(page, 2);
+    await expect(page.locator('.sweep')).toHaveCount(3);
+    // Full height, because what is being drawn is whole days.
+    const box = await page.locator('.sweep').first().boundingBox();
+    const col = await page.locator('.col').first().boundingBox();
+    expect(Math.round(box!.height)).toBe(Math.round(col!.height));
+    await page.mouse.up();
+  });
+
+  /** Backwards names the same days, and lights the same columns. */
+  test('a leftward sweep covers the days it crossed', async ({ page }) => {
+    await open(page, 'empty');
+    const c = await emptyColumn(page, 9);
+    const third = page.locator('.col').nth(2);
+    const b = (await third.boundingBox())!;
+    await page.mouse.move(b.x + b.width / 2, c.at(9));
+    await page.mouse.down();
+    await page.mouse.move(b.x + b.width / 2 - 2 * b.width, c.at(9), { steps: 8 });
+    await expect(page.locator('.sweep')).toHaveCount(3);
+    await page.mouse.up();
+
+    const got = await allDayCreated(page);
+    expect(got.firstDayMs).toBe(c.startMs);
+  });
+
+  /** A sweep that never leaves its column is untouched by any of this. */
+  test('a vertical sweep is still a timed event', async ({ page }) => {
+    await open(page, 'empty');
+    await sweep(page, 9, 11);
+    await page.mouse.up();
+    expect(await allDayCreated(page), 'no all-day ask').toBeNull();
+    expect(await created(page), 'a timed one instead').not.toBeNull();
+  });
+
   test('a sweep hands up the span that was swept', async ({ page }) => {
     await open(page, 'empty');
     const c = await sweep(page, 9, 10);
