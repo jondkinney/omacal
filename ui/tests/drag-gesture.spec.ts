@@ -717,10 +717,14 @@ test.describe('creating by sweeping empty grid', () => {
     await open(page, 'empty');
     await sweepAcross(page, 2);
     await expect(page.locator('.sweep')).toHaveCount(3);
-    // Full height, because what is being drawn is whole days.
+    // A thin ribbon — half an hour of the column — not a blackout of it.
     const box = await page.locator('.sweep').first().boundingBox();
     const col = await page.locator('.col').first().boundingBox();
-    expect(Math.round(box!.height)).toBe(Math.round(col!.height));
+    expect(box!.height).toBeLessThan(col!.height / 10);
+    expect(box!.height).toBeGreaterThan(2);
+    // And level across the days, so it reads as one bar.
+    const last = await page.locator('.sweep').last().boundingBox();
+    expect(Math.round(last!.y)).toBe(Math.round(box!.y));
     await page.mouse.up();
   });
 

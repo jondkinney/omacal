@@ -782,16 +782,36 @@
     return `top:${((s - day.start_ms) / span) * 100}%;height:${((e - s) / span) * 100}%`;
   }
 
+  /** How tall the all-day sweep's ribbon is drawn — half an hour of the
+   *  column. Thin enough to read as a bar rather than a blackout, tall
+   *  enough to see at a glance across seven columns. */
+  const ALL_DAY_GHOST_MS = 30 * 60_000;
+
+  /** Which sides of an all-day ribbon segment continue into the next column,
+   *  so the run reads as one bar rather than a row of chips — the same
+   *  `cl`/`cr` idiom `AllDayBand` uses for a span crossing a week edge. */
+  function sweepEdges(day: { start_ms: number }): { cl: boolean; cr: boolean } {
+    const ask = sweep?.ask;
+    if (ask?.kind !== 'allDay') return { cl: false, cr: false };
+    return { cl: day.start_ms > ask.firstDayMs, cr: day.start_ms < ask.lastDayMs };
+  }
+
   function sweepStyle(day: { start_ms: number; end_ms: number }): string | null {
     const ask = sweep?.ask;
     if (!ask) return null;
-    // An all-day sweep lights each day it covers, top to bottom. Whole
-    // columns are the point: what is being drawn is *these days*, and a
-    // partial-height ghost would keep suggesting a time nobody chose.
+    // An all-day sweep draws a thin ribbon across the days it covers,
+    // anchored at the height the press landed at. Not full columns: those
+    // shouted, and half a screen of tint to say "three days" is more
+    // emphasis than the fact deserves. The strip stays at the press height
+    // rather than following the pointer, because for an all-day event the
+    // vertical position means nothing and a ribbon that slid up and down
+    // would keep implying it did.
     if (ask.kind === 'allDay') {
-      return day.start_ms >= ask.firstDayMs && day.start_ms <= ask.lastDayMs
-        ? 'top:0;height:100%'
-        : null;
+      if (day.start_ms < ask.firstDayMs || day.start_ms > ask.lastDayMs) return null;
+      const span = day.end_ms - day.start_ms;
+      const height = (ALL_DAY_GHOST_MS / span) * 100;
+      const top = Math.min(Math.max(sweep!.fromFrac * 100, 0), 100 - height);
+      return `top:${top}%;height:${height}%`;
     }
     if (sweep!.dayStartMs !== day.start_ms) return null;
     const span = day.end_ms - day.start_ms;
@@ -999,7 +1019,8 @@
            covers a real event, and transparent to the pointer so the sweep it
            is drawing cannot be interrupted by its own ghost. -->
       {#if ghost}
-        <div class="sweep" style={ghost}></div>
+        {@const edge = sweepEdges(day)}
+        <div class="sweep" class:cl={edge.cl} class:cr={edge.cr} style={ghost}></div>
       {/if}
 
       <!-- The open form's live ghost: above the blocks (a draft usually
@@ -1193,6 +1214,13 @@
            background: color-mix(in srgb, var(--accent) 14%, var(--bg));
            box-shadow: inset 2px 0 0 0 var(--accent);
            pointer-events: none; z-index: 4; }
+  /* A multi-day ribbon: square off the edges that continue, and drop the
+     spine on every segment but the first, so three columns read as one bar
+     and not as three separate events. Reaching past the column's own 3px
+     inset closes the gap the columns leave between them. */
+  .sweep.cl { left: -4px; border-top-left-radius: 0; border-bottom-left-radius: 0;
+              box-shadow: none; }
+  .sweep.cr { right: -4px; border-top-right-radius: 0; border-bottom-right-radius: 0; }
 
   /* The form's draft, dressed as not-yet-real: dashed where every real
      block is solid, tinted rather than filled so whatever it covers still
