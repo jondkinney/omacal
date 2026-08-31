@@ -55,6 +55,10 @@ export type AppSettings = {
    *  Quit lives. Turning it off is for setups where something else carries
    *  those actions, like Omarchy 4's bar widget. */
   trayIcon: boolean;
+  /** Whether omacal registers itself to start when you log in. On by default
+   *  — a reminder can only fire while the app is running — and the row's hint
+   *  says so, because that is the cost of turning it off. */
+  autostart: boolean;
   /** Whether the day headers carry the forecast — an icon and the high. On
    *  by default; the hint under the toggle names the sources (Open-Meteo,
    *  the Omarchy widget's location or the IP), because this is the one
@@ -92,6 +96,12 @@ export const setNotificationsEnabled = (on: boolean) =>
  *  running tray immediately, so the icon reacts to the click. */
 export const setTrayIcon = (on: boolean) =>
   invoke<AppSettings>('set_tray_icon', { on });
+
+/** Stores the start-on-login preference; the backend registers or
+ *  unregisters the launch entry in the same call, so the answer is true the
+ *  moment the modal reports it rather than at the next launch. */
+export const setAutostart = (on: boolean) =>
+  invoke<AppSettings>('set_autostart', { on });
 
 /** Stores the weather preference; a turn-on also fetches now, backend-side,
  *  so the headers change while the modal is still open. */

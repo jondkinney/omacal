@@ -1298,12 +1298,15 @@ pub fn run() {
                 }
             }
 
-            // Start on login (§2.6) — never in demo mode.
-            if tray::may_autostart(demo) {
-                use tauri_plugin_autostart::ManagerExt;
-                if let Err(e) = app.autolaunch().enable() {
-                    tracing::warn!(%e, "could not register start-on-login");
-                }
+            // Start on login (§2.6) — never in demo mode, and only when the
+            // user has not turned it off. Read from the database rather than
+            // assumed: this call used to be an unconditional `enable()`, so
+            // an entry the user deleted by hand came straight back on the
+            // next launch (issue #22, reported 2026-08-31).
+            {
+                let pool = &app.state::<AppState>().pool;
+                let wanted = tauri::async_runtime::block_on(settings::autostart(pool));
+                tray::apply_autostart(app.handle(), demo, wanted);
             }
 
             // The scheduler. `run_once` refuses in demo mode on its own — see
@@ -1415,6 +1418,7 @@ pub fn run() {
             settings::set_sync_interval,
             settings::set_notifications_enabled,
             settings::set_tray_icon,
+            settings::set_autostart,
             settings::set_weather_enabled,
             settings::set_display_timezone,
             settings::set_second_timezone,

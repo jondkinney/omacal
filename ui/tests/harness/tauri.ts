@@ -523,6 +523,7 @@ type StubSettings = {
   displayTimezone: string | null;
   secondTimezone: string | null;
   weatherEnabled: boolean;
+  autostart: boolean;
 };
 
 const SETTINGS_KEY = 'omacal-stub-settings';
@@ -553,6 +554,10 @@ const DEFAULT_SETTINGS: StubSettings = {
   secondTimezone: null,
   // The backend's default: on unless somebody turned it off.
   weatherEnabled: true,
+  // The backend's default too, and for a reason the stub has to reproduce
+  // rather than merely copy: every install that predates the setting has the
+  // launch entry, so absent must read as ON or the upgrade unregisters it.
+  autostart: true,
 };
 
 function loadSettings(): StubSettings {
@@ -787,6 +792,9 @@ export function installTauriStub(scenario: string): Harness {
         return { days: [], place: null };
       case 'set_weather_enabled':
         settings = saveSettings({ ...settings, weatherEnabled: args.on as boolean });
+        return { ...settings };
+      case 'set_autostart':
+        settings = saveSettings({ ...settings, autostart: args.on as boolean });
         return { ...settings };
       case 'set_notifications_enabled':
         settings = saveSettings({ ...settings, notificationsEnabled: args.on as boolean });

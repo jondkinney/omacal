@@ -1194,6 +1194,35 @@ test.describe('Header', () => {
     expect(call.args).toMatchObject({ on: false });
   });
 
+  /**
+   * Start-on-login (issue #22): the app used to register its launch entry on
+   * every single start, so deleting the entry by hand achieved nothing — it
+   * was written straight back. The row is checked by default, because that is
+   * the state every existing install is already in, and unchecking it is a
+   * write through the command rather than a redraw.
+   */
+  test('General carries the start-on-login toggle, on by default and saved off', async ({ page }) => {
+    await page.goto(show('Header', 'connected'));
+    const modal = await openSettings(page);
+
+    const toggle = modal.getByRole('checkbox', { name: 'Start omacal when you log in' });
+    await expect(toggle).toBeChecked();
+    await toggle.uncheck();
+    await expect(toggle).not.toBeChecked();
+
+    const calls = await page.evaluate(() => (window as any).__harness.calls);
+    expect(calls.find((c: any) => c.cmd === 'set_autostart').args).toMatchObject({ on: false });
+
+    // Back on, so the row is a switch rather than a one-way door — and the
+    // second call proves the checkbox is driven by what the backend answers,
+    // not by the browser's own toggling.
+    await toggle.check();
+    await expect(toggle).toBeChecked();
+    const after = await page.evaluate(() => (window as any).__harness.calls);
+    expect(after.filter((c: any) => c.cmd === 'set_autostart').map((c: any) => c.args.on))
+      .toEqual([false, true]);
+  });
+
   test('Notifications shows the fallback rows in speakable units', async ({ page }) => {
     await page.goto(show('Header', 'connected'));
     const modal = await openSettings(page, 'Notifications');

@@ -127,6 +127,12 @@ quietly clamped, which is the difference between knowing what your app is doing
 and believing something untrue about it. (Setting this used to mean running
 `sqlite3` against the database by hand. It no longer does.)
 
+Also on General: **Start omacal when you log in**, on by default and now
+switchable. A reminder can only fire while the process is running, which is
+why the default is what it is — but until v0.13.1 the app registered its
+launch entry on every start, so removing that entry by hand achieved nothing.
+Turning the switch off unregisters it there and then, and leaves it off.
+
 **Calendars** — the same rows as the header's picker: **show** and **sync** as
 two separate switches, plus a colour. **Accounts** — what is connected, and
 adding another. **Notifications** — whether reminders fire at all; what fires is

@@ -116,8 +116,62 @@ pub(crate) fn action_for(id: &str) -> Option<TrayAction> {
 /// login is a nasty surprise on someone's machine, and demo mode's whole
 /// promise is that it touches nothing real. Same shape and same reason as
 /// [`crate::notify_loop::may_notify`].
+///
+/// The outer gate over the user's own preference, not a replacement for it:
+/// [`apply_autostart`] asks this first and the setting second.
 pub(crate) fn may_autostart(demo: bool) -> bool {
     !demo
+}
+
+/// What the launch entry should be, given the policy and the preference.
+///
+/// Three states rather than two, and the third is the point. A demo build
+/// must not *unregister* the real build's entry either: both ship under the
+/// same identifier, so `cargo tauri dev --features demo` on a machine running
+/// the release would otherwise quietly delete the launch entry the user
+/// chose. Demo mode touches nothing real, in both directions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Autostart {
+    Register,
+    Unregister,
+    LeaveAlone,
+}
+
+/// The decision, as a function of the two inputs, so it can be tabled by a
+/// test without an app handle or a login session.
+pub(crate) fn autostart_action(demo: bool, wanted: bool) -> Autostart {
+    if !may_autostart(demo) {
+        return Autostart::LeaveAlone;
+    }
+    if wanted { Autostart::Register } else { Autostart::Unregister }
+}
+
+/// Registers or unregisters the launch entry to match `wanted`.
+///
+/// Called at startup *and* from the setting's own command, so a change takes
+/// effect at the moment it is made rather than at some later launch — the
+/// same rule [`crate::settings::set_tray_icon`] follows, and here it is
+/// stronger: the whole complaint behind this setting (issue #22) is an app
+/// that writes the entry back whatever the user does with it.
+///
+/// **`Register` is issued on every launch, not only on a change**, and that
+/// is deliberate: it rewrites the recorded binary path, which is what repairs
+/// an entry gone stale because the AppImage moved or the app was reinstalled
+/// under a different prefix. Only the off-branch is new behaviour.
+///
+/// Failures are logged, never surfaced: nothing the user can do about a
+/// refused write to their own autostart directory belongs in a modal, and
+/// the calendar works regardless.
+pub(crate) fn apply_autostart(app: &tauri::AppHandle, demo: bool, wanted: bool) {
+    use tauri_plugin_autostart::ManagerExt;
+    let result = match autostart_action(demo, wanted) {
+        Autostart::LeaveAlone => return,
+        Autostart::Register => app.autolaunch().enable(),
+        Autostart::Unregister => app.autolaunch().disable(),
+    };
+    if let Err(e) = result {
+        tracing::warn!(%e, wanted, "could not apply the start-on-login setting");
+    }
 }
 
 /// Whether a window-close should hide rather than quit.
@@ -984,5 +1038,25 @@ mod tests {
     fn demo_mode_never_registers_start_on_login() {
         assert!(may_autostart(false));
         assert!(!may_autostart(true), "a synthetic-data build must not launch itself");
+    }
+
+    /// The whole of the start-on-login decision, as a table.
+    ///
+    /// The row that matters is the last one: a demo build must leave the
+    /// entry **alone**, not unregister it. Both builds ship under the same
+    /// identifier, so a demo run that reached for `disable()` would delete
+    /// the real install's launch entry — the same class of surprise as
+    /// registering one, in the other direction.
+    #[test]
+    fn the_setting_decides_and_demo_mode_touches_nothing() {
+        assert_eq!(autostart_action(false, true), Autostart::Register);
+        assert_eq!(
+            autostart_action(false, false),
+            Autostart::Unregister,
+            "turning the setting off has to actually remove the entry — an app that only \
+             stops re-adding it leaves the user exactly where issue #22 found them"
+        );
+        assert_eq!(autostart_action(true, true), Autostart::LeaveAlone);
+        assert_eq!(autostart_action(true, false), Autostart::LeaveAlone);
     }
 }

@@ -10,8 +10,8 @@
   import { connectCaldav } from './tasks';
   import { listAccounts, signOut, type Account } from './accounts';
   import {
-    getSettings, listTimezones, minutesOf, msOfMinutes, setDefaultCalendar,
-    setDefaultEventDuration,
+    getSettings, listTimezones, minutesOf, msOfMinutes, setAutostart,
+    setDefaultCalendar, setDefaultEventDuration,
     setDisplayTimezone, setFallbackReminders, setNotificationsEnabled,
     setSecondTimezone, setSyncInterval, setTimeFormat, setTrayIcon,
     setWeatherEnabled, setWeekStart,
@@ -425,6 +425,17 @@
     }
   }
 
+  async function toggleAutostart(on: boolean) {
+    note = null;
+    try {
+      settings = await setAutostart(on);
+    } catch (e) {
+      note = { text: String(e), kind: 'error' };
+      // Same checkbox repair as `toggleNotifications`.
+      settings = settings ? { ...settings } : null;
+    }
+  }
+
   /**
    * The four tabs of spec §3, in the order it lists them.
    *
@@ -762,6 +773,21 @@
         The tray is where Quit lives — only turn this off when something else
         covers it, like the Omarchy bar widget, which can quit and sync the
         app itself.
+      </p>
+
+      <label class="check">
+        <input
+          type="checkbox"
+          checked={settings?.autostart ?? true}
+          disabled={!settings}
+          onchange={(e) => toggleAutostart(e.currentTarget.checked)}
+        />
+        Start omacal when you log in
+      </label>
+      <p class="hint">
+        Reminders can only fire while omacal is running, so turning this off
+        means notifications arrive only once you have opened it. Takes effect
+        immediately: the login entry is removed now, not at the next restart.
       </p>
 
       <label class="check">

@@ -22,6 +22,7 @@ const WEEK_START_KEY: &str = "week_start";
 const WEEK_STARTS_TODAY_KEY: &str = "week_starts_today";
 const WEEK_VIEW_DAYS_KEY: &str = "week_view_days";
 const TRAY_ICON_KEY: &str = "tray_icon";
+const AUTOSTART_KEY: &str = "autostart";
 const WEATHER_KEY: &str = "weather_enabled";
 const DISPLAY_TZ_KEY: &str = "display_timezone";
 const SECOND_TZ_KEY: &str = "second_timezone";
@@ -199,6 +200,19 @@ pub struct AppSettings {
     /// the Omarchy 4 bar widget being the case this was built for, driving
     /// the app over the single-instance flags (`--sync-now`, `--quit`).
     pub tray_icon: bool,
+    /// Whether omacal registers itself to start when you log in. **On by
+    /// default**, for §2.6's reason: a reminder can only fire while the
+    /// process is running, so an app that waits to be opened is an app whose
+    /// notifications silently do not arrive — and defaulting this off would
+    /// do that to every existing install at once, on upgrade.
+    ///
+    /// The setting exists because until now there was no way *out*. Startup
+    /// registered the launch entry unconditionally on every run, so deleting
+    /// `~/.config/autostart/omacal.desktop` (or the macOS LaunchAgent) got it
+    /// written straight back the next time the app opened — the app
+    /// overruling the user's own system configuration, which is the part
+    /// issue #22 is really about.
+    pub autostart: bool,
     /// Whether the day headers carry the forecast — an icon and the high,
     /// from the same sources the Omarchy bar widget reads (`weather.rs`).
     /// On by default: the data is decoration and the cost is one keyless
@@ -359,6 +373,12 @@ pub async fn read_settings(pool: &SqlitePool) -> AppSettings {
         // garbage both keep the icon — losing the quit affordance must take
         // an explicit "0", never a typo.
         tray_icon: read(pool, TRAY_ICON_KEY).await.map(|v| v != "0").unwrap_or(true),
+        // Same polarity again, and here it is load bearing twice over: absent
+        // is every install that predates this setting, and those all *have*
+        // the launch entry already — reading them as "off" would unregister
+        // it on the first launch after the upgrade, which is precisely the
+        // silent change this setting exists to stop the app making.
+        autostart: autostart(pool).await,
         // `notifications_enabled`'s polarity and reasoning: on unless
         // somebody turned it off.
         weather_enabled: weather_enabled(pool).await,
@@ -519,6 +539,15 @@ pub(crate) async fn weather_enabled(pool: &SqlitePool) -> bool {
     read(pool, WEATHER_KEY).await.map(|v| v != "0").unwrap_or(true)
 }
 
+/// Whether start-on-login is wanted, named for the same reason
+/// [`weather_enabled`] is: `setup` reads it at launch to decide whether to
+/// register or unregister the launch entry, and `read_settings` reports it to
+/// the form. Two call sites, one polarity, no chance of them disagreeing
+/// about what an absent row means.
+pub(crate) async fn autostart(pool: &SqlitePool) -> bool {
+    read(pool, AUTOSTART_KEY).await.map(|v| v != "0").unwrap_or(true)
+}
+
 /// Stores the weather preference — and on a turn-on, fetches now rather
 /// than at the loop's next three-hour tick: a toggle that answers with an
 /// unchanged header for an hour reads as broken, exactly like a tray icon
@@ -562,6 +591,24 @@ pub async fn set_tray_icon(
         .await
         .map_err(|e| crate::errors::user_facing(&e))?;
     crate::tray::set_visible(&app, on);
+    Ok(read_settings(&state.pool).await)
+}
+
+/// Stores the start-on-login preference and registers or unregisters the
+/// launch entry in the same breath, for `set_tray_icon`'s reason: a switch
+/// whose effect waits for the next launch cannot be told from one that does
+/// nothing, and *this* switch's whole job is undoing something the app did
+/// without being asked.
+#[tauri::command]
+pub async fn set_autostart(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    on: bool,
+) -> Result<AppSettings, String> {
+    write(&state.pool, AUTOSTART_KEY, if on { "1" } else { "0" })
+        .await
+        .map_err(|e| crate::errors::user_facing(&e))?;
+    crate::tray::apply_autostart(&app, state.demo, on);
     Ok(read_settings(&state.pool).await)
 }
 
@@ -766,6 +813,31 @@ mod tests {
         );
         assert!(!s.week_starts_today, "a fresh install keeps the calendar-aligned week");
         assert_eq!(s.week_view_days, 7, "the old Week view has seven columns");
+        assert!(
+            s.autostart,
+            "absent is every install that predates this setting, and they all have the launch \
+             entry already — reading absent as off unregisters it on the upgrade launch"
+        );
+    }
+
+    /// The setting a hand-edited row must not be able to flip by accident,
+    /// and the one value that turns it off.
+    #[tokio::test]
+    async fn start_on_login_takes_an_explicit_zero_to_turn_off() {
+        let p = pool().await;
+        assert!(autostart(&p).await, "on before anybody writes anything");
+
+        write(&p, AUTOSTART_KEY, "0").await.unwrap();
+        assert!(!autostart(&p).await);
+        assert!(!read_settings(&p).await.autostart, "and the form is told the same");
+
+        write(&p, AUTOSTART_KEY, "1").await.unwrap();
+        assert!(autostart(&p).await, "and back on again — a switch, not a one-way door");
+
+        // Garbage, and a spelling some future version might write, both land
+        // on the default rather than silently unregistering the entry.
+        write(&p, AUTOSTART_KEY, "yes-please").await.unwrap();
+        assert!(autostart(&p).await);
     }
 
     /// `None` must clear a previously stored id back to the old rule — a
