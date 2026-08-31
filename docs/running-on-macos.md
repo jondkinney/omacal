@@ -129,7 +129,7 @@ and believing something untrue about it. (Setting this used to mean running
 
 Also on General: **When you log in** — don't start omacal, start it, or start
 it **in the background**. Starting is the default, because a reminder can only
-fire while the process is running; until v0.13.1 it was also the only
+fire while the process is running; until v0.14.0 it was also the only
 behaviour, and the app rewrote its own launch entry on every start, so
 removing that entry by hand achieved nothing. Choosing not to start
 unregisters it there and then, and leaves it off.
