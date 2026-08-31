@@ -1,4 +1,8 @@
 use omacal_core::{expand, lay_out_day, pack_lanes, Interval, Lane, Placed, Segment, Series};
+
+/// How many rows of all-day spans the week's band draws before the rest
+/// become "+N more".
+const ALL_DAY_LANES: u8 = 4;
 use omacal_store::StoredEvent;
 use serde::Serialize;
 use std::collections::HashSet;
@@ -375,7 +379,11 @@ pub fn assemble_days(events: &[StoredEvent], start_ms: i64, n: usize, tz: &str) 
         }
     }
 
-    let (all_day, overflow) = pack_lanes(&segments, n as u16, 2);
+    // Four lanes, not two. Two meant a week with three leave markers on it
+    // spent its whole band saying "+1 more" — the band is content-sized, so
+    // the rows it does not draw are not buying the grid any space worth
+    // having. Four is where a glance stops being a glance (2026-08-31).
+    let (all_day, overflow) = pack_lanes(&segments, n as u16, ALL_DAY_LANES);
 
     let days = (0..n)
         .map(|d| {

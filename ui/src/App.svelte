@@ -16,7 +16,8 @@
     type EventDetail, type Occurrence, type SendUpdates,
   } from './lib/eventdetail';
   import {
-    blankValue, blankValueAt, dateOf, pastedValue, previewSpan, timeOf, toEventInput,
+    blankValue, blankValueAt, dateOf, pastedValue, previewGhost, timeOf, toEventInput,
+    type FormGhost,
     blankAllDayValue,
     valueFromDetail, type EventFormResult, type EventFormValue, type Scope,
   } from './lib/eventform';
@@ -1050,7 +1051,7 @@
    *  the block that appears where the event will land and follows the times
    *  as they are typed (2026-08-20, by request). Null when no form is open,
    *  or when its value describes nothing timed. */
-  let formPreview = $state<{ startMs: number; endMs: number } | null>(null);
+  let formPreview = $state<FormGhost | null>(null);
   $effect(() => {
     if (!form) formPreview = null;
   });
@@ -1812,7 +1813,7 @@
     {calendars}
     onsave={saveForm}
     oncancel={() => (form = null)}
-    onvaluechange={(v) => (formPreview = previewSpan(v))}
+    onvaluechange={(v) => (formPreview = previewGhost(v))}
   />
 {/if}
 

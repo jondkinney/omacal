@@ -16,6 +16,7 @@
     SNAP_MS, beganDrag, colsMoved, edgeAt, spanForMove, spanForResize, sweepAsk,
   } from './drag';
   import { cursorNamesEvent, type KeyboardCursor } from './keyboardnav';
+  import { dateOf } from './eventform';
 
   let { week, weather = null, formPreview = null, revealNowRequest = 0, keyboardCursor = null, onpan = null, oncreate, oncreateallday, onedit, ondelete, oncopy, onmove, onresponded }: {
     week: WeekPayload;
@@ -30,7 +31,7 @@
     /** The span the open event form currently describes, drawn as a dashed
      *  ghost so the user watches the event land while typing its times —
      *  create and edit alike. Null draws nothing. */
-    formPreview?: { startMs: number; endMs: number } | null;
+    formPreview?: import('./eventform').FormGhost | null;
     /** Incremented by App for every explicit Today action, including when the
      *  anchor already names today and therefore no payload navigation occurs. */
     revealNowRequest?: number;
@@ -710,6 +711,7 @@
     if (!s.ask) return;
     const rect = { top: s.clientY, left: s.colLeft, width: s.colWidth, height: 0 };
     if (s.ask.kind === 'allDay') {
+      sweptAllDayFrac = s.fromFrac;
       oncreateallday(s.ask.firstDayMs, s.ask.lastDayMs, rect);
     } else {
       oncreate(s.ask.startMs, rect, s.ask.endMs);
@@ -773,14 +775,16 @@
   /** The form ghost's geometry in this day's column, clamped to it — a span
    *  that crosses midnight draws its slice in each column it touches, the
    *  same rule real events follow. */
-  function formPreviewStyle(day: { start_ms: number; end_ms: number }): string | null {
-    if (!formPreview) return null;
-    const s = Math.max(formPreview.startMs, day.start_ms);
-    const e = Math.min(formPreview.endMs, day.end_ms);
-    if (e <= s) return null;
-    const span = day.end_ms - day.start_ms;
-    return `top:${((s - day.start_ms) / span) * 100}%;height:${((e - s) / span) * 100}%`;
-  }
+  /** Where the all-day ribbon was drawn, kept past the release.
+   *
+   *  The draft has to stay *where the hand put it* — "the strip should not
+   *  disappear but become an all-day strip which is not yet finalised"
+   *  (2026-08-31). Anchoring the draft to the top of the column instead put
+   *  it at midnight, which on a pane scrolled to the morning is off-screen:
+   *  the ribbon still vanished, just for a different reason. Null when no
+   *  sweep drew one, and then no grid ghost is drawn at all — an all-day
+   *  form opened any other way has no position to claim. */
+  let sweptAllDayFrac = $state<number | null>(null);
 
   /** How tall the all-day sweep's ribbon is drawn — half an hour of the
    *  column. Thin enough to read as a bar rather than a blackout, tall
@@ -818,6 +822,43 @@
     const top = ((ask.startMs - day.start_ms) / span) * 100;
     const height = ((ask.endMs - ask.startMs) / span) * 100;
     return `top:${top}%;height:${height}%`;
+  }
+
+  // The remembered position belongs to one draft; when that draft is gone,
+  // so is the claim on it.
+  $effect(() => {
+    if (!formPreview) sweptAllDayFrac = null;
+  });
+
+  function formPreviewStyle(day: { start_ms: number; end_ms: number }): string | null {
+    if (!formPreview) return null;
+    // An all-day draft keeps the ribbon the sweep drew, moved to the top of
+    // the column — where an all-day thing belongs, and a position that
+    // claims no hour. Dates compared with dates: ISO strings sort
+    // chronologically, and no missing midnight can shift the match.
+    if (formPreview.kind === 'allDay') {
+      if (sweptAllDayFrac === null) return null;
+      const d = dateOf(day.start_ms);
+      if (d < formPreview.firstDate || d > formPreview.lastDate) return null;
+      const height = (ALL_DAY_GHOST_MS / (day.end_ms - day.start_ms)) * 100;
+      const top = Math.min(Math.max(sweptAllDayFrac * 100, 0), 100 - height);
+      return `top:${top}%;height:${height}%`;
+    }
+    const s = Math.max(formPreview.startMs, day.start_ms);
+    const e = Math.min(formPreview.endMs, day.end_ms);
+    if (e <= s) return null;
+    const span = day.end_ms - day.start_ms;
+    const top = ((s - day.start_ms) / span) * 100;
+    const height = ((e - s) / span) * 100;
+    return `top:${top}%;height:${height}%`;
+  }
+
+  /** The continuation edges for an all-day draft, so a multi-day one reads
+   *  as one dashed bar exactly as its sweep did. */
+  function formPreviewEdges(day: { start_ms: number }): { cl: boolean; cr: boolean } {
+    if (formPreview?.kind !== 'allDay') return { cl: false, cr: false };
+    const d = dateOf(day.start_ms);
+    return { cl: d > formPreview.firstDate, cr: d < formPreview.lastDate };
   }
 
   /**
@@ -1027,7 +1068,9 @@
            overlaps something) but translucent and dashed so it reads as
            not-yet-real, and transparent to the pointer like the sweep. -->
       {#if formPreviewStyle(day)}
-        <div class="formghost" data-testid="form-preview" style={formPreviewStyle(day)}></div>
+        {@const fedge = formPreviewEdges(day)}
+        <div class="formghost" class:cl={fedge.cl} class:cr={fedge.cr}
+             data-testid="form-preview" style={formPreviewStyle(day)}></div>
       {/if}
 
       {#each day.placed as p}
@@ -1215,12 +1258,22 @@
            box-shadow: inset 2px 0 0 0 var(--accent);
            pointer-events: none; z-index: 4; }
   /* A multi-day ribbon: square off the edges that continue, and drop the
-     spine on every segment but the first, so three columns read as one bar
-     and not as three separate events. Reaching past the column's own 3px
-     inset closes the gap the columns leave between them. */
-  .sweep.cl { left: -4px; border-top-left-radius: 0; border-bottom-left-radius: 0;
+     spine on every segment but the first, so N columns read as one bar and
+     not as N separate events. A continuing edge sits at **0** — the column's
+     own boundary, which its neighbour also starts at, so the two meet
+     exactly. Negative values put the edge *outside* the column instead: the
+     first attempt used -4px both sides, overlapping by 8px, and two
+     translucent fills stacked there drew a bright seam at every join — the
+     very thing joining them was meant to remove. Measured, not eyeballed. */
+  .sweep.cl { left: 0; border-top-left-radius: 0; border-bottom-left-radius: 0;
               box-shadow: none; }
-  .sweep.cr { right: -4px; border-top-right-radius: 0; border-bottom-right-radius: 0; }
+  .sweep.cr { right: 0; border-top-right-radius: 0; border-bottom-right-radius: 0; }
+  /* The dashed draft continues the same way, so releasing the button
+     changes the ribbon's dress and not its shape. */
+  .formghost.cl { left: 0; border-top-left-radius: 0; border-bottom-left-radius: 0;
+                  border-left: 0; }
+  .formghost.cr { right: 0; border-top-right-radius: 0; border-bottom-right-radius: 0;
+                  border-right: 0; }
 
   /* The form's draft, dressed as not-yet-real: dashed where every real
      block is solid, tinted rather than filled so whatever it covers still

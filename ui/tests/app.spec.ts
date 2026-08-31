@@ -1158,6 +1158,42 @@ test.describe('App', () => {
     await expect(newForm(page).getByLabel('End', { exact: true })).toHaveValue('11:00');
   });
 
+  /**
+   * **The all-day draft stays visible too.** Releasing a sideways sweep used
+   * to take its ribbon with it, so the span stopped being on screen at
+   * exactly the moment the user was deciding about it (reported
+   * 2026-08-31). It becomes the dashed not-yet-real bar instead — same
+   * place, same days, joined across the columns rather than three chips.
+   */
+  test('a sideways sweep leaves its ribbon behind as the form’s draft', async ({ page }) => {
+    await writable(page);
+    const col = page.locator('.col').first();
+    const box = (await col.boundingBox())!;
+    const y = box.y + box.height * (10.25 / 24);
+    await page.mouse.move(box.x + box.width / 2, y);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2 + 2 * box.width, y, { steps: 8 });
+    const ribbon = (await page.locator('.sweep').first().boundingBox())!;
+    await page.mouse.up();
+
+    await expect(newForm(page)).toBeVisible();
+    await expect(newForm(page).getByLabel('All day')).toBeChecked();
+
+    const draft = page.getByTestId('form-preview');
+    await expect(draft).toHaveCount(3);
+    const after = (await draft.first().boundingBox())!;
+    expect(Math.round(after.y), 'stays where the hand drew it').toBe(Math.round(ribbon.y));
+
+    // Joined, not overlapping: two translucent fills stacked at a join read
+    // as a bright seam down the middle of what should be one bar.
+    const overlap = await page.evaluate(() => {
+      const e = [...document.querySelectorAll('[data-testid="form-preview"]')];
+      const a = e[0].getBoundingClientRect(), b = e[1].getBoundingClientRect();
+      return +(a.right - b.left).toFixed(2);
+    });
+    expect(overlap).toBe(0);
+  });
+
   test('the open form draws its event on the grid, live', async ({ page }) => {
     // A click opens the form on 10:00–11:00 — and the grid must show that
     // block already, not after Save: the whole point is watching the event

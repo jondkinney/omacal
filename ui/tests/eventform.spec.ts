@@ -1887,6 +1887,50 @@ test.describe('the All day switch never lands on a value Save refuses', () => {
  * and nothing else, which is the honest amount of coverage for a change that
  * makes a type truthful rather than a behaviour correct.
  */
+/**
+ * The all-day draft has to stay drawable: the ribbon a sideways sweep drew
+ * used to vanish the moment the form opened, so the thing being decided
+ * about stopped being visible at exactly the wrong time (reported
+ * 2026-08-31).
+ */
+test.describe('the form ghost', () => {
+  const ghost = (page: import('@playwright/test').Page, value: Record<string, unknown>) =>
+    page.evaluate((v) => (window as any).__eventform.previewGhost(v), value);
+
+  const allDay = {
+    isAllDay: true, date: '2026-09-01', endDate: '2026-09-03',
+    start: '', end: '', title: '',
+  };
+
+  test('an all-day value is drawn as the days it covers', async ({ page }) => {
+    await page.goto(PURE);
+    expect(await ghost(page, allDay)).toEqual({
+      kind: 'allDay', firstDate: '2026-09-01', lastDate: '2026-09-03',
+    });
+  });
+
+  test('a one-day all-day value covers just its day', async ({ page }) => {
+    await page.goto(PURE);
+    expect(await ghost(page, { ...allDay, endDate: '' })).toEqual({
+      kind: 'allDay', firstDate: '2026-09-01', lastDate: '2026-09-01',
+    });
+  });
+
+  test('an end before the start draws nothing rather than a backwards bar', async ({ page }) => {
+    await page.goto(PURE);
+    expect(await ghost(page, { ...allDay, endDate: '2026-08-30' })).toBeNull();
+  });
+
+  test('a timed value keeps its span', async ({ page }) => {
+    await page.goto(PURE);
+    const got: any = await ghost(page, {
+      ...allDay, isAllDay: false, start: '09:00', end: '10:00', endDate: '2026-09-01',
+    });
+    expect(got.kind).toBe('timed');
+    expect(got.endMs - got.startMs).toBe(60 * 60_000);
+  });
+});
+
 test('an all-day value carries no source instants, because its times were not read off any', async ({ page }) => {
   await page.goto(PURE);
   const detail = allDayDetail(

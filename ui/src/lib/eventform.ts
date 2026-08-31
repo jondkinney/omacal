@@ -446,6 +446,37 @@ export function toMs(date: string, time: string): number {
  * is deliberately not reproduced here — a preview is not off by anything a
  * pixel can show.
  */
+/**
+ * What the open form currently describes, for the grid's live ghost.
+ *
+ * Two arms, mirroring the sweep that may have started it: a timed event is a
+ * span of instants, an all-day one is a run of *dates*. The all-day arm
+ * carries `yyyy-mm-dd` rather than milliseconds deliberately — the grid then
+ * compares dates with dates, and no midnight that does not exist on a
+ * spring-forward day can push the ghost off the day it belongs to.
+ */
+export type FormGhost =
+  | { kind: 'timed'; startMs: number; endMs: number }
+  | { kind: 'allDay'; firstDate: string; lastDate: string };
+
+/**
+ * The ghost for `value`, or `null` while it describes nothing drawable.
+ *
+ * All-day used to yield nothing at all, so the ribbon a sideways sweep drew
+ * vanished the instant the form opened — the draft stopped being visible at
+ * exactly the moment the user was deciding about it (reported 2026-08-31).
+ */
+export function previewGhost(value: EventFormValue): FormGhost | null {
+  if (value.isAllDay) {
+    const firstDate = value.date;
+    const lastDate = value.endDate || value.date;
+    if (!firstDate || lastDate < firstDate) return null;
+    return { kind: 'allDay', firstDate, lastDate };
+  }
+  const span = previewSpan(value);
+  return span ? { kind: 'timed', ...span } : null;
+}
+
 export function previewSpan(
   value: EventFormValue,
 ): { startMs: number; endMs: number } | null {
