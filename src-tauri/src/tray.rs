@@ -146,6 +146,32 @@ pub(crate) fn autostart_action(demo: bool, wanted: bool) -> Autostart {
     if wanted { Autostart::Register } else { Autostart::Unregister }
 }
 
+/// The argument the login entry carries, so a launch can tell where it came
+/// from.
+///
+/// A **fact about the launch**, deliberately, not an instruction: it says
+/// "the login entry started this", and the setting says what to do about it.
+/// The alternative — writing `--background` into the entry only when that
+/// mode is chosen — cannot work, because the plugin fixes the entry's
+/// arguments when it is initialised, before the database this app stores
+/// preferences in has even been opened. It would also make the entry lie for
+/// a whole session after the choice changed.
+///
+/// And it cannot be a plain "always start hidden" preference either: launch
+/// omacal from the app menu with nothing running and the window has to
+/// appear, or the launcher does nothing when clicked.
+pub(crate) const AUTOSTART_FLAG: &str = "--autostart";
+
+/// Whether this launch should put a window on screen.
+///
+/// True for every launch a person made themselves, whatever the setting says
+/// — that is the guard above, stated as code. False only for the login launch
+/// of somebody who asked for the background mode.
+pub(crate) fn opens_window(argv: &[String], mode: crate::settings::StartOnLogin) -> bool {
+    let from_login = argv.iter().any(|a| a == AUTOSTART_FLAG);
+    !from_login || mode.opens_window()
+}
+
 /// Registers or unregisters the launch entry to match `wanted`.
 ///
 /// Called at startup *and* from the setting's own command, so a change takes
@@ -1058,5 +1084,39 @@ mod tests {
         );
         assert_eq!(autostart_action(true, true), Autostart::LeaveAlone);
         assert_eq!(autostart_action(true, false), Autostart::LeaveAlone);
+    }
+
+    /// **A launch somebody made themselves always opens a window.**
+    ///
+    /// The whole risk in a background mode is an app that does nothing when
+    /// you click it, and the flag is what averts it: only a launch carrying
+    /// it is a login launch, and only that one may be silent. The window is
+    /// configured invisible, so a bug here is not a cosmetic one — it is an
+    /// omacal that cannot be opened at all.
+    #[test]
+    fn only_a_login_launch_may_start_without_a_window() {
+        use crate::settings::StartOnLogin::{Background, Off, Open};
+        let manual = argv(&["omacal"]);
+        let login = argv(&["omacal", AUTOSTART_FLAG]);
+
+        for mode in [Off, Open, Background] {
+            assert!(
+                opens_window(&manual, mode),
+                "a launch with no login flag must open the window whatever {mode:?} says — \
+                 the app menu's launcher is this one, and it cannot do nothing"
+            );
+        }
+
+        assert!(opens_window(&login, Open));
+        assert!(!opens_window(&login, Background));
+        // Unreachable in practice — `Off` writes no entry to launch from —
+        // but answered rather than left to chance: a flag arriving with the
+        // setting off is still not a reason to hide the window.
+        assert!(opens_window(&login, Off));
+
+        // The flag is matched whole, not by prefix: a date argument or a
+        // future `--autostart-something` must not read as a login launch.
+        assert!(opens_window(&argv(&["omacal", "--autostart-later"]), Background));
+        assert!(opens_window(&argv(&["omacal", "2026-09-01"]), Background));
     }
 }

@@ -77,6 +77,52 @@ impl TimeFormat {
     }
 }
 
+/// What a login should do about omacal.
+///
+/// Three states rather than a switch, because there are three answers people
+/// actually want and only two of them are the same question. `Open` is the
+/// calendar you want on screen at the start of the day; `Background` is the
+/// one that should be *available* — reminders firing, the bar widget fed —
+/// without a window nobody asked for appearing every session.
+///
+/// An enum for [`TimeFormat`]'s reason: the set is closed, so the setter
+/// needs no refusal path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum StartOnLogin {
+    #[serde(rename = "off")]
+    Off,
+    #[serde(rename = "open")]
+    Open,
+    #[serde(rename = "background")]
+    Background,
+}
+
+impl StartOnLogin {
+    /// The stored spelling, which is also the wire spelling.
+    fn as_str(self) -> &'static str {
+        match self {
+            StartOnLogin::Off => "off",
+            StartOnLogin::Open => "open",
+            StartOnLogin::Background => "background",
+        }
+    }
+
+    /// Whether a launch entry should exist at all.
+    pub(crate) fn registers(self) -> bool {
+        !matches!(self, StartOnLogin::Off)
+    }
+
+    /// Whether a launch *from that entry* should put a window on screen.
+    ///
+    /// Only ever asked about a login launch — a manual one opens the window
+    /// whatever this says, which is the whole reason the entry carries a flag
+    /// rather than this being read as "always start hidden". See
+    /// [`crate::tray::opens_window`].
+    pub(crate) fn opens_window(self) -> bool {
+        !matches!(self, StartOnLogin::Background)
+    }
+}
+
 /// The day a week begins on.
 ///
 /// Three, not seven, and they are Google Calendar's own three — this is a
@@ -200,11 +246,11 @@ pub struct AppSettings {
     /// the Omarchy 4 bar widget being the case this was built for, driving
     /// the app over the single-instance flags (`--sync-now`, `--quit`).
     pub tray_icon: bool,
-    /// Whether omacal registers itself to start when you log in. **On by
-    /// default**, for §2.6's reason: a reminder can only fire while the
-    /// process is running, so an app that waits to be opened is an app whose
-    /// notifications silently do not arrive — and defaulting this off would
-    /// do that to every existing install at once, on upgrade.
+    /// What a login does about omacal. **`Open` by default**, for §2.6's
+    /// reason: a reminder can only fire while the process is running, so an
+    /// app that waits to be opened is an app whose notifications silently do
+    /// not arrive — and defaulting to `Off` would do that to every existing
+    /// install at once, on upgrade.
     ///
     /// The setting exists because until now there was no way *out*. Startup
     /// registered the launch entry unconditionally on every run, so deleting
@@ -212,7 +258,13 @@ pub struct AppSettings {
     /// written straight back the next time the app opened — the app
     /// overruling the user's own system configuration, which is the part
     /// issue #22 is really about.
-    pub autostart: bool,
+    ///
+    /// `Background` is the second half of the same complaint, asked
+    /// separately (2026-08-31): what people want at login is the calendar
+    /// *available*, not a window in their face. It is a third state rather
+    /// than a second switch because "do not start" and "start without a
+    /// window" are answers to one question.
+    pub start_on_login: StartOnLogin,
     /// Whether the day headers carry the forecast — an icon and the high,
     /// from the same sources the Omarchy bar widget reads (`weather.rs`).
     /// On by default: the data is decoration and the cost is one keyless
@@ -373,12 +425,13 @@ pub async fn read_settings(pool: &SqlitePool) -> AppSettings {
         // garbage both keep the icon — losing the quit affordance must take
         // an explicit "0", never a typo.
         tray_icon: read(pool, TRAY_ICON_KEY).await.map(|v| v != "0").unwrap_or(true),
-        // Same polarity again, and here it is load bearing twice over: absent
-        // is every install that predates this setting, and those all *have*
-        // the launch entry already — reading them as "off" would unregister
-        // it on the first launch after the upgrade, which is precisely the
-        // silent change this setting exists to stop the app making.
-        autostart: autostart(pool).await,
+        // Same "only a spelling this version writes moves the setting" rule
+        // as its three neighbours, and here it is load bearing twice over:
+        // absent is every install that predates this setting, and those all
+        // *have* the launch entry already — landing them anywhere but `Open`
+        // would change what their machine does at the next login, which is
+        // precisely the silent change this setting exists to stop.
+        start_on_login: start_on_login(pool).await,
         // `notifications_enabled`'s polarity and reasoning: on unless
         // somebody turned it off.
         weather_enabled: weather_enabled(pool).await,
@@ -539,13 +592,23 @@ pub(crate) async fn weather_enabled(pool: &SqlitePool) -> bool {
     read(pool, WEATHER_KEY).await.map(|v| v != "0").unwrap_or(true)
 }
 
-/// Whether start-on-login is wanted, named for the same reason
-/// [`weather_enabled`] is: `setup` reads it at launch to decide whether to
-/// register or unregister the launch entry, and `read_settings` reports it to
-/// the form. Two call sites, one polarity, no chance of them disagreeing
-/// about what an absent row means.
-pub(crate) async fn autostart(pool: &SqlitePool) -> bool {
-    read(pool, AUTOSTART_KEY).await.map(|v| v != "0").unwrap_or(true)
+/// What a login should do, named for the same reason [`weather_enabled`] is:
+/// `setup` reads it at launch — twice, once to decide the launch entry and
+/// once to decide the window — and `read_settings` reports it to the form.
+/// Three call sites, one parse, no chance of them disagreeing about what an
+/// absent row means.
+///
+/// `"1"`/`"0"` are accepted alongside the three names because the switch
+/// shipped on `main` as a boolean for a few hours before it became a choice.
+/// No tagged release ever wrote them, so this is for people building from
+/// `main` — cheap enough that the alternative (their setting silently
+/// reverting) is not worth the two lines saved.
+pub(crate) async fn start_on_login(pool: &SqlitePool) -> StartOnLogin {
+    match read(pool, AUTOSTART_KEY).await.as_deref() {
+        Some("off" | "0") => StartOnLogin::Off,
+        Some("background") => StartOnLogin::Background,
+        _ => StartOnLogin::Open,
+    }
 }
 
 /// Stores the weather preference — and on a turn-on, fetches now rather
@@ -594,21 +657,30 @@ pub async fn set_tray_icon(
     Ok(read_settings(&state.pool).await)
 }
 
-/// Stores the start-on-login preference and registers or unregisters the
-/// launch entry in the same breath, for `set_tray_icon`'s reason: a switch
-/// whose effect waits for the next launch cannot be told from one that does
-/// nothing, and *this* switch's whole job is undoing something the app did
+/// Stores the start-on-login choice and registers or unregisters the launch
+/// entry in the same breath, for `set_tray_icon`'s reason: a control whose
+/// effect waits for the next launch cannot be told from one that does
+/// nothing, and *this* control's whole job is undoing something the app did
 /// without being asked.
+///
+/// Nothing is refused: `StartOnLogin` has three variants and the select
+/// offers all three, so there is no fourth value to turn down — the note on
+/// [`set_time_format`] in full.
+///
+/// **Only the entry's existence is applied now**; whether that entry opens a
+/// window is read at the next launch, because a session already running
+/// cannot un-open its own window retroactively. That is not a gap: the whole
+/// preference is about what the *next* login does.
 #[tauri::command]
-pub async fn set_autostart(
+pub async fn set_start_on_login(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
-    on: bool,
+    mode: StartOnLogin,
 ) -> Result<AppSettings, String> {
-    write(&state.pool, AUTOSTART_KEY, if on { "1" } else { "0" })
+    write(&state.pool, AUTOSTART_KEY, mode.as_str())
         .await
         .map_err(|e| crate::errors::user_facing(&e))?;
-    crate::tray::apply_autostart(&app, state.demo, on);
+    crate::tray::apply_autostart(&app, state.demo, mode.registers());
     Ok(read_settings(&state.pool).await)
 }
 
@@ -813,31 +885,52 @@ mod tests {
         );
         assert!(!s.week_starts_today, "a fresh install keeps the calendar-aligned week");
         assert_eq!(s.week_view_days, 7, "the old Week view has seven columns");
-        assert!(
-            s.autostart,
+        assert_eq!(
+            s.start_on_login,
+            StartOnLogin::Open,
             "absent is every install that predates this setting, and they all have the launch \
-             entry already — reading absent as off unregisters it on the upgrade launch"
+             entry already — landing anywhere else changes what their machine does at the \
+             next login, without anybody asking for it"
         );
     }
 
-    /// The setting a hand-edited row must not be able to flip by accident,
-    /// and the one value that turns it off.
+    /// Every spelling the row can hold, and where each one lands.
     #[tokio::test]
-    async fn start_on_login_takes_an_explicit_zero_to_turn_off() {
+    async fn the_login_choice_round_trips_and_defaults_forgivingly() {
         let p = pool().await;
-        assert!(autostart(&p).await, "on before anybody writes anything");
+        assert_eq!(start_on_login(&p).await, StartOnLogin::Open, "before anybody writes anything");
 
+        for mode in [StartOnLogin::Off, StartOnLogin::Background, StartOnLogin::Open] {
+            write(&p, AUTOSTART_KEY, mode.as_str()).await.unwrap();
+            assert_eq!(start_on_login(&p).await, mode);
+            assert_eq!(read_settings(&p).await.start_on_login, mode, "and the form is told");
+        }
+
+        // The boolean spelling `main` carried for a few hours, still read
+        // rather than silently reverting somebody's choice.
         write(&p, AUTOSTART_KEY, "0").await.unwrap();
-        assert!(!autostart(&p).await);
-        assert!(!read_settings(&p).await.autostart, "and the form is told the same");
-
-        write(&p, AUTOSTART_KEY, "1").await.unwrap();
-        assert!(autostart(&p).await, "and back on again — a switch, not a one-way door");
+        assert_eq!(start_on_login(&p).await, StartOnLogin::Off);
 
         // Garbage, and a spelling some future version might write, both land
-        // on the default rather than silently unregistering the entry.
+        // on the default rather than on the state that changes the machine.
         write(&p, AUTOSTART_KEY, "yes-please").await.unwrap();
-        assert!(autostart(&p).await);
+        assert_eq!(start_on_login(&p).await, StartOnLogin::Open);
+    }
+
+    /// The two questions the mode answers, which are deliberately not the
+    /// same question: `Background` still registers the entry.
+    #[test]
+    fn background_starts_on_login_it_just_does_not_open_a_window() {
+        assert!(!StartOnLogin::Off.registers());
+        assert!(StartOnLogin::Open.registers());
+        assert!(
+            StartOnLogin::Background.registers(),
+            "background is a way of starting, not a way of not starting — reading it as \
+             'no entry' would take the reminders away, which is the opposite of the ask"
+        );
+
+        assert!(StartOnLogin::Open.opens_window());
+        assert!(!StartOnLogin::Background.opens_window());
     }
 
     /// `None` must clear a previously stored id back to the old rule — a

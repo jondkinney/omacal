@@ -7,6 +7,25 @@ import type { WeekStartDay } from './weekstart';
 export type WeekViewDays = 3 | 5 | 7;
 
 /**
+ * What a login does about omacal, in the exact spellings
+ * `settings::StartOnLogin` stores and serialises.
+ *
+ * `'background'` starts omacal without a window: reminders fire and the bar
+ * widget's feed stays current, and nothing appears on screen. It is a way of
+ * starting, not a way of not starting — the distinction the `'off'` row makes.
+ */
+export type StartOnLogin = 'off' | 'open' | 'background';
+
+/** The three options in the order the select offers them: least to most
+ *  running. Labels here rather than in the markup so the spec that drives the
+ *  select and the component that renders it read one list. */
+export const START_ON_LOGIN_OPTIONS: ReadonlyArray<[StartOnLogin, string]> = [
+  ['off', "Don't start omacal"],
+  ['open', 'Start omacal'],
+  ['background', 'Start omacal in the background'],
+];
+
+/**
  * The preferences the settings modal edits.
  *
  * Mirrors `settings::AppSettings` field for field. `minSyncIntervalMs` is
@@ -55,10 +74,12 @@ export type AppSettings = {
    *  Quit lives. Turning it off is for setups where something else carries
    *  those actions, like Omarchy 4's bar widget. */
   trayIcon: boolean;
-  /** Whether omacal registers itself to start when you log in. On by default
-   *  — a reminder can only fire while the app is running — and the row's hint
-   *  says so, because that is the cost of turning it off. */
-  autostart: boolean;
+  /** What a login does about omacal: nothing, open it, or run it without a
+   *  window. `'open'` by default — a reminder can only fire while the app is
+   *  running, and the row's hint says so, because that is the cost of `'off'`.
+   *  Three states rather than two switches: "do not start" and "start without
+   *  a window" are answers to one question. */
+  startOnLogin: StartOnLogin;
   /** Whether the day headers carry the forecast — an icon and the high. On
    *  by default; the hint under the toggle names the sources (Open-Meteo,
    *  the Omarchy widget's location or the IP), because this is the one
@@ -97,11 +118,12 @@ export const setNotificationsEnabled = (on: boolean) =>
 export const setTrayIcon = (on: boolean) =>
   invoke<AppSettings>('set_tray_icon', { on });
 
-/** Stores the start-on-login preference; the backend registers or
- *  unregisters the launch entry in the same call, so the answer is true the
- *  moment the modal reports it rather than at the next launch. */
-export const setAutostart = (on: boolean) =>
-  invoke<AppSettings>('set_autostart', { on });
+/** Stores the start-on-login choice; the backend registers or unregisters
+ *  the launch entry in the same call, so *that* half is true the moment the
+ *  modal reports it. Whether the entry opens a window is read at the next
+ *  launch, which is the only place the question can be asked. */
+export const setStartOnLogin = (mode: StartOnLogin) =>
+  invoke<AppSettings>('set_start_on_login', { mode });
 
 /** Stores the weather preference; a turn-on also fetches now, backend-side,
  *  so the headers change while the modal is still open. */

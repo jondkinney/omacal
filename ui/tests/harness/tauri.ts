@@ -15,7 +15,7 @@ import type { Calendar } from '../../src/lib/calendars';
 import type { EventDetail } from '../../src/lib/eventdetail';
 import type { TimeFormat } from '../../src/lib/timefmt';
 import type { WeekStartDay } from '../../src/lib/weekstart';
-import type { WeekViewDays } from '../../src/lib/settings';
+import type { StartOnLogin, WeekViewDays } from '../../src/lib/settings';
 import {
   labelledWeek, weekLabel, APP_FIVE_MIN_AGO, APP_NOW, APP_SERIES_ID, APP_SERIES_OCCURRENCE,
   APP_ONE_OFF_ID, APP_ONE_OFF_START, APP_GUESTS_ID, APP_SOLO_SERIES_ID,
@@ -523,7 +523,7 @@ type StubSettings = {
   displayTimezone: string | null;
   secondTimezone: string | null;
   weatherEnabled: boolean;
-  autostart: boolean;
+  startOnLogin: StartOnLogin;
 };
 
 const SETTINGS_KEY = 'omacal-stub-settings';
@@ -556,8 +556,9 @@ const DEFAULT_SETTINGS: StubSettings = {
   weatherEnabled: true,
   // The backend's default too, and for a reason the stub has to reproduce
   // rather than merely copy: every install that predates the setting has the
-  // launch entry, so absent must read as ON or the upgrade unregisters it.
-  autostart: true,
+  // launch entry, so absent must land on `open` or the upgrade changes what
+  // the machine does at the next login.
+  startOnLogin: 'open',
 };
 
 function loadSettings(): StubSettings {
@@ -793,8 +794,8 @@ export function installTauriStub(scenario: string): Harness {
       case 'set_weather_enabled':
         settings = saveSettings({ ...settings, weatherEnabled: args.on as boolean });
         return { ...settings };
-      case 'set_autostart':
-        settings = saveSettings({ ...settings, autostart: args.on as boolean });
+      case 'set_start_on_login':
+        settings = saveSettings({ ...settings, startOnLogin: args.mode as StartOnLogin });
         return { ...settings };
       case 'set_notifications_enabled':
         settings = saveSettings({ ...settings, notificationsEnabled: args.on as boolean });

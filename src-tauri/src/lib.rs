@@ -1148,7 +1148,10 @@ pub fn run() {
         // gates, in `setup` below. Registration alone adds no login item.
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
-            None,
+            // The entry says where the launch came from; `setup` reads the
+            // preference and decides what that means. See `AUTOSTART_FLAG`
+            // for why the flag cannot instead be the instruction.
+            Some(vec![tray::AUTOSTART_FLAG]),
         ));
 
     // Registered so `app.notification()` resolves for `notify::MacNotifier`.
@@ -1234,6 +1237,28 @@ pub fn run() {
                 let _ = w.set_decorations(false);
             }
 
+            // **The window, as early as there is an answer.**
+            //
+            // It is configured `"visible": false` so that a background start
+            // never *maps* one: hiding an already-painted window would flash
+            // it at every login, which is most of what that mode exists to
+            // avoid. The cost is that showing it is now this app's job, and
+            // the placement is the whole of the care that needs — here, the
+            // first line after the database is open, rather than down beside
+            // the launch entry where the same answer is used again. Left
+            // there, every launch would wait out demo seeding, the tray build
+            // and the widget install before anything appeared on screen.
+            //
+            // Every way this can go wrong lands on *showing* the window: an
+            // unreadable setting reads as `Open`, and a launch with no login
+            // flag opens regardless of the setting. The failure mode is a
+            // window somebody did not want, never an omacal that cannot be
+            // opened at all.
+            let start_on_login = tauri::async_runtime::block_on(settings::start_on_login(&pool));
+            if tray::opens_window(&std::env::args().collect::<Vec<_>>(), start_on_login) {
+                tray::show_main_window(app.handle());
+            }
+
             // A dated fresh launch (`omacal 2026-09-01` with nothing running)
             // reaches setup rather than the single-instance channel. Read off
             // the same vocabulary that channel uses, so the two entrances
@@ -1303,11 +1328,11 @@ pub fn run() {
             // assumed: this call used to be an unconditional `enable()`, so
             // an entry the user deleted by hand came straight back on the
             // next launch (issue #22, reported 2026-08-31).
-            {
-                let pool = &app.state::<AppState>().pool;
-                let wanted = tauri::async_runtime::block_on(settings::autostart(pool));
-                tray::apply_autostart(app.handle(), demo, wanted);
-            }
+            //
+            // `start_on_login` is the answer read above, where it decided the
+            // window; the entry is the same answer's other half, and is
+            // applied here because nothing depends on when.
+            tray::apply_autostart(app.handle(), demo, start_on_login.registers());
 
             // The scheduler. `run_once` refuses in demo mode on its own — see
             // `notify_loop::may_notify` — so this starts either way and the
@@ -1418,7 +1443,7 @@ pub fn run() {
             settings::set_sync_interval,
             settings::set_notifications_enabled,
             settings::set_tray_icon,
-            settings::set_autostart,
+            settings::set_start_on_login,
             settings::set_weather_enabled,
             settings::set_display_timezone,
             settings::set_second_timezone,

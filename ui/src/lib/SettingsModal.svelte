@@ -10,12 +10,13 @@
   import { connectCaldav } from './tasks';
   import { listAccounts, signOut, type Account } from './accounts';
   import {
-    getSettings, listTimezones, minutesOf, msOfMinutes, setAutostart,
-    setDefaultCalendar, setDefaultEventDuration,
+    getSettings, listTimezones, minutesOf, msOfMinutes, setDefaultCalendar,
+    setDefaultEventDuration, setStartOnLogin, START_ON_LOGIN_OPTIONS,
     setDisplayTimezone, setFallbackReminders, setNotificationsEnabled,
     setSecondTimezone, setSyncInterval, setTimeFormat, setTrayIcon,
     setWeatherEnabled, setWeekStart,
-    setWeekStartsToday, setWeekViewDays, type AppSettings, type WeekViewDays,
+    setWeekStartsToday, setWeekViewDays,
+    type AppSettings, type StartOnLogin, type WeekViewDays,
   } from './settings';
   import { formatClock, type TimeFormat } from './timefmt';
   import type { WeekStartDay } from './weekstart';
@@ -425,13 +426,15 @@
     }
   }
 
-  async function toggleAutostart(on: boolean) {
+  async function saveStartOnLogin(mode: StartOnLogin) {
     note = null;
     try {
-      settings = await setAutostart(on);
+      settings = await setStartOnLogin(mode);
     } catch (e) {
       note = { text: String(e), kind: 'error' };
-      // Same checkbox repair as `toggleNotifications`.
+      // Same repair as `toggleNotifications`: re-assign so the select snaps
+      // back to what is actually stored rather than keeping the value the
+      // browser already painted.
       settings = settings ? { ...settings } : null;
     }
   }
@@ -775,19 +778,27 @@
         app itself.
       </p>
 
-      <label class="check">
-        <input
-          type="checkbox"
-          checked={settings?.autostart ?? true}
-          disabled={!settings}
-          onchange={(e) => toggleAutostart(e.currentTarget.checked)}
-        />
-        Start omacal when you log in
-      </label>
+      <div class="row">
+        <label class="lab" for="start-on-login">When you log in</label>
+        <div class="inline">
+          <select
+            id="start-on-login"
+            disabled={!settings}
+            value={settings?.startOnLogin ?? 'open'}
+            onchange={(e) =>
+              saveStartOnLogin((e.currentTarget as HTMLSelectElement).value as StartOnLogin)}
+          >
+            {#each START_ON_LOGIN_OPTIONS as [mode, label] (mode)}
+              <option value={mode}>{label}</option>
+            {/each}
+          </select>
+        </div>
+      </div>
       <p class="hint">
-        Reminders can only fire while omacal is running, so turning this off
-        means notifications arrive only once you have opened it. Takes effect
-        immediately: the login entry is removed now, not at the next restart.
+        Running in the background keeps reminders firing and the bar widget
+        fed, without opening a window — open it any time from the widget, the
+        tray, or your app launcher. Choosing not to start omacal means
+        notifications arrive only once you have opened it yourself.
       </p>
 
       <label class="check">

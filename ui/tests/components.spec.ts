@@ -1195,32 +1195,39 @@ test.describe('Header', () => {
   });
 
   /**
-   * Start-on-login (issue #22): the app used to register its launch entry on
-   * every single start, so deleting the entry by hand achieved nothing — it
-   * was written straight back. The row is checked by default, because that is
-   * the state every existing install is already in, and unchecking it is a
-   * write through the command rather than a redraw.
+   * Start-on-login (issue #22, and the background mode asked for alongside
+   * it): the app used to register its launch entry on every single start, so
+   * deleting the entry by hand achieved nothing — it was written straight
+   * back. Three states rather than a switch, because "do not start" and
+   * "start without a window" are answers to one question.
+   *
+   * The default is the row that matters most: every install that predates
+   * this control already has the launch entry, so anything but `open` would
+   * change what somebody's machine does at the next login without being
+   * asked.
    */
-  test('General carries the start-on-login toggle, on by default and saved off', async ({ page }) => {
+  test('General carries the login choice, defaulting to open and saving each mode', async ({ page }) => {
     await page.goto(show('Header', 'connected'));
     const modal = await openSettings(page);
 
-    const toggle = modal.getByRole('checkbox', { name: 'Start omacal when you log in' });
-    await expect(toggle).toBeChecked();
-    await toggle.uncheck();
-    await expect(toggle).not.toBeChecked();
+    const pick = modal.locator('#start-on-login');
+    await expect(pick).toHaveValue('open');
+    // All three offered, in least-to-most-running order.
+    await expect(pick.locator('option')).toHaveText([
+      "Don't start omacal", 'Start omacal', 'Start omacal in the background',
+    ]);
 
+    await pick.selectOption('background');
+    await expect(pick).toHaveValue('background');
+    await pick.selectOption('off');
+    await expect(pick).toHaveValue('off');
+
+    // Each choice written through the command, in order, and the select's
+    // value is what the backend answered rather than what the browser
+    // painted — the same rule every other control here follows.
     const calls = await page.evaluate(() => (window as any).__harness.calls);
-    expect(calls.find((c: any) => c.cmd === 'set_autostart').args).toMatchObject({ on: false });
-
-    // Back on, so the row is a switch rather than a one-way door — and the
-    // second call proves the checkbox is driven by what the backend answers,
-    // not by the browser's own toggling.
-    await toggle.check();
-    await expect(toggle).toBeChecked();
-    const after = await page.evaluate(() => (window as any).__harness.calls);
-    expect(after.filter((c: any) => c.cmd === 'set_autostart').map((c: any) => c.args.on))
-      .toEqual([false, true]);
+    expect(calls.filter((c: any) => c.cmd === 'set_start_on_login').map((c: any) => c.args.mode))
+      .toEqual(['background', 'off']);
   });
 
   test('Notifications shows the fallback rows in speakable units', async ({ page }) => {

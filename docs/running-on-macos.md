@@ -127,11 +127,20 @@ quietly clamped, which is the difference between knowing what your app is doing
 and believing something untrue about it. (Setting this used to mean running
 `sqlite3` against the database by hand. It no longer does.)
 
-Also on General: **Start omacal when you log in**, on by default and now
-switchable. A reminder can only fire while the process is running, which is
-why the default is what it is — but until v0.13.1 the app registered its
-launch entry on every start, so removing that entry by hand achieved nothing.
-Turning the switch off unregisters it there and then, and leaves it off.
+Also on General: **When you log in** — don't start omacal, start it, or start
+it **in the background**. Starting is the default, because a reminder can only
+fire while the process is running; until v0.13.1 it was also the only
+behaviour, and the app rewrote its own launch entry on every start, so
+removing that entry by hand achieved nothing. Choosing not to start
+unregisters it there and then, and leaves it off.
+
+**In the background** is the third answer: omacal starts, syncs, fires
+reminders and keeps the bar widget's feed current, and no window appears.
+Open it whenever you want from the widget, the tray, or your app launcher —
+launching omacal yourself always shows the window, whatever this is set to.
+The setting applies to the login launch alone, which is why the entry it
+writes carries an `--autostart` flag: that flag is how a launch says where it
+came from.
 
 **Calendars** — the same rows as the header's picker: **show** and **sync** as
 two separate switches, plus a colour. **Accounts** — what is connected, and
