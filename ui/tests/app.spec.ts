@@ -1829,6 +1829,73 @@ test.describe('App', () => {
   });
 
   /**
+   * The dot answers "which calendar" for anyone looking at the *form*; the
+   * draft on the grid answers it for anyone looking at the *calendar* — "so
+   * it's visually more clear which calendar I'm using to create a meeting"
+   * (2026-08-31, by request). Both directions of the switch are asserted:
+   * this fixture's default calendar happens to share `--accent`'s blue, so
+   * only the *change* can tell a wired colour from the stylesheet fallback.
+   */
+  test('the grid draft wears the calendar the form would write to', async ({ page }) => {
+    await writable(page);
+    const col = page.locator('.col').first();
+    const box = (await col.boundingBox())!;
+    await col.click({ position: { x: box.width / 2, y: box.height * (10.25 / 24) } });
+    await expect(newForm(page)).toBeVisible();
+
+    const ghost = page.getByTestId('form-preview');
+    await expect(ghost).toBeVisible();
+    await expect(ghost).toHaveCSS('border-top-color', 'rgb(91, 141, 239)'); // Personal #5b8def
+
+    const picker = newForm(page).getByRole('button', { name: 'Calendar' });
+    await picker.click();
+    await newForm(page).getByRole('option', { name: 'Team' }).click();
+    await expect(ghost).toHaveCSS('border-top-color', 'rgb(47, 191, 113)'); // Team #2fbf71
+
+    // And back, so the tile is following the choice rather than latching on
+    // the first change.
+    await picker.click();
+    await newForm(page).getByRole('option', { name: 'Personal' }).click();
+    await expect(ghost).toHaveCSS('border-top-color', 'rgb(91, 141, 239)');
+  });
+
+  /**
+   * The gesture is already the colour of the draft it becomes: the sweep used
+   * to be `--accent` on the grounds that no calendar had been chosen, but the
+   * form opens on the default one, so releasing the button recoloured the tile
+   * for no reason the user could see.
+   */
+  test('the sweep wears the colour a create would land in', async ({ page }) => {
+    await writable(page);
+    // Make the default calendar one whose colour is *not* `--accent`, which
+    // is the only way this assertion can fail when the wiring is missing.
+    await page.getByRole('button', { name: 'Menu' }).click();
+    await page.getByRole('button', { name: 'Settings…' }).click();
+    const modal = page.getByRole('dialog', { name: 'Settings' });
+    await modal.locator('#default-cal').selectOption({ label: 'Team' });
+    await page.keyboard.press('Escape');
+    await expect(modal).toHaveCount(0);
+
+    const col = page.locator('.col').first();
+    const box = (await col.boundingBox())!;
+    const y = box.y + box.height * (10.25 / 24);
+    await page.mouse.move(box.x + box.width / 2, y);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2, y + box.height / 12, { steps: 6 });
+
+    // Mid-gesture: the spine down the left of the ribbon, in Team's green.
+    await expect(page.locator('.sweep')).toHaveCSS(
+      'box-shadow', 'rgb(47, 191, 113) 2px 0px 0px 0px inset',
+    );
+    await page.mouse.up();
+
+    // And the draft it becomes keeps it.
+    await expect(newForm(page)).toBeVisible();
+    await expect(page.getByTestId('form-preview'))
+      .toHaveCSS('border-top-color', 'rgb(47, 191, 113)');
+  });
+
+  /**
    * The reminder rows through the rendered form, not only the pure layer —
    * a markup wired to nothing keeps every `eventform.spec.ts` test green.
    * The add control's default row is 15 minutes, and one added row must reach

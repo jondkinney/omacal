@@ -10,7 +10,7 @@
   import { getStatus, installUpdate, openLatestRelease, restartApp, signIn, syncNow, takeOpenDate, type AppStatus } from './lib/status';
   import { getWeather, weatherByDate, type DayWeather } from './lib/weather';
   import { changedMeetings, declinedGuests, pendingInvites } from './lib/invites';
-  import { getCalendars, offerableCalendarId, type Calendar } from './lib/calendars';
+  import { calendarColor, getCalendars, offerableCalendarId, type Calendar } from './lib/calendars';
   import {
     createEvent, deleteEvent, getEventDetail, updateEvent,
     type EventDetail, type Occurrence, type SendUpdates,
@@ -1038,6 +1038,11 @@
     ),
   );
 
+  /** The colour a new event would be drawn in, for the grid's sweep — the
+   *  calendar the form opens pre-set to, so the gesture is already the colour
+   *  of the draft it becomes (2026-08-31, by request). */
+  const createColor = $derived(calendarColor(createCalendarId, calendars));
+
   /** What the open form is for. `id` and `occurrenceStartMs` are captured when
    *  the form opens, never re-read from the popover state afterwards: the
    *  popover is already closed by then, and `occurrenceStartMs` is the one
@@ -1729,7 +1734,7 @@
                  keyboardCursor={visibleKeyboardCursor}
                  onopen={openGridEvent} />
     {:else}
-      <WeekGrid {week} {weather} {formPreview} {revealNowRequest}
+      <WeekGrid {week} {weather} {formPreview} {createColor} {revealNowRequest}
                 keyboardCursor={visibleKeyboardCursor}
                 onpan={panView}
                 oncreate={newEventAt} oncreateallday={newAllDayEventOver}
@@ -1813,7 +1818,7 @@
     {calendars}
     onsave={saveForm}
     oncancel={() => (form = null)}
-    onvaluechange={(v) => (formPreview = previewGhost(v))}
+    onvaluechange={(v) => (formPreview = previewGhost(v, calendarColor(v.calendarId, calendars)))}
   />
 {/if}
 

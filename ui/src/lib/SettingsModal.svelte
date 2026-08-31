@@ -6,7 +6,7 @@
   import { escapeCloses } from './dismiss.svelte';
   import { REMINDER_UNITS, reminderAmountOf, reminderMax, reminderUnitOf } from './reminders';
   import CalendarList from './CalendarList.svelte';
-  import { offerableCalendarId, writableCalendars, type Calendar } from './calendars';
+  import { calendarColor, offerableCalendarId, writableCalendars, type Calendar } from './calendars';
   import { connectCaldav } from './tasks';
   import { listAccounts, signOut, type Account } from './accounts';
   import {
@@ -307,7 +307,7 @@
    *  uses, so the dot cannot promise a calendar a create cannot reach. */
   const defaultCalColor = $derived.by(() => {
     const id = offerableCalendarId(settings?.defaultCalendarId ?? null, calendars);
-    return calendars.find((c) => c.id === id)?.color_hex ?? 'var(--accent)';
+    return calendarColor(id, calendars) ?? 'var(--accent)';
   });
 
   /** Same repair as `toggleNotifications` when the backend refuses. */

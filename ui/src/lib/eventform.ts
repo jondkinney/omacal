@@ -454,27 +454,39 @@ export function toMs(date: string, time: string): number {
  * carries `yyyy-mm-dd` rather than milliseconds deliberately — the grid then
  * compares dates with dates, and no midnight that does not exist on a
  * spring-forward day can push the ghost off the day it belongs to.
+ *
+ * `color` is what the draft is drawn in: the colour of the calendar the form
+ * would write to, so the tile on the grid says which calendar is being
+ * created on (2026-08-31, by request). It rides on the ghost rather than
+ * beside it because the two must never disagree — a shape from one value and
+ * a colour from another is exactly the pairing that drifts. `null` when the
+ * calendar has no colour to lend, which the grid draws as `--accent`.
  */
 export type FormGhost =
-  | { kind: 'timed'; startMs: number; endMs: number }
-  | { kind: 'allDay'; firstDate: string; lastDate: string };
+  | { kind: 'timed'; startMs: number; endMs: number; color: string | null }
+  | { kind: 'allDay'; firstDate: string; lastDate: string; color: string | null };
 
 /**
- * The ghost for `value`, or `null` while it describes nothing drawable.
+ * The ghost for `value` in `color`, or `null` while it describes nothing
+ * drawable.
+ *
+ * The colour is a parameter rather than something read off `value`: a form
+ * value carries a calendar *id*, and which colour that id draws in is the
+ * calendar list's business, not this module's.
  *
  * All-day used to yield nothing at all, so the ribbon a sideways sweep drew
  * vanished the instant the form opened — the draft stopped being visible at
  * exactly the moment the user was deciding about it (reported 2026-08-31).
  */
-export function previewGhost(value: EventFormValue): FormGhost | null {
+export function previewGhost(value: EventFormValue, color: string | null): FormGhost | null {
   if (value.isAllDay) {
     const firstDate = value.date;
     const lastDate = value.endDate || value.date;
     if (!firstDate || lastDate < firstDate) return null;
-    return { kind: 'allDay', firstDate, lastDate };
+    return { kind: 'allDay', firstDate, lastDate, color };
   }
   const span = previewSpan(value);
-  return span ? { kind: 'timed', ...span } : null;
+  return span ? { kind: 'timed', ...span, color } : null;
 }
 
 export function previewSpan(

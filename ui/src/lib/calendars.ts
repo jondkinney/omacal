@@ -58,6 +58,18 @@ export function offerableCalendarId(wanted: number | null, cals: Calendar[]): nu
   return offers.some((c) => c.id === wanted) ? wanted : (offers[0]?.id ?? null);
 }
 
+/**
+ * The colour to draw something belonging to calendar `id` in, or `null` when
+ * there is no such calendar or it has no colour — a caller then falls back to
+ * `--accent`, the same way `CalendarPicker`'s swatch does.
+ *
+ * `color_hex` and not `color_override`: this answers "what colour is this
+ * calendar", which is the override *or* Google's own. See the field's comment.
+ */
+export function calendarColor(id: number | null, cals: Calendar[]): string | null {
+  return cals.find((c) => c.id === id)?.color_hex ?? null;
+}
+
 export const getCalendars = () => invoke<Calendar[]>('get_calendars');
 export const setCalendarSelected = (id: number, on: boolean) =>
   invoke<void>('set_calendar_selected', { id, on });

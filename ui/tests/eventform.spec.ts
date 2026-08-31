@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { offerableCalendarId, type Calendar } from '../src/lib/calendars';
+import { calendarColor, offerableCalendarId, type Calendar } from '../src/lib/calendars';
 import type { EventDetail } from '../src/lib/eventdetail';
 import {
   addGuest, blankValue, blankValueAt, endAfterStart, isAddress, mailableGuests, pastedValue,
@@ -64,6 +64,22 @@ test.describe('offerableCalendarId', () => {
     // returning a reader here would defeat the whole function.
     expect(offerableCalendarId(3, [cal(3, 'reader'), cal(4, 'freeBusyReader')])).toBeNull();
     expect(offerableCalendarId(null, [])).toBeNull();
+  });
+});
+
+test.describe('calendarColor', () => {
+  const painted = { ...cal(7, 'owner'), color_hex: '#8e7cc3' };
+
+  test('answers the calendar its id names', () => {
+    expect(calendarColor(7, [...CALS, painted])).toBe('#8e7cc3');
+  });
+
+  test('answers null for a calendar with no colour, and for no calendar', () => {
+    // Three ways to have nothing to draw with, one answer — the callers all
+    // fall back to `--accent`, and none of them needs to tell these apart.
+    expect(calendarColor(1, CALS)).toBeNull();
+    expect(calendarColor(99, CALS)).toBeNull();
+    expect(calendarColor(null, CALS)).toBeNull();
   });
 });
 
@@ -1894,8 +1910,16 @@ test.describe('the All day switch never lands on a value Save refuses', () => {
  * 2026-08-31).
  */
 test.describe('the form ghost', () => {
-  const ghost = (page: import('@playwright/test').Page, value: Record<string, unknown>) =>
-    page.evaluate((v) => (window as any).__eventform.previewGhost(v), value);
+  const CAL = '#8e7cc3';
+  const ghost = (
+    page: import('@playwright/test').Page,
+    value: Record<string, unknown>,
+    color: string | null = CAL,
+  ) =>
+    page.evaluate(
+      ([v, c]) => (window as any).__eventform.previewGhost(v, c),
+      [value, color] as const,
+    );
 
   const allDay = {
     isAllDay: true, date: '2026-09-01', endDate: '2026-09-03',
@@ -1905,14 +1929,14 @@ test.describe('the form ghost', () => {
   test('an all-day value is drawn as the days it covers', async ({ page }) => {
     await page.goto(PURE);
     expect(await ghost(page, allDay)).toEqual({
-      kind: 'allDay', firstDate: '2026-09-01', lastDate: '2026-09-03',
+      kind: 'allDay', firstDate: '2026-09-01', lastDate: '2026-09-03', color: CAL,
     });
   });
 
   test('a one-day all-day value covers just its day', async ({ page }) => {
     await page.goto(PURE);
     expect(await ghost(page, { ...allDay, endDate: '' })).toEqual({
-      kind: 'allDay', firstDate: '2026-09-01', lastDate: '2026-09-01',
+      kind: 'allDay', firstDate: '2026-09-01', lastDate: '2026-09-01', color: CAL,
     });
   });
 
@@ -1928,6 +1952,21 @@ test.describe('the form ghost', () => {
     });
     expect(got.kind).toBe('timed');
     expect(got.endMs - got.startMs).toBe(60 * 60_000);
+  });
+
+  /**
+   * The draft says which calendar it would land on, so the colour has to
+   * reach the grid on the ghost itself — both arms, and a calendar with no
+   * colour of its own has to be tellable from one that has, since the grid
+   * falls back to `--accent` for exactly that case (2026-08-31, by request).
+   */
+  test('the calendar colour rides on both arms, and null stays null', async ({ page }) => {
+    await page.goto(PURE);
+    const timed = { ...allDay, isAllDay: false, start: '09:00', end: '10:00' };
+    expect((await ghost(page, timed) as any).color).toBe(CAL);
+    expect((await ghost(page, allDay) as any).color).toBe(CAL);
+    expect((await ghost(page, timed, null) as any).color).toBeNull();
+    expect((await ghost(page, allDay, null) as any).color).toBeNull();
   });
 });
 

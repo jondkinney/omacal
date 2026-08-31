@@ -18,7 +18,7 @@
   import { cursorNamesEvent, type KeyboardCursor } from './keyboardnav';
   import { dateOf } from './eventform';
 
-  let { week, weather = null, formPreview = null, revealNowRequest = 0, keyboardCursor = null, onpan = null, oncreate, oncreateallday, onedit, ondelete, oncopy, onmove, onresponded }: {
+  let { week, weather = null, formPreview = null, createColor = null, revealNowRequest = 0, keyboardCursor = null, onpan = null, oncreate, oncreateallday, onedit, ondelete, oncopy, onmove, onresponded }: {
     week: WeekPayload;
     /** A horizontal wheel/trackpad gesture asking the window to slide by
      *  whole days — positive is forward. Optional: a grid without it (a
@@ -32,6 +32,13 @@
      *  ghost so the user watches the event land while typing its times —
      *  create and edit alike. Null draws nothing. */
     formPreview?: import('./eventform').FormGhost | null;
+    /** The colour a create started here would land in — the calendar the form
+     *  will open pre-set to. The sweep wears it so the gesture and the draft
+     *  it becomes are the same colour as well as the same shape: releasing
+     *  the button must change the ribbon's dress, not its identity. Null
+     *  falls back to `--accent`, which is also what an unwritable-to app
+     *  (no calendar a create can land on) draws. */
+    createColor?: string | null;
     /** Incremented by App for every explicit Today action, including when the
      *  anchor already names today and therefore no payload navigation occurs. */
     revealNowRequest?: number;
@@ -800,9 +807,21 @@
     return { cl: day.start_ms > ask.firstDayMs, cr: day.start_ms < ask.lastDayMs };
   }
 
+  /** `--ghost: <colour>;`, or nothing when there is no colour to declare and
+   *  the stylesheet's `--accent` fallback should stand. A custom property
+   *  rather than the declarations that read it, so the dashed border, the
+   *  tint and the spine can never end up different colours. */
+  const ghostInk = (color: string | null) => (color ? `--ghost:${color};` : '');
+
   function sweepStyle(day: { start_ms: number; end_ms: number }): string | null {
     const ask = sweep?.ask;
     if (!ask) return null;
+    // The colour the form is about to open on. The gesture used to be
+    // `--accent` on the grounds that no calendar had been chosen yet, but one
+    // has: the create lands on the default calendar unless the form is told
+    // otherwise, and drawing the sweep in anything else meant the tile changed
+    // colour on release for no reason the user could see.
+    const ink = ghostInk(createColor);
     // An all-day sweep draws a thin ribbon across the days it covers,
     // anchored at the height the press landed at. Not full columns: those
     // shouted, and half a screen of tint to say "three days" is more
@@ -815,13 +834,13 @@
       const span = day.end_ms - day.start_ms;
       const height = (ALL_DAY_GHOST_MS / span) * 100;
       const top = Math.min(Math.max(sweep!.fromFrac * 100, 0), 100 - height);
-      return `top:${top}%;height:${height}%`;
+      return `${ink}top:${top}%;height:${height}%`;
     }
     if (sweep!.dayStartMs !== day.start_ms) return null;
     const span = day.end_ms - day.start_ms;
     const top = ((ask.startMs - day.start_ms) / span) * 100;
     const height = ((ask.endMs - ask.startMs) / span) * 100;
-    return `top:${top}%;height:${height}%`;
+    return `${ink}top:${top}%;height:${height}%`;
   }
 
   // The remembered position belongs to one draft; when that draft is gone,
@@ -832,6 +851,11 @@
 
   function formPreviewStyle(day: { start_ms: number; end_ms: number }): string | null {
     if (!formPreview) return null;
+    // The draft is drawn in the colour of the calendar it would be written to,
+    // and follows the picker: switching calendar in the open form recolours
+    // the tile, which is the whole point — "so it's visually more clear which
+    // calendar I'm using to create a meeting" (2026-08-31).
+    const ink = ghostInk(formPreview.color);
     // An all-day draft keeps the ribbon the sweep drew, moved to the top of
     // the column — where an all-day thing belongs, and a position that
     // claims no hour. Dates compared with dates: ISO strings sort
@@ -842,7 +866,7 @@
       if (d < formPreview.firstDate || d > formPreview.lastDate) return null;
       const height = (ALL_DAY_GHOST_MS / (day.end_ms - day.start_ms)) * 100;
       const top = Math.min(Math.max(sweptAllDayFrac * 100, 0), 100 - height);
-      return `top:${top}%;height:${height}%`;
+      return `${ink}top:${top}%;height:${height}%`;
     }
     const s = Math.max(formPreview.startMs, day.start_ms);
     const e = Math.min(formPreview.endMs, day.end_ms);
@@ -850,7 +874,7 @@
     const span = day.end_ms - day.start_ms;
     const top = ((s - day.start_ms) / span) * 100;
     const height = ((e - s) / span) * 100;
-    return `top:${top}%;height:${height}%`;
+    return `${ink}top:${top}%;height:${height}%`;
   }
 
   /** The continuation edges for an all-day draft, so a multi-day one reads
@@ -1251,11 +1275,11 @@
   /* The span being swept out, drawn as the event it is about to become: the
      same 6px radius and the same left spine an `EventBlock` has, so what the
      gesture promises and what appears afterwards read as the same object.
-     Built from `--accent` rather than a calendar colour because no calendar has
-     been chosen yet — that is the form's first question. */
+     `--ghost` is the calendar the create would land on, declared inline by
+     `sweepStyle`; `--accent` stands in when there is no such calendar. */
   .sweep { position: absolute; left: 3px; right: 3px; border-radius: 6px;
-           background: color-mix(in srgb, var(--accent) 14%, var(--bg));
-           box-shadow: inset 2px 0 0 0 var(--accent);
+           background: color-mix(in srgb, var(--ghost, var(--accent)) 14%, var(--bg));
+           box-shadow: inset 2px 0 0 0 var(--ghost, var(--accent));
            pointer-events: none; z-index: 4; }
   /* A multi-day ribbon: square off the edges that continue, and drop the
      spine on every segment but the first, so N columns read as one bar and
@@ -1277,10 +1301,12 @@
 
   /* The form's draft, dressed as not-yet-real: dashed where every real
      block is solid, tinted rather than filled so whatever it covers still
-     reads through. */
+     reads through — and in the colour of the calendar it would be written
+     to, which the open form can change under it (`--ghost`, declared inline
+     by `formPreviewStyle`; `--accent` when the calendar lends no colour). */
   .formghost { position: absolute; left: 3px; right: 3px; border-radius: 6px;
-               background: color-mix(in srgb, var(--accent) 18%, transparent);
-               border: 1.5px dashed var(--accent);
+               background: color-mix(in srgb, var(--ghost, var(--accent)) 18%, transparent);
+               border: 1.5px dashed var(--ghost, var(--accent));
                pointer-events: none; z-index: 6; }
 
   /* The loudest thing on screen, deliberately. */
