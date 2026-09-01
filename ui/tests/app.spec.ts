@@ -1811,6 +1811,34 @@ test.describe('App', () => {
   });
 
   /**
+   * Issue #26. The setting exists; the default does not move. Both halves are
+   * asserted here because the second is the one a future edit is likeliest to
+   * break — an install that never touches this checkbox must go on hiding on
+   * close, which is what keeps its reminders firing.
+   */
+  test('closing the window quits only once the setting says so', async ({ page }) => {
+    await writable(page);
+    await page.getByRole('button', { name: 'Menu' }).click();
+    await page.getByRole('button', { name: 'Settings…' }).click();
+    const modal = page.getByRole('dialog', { name: 'Settings' });
+    const box = modal.getByRole('checkbox', { name: 'Closing the window quits omacal' });
+    await expect(box).not.toBeChecked();
+
+    await box.check();
+    const [args] = await callsTo(page, 'set_quit_on_close');
+    expect(args).toEqual({ on: true });
+
+    // Reopened, the box shows what was stored rather than its own default.
+    await page.keyboard.press('Escape');
+    await expect(modal).toHaveCount(0);
+    await page.getByRole('button', { name: 'Menu' }).click();
+    await page.getByRole('button', { name: 'Settings…' }).click();
+    await expect(
+      modal.getByRole('checkbox', { name: 'Closing the window quits omacal' }),
+    ).toBeChecked();
+  });
+
+  /**
    * Issue #28. A self-hosted CalDAV server is named by LAN address and signed
    * into with a bare username, and the form was built for neither: the
    * identity field was `type="email"`, so the browser's own validation

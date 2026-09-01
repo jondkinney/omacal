@@ -93,6 +93,13 @@ pub struct AppState {
     /// alt-tab is not a request to poll GitHub. Atomic rather than another
     /// mutex: one stamp, written after each check, read on each focus.
     pub update_checked_at: std::sync::atomic::AtomicI64,
+    /// The `quit_on_close` setting, mirrored where a synchronous handler can
+    /// read it. `WindowEvent::CloseRequested` has to decide before the window
+    /// goes, with no runtime to await a query on, so the row is read once at
+    /// startup and re-stored by `settings::set_quit_on_close`. Atomic for
+    /// `update_checked_at`'s reason: one flag, written on a toggle, read on
+    /// a close.
+    pub quit_on_close: std::sync::atomic::AtomicBool,
     /// The system zone's new IANA name, once `tz_watch` has seen it move out
     /// from under this process — `None` until then. Carried to the UI on
     /// `get_status`, where it becomes the restart banner. In memory only,
@@ -1268,6 +1275,11 @@ pub fn run() {
                 _ => None,
             };
 
+            // Read before the pool moves into the state, alongside
+            // `start_on_login` above and for the same reason: the answer is
+            // needed by a synchronous handler later.
+            let quit_on_close = tauri::async_runtime::block_on(settings::quit_on_close(&pool));
+
             app.manage(AppState {
                 pool, demo,
                 tokens: Default::default(),
@@ -1275,6 +1287,7 @@ pub fn run() {
                 update: Default::default(),
                 update_checked_at: Default::default(),
                 system_tz_change: Default::default(),
+                quit_on_close: std::sync::atomic::AtomicBool::new(quit_on_close),
                 open_date: std::sync::Mutex::new(open_date),
             });
             sync_loop::spawn(app.handle().clone());
@@ -1400,11 +1413,24 @@ pub fn run() {
                 // a day — the exact day the Update button matters most.
                 update::check_on_focus(window.app_handle());
             }
-            // §2.6: closing hides. The scheduler is the whole point of the
-            // app, and a closed window that silently stopped firing reminders
-            // would be a bug rather than a feature. Quit is explicit, from the
-            // tray.
-            tauri::WindowEvent::CloseRequested { api, .. } if tray::hide_instead_of_closing() => {
+            // §2.6: closing hides, unless the user has said otherwise. The
+            // scheduler is the whole point of the app, and a closed window
+            // that silently stopped firing reminders would be a bug rather
+            // than a feature — so that stays the default, and the setting
+            // (issue #26) is someone deciding for themselves. Quit is
+            // otherwise explicit, from the tray.
+            //
+            // The flag is read off `AppState` rather than the database: this
+            // handler answers synchronously, before the window is gone.
+            tauri::WindowEvent::CloseRequested { api, .. }
+                if tray::hide_instead_of_closing(
+                    window
+                        .app_handle()
+                        .state::<AppState>()
+                        .quit_on_close
+                        .load(std::sync::atomic::Ordering::Relaxed),
+                ) =>
+            {
                 api.prevent_close();
                 let _ = window.hide();
             }
@@ -1443,6 +1469,7 @@ pub fn run() {
             settings::set_sync_interval,
             settings::set_notifications_enabled,
             settings::set_tray_icon,
+            settings::set_quit_on_close,
             settings::set_start_on_login,
             settings::set_weather_enabled,
             settings::set_display_timezone,

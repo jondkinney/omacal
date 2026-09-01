@@ -13,7 +13,7 @@
     getSettings, listTimezones, minutesOf, msOfMinutes, setDefaultCalendar,
     setDefaultEventDuration, setStartOnLogin, START_ON_LOGIN_OPTIONS,
     setDisplayTimezone, setFallbackReminders, setNotificationsEnabled,
-    setSecondTimezone, setSyncInterval, setTimeFormat, setTrayIcon,
+    setQuitOnClose, setSecondTimezone, setSyncInterval, setTimeFormat, setTrayIcon,
     setWeatherEnabled, setWeekStart,
     setWeekStartsToday, setWeekViewDays,
     type AppSettings, type StartOnLogin, type WeekViewDays,
@@ -426,6 +426,17 @@
     }
   }
 
+  async function toggleQuitOnClose(on: boolean) {
+    note = null;
+    try {
+      settings = await setQuitOnClose(on);
+    } catch (e) {
+      note = { text: String(e), kind: 'error' };
+      // Same checkbox repair as `toggleNotifications`.
+      settings = settings ? { ...settings } : null;
+    }
+  }
+
   async function saveStartOnLogin(mode: StartOnLogin) {
     note = null;
     try {
@@ -776,6 +787,21 @@
         The tray is where Quit lives — only turn this off when something else
         covers it, like the Omarchy bar widget, which can quit and sync the
         app itself.
+      </p>
+
+      <label class="check">
+        <input
+          type="checkbox"
+          checked={settings?.quitOnClose ?? false}
+          disabled={!settings}
+          onchange={(e) => toggleQuitOnClose(e.currentTarget.checked)}
+        />
+        Closing the window quits omacal
+      </label>
+      <p class="hint">
+        Off by default: closing hides the window and omacal keeps running, so
+        reminders still arrive and the bar widget stays fed. Turn this on and
+        a close ends the app — nothing will fire until you open it again.
       </p>
 
       <div class="row">

@@ -202,12 +202,17 @@ pub(crate) fn apply_autostart(app: &tauri::AppHandle, demo: bool, wanted: bool) 
 
 /// Whether a window-close should hide rather than quit.
 ///
-/// Always, and it is a rule rather than a constant because it is the one thing
-/// standing between this app and the bug §2.6 describes: a window someone
-/// closed, an app that looks gone, and reminders that silently stopped firing.
-/// Quit is explicit, from the tray.
-pub(crate) fn hide_instead_of_closing() -> bool {
-    true
+/// Unless the user has asked for the opposite, and only then. Hiding is what
+/// stands between this app and the bug §2.6 describes — a window someone
+/// closed, an app that looks gone, and reminders that silently stopped firing
+/// — so it remains what an install does by default and what every unreadable
+/// or absent setting resolves to; `settings::quit_on_close` holds that
+/// polarity. Quit is otherwise explicit, from the tray.
+///
+/// Trivial as a function, and it stays one for the module's stated split: the
+/// decision is testable here, and `lib.rs`'s window handler does the OS half.
+pub(crate) fn hide_instead_of_closing(quit_on_close: bool) -> bool {
+    !quit_on_close
 }
 
 /// The tray icon's id, shared by [`build`] and [`set_visible`].
@@ -989,11 +994,21 @@ mod tests {
     /// Recorded plainly rather than left to look like the others.
     #[test]
     fn quit_is_on_the_menu_because_closing_the_window_does_not_quit() {
-        assert!(hide_instead_of_closing(), "fixture check: closing only hides");
+        assert!(hide_instead_of_closing(false), "fixture check: closing only hides");
         assert!(
             MENU.iter().any(|(id, _)| *id == "quit"),
             "closing the window only hides it, so the tray must offer a way out"
         );
+    }
+
+    /// Issue #26. The setting is the only thing that may move this, and it
+    /// moves it in one direction: `false` — absent row, unreadable row, an
+    /// install that predates the setting — is the hide the tray menu's
+    /// promise above depends on.
+    #[test]
+    fn only_the_setting_makes_a_close_quit() {
+        assert!(hide_instead_of_closing(false));
+        assert!(!hide_instead_of_closing(true));
     }
 
     /// Every id on the menu maps to something. An entry that mapped to nothing

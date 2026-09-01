@@ -365,6 +365,7 @@ mod tests {
             update: Default::default(),
             update_checked_at: Default::default(),
             system_tz_change: Default::default(),
+            quit_on_close: Default::default(),
             open_date: Default::default(),
         };
 

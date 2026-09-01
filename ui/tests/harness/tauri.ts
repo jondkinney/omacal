@@ -524,6 +524,7 @@ type StubSettings = {
   secondTimezone: string | null;
   weatherEnabled: boolean;
   startOnLogin: StartOnLogin;
+  quitOnClose: boolean;
 };
 
 const SETTINGS_KEY = 'omacal-stub-settings';
@@ -559,6 +560,9 @@ const DEFAULT_SETTINGS: StubSettings = {
   // launch entry, so absent must land on `open` or the upgrade changes what
   // the machine does at the next login.
   startOnLogin: 'open',
+  // The backend's default: closing hides the window, because a reminder can
+  // only fire while the process is alive.
+  quitOnClose: false,
 };
 
 function loadSettings(): StubSettings {
@@ -802,6 +806,9 @@ export function installTauriStub(scenario: string): Harness {
         return { ...settings };
       case 'set_start_on_login':
         settings = saveSettings({ ...settings, startOnLogin: args.mode as StartOnLogin });
+        return { ...settings };
+      case 'set_quit_on_close':
+        settings = saveSettings({ ...settings, quitOnClose: args.on as boolean });
         return { ...settings };
       case 'set_notifications_enabled':
         settings = saveSettings({ ...settings, notificationsEnabled: args.on as boolean });

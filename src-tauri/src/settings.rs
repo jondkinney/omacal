@@ -22,6 +22,7 @@ const WEEK_START_KEY: &str = "week_start";
 const WEEK_STARTS_TODAY_KEY: &str = "week_starts_today";
 const WEEK_VIEW_DAYS_KEY: &str = "week_view_days";
 const TRAY_ICON_KEY: &str = "tray_icon";
+const QUIT_ON_CLOSE_KEY: &str = "quit_on_close";
 const AUTOSTART_KEY: &str = "autostart";
 const WEATHER_KEY: &str = "weather_enabled";
 const DISPLAY_TZ_KEY: &str = "display_timezone";
@@ -246,6 +247,18 @@ pub struct AppSettings {
     /// the Omarchy 4 bar widget being the case this was built for, driving
     /// the app over the single-instance flags (`--sync-now`, `--quit`).
     pub tray_icon: bool,
+    /// Whether closing the window quits omacal instead of hiding it.
+    ///
+    /// **Off by default, and it stays a setting rather than becoming the
+    /// behaviour**: reminders only fire while the process runs, so quitting
+    /// on close is the user choosing to give them up until the app is opened
+    /// again. §2.6 turned that down as a default for exactly that reason and
+    /// nothing here reverses it — what changed (issue #26, 2026-08-31) is
+    /// that "the window is closed, therefore I am done with it" is a
+    /// legitimate way to want a desktop app to behave, and refusing it
+    /// outright left people with a process they could only end from a tray
+    /// icon they may also have turned off.
+    pub quit_on_close: bool,
     /// What a login does about omacal. **`Open` by default**, for §2.6's
     /// reason: a reminder can only fire while the process is running, so an
     /// app that waits to be opened is an app whose notifications silently do
@@ -425,6 +438,7 @@ pub async fn read_settings(pool: &SqlitePool) -> AppSettings {
         // garbage both keep the icon — losing the quit affordance must take
         // an explicit "0", never a typo.
         tray_icon: read(pool, TRAY_ICON_KEY).await.map(|v| v != "0").unwrap_or(true),
+        quit_on_close: quit_on_close(pool).await,
         // Same "only a spelling this version writes moves the setting" rule
         // as its three neighbours, and here it is load bearing twice over:
         // absent is every install that predates this setting, and those all
@@ -592,6 +606,17 @@ pub(crate) async fn weather_enabled(pool: &SqlitePool) -> bool {
     read(pool, WEATHER_KEY).await.map(|v| v != "0").unwrap_or(true)
 }
 
+/// Whether closing the window should quit (issue #26), named for
+/// [`weather_enabled`]'s reason: `setup` reads it once to seed the flag the
+/// window handler consults, and `read_settings` reports it to the form.
+///
+/// The polarity is the safety. Absent — every install that predates this
+/// setting — and anything a hand-edited row could hold both mean "hide", so
+/// giving up the reminders takes an explicit `"1"` this version wrote.
+pub(crate) async fn quit_on_close(pool: &SqlitePool) -> bool {
+    read(pool, QUIT_ON_CLOSE_KEY).await.map(|v| v == "1").unwrap_or(false)
+}
+
 /// What a login should do, named for the same reason [`weather_enabled`] is:
 /// `setup` reads it at launch — twice, once to decide the launch entry and
 /// once to decide the window — and `read_settings` reports it to the form.
@@ -654,6 +679,27 @@ pub async fn set_tray_icon(
         .await
         .map_err(|e| crate::errors::user_facing(&e))?;
     crate::tray::set_visible(&app, on);
+    Ok(read_settings(&state.pool).await)
+}
+
+/// Stores the close-behaviour preference and updates the flag the window
+/// handler reads, in the same breath and for `set_tray_icon`'s reason: a
+/// setting that only took effect at the next launch would read as broken.
+///
+/// The database row is the source of truth; [`AppState::quit_on_close`] is a
+/// mirror of it, because `WindowEvent::CloseRequested` is a synchronous
+/// handler that has to answer before the window is gone and cannot await a
+/// query. Seeded from the row at startup, so a crash between the two writes
+/// heals on the next launch.
+#[tauri::command]
+pub async fn set_quit_on_close(
+    state: tauri::State<'_, AppState>,
+    on: bool,
+) -> Result<AppSettings, String> {
+    write(&state.pool, QUIT_ON_CLOSE_KEY, if on { "1" } else { "0" })
+        .await
+        .map_err(|e| crate::errors::user_facing(&e))?;
+    state.quit_on_close.store(on, std::sync::atomic::Ordering::Relaxed);
     Ok(read_settings(&state.pool).await)
 }
 

@@ -74,6 +74,11 @@ export type AppSettings = {
    *  Quit lives. Turning it off is for setups where something else carries
    *  those actions, like Omarchy 4's bar widget. */
   trayIcon: boolean;
+  /** Whether closing the window quits omacal rather than hiding it. Off by
+   *  default: reminders only fire while the app runs, so this is the user
+   *  choosing to give them up until they open it again, and the hint under
+   *  the checkbox says so. */
+  quitOnClose: boolean;
   /** What a login does about omacal: nothing, open it, or run it without a
    *  window. `'open'` by default — a reminder can only fire while the app is
    *  running, and the row's hint says so, because that is the cost of `'off'`.
@@ -117,6 +122,12 @@ export const setNotificationsEnabled = (on: boolean) =>
  *  running tray immediately, so the icon reacts to the click. */
 export const setTrayIcon = (on: boolean) =>
   invoke<AppSettings>('set_tray_icon', { on });
+
+/** Stores the close-behaviour preference. Takes effect on the next close, not
+ *  the next launch — the backend keeps its own copy of this one for the
+ *  window handler to read. */
+export const setQuitOnClose = (on: boolean) =>
+  invoke<AppSettings>('set_quit_on_close', { on });
 
 /** Stores the start-on-login choice; the backend registers or unregisters
  *  the launch entry in the same call, so *that* half is true the moment the
