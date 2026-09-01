@@ -1,6 +1,7 @@
 import { test, expect, type Page } from '@playwright/test';
 import {
-  FIXED_NOW, FORM_FALLBACK_ID, FORM_NOW, FORM_UNWRITABLE_ID, FORM_UNWRITABLE_NAMES,
+  FIXED_NOW, FORM_FALLBACK_ID, FORM_NOW, FORM_OTHER_ACCOUNT_NAME, FORM_UNWRITABLE_ID,
+  FORM_UNWRITABLE_NAMES,
   MON, MONTH_2026_NOW, POPOVER_DETAILS, POPOVER_REFRESHED_DETAIL,
   TRIP_END_DATE, TRIP_FIRST_DAY, TRIP_LAST_DAY, popoverWeekWithResponse, UNBREAKABLE,
   WEEK_NOW, WEEK_NOW_INSIDE, YEAR_2026_NOW,
@@ -3878,16 +3879,76 @@ test.describe('EventForm', () => {
     expect(saved.calendarId).not.toBe(FORM_UNWRITABLE_ID);
   });
 
-  test('the calendar can be chosen on a create and not on an edit', async ({ page }) => {
-    // `update_event` takes no calendar id — it reads the target from
-    // `event_for_write(id)` — so an enabled control on an edit silently
-    // discards the choice. Both arms in one spec: `disabled={true}` always
-    // would pass the edit half on its own.
+  test('the calendar can be chosen on an edit, not only on a create', async ({ page }) => {
+    // It could not, until `update_event` learned to re-file an event: the
+    // control was disabled and the only way to change an event's calendar was
+    // to delete it and make it again — losing its guests' answers with it.
+    // Both arms in one spec: `disabled={false}` always would pass the edit
+    // half on its own.
     await open(page, 'create');
     await expect(page.getByRole('button', { name: 'Calendar' })).toBeEnabled();
 
     await open(page, 'with-guests');
-    await expect(page.getByRole('button', { name: 'Calendar' })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Calendar' })).toBeEnabled();
+  });
+
+  test('an edit offers only the writable calendars of its own account', async ({ page }) => {
+    // Across accounts there is no move — only a copy that takes a new event
+    // id and re-invites every guest — so `update_event` refuses it
+    // (`MOVE_ACROSS_ACCOUNTS`). An option that can only earn a refusal does
+    // not belong in the list, the same rule that keeps a `reader` out of it.
+    await open(page, 'edit-two-accounts');
+    await page.getByRole('button', { name: 'Calendar' }).click();
+    await expect(page.getByRole('option', { name: 'Personal' })).toBeVisible();
+    await expect(page.getByRole('option', { name: 'Team' })).toBeVisible();
+    await expect(page.getByRole('option', { name: FORM_OTHER_ACCOUNT_NAME }))
+      .toHaveCount(0);
+    for (const name of FORM_UNWRITABLE_NAMES) {
+      await expect(page.getByRole('option', { name })).toHaveCount(0);
+    }
+  });
+
+  test('an account with one writable calendar says why the event cannot move', async ({ page }) => {
+    // Enabled here would open a list holding only the calendar the event is
+    // already on — a control that can do nothing, which reads as broken
+    // rather than as "there is nowhere to move it".
+    await open(page, 'edit-only-one-calendar');
+    const picker = page.getByRole('button', { name: 'Calendar' });
+    await expect(picker).toBeDisabled();
+    await expect(picker).toHaveAttribute(
+      'title', 'There is no other calendar on this account to move this event to',
+    );
+  });
+
+  test('choosing another calendar for a series settles the scope on all events', async ({ page }) => {
+    // Neither Google's move nor a CalDAV collection can re-file one
+    // occurrence and leave its siblings behind, so `update_event` refuses any
+    // other scope. Deciding it here means the radios agree with what will
+    // happen, instead of the user meeting the refusal after Save.
+    await open(page, 'recurring-edit-two-accounts');
+    const thisOne = page.getByRole('radio', { name: 'This event' });
+    await expect(thisOne).toBeChecked();
+
+    await page.getByRole('button', { name: 'Calendar' }).click();
+    await page.getByRole('option', { name: 'Team' }).click();
+
+    await expect(page.getByRole('radio', { name: 'All events' })).toBeChecked();
+    await expect(thisOne).toBeDisabled();
+    await expect(page.getByRole('radio', { name: 'This and following' })).toBeDisabled();
+    await expect(page.getByTestId('move-series-note')).toBeVisible();
+  });
+
+  test('the chosen calendar is what an edit saves', async ({ page }) => {
+    // The picker's value has to reach `update_event` as `targetCalendarId`;
+    // an enabled control whose choice is dropped on the way is the failure
+    // this whole feature exists to end.
+    await open(page, 'edit-two-accounts');
+    await page.getByRole('button', { name: 'Calendar' }).click();
+    await page.getByRole('option', { name: 'Team' }).click();
+    await page.getByRole('button', { name: 'Save' }).click();
+
+    const [saved] = await saves(page);
+    expect(saved.calendarId).toBe(2); // 'Team'
   });
 
   test('moving the start date takes the end date with it', async ({ page }) => {

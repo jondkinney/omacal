@@ -1393,6 +1393,24 @@ const FORM_CALENDARS: Calendar[] = [
   cal({ id: 4, account_email: 'me@x.com', summary: 'Meeting rooms', access_role: 'freeBusyReader' }),
 ];
 
+/**
+ * `FORM_CALENDARS` plus one writable calendar on a **second account**.
+ *
+ * A move is same-account only — across accounts there is no move, only a copy
+ * that re-invites every guest — so the picker filters by `account_id` on an
+ * edit. That rule is invisible against a one-account fixture: every list would
+ * look correct whether the filter existed or not.
+ */
+const FORM_TWO_ACCOUNT_CALENDARS: Calendar[] = [
+  ...FORM_CALENDARS,
+  cal({
+    id: 5, account_id: 2, account_email: 'work@x.com', summary: 'Work', access_role: 'owner',
+  }),
+];
+
+/** The second account's calendar name — the option an edit must not offer. */
+export const FORM_OTHER_ACCOUNT_NAME = 'Work';
+
 /** The names of the two calendars a create must never be offered — exported so
  *  the spec asserts against the same strings the fixture is built from. */
 export const FORM_UNWRITABLE_NAMES = ['Holidays in Bulgaria', 'Meeting rooms'];
@@ -2624,6 +2642,34 @@ export const FIXTURES: Record<string, Record<string, any>> = {
         recurrence: 'RRULE:FREQ=WEEKLY', repeat: 'weekly', can_edit: true,
       })),
       calendars: FORM_CALENDARS,
+    },
+    // An edit whose account has a second writable calendar *and* a calendar
+    // on another account — what the move picker has to tell apart.
+    'edit-two-accounts': {
+      anchor: ANCHOR,
+      initial: editing(detail({ id: 16, title: 'Review', can_edit: true })),
+      calendars: FORM_TWO_ACCOUNT_CALENDARS,
+    },
+    // The same series as `recurring-edit`, with somewhere else to move it to:
+    // choosing another calendar has to settle the scope question, because a
+    // series moves whole or not at all.
+    'recurring-edit-two-accounts': {
+      anchor: ANCHOR,
+      initial: editing(detail({
+        id: 17, title: 'Standup', is_recurring: true,
+        recurrence: 'RRULE:FREQ=WEEKLY', repeat: 'weekly', can_edit: true,
+      })),
+      calendars: FORM_TWO_ACCOUNT_CALENDARS,
+    },
+    // An edit on an account with exactly one writable calendar: there is
+    // nowhere to move it, so the picker stays disabled and says why.
+    'edit-only-one-calendar': {
+      anchor: ANCHOR,
+      initial: editing(detail({ id: 18, title: 'Solo', can_edit: true })),
+      calendars: [
+        cal({ id: 1, account_email: 'me@x.com', summary: 'Personal', is_primary: true }),
+        cal({ id: 3, account_email: 'me@x.com', summary: 'Holidays in Bulgaria', access_role: 'reader' }),
+      ],
     },
     // Three days, all day. See TRIP_START above for why the exclusive end is
     // the whole point of this one.

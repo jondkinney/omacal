@@ -1321,8 +1321,12 @@
         // mailing the whole room about that is the outcome the choice exists
         // to prevent. `App` does not decide it — the form asks, and this
         // carries the answer.
+        // `result.calendarId` is the picker's value, sent on every save: the
+        // backend reads "the calendar it is already on" as no move at all, so
+        // there is nothing here to decide about whether it changed.
         await updateEvent(
           request.id, result.scope, request.occurrenceStartMs, result.fields, result.notify,
+          result.calendarId,
         );
       }
     } catch (e) {

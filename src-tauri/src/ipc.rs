@@ -145,8 +145,14 @@ pub(crate) async fn dispatch(state: &AppState, req: Request) -> serde_json::Valu
             }
         }
         Request::Update { id, scope, occurrence_start_ms, fields, send_updates } => {
+            // `None`: the CLI has no verb for moving an event between
+            // calendars, so its update always means "leave it where it is".
+            // A socket request that could re-file an event would have to say
+            // which calendar by name, and that is a CLI surface change with a
+            // skill file to match — not something to smuggle in behind an
+            // optional argument.
             match crate::events::update_event_body(
-                state, id, &scope, occurrence_start_ms, fields, &send_updates,
+                state, id, &scope, occurrence_start_ms, fields, &send_updates, None,
             )
             .await
             {

@@ -30,6 +30,14 @@ omacal's version:
   closes.
 - **Edit mode**: the dot button is disabled with the same tooltip the
   select had — an event cannot be moved between calendars from omacal.
+  **Superseded 2026-09-01.** A week of daily use found the cost of that:
+  with several calendars, an event created on the wrong one could only be
+  fixed by deleting it and making it again, which throws away every guest's
+  answer. `update_event` now takes a target calendar — Google's own
+  `events.move`, or a PUT-then-DELETE across CalDAV collections — and the
+  picker is enabled on an edit, offering the writable calendars of the
+  event's *own account*. Across accounts there is no move, only a copy that
+  re-invites everyone, so that stays refused and says so.
 - Escape closes the picker and not the form: the form's `escapeCloses`
   guard adds `!calendarOpen`, and listener registration order (form
   before picker) means the form's guard is evaluated while the picker is

@@ -992,6 +992,19 @@ pub(crate) const CREATED_NOT_STORED: &str =
     "The event was created on Google, but omacal could not record it locally. \
      The next sync will bring it in — do not create it again.";
 
+/// What a CalDAV move reports when the copy landed and the original would not
+/// go — the one partial outcome the PUT-then-DELETE order can produce.
+///
+/// [`CREATED_NOT_STORED`]'s reasoning, for the other write: the thing this
+/// message must never do is read as a failed move, because the answer to a
+/// failed move is to try it again, and trying again puts a second copy
+/// nowhere useful. It says where both copies are and which one to delete,
+/// because that is a thing a person can actually do. Safelisted verbatim in
+/// `errors.rs`; the underlying transport error goes to the log.
+pub(crate) const MOVED_NOT_REMOVED: &str =
+    "The event is now on the calendar you chose, but omacal could not remove it \
+     from the old one — it is on both. Delete the copy on the old calendar.";
+
 /// Which timezone an edit puts on both sides of its diff.
 ///
 /// A timed event keeps the zone it is *stored* in, never the zone of the
@@ -1299,7 +1312,12 @@ fn row_from_wire(
 /// `occurrence_start_ms` is the `start_ms` of the block the user actually
 /// clicked — see [`instance_lookup_window`] for why this cannot be derived
 /// from the stored row instead. `scope` is `"this"` or `"all"`.
+///
+/// `target_calendar_id` is the calendar the event should end up on, or `None`
+/// for "leave it where it is" — which is also what the *same* calendar means,
+/// so a form that always sends its picker's value costs nothing.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn update_event(
     state: tauri::State<'_, AppState>,
     id: i64,
@@ -1307,14 +1325,25 @@ pub async fn update_event(
     occurrence_start_ms: i64,
     fields: crate::write::EventInput,
     send_updates: String,
+    target_calendar_id: Option<i64>,
 ) -> Result<EventDetail, String> {
-    update_event_body(&state, id, &scope, occurrence_start_ms, fields, &send_updates).await
+    update_event_body(
+        &state,
+        id,
+        &scope,
+        occurrence_start_ms,
+        fields,
+        &send_updates,
+        target_calendar_id,
+    )
+    .await
 }
 
 /// The whole of `update_event` minus the Tauri `State` wrapper — see
 /// [`create_event_body`] for why the IPC surface runs through this exact
 /// function rather than a parallel one, and for the fallible
 /// `fields_from_input` note that applies here identically.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn update_event_body(
     state: &AppState,
     id: i64,
@@ -1322,6 +1351,7 @@ pub(crate) async fn update_event_body(
     occurrence_start_ms: i64,
     fields: crate::write::EventInput,
     send_updates: &str,
+    target_calendar_id: Option<i64>,
 ) -> Result<EventDetail, String> {
     let fields = crate::write::fields_from_input(fields)?;
     update_impl(
@@ -1331,6 +1361,7 @@ pub(crate) async fn update_event_body(
         occurrence_start_ms,
         fields,
         send_updates,
+        target_calendar_id,
     )
     .await
     .map_err(|e| crate::errors::user_facing(&e))
@@ -1364,6 +1395,7 @@ async fn update_impl(
     occurrence_start_ms: i64,
     fields: crate::write::EventFields,
     send_updates: &str,
+    target_calendar_id: Option<i64>,
 ) -> anyhow::Result<EventDetail> {
     if state.demo {
         anyhow::bail!("demo mode — there is nothing to save");
@@ -1386,6 +1418,14 @@ async fn update_impl(
         crate::write::validate_reminders(r).map_err(|m| anyhow::anyhow!(m))?;
     }
 
+    // **Resolved before the first write, deliberately.** Every refusal a move
+    // can earn — the wrong scope, another account, a read-only destination —
+    // is knowable from the two calendars and the arguments alone, and a Save
+    // that wrote the fields and *then* turned the move down would be half
+    // applied: the user would be looking at their edit, on the old calendar,
+    // with an error saying the move did not happen.
+    let move_to = move_target(state, id, scope, target_calendar_id).await?;
+
     // The CalDAV path, decided off the event's own calendar — see
     // `create_impl` for the shape.
     {
@@ -1399,8 +1439,16 @@ async fn update_impl(
                 if fields.conference.is_some() {
                     anyhow::bail!("Google Meet can only be added to a Google calendar");
                 }
-                return crate::caldav_write::update(state, id, scope, occurrence_start_ms, fields)
-                    .await;
+                let detail =
+                    crate::caldav_write::update(state, id, scope, occurrence_start_ms, fields)
+                        .await?;
+                // Fields first, then the collection. The other order would
+                // have the move's own resync write the *old* text into the
+                // new calendar and leave the edit to a second write.
+                return match move_to {
+                    Some(target) => crate::caldav_write::move_to(state, id, target).await,
+                    None => Ok(detail),
+                };
             }
         }
     }
@@ -1431,6 +1479,15 @@ async fn update_impl(
     let token = crate::access_token_for(state, &cfg, &account_email).await?;
     let client = omacal_google::CalendarClient::new(crate::GOOGLE_CALENDAR_API, &token);
 
+    // Read off the row before `update_via_client` consumes it. The *series*
+    // is what moves — Google's endpoint takes the master and carries its
+    // exceptions with it — so an occurrence's own id would move nothing.
+    let source_calendar_id = ev.calendar_id;
+    let master_google_id = ev
+        .recurring_event_id
+        .clone()
+        .unwrap_or_else(|| ev.google_id.clone());
+
     update_via_client(
         &state.pool,
         scope,
@@ -1444,7 +1501,143 @@ async fn update_impl(
     )
     .await?;
 
+    // Fields first, then the calendar — `create_impl`'s order for the same
+    // reason: the patch is addressed to the resource on the calendar it is
+    // still on, and re-deriving that path after the move would be a second
+    // authority on where the event lives.
+    if let Some(target) = move_to {
+        move_via_client(
+            &state.pool,
+            source_calendar_id,
+            &cal_google_id,
+            &master_google_id,
+            target,
+            send_updates,
+            &client,
+        )
+        .await?;
+    }
+
     event_detail_impl(state, id).await
+}
+
+/// What a move earns when the event is one occurrence of a series.
+///
+/// Google's `events.move` takes an event id, and for a recurring event that is
+/// the master: there is no request that re-files one occurrence and leaves its
+/// siblings behind, and CalDAV is the same — the whole `VCALENDAR` resource is
+/// one file in one collection. So this refuses rather than quietly moving more
+/// than was asked for. Allowlisted in `errors.rs`: the user can act on it, and
+/// the action is the scope choice already on screen.
+pub(crate) const MOVE_ONE_OCCURRENCE: &str =
+    "one occurrence cannot be moved on its own — choose All events to move the whole series";
+
+/// What a move earns when the destination belongs to another account.
+///
+/// Not a limitation to be lifted later: across accounts there is no move, only
+/// a copy and a delete. The event would take a new id, every guest would be
+/// invited afresh, and every RSVP already given would be discarded — the exact
+/// outcome that made "delete it and make it again" the workaround this feature
+/// exists to remove. Refused with the reason rather than performed silently.
+pub(crate) const MOVE_ACROSS_ACCOUNTS: &str =
+    "an event can only be moved between calendars on the same account";
+
+/// Which calendar this save should re-file the event onto, or `None` for none.
+///
+/// Every check here is a pure function of the two calendar rows and the
+/// arguments, so all of it runs before the first write — see the call site.
+/// The same-calendar case answers `None` rather than refusing: a form that
+/// always sends its picker's value is asking for nothing, and should not be
+/// told off for it.
+async fn move_target(
+    state: &AppState,
+    id: i64,
+    scope: &str,
+    requested: Option<i64>,
+) -> anyhow::Result<Option<i64>> {
+    let Some(target) = requested else {
+        return Ok(None);
+    };
+    let (ev, _, _) = omacal_store::event_by_id(&state.pool, id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("that event is no longer here"))?;
+    if ev.calendar_id == target {
+        return Ok(None);
+    }
+
+    // A master carries the rule; an exception carries a pointer to one. Either
+    // means "there are siblings", which is what `MOVE_ONE_OCCURRENCE` is about.
+    let is_series = ev.recurrence.is_some() || ev.recurring_event_id.is_some();
+    if is_series && scope != "all" {
+        anyhow::bail!(MOVE_ONE_OCCURRENCE);
+    }
+
+    // `account_id`, not the account's email: the same address can be signed in
+    // twice, once through Google and once as a CalDAV account, and those are
+    // two sets of credentials that cannot see each other's calendars.
+    let account_of = |cal: i64| async move {
+        sqlx::query_as::<_, (i64, String)>(
+            "SELECT account_id, access_role FROM calendars WHERE id = ?1",
+        )
+        .bind(cal)
+        .fetch_optional(&state.pool)
+        .await
+    };
+    let (source_account, _) = account_of(ev.calendar_id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("that calendar is no longer here"))?;
+    let (target_account, target_role) = account_of(target)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("that calendar is no longer here"))?;
+    if source_account != target_account {
+        anyhow::bail!(MOVE_ACROSS_ACCOUNTS);
+    }
+    // The destination's own writability, checked by the rule the source is
+    // checked by: a calendar that cannot be written to cannot be moved onto.
+    if !can_edit(false, &target_role) {
+        anyhow::bail!("this calendar is not writable from omacal");
+    }
+    Ok(Some(target))
+}
+
+/// The move itself, once the fields are saved and the guards have passed.
+///
+/// Google's own verb, then the local rows — see
+/// [`omacal_store::move_series_to_calendar`] for why the local half is an
+/// `UPDATE` and not a delete-and-reinsert. The next sync reconciles both
+/// calendars properly; this is what makes the grid redraw in the new
+/// calendar's colour before it runs.
+async fn move_via_client(
+    pool: &SqlitePool,
+    source_calendar_id: i64,
+    source_cal_google_id: &str,
+    master_google_id: &str,
+    target_calendar_id: i64,
+    send_updates: &str,
+    client: &omacal_google::CalendarClient,
+) -> anyhow::Result<()> {
+    let (target_google_id, _, _, _) =
+        omacal_store::calendar_for_write(pool, target_calendar_id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("that calendar is no longer here"))?;
+
+    client
+        .move_event(
+            source_cal_google_id,
+            master_google_id,
+            &target_google_id,
+            send_updates,
+        )
+        .await?;
+
+    omacal_store::move_series_to_calendar(
+        pool,
+        source_calendar_id,
+        master_google_id,
+        target_calendar_id,
+    )
+    .await?;
+    Ok(())
 }
 
 /// The network exchange and local write-back half of [`update_impl`], with the
@@ -5789,6 +5982,7 @@ mod tests {
             OCCURRENCE,
             form("Standup (moved)", OCCURRENCE, OCCURRENCE + HOUR),
             "all",
+            None,
         )
         .await
         .unwrap_err();
@@ -5812,6 +6006,7 @@ mod tests {
             OCCURRENCE,
             form("Standup (moved)", OCCURRENCE, OCCURRENCE + HOUR),
             "all",
+            None,
         )
         .await
         .unwrap_err();
@@ -6320,6 +6515,7 @@ mod tests {
             OCCURRENCE,
             form("Standup (moved)", OCCURRENCE, OCCURRENCE + HOUR),
             "all",
+            None,
         )
         .await
         .unwrap_err();
@@ -8185,6 +8381,7 @@ mod tests {
             OCCURRENCE,
             form("Standup", OCCURRENCE, OCCURRENCE + HOUR),
             "all",
+            None,
         )
         .await
         .unwrap_err();
@@ -9053,6 +9250,145 @@ mod tests {
             .await
             .unwrap_err();
         assert!(err.to_string().contains("not available yet"), "got: {err}");
+    }
+
+    /// A second calendar to move onto. `account` decides whether it is the
+    /// same account as [`seed_calendar_with_tz`]'s — the whole subject of
+    /// `MOVE_ACROSS_ACCOUNTS`.
+    async fn seed_second_calendar(pool: &SqlitePool, account: i64, access_role: &str) -> i64 {
+        if account != 1 {
+            sqlx::query(
+                "INSERT INTO accounts (google_sub, email, created_at) VALUES ('s2','other@x',0)",
+            )
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+        sqlx::query(
+            "INSERT INTO calendars (account_id, google_id, summary, timezone, access_role)
+             VALUES (?1, 'other@x.com', 'Other', 'UTC', ?2)",
+        )
+        .bind(account)
+        .bind(access_role)
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query_scalar("SELECT id FROM calendars WHERE google_id = 'other@x.com'")
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    /// Every refusal a move can earn is decided here, before the first write —
+    /// which is the property that keeps a turned-down move from leaving the
+    /// fields saved and the event where it was.
+    #[tokio::test]
+    async fn a_move_is_refused_across_accounts_and_onto_a_read_only_calendar() {
+        let mut ev = stored(vec![]);
+        let (pool, id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+        let elsewhere = seed_second_calendar(&pool, 2, "owner").await;
+        let state = state_with(pool, false);
+
+        let err = move_target(&state, id, "all", Some(elsewhere)).await.unwrap_err();
+        assert_eq!(err.to_string(), MOVE_ACROSS_ACCOUNTS);
+
+        // The destination is checked by the rule the source is checked by: a
+        // calendar that cannot be written to cannot be moved onto either.
+        let read_only = sqlx::query("UPDATE calendars SET account_id = 1, access_role = 'reader' WHERE id = ?1")
+            .bind(elsewhere);
+        read_only.execute(&state.pool).await.unwrap();
+        let err = move_target(&state, id, "all", Some(elsewhere)).await.unwrap_err();
+        assert!(err.to_string().contains("not writable"), "got: {err}");
+    }
+
+    /// Neither Google's `events.move` nor a CalDAV collection can re-file one
+    /// occurrence and leave its siblings behind, so the scope is refused
+    /// rather than silently widened to the whole series.
+    #[tokio::test]
+    async fn one_occurrence_of_a_series_cannot_be_moved_on_its_own() {
+        let mut ev = weekly_master("RRULE:FREQ=WEEKLY");
+        let (pool, id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+        let elsewhere = seed_second_calendar(&pool, 1, "owner").await;
+        let state = state_with(pool, false);
+
+        for scope in ["this", "following"] {
+            let err = move_target(&state, id, scope, Some(elsewhere)).await.unwrap_err();
+            assert_eq!(err.to_string(), MOVE_ONE_OCCURRENCE, "scope {scope}");
+        }
+        assert_eq!(move_target(&state, id, "all", Some(elsewhere)).await.unwrap(), Some(elsewhere));
+    }
+
+    /// The rule above is about *siblings*, not about the word "this": a one-off
+    /// has none, so the scope its form sends must not block its move.
+    #[tokio::test]
+    async fn a_one_off_moves_whatever_scope_the_form_sent() {
+        let mut ev = stored(vec![]);
+        let (pool, id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+        let elsewhere = seed_second_calendar(&pool, 1, "owner").await;
+        let state = state_with(pool, false);
+
+        assert_eq!(move_target(&state, id, "this", Some(elsewhere)).await.unwrap(), Some(elsewhere));
+    }
+
+    /// The form sends its picker's value on every save, so "the calendar it is
+    /// already on" has to mean no move at all — not a refusal, and not a
+    /// pointless round trip to Google.
+    #[tokio::test]
+    async fn naming_the_calendar_the_event_is_already_on_moves_nothing() {
+        let mut ev = stored(vec![]);
+        let (pool, id) = seeded_pool_on_cal(&mut ev, "UTC").await;
+        let here = ev.calendar_id;
+        let state = state_with(pool, false);
+
+        assert_eq!(move_target(&state, id, "all", Some(here)).await.unwrap(), None);
+        assert_eq!(move_target(&state, id, "all", None).await.unwrap(), None);
+    }
+
+    /// The request Google's own move verb wants, and the local rows that
+    /// follow it. Both halves matter: without the second, the event is on the
+    /// new calendar for Google and still drawn in the old one's colour until
+    /// two syncs have run.
+    #[tokio::test]
+    async fn a_move_sends_the_master_to_the_destination_and_re_files_the_local_rows() {
+        let mut master = weekly_master("RRULE:FREQ=WEEKLY");
+        let (pool, _) = seeded_pool_on_cal(&mut master, "UTC").await;
+        let source = master.calendar_id;
+        let destination = seed_second_calendar(&pool, 1, "owner").await;
+
+        // A materialised exception of that series, which must travel with it.
+        let mut exception = stored(vec![]);
+        exception.calendar_id = source;
+        exception.google_id = "master1_20260803T090000Z".into();
+        exception.recurring_event_id = Some(master.google_id.clone());
+        omacal_store::upsert_event(&pool, &exception).await.unwrap();
+
+        let server = wiremock::MockServer::start().await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            // The **master's** id, even though the row that was opened may be
+            // an exception: there is no request that moves one occurrence.
+            .and(wiremock::matchers::path("/calendars/cal%40x.com/events/master1/move"))
+            .and(wiremock::matchers::query_param("destination", "other@x.com"))
+            .and(wiremock::matchers::query_param("sendUpdates", "all"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "id": "master1", "status": "confirmed",
+                "start": {"dateTime": "2026-08-03T09:00:00Z"},
+                "end": {"dateTime": "2026-08-03T09:30:00Z"},
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let client = omacal_google::CalendarClient::new(server.uri(), "t");
+
+        move_via_client(&pool, source, "cal@x.com", "master1", destination, "all", &client)
+            .await
+            .unwrap();
+
+        let moved: Vec<i64> =
+            sqlx::query_scalar("SELECT calendar_id FROM events ORDER BY google_id")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(moved, vec![destination, destination], "the exception stayed behind");
     }
 }
 

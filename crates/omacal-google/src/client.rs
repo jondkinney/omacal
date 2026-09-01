@@ -317,6 +317,57 @@ impl CalendarClient {
             .map_err(|e| ApiError::Transport(e.to_string()))
     }
 
+    /// Moves an event to another calendar **on the same account**, and returns
+    /// it as it now is.
+    ///
+    /// Google's own verb, not a create-and-delete: the event keeps its id, its
+    /// guest list, and every RSVP already answered on it. A copy would keep
+    /// none of those — it would mail the whole room a fresh invitation to an
+    /// event they had already accepted, which is exactly the outcome that made
+    /// "delete it and make it again" an unacceptable workaround.
+    ///
+    /// **The whole series moves, or nothing does.** The endpoint takes an
+    /// event id, and for a recurring event that means the master: there is no
+    /// request that moves one occurrence and leaves its siblings behind. The
+    /// caller refuses that scope before reaching here (`events::move_guard`)
+    /// rather than moving more than the user asked for.
+    ///
+    /// `destination` is the target calendar's Google id. Cross-*account* moves
+    /// are not this endpoint's business and are refused before it is called:
+    /// the destination has to be visible to the same credentials.
+    pub async fn move_event(
+        &self,
+        cal: &str,
+        event_id: &str,
+        destination: &str,
+        send_updates: &str,
+    ) -> Result<model::Event, ApiError> {
+        let resp = self
+            .http
+            .post(format!(
+                "{}/calendars/{}/events/{}/move",
+                self.base_url,
+                urlencoding_path(cal),
+                urlencoding_path(event_id)
+            ))
+            .bearer_auth(&self.access_token)
+            .query(&[("destination", destination), ("sendUpdates", send_updates)])
+            .send()
+            .await
+            .map_err(|e| ApiError::Transport(e.to_string()))?;
+
+        if resp.status() == reqwest::StatusCode::PRECONDITION_FAILED {
+            return Err(ApiError::PreconditionFailed);
+        }
+        if !resp.status().is_success() {
+            return Err(ApiError::Http(format!("{}", resp.status())));
+        }
+
+        resp.json::<model::Event>()
+            .await
+            .map_err(|e| ApiError::Transport(e.to_string()))
+    }
+
     /// Delete an event. `sendUpdates=all` so a cancelled meeting reaches the
     /// guest list — a meeting that vanishes for the organiser only is worse
     /// than an email.

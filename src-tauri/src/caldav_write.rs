@@ -457,6 +457,72 @@ pub(crate) async fn respond(
     crate::events::event_detail_impl(state, row).await
 }
 
+/// Where one UID's resource lives inside a collection.
+///
+/// A collection URL may or may not carry its trailing slash — servers publish
+/// both, and Radicale's discovery answers with one — so joining without
+/// trimming produces `…/calendar//uid.ics`. Some servers accept that and store
+/// the event at a path the next sync does not recognise, which is the worst
+/// available outcome: a move that looks like it worked and loses the event.
+fn resource_href(collection_url: &str, uid: &str) -> String {
+    format!("{}/{uid}.ics", collection_url.trim_end_matches('/'))
+}
+
+/// Re-files an event onto another collection of the **same account**.
+///
+/// CalDAV has no move verb: a collection is a directory and an event is a file
+/// in it, so this is a PUT into the destination followed by a DELETE from the
+/// source. The whole `VCALENDAR` resource travels — master and every
+/// materialised exception, which live in one file under one UID — so a series
+/// arrives whole or not at all.
+///
+/// **PUT first, DELETE second, and never the other way round.** Both orders
+/// can fail in the middle; only one of them can lose the event. A failed
+/// DELETE leaves a copy in the old calendar, which is visible, fixable by
+/// hand, and reported as [`crate::events::MOVED_NOT_REMOVED`]; a failed PUT
+/// after a DELETE leaves nothing anywhere.
+///
+/// The etag on the DELETE is the row's, re-read here rather than carried in:
+/// the field edit that precedes a move has already rewritten and resynced this
+/// resource, so the version in hand at the start of the save is one write out
+/// of date by the time this runs.
+pub(crate) async fn move_to(
+    state: &AppState,
+    id: i64,
+    target_calendar_id: i64,
+) -> anyhow::Result<crate::events::EventDetail> {
+    let (viewed, _, _) = omacal_store::event_by_id(&state.pool, id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("that event is no longer here"))?;
+    let master = master_of(state, &viewed).await?;
+    let (client, _) = crate::caldav_account::client_for_calendar(state, master.calendar_id).await?;
+    // The destination's collection URL, and its read-only refusal: one call
+    // does both, so a move onto a calendar that cannot be written to is turned
+    // down by the same rule an edit there would be.
+    let (_, collection_url) =
+        crate::caldav_account::client_for_calendar(state, target_calendar_id).await?;
+    let (href, raw) = resource_of(state, master.id).await?;
+    let uid = master.google_id.clone();
+    let destination = resource_href(&collection_url, &uid);
+
+    // `None` rather than an etag: this is a create in the destination, so
+    // `If-None-Match: *` — a UID that somehow already exists there fails
+    // loudly instead of overwriting a stranger's event.
+    client.put(&destination, &raw, None).await.map_err(friendly)?;
+
+    if let Err(e) = client.delete(&href, master.etag.as_deref()).await {
+        tracing::error!(%e, %uid, "moved the event but could not remove the original");
+        anyhow::bail!(crate::events::MOVED_NOT_REMOVED);
+    }
+
+    // Both collections, because both changed. The destination is resynced
+    // last so the row this returns is the one it just brought in.
+    resync(state, master.calendar_id).await?;
+    resync(state, target_calendar_id).await?;
+    let row = row_id_by_uid(state, target_calendar_id, &uid).await?;
+    crate::events::event_detail_impl(state, row).await
+}
+
 /// Deletes an event, one occurrence, or the rest of a series.
 pub(crate) async fn delete(
     state: &AppState,
@@ -534,6 +600,20 @@ mod tests {
             },
             calendar_default_reminders: Vec::new(),
         }
+    }
+
+    /// A move's destination is built from a collection URL the server chose
+    /// the spelling of, so both spellings have to land on the same path.
+    #[test]
+    fn a_collection_url_joins_the_same_way_with_or_without_its_slash() {
+        assert_eq!(
+            resource_href("https://dav.example.com/u/calendar/", "abc"),
+            "https://dav.example.com/u/calendar/abc.ics",
+        );
+        assert_eq!(
+            resource_href("https://dav.example.com/u/calendar", "abc"),
+            "https://dav.example.com/u/calendar/abc.ics",
+        );
     }
 
     /// The answer vocabulary, both directions: the three words the popover

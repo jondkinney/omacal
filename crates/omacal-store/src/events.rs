@@ -289,6 +289,59 @@ pub async fn delete_series(
     Ok(())
 }
 
+/// Re-files one event — and, when it is a series master, every exception of
+/// it — under another calendar.
+///
+/// The counterpart to Google's own `events.move`, applied to the local copy so
+/// the grid redraws in the new calendar's colour without waiting for two
+/// syncs. Deliberately an `UPDATE` rather than a delete-and-reinsert: the row
+/// **id** is what the open form, the popover and the caller's own
+/// `event_detail` are all holding, and a move that renumbered it would leave
+/// every one of them pointing at nothing.
+///
+/// The exception clause is [`delete_series`]'s, for its reason in reverse: a
+/// materialised occurrence is its own row, and one left behind in the old
+/// calendar carries no `recurrence` to be expanded from — so it would go on
+/// rendering there, in the old colour, as a meeting that has moved.
+///
+/// Addressed by `master_google_id` rather than by row id, and matched against
+/// both columns exactly as [`delete_series`] does — which also keeps every
+/// value this statement reads out of the table it is writing to. A `WHERE`
+/// clause that asked the events table for the row's own calendar mid-`UPDATE`
+/// could see the master already re-filed and stop matching its own exceptions.
+///
+/// Returns the number of rows re-filed, which a caller can read as "the master
+/// and its N exceptions". Zero means nothing matched.
+pub async fn move_series_to_calendar(
+    pool: &SqlitePool,
+    source_calendar_id: i64,
+    master_google_id: &str,
+    target_calendar_id: i64,
+) -> anyhow::Result<u64> {
+    // The first clause hits the `(calendar_id, google_id)` unique index, the
+    // second `idx_events_recurring (calendar_id, recurring_event_id)`.
+    //
+    // `OR REPLACE` for a race that is narrow but real: the sync loop runs in
+    // the background, and a sync of the *destination* landing between the
+    // provider's move and this statement brings the very same event in under
+    // its own new row. Without it the move fails on `UNIQUE (calendar_id,
+    // google_id)` — after the provider has already moved the event, so the
+    // user is told a move failed that in fact happened. A conflicting row here
+    // is by definition the same event on the same account, so replacing it
+    // with the copy carrying this session's edits is not a guess.
+    let moved = sqlx::query(
+        "UPDATE OR REPLACE events SET calendar_id = ?3
+          WHERE calendar_id = ?1 AND (google_id = ?2 OR recurring_event_id = ?2)",
+    )
+    .bind(source_calendar_id)
+    .bind(master_google_id)
+    .bind(target_calendar_id)
+    .execute(pool)
+    .await?
+    .rows_affected();
+    Ok(moved)
+}
+
 /// The query behind both [`event_by_id`] and [`event_for_write`]: one event
 /// row, its calendar's `access_role`, the calendar's own `timezone` and
 /// `google_id`, and the email of the account that owns it. The last needs a
@@ -642,6 +695,68 @@ mod tests {
             comment: None,
             additional_guests: 0,
         }
+    }
+
+    /// A move takes the series and only the series: the master, its
+    /// materialised exceptions, and nothing else sharing the calendar.
+    #[tokio::test]
+    async fn moving_a_series_takes_its_exceptions_and_leaves_the_rest() {
+        let pool = connect_memory().await.unwrap();
+        let (source, destination) = seed_two_accounts(&pool).await;
+
+        upsert_event(&pool, &ev(source, "master", 1_000, 2_000)).await.unwrap();
+        let mut exception = ev(source, "master_20260803", 3_000, 4_000);
+        exception.recurring_event_id = Some("master".into());
+        upsert_event(&pool, &exception).await.unwrap();
+        // Same calendar, nothing to do with that series.
+        upsert_event(&pool, &ev(source, "other", 5_000, 6_000)).await.unwrap();
+
+        let moved = move_series_to_calendar(&pool, source, "master", destination).await.unwrap();
+        assert_eq!(moved, 2, "the master and its one exception");
+
+        let left: Vec<String> =
+            sqlx::query_scalar("SELECT google_id FROM events WHERE calendar_id = ?1 ORDER BY google_id")
+                .bind(source)
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(left, vec!["other".to_string()], "only the unrelated event stays");
+        let arrived: Vec<String> =
+            sqlx::query_scalar("SELECT google_id FROM events WHERE calendar_id = ?1 ORDER BY google_id")
+                .bind(destination)
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(arrived, vec!["master".to_string(), "master_20260803".to_string()]);
+    }
+
+    /// The race `UPDATE OR REPLACE` exists for: a background sync of the
+    /// destination pulls the moved event in *before* the local re-file runs,
+    /// so the row this statement is about to move already exists there. The
+    /// plain `UPDATE` fails on the unique index — after the provider has
+    /// already moved the event, telling the user a move failed that happened.
+    #[tokio::test]
+    async fn a_destination_that_already_holds_the_event_does_not_block_the_move() {
+        let pool = connect_memory().await.unwrap();
+        let (source, destination) = seed_two_accounts(&pool).await;
+
+        let mut ours = ev(source, "master", 1_000, 2_000);
+        ours.summary = Some("Renamed in this very save".into());
+        upsert_event(&pool, &ours).await.unwrap();
+        upsert_event(&pool, &ev(destination, "master", 1_000, 2_000)).await.unwrap();
+
+        move_series_to_calendar(&pool, source, "master", destination).await.unwrap();
+
+        let rows: Vec<(i64, Option<String>)> =
+            sqlx::query_as("SELECT calendar_id, summary FROM events")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        // One row, on the destination, carrying *this* session's edit rather
+        // than what the sync happened to bring in.
+        assert_eq!(rows.len(), 1, "the duplicate should be gone, not doubled");
+        assert_eq!(rows[0].0, destination);
+        assert_eq!(rows[0].1.as_deref(), Some("Renamed in this very save"));
     }
 
     /// The autocomplete corpus: people deduped across events (case folded),

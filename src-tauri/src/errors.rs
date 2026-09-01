@@ -186,6 +186,26 @@ const SAFE_EXACT: &[&str] = &[
     // down for a knowable, fixable reason, and "Sync failed, see the log"
     // sends the user looking for a fault instead of reading a decision.
     omacal_caldav::NOT_PRIVATE_HTTP,
+    // src-tauri/src/events.rs — `move_target`'s two refusals, both raised with
+    // `bail!` on a fixed literal before any write happens, and reaching the
+    // user through `update_event`'s own `.map_err(user_facing)` with no
+    // `.context(..)` on the way.
+    //
+    // Allowlisted because each names the action that resolves it: one says to
+    // choose All events (a control already on screen), the other says the
+    // destination is on another account (which is why the picker offered it
+    // greyed). OPAQUE for either would turn a decision the user can act on
+    // into a fault report about a save that did nothing.
+    crate::events::MOVE_ONE_OCCURRENCE,
+    crate::events::MOVE_ACROSS_ACCOUNTS,
+    // src-tauri/src/events.rs — `MOVED_NOT_REMOVED`, raised by
+    // `caldav_write::move_to` when the copy landed and the original would not
+    // go. Fixed literal; the transport error that caused it is logged and
+    // never interpolated. **Must** reach the user verbatim for
+    // `CREATED_NOT_STORED`'s reason in the other direction: the event is on
+    // two calendars, only the user can say which copy to delete, and nothing
+    // else in the app will ever tell them.
+    crate::events::MOVED_NOT_REMOVED,
 ];
 
 /// The generic replacement. Deliberately says where to look rather than
@@ -371,6 +391,12 @@ mod tests {
             // not repeated back — it can carry a password in its userinfo),
             // and `connect_caldav`'s `.map_err(user_facing)` adds no context.
             omacal_caldav::NOT_PRIVATE_HTTP,
+            // Checked against the doc-comment rule: three fixed literals, no
+            // interpolation, each raised with `bail!` and propagated by a bare
+            // `?` to `update_event_body`'s `.map_err(user_facing)`.
+            crate::events::MOVE_ONE_OCCURRENCE,
+            crate::events::MOVE_ACROSS_ACCOUNTS,
+            crate::events::MOVED_NOT_REMOVED,
         ];
         for expected in EXPECTED {
             assert!(

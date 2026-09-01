@@ -96,6 +96,24 @@
   // `repeat` to tell "the user did not touch Repeat" from "the user chose the
   // same thing" — the difference between leaving a rule alone and rewriting it.
   const offerable = $derived(writableCalendars(calendars));
+  /**
+   * Where an edit may re-file this event: writable, and on the **same
+   * account**.
+   *
+   * A create can land anywhere writable, so this narrows nothing there. An
+   * edit is different in kind — across accounts there is no move, only a copy
+   * and a delete, which takes a new event id and re-invites every guest, so
+   * `update_event` refuses it outright (`MOVE_ACROSS_ACCOUNTS`). Offering
+   * those calendars here would be offering a Save that can only be turned
+   * down, which is exactly what `writableCalendars` exists to prevent one
+   * layer up.
+   */
+  const account = $derived(calendars.find((c) => c.id === initial.calendarId)?.account_id);
+  const movable = $derived(
+    initial.isEdit && account !== undefined
+      ? offerable.filter((c) => c.account_id === account)
+      : offerable,
+  );
   /** The selected calendar's provider. CalDAV has no guest management and no
    *  notify question — the editor hides and Save never asks; attendee lines
    *  on the server survive our rewrites untouched. */
@@ -131,6 +149,10 @@
   // svelte-ignore state_referenced_locally
   let zoomDraft = $state(initial.videoCall?.provider === 'zoom' ? initial.videoCall.uri ?? '' : '');
   const videoChoice = $derived(value.videoCall?.provider ?? 'none');
+  /** Whether this Save also re-files the event. Drives the scope rule below:
+   *  a series moves whole or not at all. Declared here rather than beside
+   *  `movable` because it reads `value`, which is seeded above it. */
+  const movingCalendar = $derived(initial.isEdit && value.calendarId !== initial.calendarId);
   let scope = $state<Scope>('this');
 
   // The grid's live preview rides on this: a snapshot per change, so the
@@ -561,12 +583,21 @@
       <input class="title" aria-label="Title" bind:this={titleEl} bind:value={value.title}
              placeholder="Add a title" />
       <CalendarPicker
-        calendars={offerable}
+        calendars={movable}
         value={value.calendarId}
-        disabled={initial.isEdit}
-        disabledReason="An event cannot be moved between calendars from omacal"
+        disabled={initial.isEdit && movable.length < 2}
+        disabledReason="There is no other calendar on this account to move this event to"
         bind:open={calOpen}
-        onpick={(id) => (value.calendarId = id)}
+        onpick={(id) => {
+          value.calendarId = id;
+          // A series moves whole or not at all — `update_event` refuses any
+          // other scope (`MOVE_ONE_OCCURRENCE`), because neither Google's
+          // move nor a CalDAV collection can re-file one occurrence and
+          // leave its siblings behind. Chosen here rather than refused after
+          // Save: the radios below go with it, so what is on screen is what
+          // will happen.
+          if (showScope && id !== initial.calendarId) scope = 'all';
+        }}
       />
     </div>
 
@@ -841,11 +872,13 @@
     {#if showScope}
       <div class="scope" role="radiogroup" aria-label="Apply to">
         <label>
-          <input type="radio" name="scope" checked={scope === 'this'} onchange={() => (scope = 'this')} />
+          <input type="radio" name="scope" checked={scope === 'this'} disabled={movingCalendar}
+                 onchange={() => (scope = 'this')} />
           This event
         </label>
         <label>
-          <input type="radio" name="scope" checked={scope === 'following'} onchange={() => (scope = 'following')} />
+          <input type="radio" name="scope" checked={scope === 'following'} disabled={movingCalendar}
+                 onchange={() => (scope = 'following')} />
           This and following
         </label>
         <label>
@@ -853,7 +886,12 @@
           All events
         </label>
       </div>
-      {#if scope === 'all'}
+      {#if movingCalendar}
+        <p class="hint" data-testid="move-series-note">
+          Another calendar was chosen, and a series moves whole: this applies
+          to every occurrence.
+        </p>
+      {:else if scope === 'all'}
         <p class="hint" data-testid="all-events-note">
           All events shifts the whole series: moving this one from 09:00 to
           10:00 moves every occurrence an hour later, earlier ones included. It

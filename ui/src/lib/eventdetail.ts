@@ -277,7 +277,14 @@ export const updateEvent = (
   occurrenceStartMs: number,
   fields: EventInput,
   sendUpdates: SendUpdates,
-) => invoke<EventDetail>('update_event', { id, scope, occurrenceStartMs, fields, sendUpdates });
+  /** The calendar the event should end up on, or `null` to leave it where it
+   *  is — which is also what naming its current calendar means, so the form
+   *  can send its picker's value unconditionally. A drag never re-files
+   *  anything and passes `null`. */
+  targetCalendarId: number | null = null,
+) => invoke<EventDetail>('update_event', {
+  id, scope, occurrenceStartMs, fields, sendUpdates, targetCalendarId,
+});
 
 /**
  * Who Google mails about a write. Google's own vocabulary, and a required

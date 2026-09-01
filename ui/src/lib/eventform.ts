@@ -219,8 +219,9 @@ export type EventFormValue = {
    *  than the event's own overrides. Decides the hint, nothing else. */
   remindersWereDefault: boolean;
   /** An edit, rather than a create. Decides the Save label, whether the scope
-   *  chooser and the guest editor appear, and whether the calendar can still
-   *  be chosen (`update_event` cannot move an event between calendars). */
+   *  chooser and the guest editor appear, and which calendars the picker
+   *  offers — an edit may re-file the event, but only onto another calendar
+   *  of the same account (`update_event`'s `MOVE_ACROSS_ACCOUNTS`). */
   isEdit: boolean;
   /** Part of a series — the only case where a scope choice means anything. */
   isRecurring: boolean;
