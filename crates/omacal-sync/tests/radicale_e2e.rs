@@ -9,6 +9,11 @@
 //! python -m radicale --config <auth=none config> &
 //! cargo test -p omacal-sync --test radicale_e2e -- --ignored
 //! ```
+//!
+//! [`a_private_ca_is_trusted_when_the_system_store_names_it`] needs a second,
+//! TLS-enabled server and does not run without one — see its own comment for
+//! the two-command recipe and, more importantly, for why the failing half has
+//! to be re-checked by hand.
 
 use omacal_caldav::CalDavClient;
 
@@ -332,4 +337,173 @@ async fn the_whole_loop_against_a_real_server() {
     assert_eq!(invite.self_response.as_deref(), Some("accepted"), "the answer round-tripped");
     let ana = invite.attendees.iter().find(|a| a.email == "ana@x.com").unwrap();
     assert_eq!((ana.response_status.as_str(), ana.is_self), ("accepted", false), "hers, untouched");
+}
+
+/// The move `caldav_write::move_to` performs, against a real server.
+///
+/// CalDAV has no move verb, so the app copies the whole `VCALENDAR` resource
+/// into the destination collection and deletes the source — and every
+/// assumption in that sentence is the server's to keep, not ours. This pins
+/// the three that matter: a PUT with `If-None-Match: *` creates in a
+/// collection that has never held the uid, a series and its materialised
+/// exception travel as **one** resource (so an occurrence cannot be left
+/// behind), and an `If-Match` DELETE removes the original. The rest of the
+/// suite mocks all three.
+///
+/// Deliberately drives the client rather than `caldav_write::move_to` itself:
+/// that function lives in `src-tauri`, needs an `AppState` and reads the
+/// account's password out of the real keyring, none of which belongs in a
+/// test. What is exercised here is the protocol underneath it, in the same
+/// order and with the same preconditions.
+#[tokio::test]
+#[ignore = "needs a live Radicale on 127.0.0.1:5232"]
+async fn a_series_moves_between_collections_whole() {
+    let base = base_url();
+    let user = format!("omacal-move-{}", std::process::id());
+
+    mkcalendar(&base, &user, "from", "VEVENT").await;
+    mkcalendar(&base, &user, "to", "VEVENT").await;
+
+    let client = CalDavClient::new(&base, &user, "pw").expect("client");
+    client
+        .put(&format!("{base}/{user}/from/e2e-series.ics"), SERIES, None)
+        .await
+        .expect("seed PUT");
+
+    let cals = client.discover().await.expect("discovery");
+    let from = cals.iter().find(|c| c.display_name == "from").expect("from found");
+    let to = cals.iter().find(|c| c.display_name == "to").expect("to found");
+
+    let pool = omacal_store::connect_memory().await.unwrap();
+    sqlx::query(
+        "INSERT INTO accounts (google_sub, email, created_at, provider, server_url, username)
+         VALUES ('caldav:move', 'move@test', 0, 'caldav', ?1, ?2)",
+    )
+    .bind(&base)
+    .bind(&user)
+    .execute(&pool)
+    .await
+    .unwrap();
+    let mut ids = Vec::new();
+    for cal in [from, to] {
+        let id: i64 = sqlx::query_scalar(
+            "INSERT INTO calendars (account_id, google_id, summary, timezone, access_role,
+                                    supports_events, supports_tasks)
+             VALUES (1, ?1, ?2, 'Europe/Sofia', 'owner', 1, 0) RETURNING id",
+        )
+        .bind(&cal.url)
+        .bind(&cal.display_name)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        ids.push(id);
+    }
+    let (from_id, to_id) = (ids[0], ids[1]);
+
+    let sync = |cal_id: i64, url: String, tick: i64| {
+        let pool = pool.clone();
+        let client = &client;
+        async move {
+            omacal_sync::caldav::sync_caldav_calendar(
+                &pool, client, cal_id, &url, true, false, WINDOW_START, WINDOW_END, tick,
+            )
+            .await
+            .expect("sync")
+        }
+    };
+    let rows_on = |cal_id: i64| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM events WHERE calendar_id = ?1")
+                .bind(cal_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
+    };
+
+    sync(from_id, from.url.clone(), 1).await;
+    sync(to_id, to.url.clone(), 1).await;
+    assert_eq!(rows_on(from_id).await, 2, "master + its materialised exception");
+    assert_eq!(rows_on(to_id).await, 0, "the destination starts empty");
+
+    // What `resource_of` hands the move: the master row's href and the whole
+    // resource behind it. Both must be there — `move_to` refuses with "not
+    // finished syncing" if either is null, and this is where that is true.
+    let (href, raw, etag): (String, String, Option<String>) = sqlx::query_as(
+        "SELECT caldav_href, raw_ics, etag FROM events
+         WHERE google_id = 'e2e-series' AND calendar_id = ?1 AND caldav_href IS NOT NULL",
+    )
+    .bind(from_id)
+    .fetch_one(&pool)
+    .await
+    .expect("the master's resource is in the store");
+
+    // The move itself, in the app's order: create in the destination first,
+    // then delete the original. Reversed, a failure here would lose the event
+    // rather than duplicate it.
+    let destination = format!("{}/e2e-series.ics", to.url.trim_end_matches('/'));
+    client.put(&destination, &raw, None).await.expect("PUT into the destination");
+    client.delete(&href, etag.as_deref()).await.expect("If-Match DELETE of the original");
+
+    sync(from_id, from.url.clone(), 2).await;
+    sync(to_id, to.url.clone(), 2).await;
+    assert_eq!(rows_on(from_id).await, 0, "the source collection is empty");
+    assert_eq!(rows_on(to_id).await, 2, "master and exception both arrived");
+
+    let events = omacal_store::events_in_window(&pool, WINDOW_START, WINDOW_END).await.unwrap();
+    let master = events
+        .iter()
+        .find(|e| e.google_id == "e2e-series" && e.recurring_event_id.is_none())
+        .expect("the master is on the destination");
+    assert_eq!(master.calendar_id, to_id);
+    assert!(master.recurrence.as_deref().unwrap().contains("FREQ=DAILY"), "the rule survived");
+    let exception = events
+        .iter()
+        .find(|e| e.recurring_event_id.as_deref() == Some("e2e-series"))
+        .expect("the exception came with it");
+    assert_eq!(exception.calendar_id, to_id, "an occurrence left behind is the failure mode");
+    assert_eq!(exception.summary.as_deref(), Some("Standup (moved)"));
+}
+
+/// The system trust store is consulted at all — issue #29.
+///
+/// omacal used to build `reqwest` with `rustls-tls`, which means
+/// **webpki-roots**: Mozilla's bundled list and nothing else. A CA the user
+/// had installed on their own machine was therefore invisible, so a
+/// self-hosted server with a certificate from a private CA could not be
+/// reached however correctly it was set up — while every other client on the
+/// same box reached it. Native roots are now enabled alongside webpki's, so
+/// the platform's own store is trusted too.
+///
+/// `SSL_CERT_FILE` is what makes this testable without touching the machine's
+/// real trust store: `rustls-native-certs` reads it in place of the system
+/// paths, so pointing it at a throwaway CA proves the same code path a real
+/// `/etc/ssl/certs` entry takes. Run it against a TLS Radicale:
+///
+/// ```sh
+/// SSL_CERT_FILE=/path/ca.crt RADICALE_TLS_URL=https://localhost:5233 \
+///   cargo test -p omacal-sync --test radicale_e2e -- --ignored a_private_ca
+/// ```
+///
+/// Without `SSL_CERT_FILE` the same run must fail, and that is the half worth
+/// re-checking by hand: a test that passes because everything is trusted
+/// proves nothing.
+#[tokio::test]
+#[ignore = "needs a TLS Radicale and SSL_CERT_FILE naming its CA"]
+async fn a_private_ca_is_trusted_when_the_system_store_names_it() {
+    let base = std::env::var("RADICALE_TLS_URL")
+        .expect("RADICALE_TLS_URL, e.g. https://localhost:5233");
+    let user = format!("omacal-tls-{}", std::process::id());
+    mkcalendar(&base, &user, "work", "VEVENT").await;
+
+    let client = CalDavClient::new(&base, &user, "pw").expect("client");
+    let cals = client
+        .discover()
+        .await
+        .expect("the handshake is the assertion: a private CA in the store is trusted");
+    assert!(
+        cals.iter().any(|c| c.display_name == "work"),
+        "discovery came back over TLS",
+    );
 }
