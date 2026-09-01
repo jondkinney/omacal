@@ -681,6 +681,12 @@ export function installTauriStub(scenario: string): Harness {
       case 'sign_out':
         // Signing out the only fixture account leaves none.
         return [];
+      // The Accounts tab's CalDAV connect. The real command resolves to the
+      // account's display name, so echoing the identifier back is enough —
+      // the fact a test wants is that the submit reached the backend at all,
+      // and with what, in `harness.calls`.
+      case 'connect_caldav':
+        return args.email;
       case 'get_week':
         return getWeek(scenario, args.weekStartMs);
       case 'get_range':

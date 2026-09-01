@@ -898,10 +898,16 @@
                 disabled={caldavBusy}
               />
             {/if}
+            <!-- `text`, not `email`, for a plain CalDAV server: the backend
+                 asks for "an email (or account name)" and a self-hosted
+                 Radicale account is normally a bare username, which the
+                 browser's own email validation would refuse to submit
+                 (issue #28). An Apple ID is always an address, so iCloud
+                 keeps the check. -->
             <input
-              type="email"
-              placeholder={caldavForm === 'icloud' ? 'Apple ID' : 'Email'}
-              aria-label={caldavForm === 'icloud' ? 'Apple ID' : 'Email'}
+              type={caldavForm === 'icloud' ? 'email' : 'text'}
+              placeholder={caldavForm === 'icloud' ? 'Apple ID' : 'Email or account name'}
+              aria-label={caldavForm === 'icloud' ? 'Apple ID' : 'Email or account name'}
               bind:value={caldavEmail}
               disabled={caldavBusy}
             />
@@ -925,6 +931,15 @@
               <p class="hint">
                 Not your Apple ID password: create an app-specific password at
                 appleid.apple.com → Sign-In and Security.
+              </p>
+            {/if}
+            <!-- Said before the attempt rather than after it: the same rule
+                 the transport enforces, at the moment the address is typed. -->
+            {#if caldavForm === 'caldav' && /^\s*http:\/\//i.test(caldavUrl)}
+              <p class="hint">
+                Plain http is accepted only for a server on this machine or
+                your own network — the password travels unencrypted, so a
+                server reachable from the internet needs https.
               </p>
             {/if}
             <div class="provider-row">

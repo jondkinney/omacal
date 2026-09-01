@@ -174,6 +174,18 @@ const SAFE_EXACT: &[&str] = &[
     // looking for an edit that did not happen instead of a duplicate that did.
     "the new series was created but the original could not be shortened — \
      you now have two overlapping series and should delete one",
+    // crates/omacal-caldav/src/client.rs — `https_or_private`'s refusal of a
+    // plain-http address outside the user's own network, reached from
+    // `CalDavClient::new` through `connect_caldav`'s `.map_err(user_facing)`
+    // with no `.context(..)` on the way. The constant interpolates nothing on
+    // purpose (the rejected URL can carry a password in its userinfo), and
+    // `the_scheme_refusal_does_not_repeat_the_address_back` pins that.
+    //
+    // Allow-listed because OPAQUE here is the whole of issue #28: a
+    // self-hosted CalDAV server that works in every other client is turned
+    // down for a knowable, fixable reason, and "Sync failed, see the log"
+    // sends the user looking for a fault instead of reading a decision.
+    omacal_caldav::NOT_PRIVATE_HTTP,
 ];
 
 /// The generic replacement. Deliberately says where to look rather than
@@ -353,6 +365,12 @@ mod tests {
             // `tracing`, never into this string, and no `.context(..)` wraps
             // it on the way to `sign_in_impl`'s `map_err`.
             crate::BROWSER_FAILED,
+            // Checked against the doc-comment rule: a fixed literal raised by
+            // `bail!(NOT_PRIVATE_HTTP)` in the caldav crate's transport guard,
+            // interpolating nothing (the address it refused is deliberately
+            // not repeated back — it can carry a password in its userinfo),
+            // and `connect_caldav`'s `.map_err(user_facing)` adds no context.
+            omacal_caldav::NOT_PRIVATE_HTTP,
         ];
         for expected in EXPECTED {
             assert!(
@@ -383,6 +401,18 @@ mod tests {
     fn a_guest_list_conflict_reaches_the_user_verbatim() {
         let raised = anyhow::anyhow!(crate::events::CONFLICT_GUESTS);
         assert_eq!(user_facing(&raised), crate::events::CONFLICT_GUESTS);
+        assert_ne!(user_facing(&raised), OPAQUE);
+    }
+
+    /// Issue #28: the address was refused for a reason the user can act on,
+    /// and OPAQUE turns that decision into a fault report.
+    #[test]
+    fn a_refused_caldav_address_tells_the_user_why() {
+        // `.err().expect(..)`: `CalDavClient` holds a password and has no `Debug`.
+        let raised = omacal_caldav::CalDavClient::new("http://cal.example.com/", "u", "p")
+            .err()
+            .expect("a public http address must be refused");
+        assert_eq!(user_facing(&raised), omacal_caldav::NOT_PRIVATE_HTTP);
         assert_ne!(user_facing(&raised), OPAQUE);
     }
 

@@ -2,7 +2,8 @@
 //!
 //! Two halves. `client` is the wire protocol — discovery, listing, windowed
 //! queries, etag-guarded writes — with the credential-safety rules built in
-//! (HTTPS-only, same-site hrefs, same-host redirects). `ics` is the payload
+//! (HTTPS outside the user's own network, same-site hrefs, same-host
+//! redirects). `ics` is the payload
 //! format, kept deliberately small because recurrence lines pass through
 //! verbatim to `omacal-core`'s expander.
 //!
@@ -15,7 +16,7 @@
 pub mod client;
 pub mod ics;
 
-pub use client::{CalDavClient, CalDavError, DiscoveredCalendar, Resource};
+pub use client::{CalDavClient, CalDavError, DiscoveredCalendar, Resource, NOT_PRIVATE_HTTP};
 pub use ics::{
     escape, events_in, exclude_occurrence, new_event_ics, new_todo_ics, parse, parse_time,
     patch_todo_status, resolve, respond_all, respond_occurrence, rewrite_master, todos_in,

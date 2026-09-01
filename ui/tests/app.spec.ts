@@ -1811,6 +1811,39 @@ test.describe('App', () => {
   });
 
   /**
+   * Issue #28. A self-hosted CalDAV server is named by LAN address and signed
+   * into with a bare username, and the form was built for neither: the
+   * identity field was `type="email"`, so the browser's own validation
+   * refused to submit "plamen" and nothing was ever sent. That is the
+   * *ordinary* shape of a Radicale account, so the form has to carry it as
+   * far as the backend before anything can be said about the server.
+   */
+  test('a CalDAV server on the LAN connects with a bare username', async ({ page }) => {
+    await writable(page);
+    await page.getByRole('button', { name: 'Menu' }).click();
+    await page.getByRole('button', { name: 'Settings…' }).click();
+    const modal = page.getByRole('dialog', { name: 'Settings' });
+    await modal.getByRole('tab', { name: 'Accounts' }).click();
+    await modal.getByRole('button', { name: 'Add CalDAV account' }).click();
+
+    await modal.getByLabel('Server address').fill('http://192.168.1.5:5232/');
+    // The rule the transport enforces, said while the address is being typed
+    // rather than after a failed attempt.
+    await expect(modal.getByText(/Plain http is accepted only/)).toBeVisible();
+    await modal.getByLabel('Email or account name').fill('plamen');
+    await modal.getByLabel('Password').fill('hunter2');
+    await modal.getByRole('button', { name: 'Connect' }).click();
+
+    await expect(modal.getByText(/plamen connected/)).toBeVisible();
+    const [args] = await callsTo(page, 'connect_caldav');
+    expect(args, 'the submit never reached the backend').toMatchObject({
+      kind: 'caldav',
+      serverUrl: 'http://192.168.1.5:5232/',
+      email: 'plamen',
+    });
+  });
+
+  /**
    * The picker wears the chosen calendar's colour (2026-08-10, by request):
    * names identify calendars to a reader who knows them, colour to everyone.
    * Both halves asserted — the resting colour and it *following* a change —

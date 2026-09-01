@@ -3,7 +3,9 @@
 //! the ICS payloads are `ics.rs`'s business.
 //!
 //! Security rules (from the provider decision doc):
-//! - **HTTPS only**, with a loopback exception so a local test server works.
+//! - **HTTPS only**, with an exception for addresses that can only be on the
+//!   user's own wire — loopback, the private ranges, LAN-only names. See
+//!   [`https_or_private`].
 //! - **Redirects are followed same-host only.** Credentials never travel to
 //!   a host the user did not name…
 //! - …with one carve-out for hrefs (not redirects): a server may hand back
@@ -12,7 +14,7 @@
 //!   the new host shares the registrable parent of the one the user gave.
 
 use reqwest::{Method, StatusCode};
-use url::Url;
+use url::{Host, Url};
 
 #[derive(Debug, thiserror::Error)]
 pub enum CalDavError {
@@ -70,15 +72,59 @@ pub struct CalDavClient {
     password: String,
 }
 
-fn https_or_loopback(url: &Url) -> anyhow::Result<()> {
+/// The refusal a plain-http address on the public internet earns.
+///
+/// A fixed literal with nothing interpolated, so it can be shown verbatim:
+/// the user typed the address and gets to read why it was turned down. Pinned
+/// by `errors::user_facing`'s allow-list on the app side.
+pub const NOT_PRIVATE_HTTP: &str = "CalDAV needs an https:// address — plain http:// is accepted \
+     only for a server on this machine or your own network";
+
+/// Whether an address can only be reached across a wire the user owns.
+///
+/// Basic auth rides on every request, so cleartext http is a real exposure —
+/// but only where the packets can be seen by someone else. This is therefore
+/// an address test, not a preference: loopback, the RFC 1918 and RFC 4193
+/// private ranges, link-local, and the names that cannot resolve outside a
+/// LAN (`localhost`, mDNS `.local`, `.home.arpa`, and single-label hosts like
+/// `nas`, which have no public TLD to be reached through).
+///
+/// Self-hosted Radicale is the case this exists for (issue #28): it ships
+/// plain http on 5232, every other client on the box connects to it, and
+/// refusing until the user fronts it with TLS is a wall rather than a
+/// security control — the credential never leaves their own network.
+fn is_private_host(host: &Host<&str>) -> bool {
+    match host {
+        Host::Ipv4(ip) => ip.is_loopback() || ip.is_private() || ip.is_link_local(),
+        // `is_unique_local` and `is_unicast_link_local` are still unstable, so
+        // fc00::/7 and fe80::/10 are spelled out against the first group.
+        Host::Ipv6(ip) => {
+            ip.is_loopback()
+                || (ip.segments()[0] & 0xfe00) == 0xfc00
+                || (ip.segments()[0] & 0xffc0) == 0xfe80
+        }
+        Host::Domain(name) => {
+            let name = name.trim_end_matches('.').to_ascii_lowercase();
+            name == "localhost"
+                || name.ends_with(".localhost")
+                || name.ends_with(".local")
+                || name.ends_with(".home.arpa")
+                || !name.contains('.')
+        }
+    }
+}
+
+fn https_or_private(url: &Url) -> anyhow::Result<()> {
     if url.scheme() == "https" {
         return Ok(());
     }
-    let host = url.host_str().unwrap_or("");
-    if url.scheme() == "http" && (host == "localhost" || host == "127.0.0.1" || host == "[::1]") {
+    if url.scheme() == "http" && url.host().as_ref().is_some_and(is_private_host) {
         return Ok(());
     }
-    anyhow::bail!("CalDAV servers must be https:// (got {url})");
+    // Deliberately interpolates nothing. The rejected URL may carry userinfo
+    // (`http://user:password@host/`), and this string is allow-listed for
+    // display in `errors::user_facing` — see `NOT_PRIVATE_HTTP` there.
+    anyhow::bail!(NOT_PRIVATE_HTTP);
 }
 
 /// Whether `candidate` may receive the credentials given to `original`:
@@ -103,7 +149,7 @@ const NS: &str = r#"xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav" xmlns
 impl CalDavClient {
     pub fn new(base_url: &str, username: &str, password: &str) -> anyhow::Result<Self> {
         let base = Url::parse(base_url.trim())?;
-        https_or_loopback(&base)?;
+        https_or_private(&base)?;
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::custom(|attempt| {
                 // Same-host only: a redirect is the server's word, not the
@@ -132,7 +178,7 @@ impl CalDavClient {
     /// outside the original site.
     fn resolve(&self, context: &Url, href: &str) -> anyhow::Result<Url> {
         let joined = context.join(href.trim())?;
-        https_or_loopback(&joined)?;
+        https_or_private(&joined)?;
         if !same_site(&self.base, &joined) {
             anyhow::bail!("server pointed outside its own site: {joined}");
         }
@@ -319,7 +365,7 @@ impl CalDavClient {
         etag: Option<&str>,
     ) -> Result<Option<String>, CalDavError> {
         let url = Url::parse(resource_url).map_err(anyhow::Error::from)?;
-        https_or_loopback(&url).map_err(CalDavError::Other)?;
+        https_or_private(&url).map_err(CalDavError::Other)?;
         let guard: (&str, &str) = match etag {
             Some(t) => ("If-Match", t),
             None => ("If-None-Match", "*"),
@@ -556,10 +602,62 @@ mod tests {
     }
 
     #[test]
-    fn plain_http_is_refused_except_loopback() {
+    fn plain_http_is_refused_on_the_open_internet() {
         assert!(CalDavClient::new("http://cal.example.com/", "u", "p").is_err());
-        assert!(CalDavClient::new("http://localhost:5232/", "u", "p").is_ok());
         assert!(CalDavClient::new("https://cal.example.com/", "u", "p").is_ok());
+    }
+
+    /// Issue #28. A self-hosted server is named by LAN address or LAN name,
+    /// and Radicale's own default is plain http on 5232 — every one of these
+    /// keeps the credential on a wire the user already owns.
+    #[test]
+    fn plain_http_is_accepted_on_the_users_own_network() {
+        for url in [
+            "http://localhost:5232/",
+            "http://127.0.0.1:5232/",
+            "http://[::1]:5232/",
+            "http://192.168.1.20:5232/",
+            "http://10.0.0.4:5232/",
+            "http://172.16.3.9:5232/",
+            "http://169.254.7.7:5232/",
+            "http://[fd00::1]:5232/",
+            "http://[fe80::1]:5232/",
+            "http://nas:5232/",
+            "http://radicale.local:5232/",
+            "http://dav.home.arpa:5232/",
+        ] {
+            assert!(CalDavClient::new(url, "u", "p").is_ok(), "refused {url}");
+        }
+    }
+
+    /// The test is the address, not the spelling: a public host that merely
+    /// reads as private is still public, and `192.168.1.20.example.com`
+    /// resolves to whatever its owner wants.
+    #[test]
+    fn a_public_host_that_reads_as_private_is_still_refused() {
+        for url in [
+            "http://192.168.1.20.example.com/",
+            "http://localhost.example.com/",
+            "http://cal.notlocal/",
+            "http://8.8.8.8/",
+        ] {
+            assert!(CalDavClient::new(url, "u", "p").is_err(), "accepted {url}");
+        }
+    }
+
+    /// The refusal is shown to the user verbatim (it is allow-listed in
+    /// `errors::user_facing`), so it must never quote the address back — a
+    /// pasted URL can carry the password in its userinfo.
+    #[test]
+    fn the_scheme_refusal_does_not_repeat_the_address_back() {
+        // `.err().expect(..)` rather than `expect_err`: `CalDavClient` holds a
+        // password and deliberately has no `Debug`.
+        let err = CalDavClient::new("http://someone:hunter2@cal.example.com/", "u", "p")
+            .err()
+            .expect("a public http address must be refused");
+        let shown = err.to_string();
+        assert_eq!(shown, NOT_PRIVATE_HTTP);
+        assert!(!shown.contains("hunter2"), "userinfo leaked: {shown}");
     }
 
     const PRINCIPAL: &str = r#"<?xml version="1.0"?>
