@@ -71,6 +71,26 @@ fn resolve(dt: &EventDateTime, cal_tz: &str) -> Option<i64> {
         .map(|z| z.timestamp().as_millisecond())
 }
 
+/// The join URL for an event's conference, if it has one.
+///
+/// `hangout_link` only covers Meet — a Zoom/Teams/Webex add-on meeting's join
+/// link lands in `conferenceData.entryPoints` instead, so this falls back to
+/// that entry's `"video"` entry point. Video-only, no fallback to whatever
+/// entry point comes first: a dial-in-only invite carries a `phone` or `sip`
+/// entry and nothing else, and a button labelled "Join video call" that
+/// opens a dialer is worse than no button at all.
+fn conference_join_uri(ev: &Event) -> Option<String> {
+    if ev.hangout_link.is_some() {
+        return ev.hangout_link.clone();
+    }
+    let entry_points = ev.conference_data.as_ref()?.get("entryPoints")?.as_array()?;
+    entry_points
+        .iter()
+        .find(|p| p.get("entryPointType").and_then(|t| t.as_str()) == Some("video"))
+        .and_then(|p| p.get("uri")?.as_str())
+        .map(str::to_string)
+}
+
 /// Converts a wire event into a storable row. Returns `None` for tombstones and
 /// for rows whose times cannot be parsed — a malformed event must not abort a
 /// whole sync page.
@@ -119,7 +139,7 @@ pub fn to_stored(ev: &Event, calendar_id: i64, cal_tz: &str) -> Option<StoredEve
             .iter()
             .find(|a| a.is_self)
             .map(|a| a.response_status.clone()),
-        conference_uri: ev.hangout_link.clone(),
+        conference_uri: conference_join_uri(ev),
         // Joined in from `calendars` on read; nothing to write here.
         color_hex: None,
         // Also joined in on read, so this write is inert — but `cal_tz` is
@@ -298,6 +318,60 @@ mod tests {
         ev.status = "cancelled".into();
         assert!(is_tombstone(&ev));
         assert!(to_stored(&ev, 1, "Europe/Sofia").is_none());
+    }
+
+    /// A Zoom add-on meeting has no `hangoutLink`, only `entryPoints`.
+    #[test]
+    fn a_zoom_meeting_via_conference_data_becomes_the_conference_uri() {
+        let mut ev = timed("2026-08-03T09:00:00+03:00", "2026-08-03T09:30:00+03:00");
+        ev.hangout_link = None;
+        ev.conference_data = Some(serde_json::json!({
+            "conferenceId": "123456789",
+            "conferenceSolution": { "key": { "type": "addOn" }, "name": "Zoom Meeting" },
+            "entryPoints": [
+                { "entryPointType": "phone", "uri": "tel:+11234567890" },
+                { "entryPointType": "video", "uri": "https://us02web.zoom.us/j/123456789?pwd=x" }
+            ]
+        }));
+        let s = to_stored(&ev, 1, "Europe/Sofia").unwrap();
+        assert_eq!(s.conference_uri.as_deref(), Some("https://us02web.zoom.us/j/123456789?pwd=x"));
+    }
+
+    /// `hangout_link` still wins when both are present.
+    #[test]
+    fn hangout_link_is_preferred_over_conference_data_when_both_are_present() {
+        let mut ev = timed("2026-08-03T09:00:00+03:00", "2026-08-03T09:30:00+03:00");
+        ev.hangout_link = Some("https://meet.google.com/abc-defg-hij".into());
+        ev.conference_data = Some(serde_json::json!({
+            "entryPoints": [
+                { "entryPointType": "video", "uri": "https://meet.google.com/abc-defg-hij" }
+            ]
+        }));
+        let s = to_stored(&ev, 1, "Europe/Sofia").unwrap();
+        assert_eq!(s.conference_uri.as_deref(), Some("https://meet.google.com/abc-defg-hij"));
+    }
+
+    #[test]
+    fn no_conference_data_leaves_conference_uri_absent() {
+        let ev = timed("2026-08-03T09:00:00+03:00", "2026-08-03T09:30:00+03:00");
+        let s = to_stored(&ev, 1, "Europe/Sofia").unwrap();
+        assert!(s.conference_uri.is_none());
+    }
+
+    /// A dial-in-only invite has a `phone` entry point and no `video` one —
+    /// that must not surface a `tel:` URI behind a "Join video call" button.
+    #[test]
+    fn a_phone_only_entry_point_does_not_become_the_conference_uri() {
+        let mut ev = timed("2026-08-03T09:00:00+03:00", "2026-08-03T09:30:00+03:00");
+        ev.hangout_link = None;
+        ev.conference_data = Some(serde_json::json!({
+            "entryPoints": [
+                { "entryPointType": "phone", "uri": "tel:+11234567890" },
+                { "entryPointType": "sip", "uri": "sip:123456789@example.com" }
+            ]
+        }));
+        let s = to_stored(&ev, 1, "Europe/Sofia").unwrap();
+        assert!(s.conference_uri.is_none());
     }
 
     #[test]
