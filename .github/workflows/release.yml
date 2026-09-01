@@ -142,15 +142,65 @@ jobs:
             echo "the x11 forcing survived" >&2
             exit 1
           fi
+          # Issue #27, and the repack is the only place it can be done: the
+          # bundler writes no AppImage metadata at all, so an image managed by
+          # AppManager, appimaged or AppImageUpdate has nothing to read its
+          # own name, version or update source out of.
+          #
+          # `X-AppImage-Version` is the key that matters — it is what a
+          # manager compares against the newest release to decide there is
+          # one — and it comes from the same tauri.conf.json the release is
+          # cut from, so it cannot describe a different build than it ships in.
+          version=$(jq -r .version "$GITHUB_WORKSPACE/src-tauri/tauri.conf.json")
+          # Resolved and de-duplicated: the AppDir's root .desktop is a
+          # symlink to the one under usr/share/applications, and `sed -i` on a
+          # symlink replaces it with a regular file. Patch the target once and
+          # the link stays a link.
+          desktops=$(for d in squashfs-root/*.desktop squashfs-root/usr/share/applications/*.desktop; do
+            [ -e "$d" ] && readlink -f "$d"
+          done | sort -u)
+          for desktop in $desktops; do
+            [ -f "$desktop" ] || continue
+            # Desktop Entry keys, so they must not land after a second group.
+            # Tauri's template has exactly one; if that ever changes, stop
+            # rather than write lines nothing will read.
+            if [ "$(grep -c '^\[' "$desktop")" != "1" ]; then
+              echo "$desktop has more than one group — the keys would land outside [Desktop Entry]" >&2
+              exit 1
+            fi
+            sed -i '/^X-AppImage-/d' "$desktop"
+            {
+              printf 'X-AppImage-Name=omacal\n'
+              printf 'X-AppImage-Version=%s\n' "$version"
+              printf 'X-AppImage-Arch=x86_64\n'
+              printf 'X-AppImage-Homepage=https://github.com/%s\n' "$GITHUB_REPOSITORY"
+              printf 'X-AppImage-UpdateURL=https://github.com/%s\n' "$GITHUB_REPOSITORY"
+            } >> "$desktop"
+          done
           curl -fsSL -o appimagetool \
             https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
           chmod +x appimagetool
-          APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64 ./appimagetool squashfs-root "$image"
+          # `-u` is the other half of issue #27, and the half that actually
+          # updates anything: it embeds AppImage's own update information in
+          # the image and writes the .zsync file AppImageUpdate and appimaged
+          # fetch to work out which blocks changed. The desktop keys above
+          # only let a manager *notice* a new version; without this there is
+          # no file behind the word "auto-update". The glob is matched against
+          # the release's assets, so it must keep describing whatever the
+          # bundler names the image (`omacal_<version>_amd64.AppImage`).
+          APPIMAGE_EXTRACT_AND_RUN=1 ARCH=x86_64 ./appimagetool \
+            -u "gh-releases-zsync|${GITHUB_REPOSITORY%%/*}|${GITHUB_REPOSITORY#*/}|latest|omacal_*_amd64.AppImage.zsync" \
+            squashfs-root "$image"
+          test -s "$image.zsync" || { echo "appimagetool wrote no .zsync" >&2; exit 1; }
           rm -rf squashfs-root appimagetool
           # Re-extract the repacked image and prove the strip held.
           ./"$image" --appimage-extract >/dev/null
           if ls squashfs-root/usr/lib/libwayland-* 2>/dev/null; then
             echo "libwayland survived the repack" >&2
+            exit 1
+          fi
+          if ! grep -qx "X-AppImage-Version=$version" squashfs-root/*.desktop; then
+            echo "the AppImage metadata did not survive the repack" >&2
             exit 1
           fi
           rm -rf squashfs-root
@@ -187,8 +237,12 @@ jobs:
             # join job, which needs both platforms' signatures in view —
             # naming it here after the move is exactly the ls-failure that
             # broke the v0.5.0 first build, on a step only tag pushes run.
+            # The .zsync rides along: an AppImage carrying update
+            # information whose zsync is not on the release describes a file
+            # that does not exist, which is worse than carrying none.
             files=$(ls target/release/bundle/appimage/*.AppImage \
                        target/release/bundle/appimage/*.AppImage.sig \
+                       target/release/bundle/appimage/*.AppImage.zsync \
                        target/release/bundle/deb/*.deb \
                        target/release/bundle/rpm/*.rpm)
           else
@@ -211,6 +265,7 @@ jobs:
           name: omacal-${{ matrix.platform }}
           path: |
             target/release/bundle/appimage/*.AppImage
+            target/release/bundle/appimage/*.AppImage.zsync
             target/release/bundle/deb/*.deb
             target/release/bundle/rpm/*.rpm
             target/release/bundle/dmg/*.dmg
@@ -267,7 +322,7 @@ jobs:
           # in view. The manifest and this file are excluded from
           # themselves — a checksum file listing itself can never verify.
           gh release download "$tag" --repo "$GITHUB_REPOSITORY" \
-            -p "*.dmg" -p "*.deb" -p "*.rpm" || true
+            -p "*.dmg" -p "*.deb" -p "*.rpm" -p "*.AppImage.zsync" || true
           sha256sum $(ls | grep -v -e '^latest.json$' -e '^checksums.txt$') > checksums.txt
           cat checksums.txt
           gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber checksums.txt

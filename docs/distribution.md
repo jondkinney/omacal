@@ -89,6 +89,16 @@ minutes; the `config.toml` escape hatch is also the documented courtesy exit
   hand-someone-one-file answer: download, `chmod +x`, run — Arch, Ubuntu,
   Fedora alike. `--no-bundle` (what this machine uses day-to-day) skips all
   of this and emits only the bare binary.
+- The released AppImage carries **AppImage update information** and ships a
+  `.zsync` beside it, added by the repack step in `release.yml` (issue #27):
+  `appimagetool -u "gh-releases-zsync|x3me|omacal|latest|omacal_*_amd64.AppImage.zsync"`.
+  That is what AppImageUpdate, appimaged and the third-party managers use to
+  find and fetch a new version, and it is separate from the app's own
+  in-app updater (which reads `latest.json` and verifies a minisign `.sig`).
+  The same step writes the `X-AppImage-*` desktop keys — name, version, arch,
+  homepage — which is what a manager reads to recognise the app at all. The
+  glob in the update information is matched against the release's assets, so
+  it has to keep describing whatever the bundler names the image.
 - **AUR package** for Arch/Omarchy users — the native path on this app's home
   platform: `omacal-bin` repackaging the GitHub release, optionally `omacal`
   building from source. AUR maintainership is a personal account, not an
