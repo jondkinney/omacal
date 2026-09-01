@@ -16,6 +16,7 @@ import type { EventDetail } from '../../src/lib/eventdetail';
 import type { TimeFormat } from '../../src/lib/timefmt';
 import type { WeekStartDay } from '../../src/lib/weekstart';
 import type { StartOnLogin, WeekViewDays } from '../../src/lib/settings';
+import type { TemperatureUnit } from '../../src/lib/temperature';
 import {
   labelledWeek, weekLabel, APP_FIVE_MIN_AGO, APP_NOW, APP_SERIES_ID, APP_SERIES_OCCURRENCE,
   APP_ONE_OFF_ID, APP_ONE_OFF_START, APP_GUESTS_ID, APP_SOLO_SERIES_ID,
@@ -523,6 +524,7 @@ type StubSettings = {
   displayTimezone: string | null;
   secondTimezone: string | null;
   weatherEnabled: boolean;
+  temperatureUnit: TemperatureUnit;
   startOnLogin: StartOnLogin;
   quitOnClose: boolean;
 };
@@ -555,6 +557,8 @@ const DEFAULT_SETTINGS: StubSettings = {
   secondTimezone: null,
   // The backend's default: on unless somebody turned it off.
   weatherEnabled: true,
+  // The backend's default: Celsius, so no installed copy changes under its user.
+  temperatureUnit: 'celsius',
   // The backend's default too, and for a reason the stub has to reproduce
   // rather than merely copy: every install that predates the setting has the
   // launch entry, so absent must land on `open` or the upgrade changes what
@@ -803,6 +807,9 @@ export function installTauriStub(scenario: string): Harness {
         return { days: [], place: null };
       case 'set_weather_enabled':
         settings = saveSettings({ ...settings, weatherEnabled: args.on as boolean });
+        return { ...settings };
+      case 'set_temperature_unit':
+        settings = saveSettings({ ...settings, temperatureUnit: args.unit as TemperatureUnit });
         return { ...settings };
       case 'set_start_on_login':
         settings = saveSettings({ ...settings, startOnLogin: args.mode as StartOnLogin });
