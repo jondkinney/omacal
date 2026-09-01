@@ -5,6 +5,8 @@
   import { openConference, type UiEvent } from './api';
   import type { Rect } from './position';
   import { locationLabel, meetingUrl } from './location';
+  import { temperatureUnit } from './tempunit.svelte';
+  import { formatTemp } from './temperature';
   import WeatherGlyph from './WeatherGlyph.svelte';
   import { dateKey, type DayWeather } from './weather';
   import type { ListDay } from './filmstrip';
@@ -136,7 +138,7 @@
           {#if weather?.get(dateKey(d.startMs))}
             {@const wx = weather.get(dateKey(d.startMs))!}
             <span class="wx">
-              <WeatherGlyph bucket={wx.bucket} size={12} />{wx.tmax}°
+              <WeatherGlyph bucket={wx.bucket} size={12} />{formatTemp(wx.tmax, temperatureUnit())}°
             </span>
           {/if}
         </h2>

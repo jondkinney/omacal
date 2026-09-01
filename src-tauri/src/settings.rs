@@ -25,6 +25,7 @@ const TRAY_ICON_KEY: &str = "tray_icon";
 const QUIT_ON_CLOSE_KEY: &str = "quit_on_close";
 const AUTOSTART_KEY: &str = "autostart";
 const WEATHER_KEY: &str = "weather_enabled";
+const TEMPERATURE_UNIT_KEY: &str = "temperature_unit";
 const DISPLAY_TZ_KEY: &str = "display_timezone";
 const SECOND_TZ_KEY: &str = "second_timezone";
 
@@ -74,6 +75,31 @@ impl TimeFormat {
         match self {
             TimeFormat::H24 => "24h",
             TimeFormat::H12 => "12h",
+        }
+    }
+}
+
+/// Whether a temperature is drawn as `22°` or `72°` — Celsius or Fahrenheit.
+///
+/// [`TimeFormat`]'s reason, twice over: the set is closed, so [`set_temperature_unit`]
+/// needs no refusal path, and `weather::DayWeather` carries unrounded Celsius
+/// so this side can round once, in whichever unit this names, rather than
+/// rounding at fetch and converting a rounded number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TemperatureUnit {
+    #[serde(rename = "celsius")]
+    Celsius,
+    #[serde(rename = "fahrenheit")]
+    Fahrenheit,
+}
+
+impl TemperatureUnit {
+    /// The stored spelling. The same strings the wire uses, so a row read by
+    /// eye in `sqlite3` says what the settings modal says.
+    fn as_str(self) -> &'static str {
+        match self {
+            TemperatureUnit::Celsius => "celsius",
+            TemperatureUnit::Fahrenheit => "fahrenheit",
         }
     }
 }
@@ -285,6 +311,11 @@ pub struct AppSettings {
     /// destination beyond the calendar providers, which is why the off
     /// switch exists and the settings hint names where the data comes from.
     pub weather_enabled: bool,
+    /// Whether the day headers' forecast high is drawn in Celsius or
+    /// Fahrenheit — Celsius by default, so no installed copy changes under
+    /// its user. Read by the same components as `weather_enabled` guards,
+    /// and only meaningful while that toggle is on.
+    pub temperature_unit: TemperatureUnit,
     /// Whether times are drawn as `13:30` or `1:30 PM`, everywhere the app
     /// prints one — event blocks, the filmstrip, the popover and the Week and
     /// Day hour gutter, which follows deliberately: a 12-hour reader given a
@@ -449,6 +480,13 @@ pub async fn read_settings(pool: &SqlitePool) -> AppSettings {
         // `notifications_enabled`'s polarity and reasoning: on unless
         // somebody turned it off.
         weather_enabled: weather_enabled(pool).await,
+        // Same "only a spelling this version writes moves the setting" rule
+        // as `week_start`: absent, garbage and a future spelling all land on
+        // Celsius, the unit omacal has always drawn.
+        temperature_unit: match read(pool, TEMPERATURE_UNIT_KEY).await.as_deref() {
+            Some("fahrenheit") => TemperatureUnit::Fahrenheit,
+            _ => TemperatureUnit::Celsius,
+        },
     }
 }
 
@@ -826,6 +864,21 @@ pub async fn set_time_format(
     Ok(read_settings(&state.pool).await)
 }
 
+/// Stores the temperature unit. Like [`set_time_format`] nothing is refused
+/// and the cache needs no refetch: `weather::DayWeather` carries unrounded
+/// Celsius regardless of this setting, so a toggle changes only how the
+/// headers round what is already cached.
+#[tauri::command]
+pub async fn set_temperature_unit(
+    state: tauri::State<'_, AppState>,
+    unit: TemperatureUnit,
+) -> Result<AppSettings, String> {
+    write(&state.pool, TEMPERATURE_UNIT_KEY, unit.as_str())
+        .await
+        .map_err(|e| crate::errors::user_facing(&e))?;
+    Ok(read_settings(&state.pool).await)
+}
+
 /// Stores the day a calendar-aligned week begins on and leaves rolling mode.
 /// Nothing to refuse: [`WeekStart`] has three variants and the select offers
 /// all three. The two writes are one user choice; the helper keeps that shape
@@ -937,6 +990,11 @@ mod tests {
             "absent is every install that predates this setting, and they all have the launch \
              entry already — landing anywhere else changes what their machine does at the \
              next login, without anybody asking for it"
+        );
+        assert_eq!(
+            s.temperature_unit,
+            TemperatureUnit::Celsius,
+            "the unit omacal has always drawn, so no installed copy changes under its user"
         );
     }
 
@@ -1205,6 +1263,26 @@ mod tests {
                 read_settings(&p).await.week_start,
                 WeekStart::Monday,
                 "{stored:?} is not a day this version writes",
+            );
+        }
+    }
+
+    /// Both spellings round-trip, and an unrecognised row reads as Celsius —
+    /// the same polarity rule [`the_week_start_round_trips_and_falls_back_to_monday`]
+    /// takes.
+    #[tokio::test]
+    async fn the_temperature_unit_round_trips_and_falls_back_to_celsius() {
+        let p = pool().await;
+        for unit in [TemperatureUnit::Fahrenheit, TemperatureUnit::Celsius] {
+            write(&p, TEMPERATURE_UNIT_KEY, unit.as_str()).await.unwrap();
+            assert_eq!(read_settings(&p).await.temperature_unit, unit);
+        }
+        for stored in ["", "Fahrenheit", "F", "kelvin", "🌡"] {
+            write(&p, TEMPERATURE_UNIT_KEY, stored).await.unwrap();
+            assert_eq!(
+                read_settings(&p).await.temperature_unit,
+                TemperatureUnit::Celsius,
+                "{stored:?} is not a spelling this version writes",
             );
         }
     }

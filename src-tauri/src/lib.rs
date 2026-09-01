@@ -1489,6 +1489,7 @@ pub fn run() {
             settings::set_default_calendar,
             settings::set_default_event_duration,
             settings::set_time_format,
+            settings::set_temperature_unit,
             settings::set_week_start,
             settings::set_week_starts_today,
             settings::set_week_view_days,

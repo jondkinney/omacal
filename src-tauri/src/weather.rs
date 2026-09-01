@@ -54,8 +54,13 @@ pub struct DayWeather {
     /// `fog` | `drizzle` | `rain` | `snow` | `thunder`. Decided here so the
     /// grouping is tested once, beside the table it was ported from.
     pub bucket: String,
-    pub tmax: i32,
-    pub tmin: i32,
+    /// **Celsius, unrounded** — the unit Open-Meteo answers in and the one
+    /// this side stays in, whichever unit the header ends up printing. The
+    /// rounding lives at the display end (`temperature.ts`) because it can
+    /// only happen once: rounding here and converting there turns 31.6°C
+    /// into 90°F, and 31.6°C is 89°F.
+    pub tmax: f64,
+    pub tmin: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize, Default)]
@@ -135,8 +140,9 @@ pub(crate) fn parse_geocoding(raw: &str) -> Option<(f64, f64)> {
     Some((hit.get("latitude")?.as_f64()?, hit.get("longitude")?.as_f64()?))
 }
 
-/// Open-Meteo's daily forecast → our report. Temperatures round to whole
-/// degrees — a day header saying `31.6°` is a header showing off.
+/// Open-Meteo's daily forecast → our report. Temperatures pass through
+/// unrounded — the rounding happens once, at display, in whichever unit the
+/// header prints (see the note on `DayWeather::tmax`).
 pub(crate) fn parse_open_meteo(raw: &str, place: Option<String>) -> Option<WeatherReport> {
     let v: serde_json::Value = serde_json::from_str(raw).ok()?;
     let daily = v.get("daily")?;
@@ -158,8 +164,8 @@ pub(crate) fn parse_open_meteo(raw: &str, place: Option<String>) -> Option<Weath
         days.push(DayWeather {
             date: date.to_string(),
             bucket: bucket_for_code(code as u16).to_string(),
-            tmax: hi.round() as i32,
-            tmin: lo.round() as i32,
+            tmax: hi,
+            tmin: lo,
         });
     }
     (!days.is_empty()).then_some(WeatherReport { days, place })
@@ -174,9 +180,9 @@ pub(crate) fn cache_is_fresh(now_ms: i64, at_ms: i64, ttl_ms: i64) -> bool {
 /// dated from today. Deterministic — a demo screenshot taken twice shows the
 /// same sky — and offline, which is demo's whole promise.
 pub(crate) fn synthetic_report(today: jiff::civil::Date) -> WeatherReport {
-    const CYCLE: &[(u16, i32, i32)] = &[
-        (0, 31, 24), (2, 29, 23), (3, 27, 22), (61, 26, 22),
-        (95, 25, 21), (71, 2, -3), (1, 28, 22), (0, 30, 23),
+    const CYCLE: &[(u16, f64, f64)] = &[
+        (0, 31.6, 24.0), (2, 29.0, 23.0), (3, 27.0, 22.0), (61, 26.0, 22.0),
+        (95, 25.0, 21.0), (71, 2.0, -3.0), (1, 28.0, 22.0), (0, 30.0, 23.0),
     ];
     let days = CYCLE
         .iter()
@@ -405,10 +411,13 @@ mod tests {
         assert_eq!(bucket_for_code(42), "overcast");
     }
 
-    /// A real Open-Meteo daily answer, cut to two days. Rounding is part of
-    /// the contract: a header saying `31.6°` is a header showing off.
+    /// A real Open-Meteo daily answer, cut to two days. Unrounded is part of
+    /// the contract: the caller (`temperature.ts`) is the one that rounds,
+    /// once, in whichever unit it is printing — pinning `32` here would have
+    /// hidden the very bug (rounding twice, in two units) this shape exists
+    /// to avoid.
     #[test]
-    fn an_open_meteo_answer_becomes_rounded_bucketed_days() {
+    fn an_open_meteo_answer_becomes_unrounded_bucketed_days() {
         let raw = r#"{"daily":{
             "time":["2026-08-24","2026-08-25"],
             "weather_code":[3,95],
@@ -419,8 +428,8 @@ mod tests {
         assert_eq!(r.days.len(), 2);
         assert_eq!(r.days[0].date, "2026-08-24");
         assert_eq!(r.days[0].bucket, "overcast");
-        assert_eq!(r.days[0].tmax, 32);
-        assert_eq!(r.days[0].tmin, 26);
+        assert_eq!(r.days[0].tmax, 31.6);
+        assert_eq!(r.days[0].tmin, 25.5);
         assert_eq!(r.days[1].bucket, "thunder");
     }
 
