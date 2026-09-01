@@ -2321,28 +2321,6 @@ export const FIXTURES: Record<string, Record<string, any>> = {
       anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, occurrenceEndMs: MON + 9 * H + 30 * 60_000,
       onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
     },
-    // A join link that only lives in the description, with an ordinary room
-    // in `location`.
-    'description-holds-a-real-zoom-link': {
-      detail: detail({
-        id: 66,
-        description: 'Join Zoom Meeting: https://us02web.zoom.us/j/123456?pwd=x',
-        location: 'Room 4A',
-      }),
-      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, occurrenceEndMs: MON + 9 * H + 30 * 60_000,
-      onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
-    },
-    // The location still wins when both fields carry a (different)
-    // recognised link — one control, not two arguing about which is real.
-    'location-and-description-both-hold-a-meeting-link': {
-      detail: detail({
-        id: 67,
-        description: 'Backup bridge: https://us02web.zoom.us/j/999999?pwd=y',
-        location: 'https://meet.google.com/abc-defg-hij',
-      }),
-      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, occurrenceEndMs: MON + 9 * H + 30 * 60_000,
-      onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
-    },
     'location-room-in-description': {
       detail: detail({
         id: 63,

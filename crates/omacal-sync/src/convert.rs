@@ -75,7 +75,10 @@ fn resolve(dt: &EventDateTime, cal_tz: &str) -> Option<i64> {
 ///
 /// `hangout_link` only covers Meet — a Zoom/Teams/Webex add-on meeting's join
 /// link lands in `conferenceData.entryPoints` instead, so this falls back to
-/// that, preferring the `"video"` entry point.
+/// that entry's `"video"` entry point. Video-only, no fallback to whatever
+/// entry point comes first: a dial-in-only invite carries a `phone` or `sip`
+/// entry and nothing else, and a button labelled "Join video call" that
+/// opens a dialer is worse than no button at all.
 fn conference_join_uri(ev: &Event) -> Option<String> {
     if ev.hangout_link.is_some() {
         return ev.hangout_link.clone();
@@ -84,7 +87,6 @@ fn conference_join_uri(ev: &Event) -> Option<String> {
     entry_points
         .iter()
         .find(|p| p.get("entryPointType").and_then(|t| t.as_str()) == Some("video"))
-        .or_else(|| entry_points.first())
         .and_then(|p| p.get("uri")?.as_str())
         .map(str::to_string)
 }
@@ -352,6 +354,22 @@ mod tests {
     #[test]
     fn no_conference_data_leaves_conference_uri_absent() {
         let ev = timed("2026-08-03T09:00:00+03:00", "2026-08-03T09:30:00+03:00");
+        let s = to_stored(&ev, 1, "Europe/Sofia").unwrap();
+        assert!(s.conference_uri.is_none());
+    }
+
+    /// A dial-in-only invite has a `phone` entry point and no `video` one —
+    /// that must not surface a `tel:` URI behind a "Join video call" button.
+    #[test]
+    fn a_phone_only_entry_point_does_not_become_the_conference_uri() {
+        let mut ev = timed("2026-08-03T09:00:00+03:00", "2026-08-03T09:30:00+03:00");
+        ev.hangout_link = None;
+        ev.conference_data = Some(serde_json::json!({
+            "entryPoints": [
+                { "entryPointType": "phone", "uri": "tel:+11234567890" },
+                { "entryPointType": "sip", "uri": "sip:123456789@example.com" }
+            ]
+        }));
         let s = to_stored(&ev, 1, "Europe/Sofia").unwrap();
         assert!(s.conference_uri.is_none());
     }
