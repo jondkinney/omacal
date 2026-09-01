@@ -3,7 +3,7 @@ import type {
   BigYearPayload, RibbonRow,
 } from '../src/lib/api';
 import type { AppStatus } from '../src/lib/status';
-import type { DayWeather } from '../src/lib/weather';
+import type { DayWeather, WeatherReport } from '../src/lib/weather';
 import type { Calendar } from '../src/lib/calendars';
 import type { Attendee, EventDetail } from '../src/lib/eventdetail';
 import type { Rect } from '../src/lib/position';
@@ -1471,6 +1471,27 @@ export const APP_ALLDAY_SERIES_DTSTART = APP_MON;
  *  on a real neighbouring day rather than on something obviously wrong, which
  *  is why the two are deliberately different days here. */
 export const APP_ALLDAY_OCCURRENCE = APP_MON + 2 * 24 * H;
+
+/** What `get_weather` answers for the `weather` scenario only — every other
+ *  scenario stays deliberately weatherless (see the stub's own `get_weather`
+ *  case). `tmax: 31` is `WEEK_WEATHER`'s own Monday reading, reused rather
+ *  than invented, so the header's `31°`/`88°` here matches the numbers
+ *  `components.spec.ts` already pins for the same conversion.
+ *
+ *  Dated through `utcDate` rather than written out, because the date is not a
+ *  fact of its own: it is whichever Monday the app opens on. The suite fixes
+ *  the browser to UTC (`playwright.config.ts`), so this is the same string
+ *  `dateKey` derives from the rendered column — which is the whole of why the
+ *  lookup hits. A literal would go on naming 29 January after `APP_MON` moved.
+ *
+ *  One day and not seven, so "every header drew the same sky" is a different
+ *  count rather than the same one. */
+export const APP_WEATHER: WeatherReport = {
+  days: [{ date: utcDate(APP_MON), bucket: 'clear', tmax: 31, tmin: 24 }],
+  // Null rather than a name: nothing in `ui/src` reads `place`, and the
+  // weatherless branch beside this one answers null already.
+  place: null,
+};
 
 /** The calendar a create must land on: the user's own primary. Third in the
  *  list below on purpose — a seed that took `calendars[0]` would pick the

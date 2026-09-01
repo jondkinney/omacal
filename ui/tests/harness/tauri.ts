@@ -21,7 +21,7 @@ import {
   labelledWeek, weekLabel, APP_FIVE_MIN_AGO, APP_NOW, APP_SERIES_ID, APP_SERIES_OCCURRENCE,
   APP_ONE_OFF_ID, APP_ONE_OFF_START, APP_GUESTS_ID, APP_SOLO_SERIES_ID,
   POPOVER_DETAILS, busyDayMonth,
-  appWritableWeek, APP_WRITE_CALENDARS, CREATED_DETAIL, crossZoneWeek,
+  appWritableWeek, APP_WRITE_CALENDARS, APP_WEATHER, CREATED_DETAIL, crossZoneWeek,
   XZONE_WEEK_START, keyboardWeek,
 } from '../fixtures';
 
@@ -802,9 +802,11 @@ export function installTauriStub(scenario: string): Harness {
       // Empty on purpose: App-level scenarios stay weatherless, so no
       // existing spec or screenshot grows a sky it never asked for. The
       // rendering itself is proven component-side, where the fixture hands
-      // the map in as a prop.
+      // the map in as a prop — except the `weather` scenario, which needs a
+      // real forecast for the day header's own live-repaint spec to have
+      // something to convert.
       case 'get_weather':
-        return { days: [], place: null };
+        return scenario === 'weather' ? APP_WEATHER : { days: [], place: null };
       case 'set_weather_enabled':
         settings = saveSettings({ ...settings, weatherEnabled: args.on as boolean });
         return { ...settings };
