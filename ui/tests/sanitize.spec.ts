@@ -110,4 +110,107 @@ test.describe('descriptionSegments', () => {
     // kept as literal text, same as the old (slow) implementation produced.
     expect(out).toBe(input);
   });
+
+  test('an anchor written with words keeps its destination', () => {
+    // Issue #19's real case. The stripper used to remove the tag and leave
+    // "Pre-read" as bare text, so the one thing the link was for — where it
+    // went — was gone, with nothing on screen to say a link had been there.
+    const out = descriptionSegments('See the <a href="https://docs.example.com/x">Pre-read</a> first');
+    expect(out.map((s) => s.kind)).toEqual(['text', 'link', 'text']);
+    const link = out[1] as { kind: 'link'; value: string; href: string };
+    expect(link.value).toBe('Pre-read');
+    expect(link.href).toBe('https://docs.example.com/x');
+    expect(text('See the <a href="https://docs.example.com/x">Pre-read</a> first'))
+      .toBe('See the Pre-read first');
+  });
+
+  test('an anchor whose text is its own url is unchanged', () => {
+    // 169 of the 217 anchors on the author's real calendar are this shape.
+    // Label and destination are the same string, so this must come out
+    // exactly as it did before anchors were understood at all.
+    const out = descriptionSegments('<a href="https://meet.google.com/abc">https://meet.google.com/abc</a>');
+    expect(out).toHaveLength(1);
+    expect(out[0]).toEqual({
+      kind: 'link', value: 'https://meet.google.com/abc', href: 'https://meet.google.com/abc',
+    });
+  });
+
+  test('an anchor href is held to the same scheme rule as a bare url', () => {
+    // `hrefOf` is the second and last place a URL becomes an href, so it
+    // carries the same check. The words stay either way — losing the label
+    // as well would hide that anything was written there.
+    for (const href of ['javascript:alert(1)', 'data:text/html,hello', 'file:///etc/passwd']) {
+      const out = descriptionSegments(`<a href="${href}">Click me</a>`);
+      expect(out.every((s) => s.kind === 'text'), href).toBe(true);
+      expect(out.map((s) => s.value).join('')).toBe('Click me');
+    }
+  });
+
+  test('a tag-ending bracket inside an attribute loses the link, never forges one', () => {
+    // Finding a tag's end ignores quoting — `indexOf('>')`, the same rule
+    // `stripTags` has always used — so `href="…<script>"` ends the tag early
+    // and the remainder becomes text. That can only ever *lose* a link: an
+    // href is only followed when it matches an anchored http(s) pattern that
+    // excludes `<`, `>` and both quotes, so a truncated attribute yields
+    // nothing rather than something unintended.
+    const out = descriptionSegments('<a href="data:text/html,<script>">Click me</a>');
+    expect(out.every((s) => s.kind === 'text')).toBe(true);
+    expect(out.map((s) => s.value).join('')).not.toContain('<script>');
+  });
+
+  test('an anchor with no usable href is words, not a link', () => {
+    expect(descriptionSegments('<a>bare</a>').every((s) => s.kind === 'text')).toBe(true);
+    expect(descriptionSegments('<a name="top">anchor</a>').every((s) => s.kind === 'text')).toBe(true);
+    // `data-href` is not `href`, and must not be read as one.
+    expect(descriptionSegments('<a data-href="https://x.example">no</a>')
+      .every((s) => s.kind === 'text')).toBe(true);
+  });
+
+  test('the shapes a real invitation actually contains', () => {
+    const href = (raw: string) => {
+      const out = descriptionSegments(raw);
+      const link = out.find((s) => s.kind === 'link');
+      return link && link.kind === 'link' ? link.href : null;
+    };
+    // Single quotes, no quotes, uppercase tag and attribute, extra
+    // attributes before and after, and a query string written with entities
+    // — which is how every calendar invitation writes one.
+    expect(href("<a href='https://x.example/a'>x</a>")).toBe('https://x.example/a');
+    expect(href('<a href=https://x.example/b>x</a>')).toBe('https://x.example/b');
+    expect(href('<A HREF="https://x.example/c">x</A>')).toBe('https://x.example/c');
+    expect(href('<a target="_blank" href="https://x.example/d" rel="noopener">x</a>'))
+      .toBe('https://x.example/d');
+    expect(href('<a href="https://x.example/e?a=1&amp;b=2">x</a>'))
+      .toBe('https://x.example/e?a=1&b=2');
+  });
+
+  test('nothing inside an anchor survives as markup', () => {
+    // The label goes through the same stripper and decoder as any other
+    // text, so an anchor is not a hole in the guarantee this module makes.
+    const out = descriptionSegments('<a href="https://x.example"><img src=x onerror=alert(1)>Go</a>');
+    const link = out.find((s) => s.kind === 'link');
+    expect(link && link.kind === 'link' ? link.value : '').toBe('Go');
+    expect(text('<a href="https://x.example"><b>bo</b>ld</a>')).toBe('bold');
+    expect(descriptionSegments('<a href="https://x.example">&lt;script&gt;</a>')
+      .map((s) => s.value).join('')).toBe('<script>');
+  });
+
+  test('an unclosed anchor is stripped like any other malformed tag', () => {
+    // No `</a>` means no anchor: it falls back to the text path, which is
+    // what happened before links carried labels and is still right.
+    expect(descriptionSegments('<a href="https://x.example">dangling')
+      .every((s) => s.kind === 'text')).toBe(true);
+    expect(text('<a href="https://x.example">dangling')).toBe('dangling');
+  });
+
+  test('a run of 200,000 unclosed anchors is linear too', () => {
+    // The anchor scan is new, and it is the one place that looks for a
+    // *second* tag before deciding. Every branch advances past what it
+    // consumed; this is what proves it.
+    const input = '<a '.repeat(60_000);
+    const start = Date.now();
+    const out = descriptionSegments(input);
+    expect(Date.now() - start).toBeLessThan(5000);
+    expect(out.every((s) => s.kind === 'text')).toBe(true);
+  });
 });

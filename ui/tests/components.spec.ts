@@ -2339,6 +2339,21 @@ test.describe('EventPopover', () => {
     await expect(page.locator('.desc script')).toHaveCount(0);
   });
 
+  test('a link written with words keeps the words and the destination', async ({ page }) => {
+    // Issue #19. The popover is where this is finally true or not: the
+    // segment carries label and href separately, and the anchor renders the
+    // first with the second behind it. Both halves asserted, because showing
+    // the URL as the text would "fix" the link and lose the sentence.
+    await page.goto(show('labelled-link-description'));
+    const link = page.locator('.desc a');
+    await expect(link).toHaveText('the pre-read');
+    await expect(link).toHaveAttribute('href', 'https://docs.example.com/pre-read');
+    // The paragraph, not `.desc` — that also holds the Copy button.
+    await expect(page.locator('.desc p')).toHaveText('Please read the pre-read first.');
+    // Copying a link copies where it goes, not what it is called.
+    await expect(link).toHaveAttribute('data-copy-value', 'https://docs.example.com/pre-read');
+  });
+
   test('a one-off event offers no scope choice', async ({ page }) => {
     await page.goto(show('standup'));
     await expect(page.locator('.rsvp')).toBeVisible();

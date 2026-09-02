@@ -2360,6 +2360,18 @@ export const FIXTURES: Record<string, Record<string, any>> = {
       anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, occurrenceEndMs: MON + 9 * H + 30 * 60_000,
       onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
     },
+    // The shape issue #19 was about: an anchor written with words. Before
+    // `sanitize.ts` understood anchors the stripper removed the tag and left
+    // "the pre-read" as bare text — the destination gone, and nothing on
+    // screen to say a link had ever been there.
+    'labelled-link-description': {
+      detail: detail({
+        id: 68,
+        description: 'Please read <a href="https://docs.example.com/pre-read">the pre-read</a> first.',
+      }),
+      anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, occurrenceEndMs: MON + 9 * H + 30 * 60_000,
+      onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
+    },
     'location-room-in-description': {
       detail: detail({
         id: 63,

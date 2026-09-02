@@ -453,9 +453,13 @@
               data-copy-label="description"
               data-copy-value={detail.description ?? ''}
               onclick={() => copyField(detail.description ?? '', 'description')}>Copy</button>
+      <!-- `href` and the copied value are the destination; the text between
+           the tags is the label. For a bare URL those are the same string,
+           which is every link this popover drew before descriptions could
+           carry an anchor with words in it. -->
       <p>{#each segments as s}{#if s.kind === 'link'}<a
-              href={s.value} target="_blank" rel="noopener noreferrer"
-              data-copy-label="link" data-copy-value={s.value}>{s.value}</a
+              href={s.href} target="_blank" rel="noopener noreferrer"
+              data-copy-label="link" data-copy-value={s.href}>{s.value}</a
           >{:else}{s.value}{/if}{/each}</p>
     </div>
   {/if}
