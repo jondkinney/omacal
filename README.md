@@ -87,6 +87,26 @@ ritual, same self-update.
 First sign-in stores the token in your keyring, so a minimal Hyprland
 session needs gnome-keyring, KeePassXC or kwallet running.
 
+## Updating
+
+**Usually nothing.** When a newer release exists, the header grows an
+**Update** button; one click fetches it, checks its signature and restarts.
+That is the AppImage and the macOS app both.
+
+Otherwise, by how you installed it:
+
+- **AppImage from the install line** — re-run the same line any time. It
+  replaces the copy in `~/.local/bin` with the current release.
+- **`.deb` / `.rpm`** — these do not self-update. Take the new package from
+  the [releases page](https://github.com/x3me/omacal/releases) and install it
+  over the old one.
+- **An AppImage manager** (AppImageUpdate, appimaged, AppManager) — the
+  released AppImage carries AppImage update information and publishes a
+  `.zsync` beside it, so these update it in place.
+
+Which version you are on: the footer of Settings prints it, and so does
+`omacal doctor`.
+
 ## The rest, briefly
 
 Five views (Day to a whole-year 14-row ribbon), keyboard-first — press

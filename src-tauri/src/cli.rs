@@ -68,6 +68,12 @@ WRITES (the running app executes them, through its own guards)
   in omacal's display zone. A repeating event needs --scope said out loud;
   an event with guests needs --notify said out loud — neither is guessed.
 
+UPDATING
+  The app updates itself: when a release exists its header grows an Update
+  button. `omacal doctor` prints the version you are on. An AppImage
+  installed by the install script is also replaced by re-running that line;
+  a .deb or .rpm is replaced by the newer package.
+
 OUTPUT
   --json prints {\"ok\":true,\"data\":…} on success and
   {\"ok\":false,\"error\":{\"code\",\"message\"}} on failure; nothing prompts.
