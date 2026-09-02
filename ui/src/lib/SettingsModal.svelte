@@ -98,15 +98,51 @@
    */
   type WeekStartChoice = WeekStartDay | 'today';
 
-  /** The rolling option plus Google Calendar's three concrete starts. Today
-   *  applies only to Week view; the concrete value remains the row alignment
-   *  for Month, Year and Big Year. */
-  const WEEK_STARTS: { id: WeekStartChoice; label: string }[] = [
-    { id: 'today', label: 'Today' },
-    { id: 'monday', label: 'Monday' },
-    { id: 'sunday', label: 'Sunday' },
-    { id: 'saturday', label: 'Saturday' },
+  /**
+   * What Week view shows, as **one** question.
+   *
+   * This used to be two controls, and the second only appeared once the
+   * first said "Today" — so the rolling three-day view existed and could not
+   * be found: someone looking for it read the whole panel, saw a row called
+   * "Week view starts on", and concluded the app had no such thing (issue
+   * #31). A setting nobody can discover is not a setting.
+   *
+   * The two stored values behind it stay two, because they are not the same
+   * fact: `weekStart` still aligns the rows of Month, Year and Big Year even
+   * while Week rolls from today, and `weekViewDays` only means anything while
+   * it does (`App`: `days: weekStartsToday ? weekViewDays : 7`). This list is
+   * the crossing of the two that the grid can actually draw — which is why a
+   * "3 days from Monday" option is absent rather than disabled: there is no
+   * such shape.
+   */
+  type WeekViewChoice =
+    | { id: WeekStartDay; label: string; days?: never }
+    | { id: `today-${WeekViewDays}`; label: string; days: WeekViewDays };
+
+  const WEEK_VIEWS: WeekViewChoice[] = [
+    { id: 'monday', label: 'Whole week, from Monday' },
+    { id: 'sunday', label: 'Whole week, from Sunday' },
+    { id: 'saturday', label: 'Whole week, from Saturday' },
+    { id: 'today-3', label: '3 days from today', days: 3 },
+    { id: 'today-5', label: '5 days from today', days: 5 },
+    { id: 'today-7', label: '7 days from today', days: 7 },
   ];
+
+  /** The fixed day on its own, for the rolling hint — which has to name the
+   *  alignment Month and Year still use while the select is showing a
+   *  rolling row and cannot say it. */
+  const DAY_LABEL: Record<WeekStartDay, string> = {
+    monday: 'Monday',
+    sunday: 'Sunday',
+    saturday: 'Saturday',
+  };
+
+  /** Which row the stored pair of settings is currently on. */
+  const weekViewChoice = $derived(
+    settings?.weekStartsToday
+      ? (`today-${settings.weekViewDays}` as const)
+      : (settings?.weekStart ?? 'monday'),
+  );
 
   /** Stores the first day of the week. Same shape as `saveTimeFormat`: the
    *  backend's answer replaces `settings`, and `onsettingschange` is what
@@ -189,20 +225,28 @@
     }
   }
 
-  async function saveWeekStart(start: WeekStartChoice) {
+  /**
+   * One choice, and for the rolling rows two writes — **in this order**.
+   *
+   * The day count goes first because it is invisible while the week is a
+   * whole one: if that write lands and the second fails, the user sees
+   * exactly what they saw before, plus the error. The other order would
+   * leave Week rolling with the *old* count — a view they did not ask for
+   * and no message explaining it.
+   *
+   * A whole-week row is one write: `set_week_start` clears the rolling flag
+   * itself, so there is no second call to half-apply.
+   */
+  async function saveWeekView(id: string) {
+    const choice = WEEK_VIEWS.find((w) => w.id === id);
+    if (!choice) return;
     try {
-      settings = start === 'today'
-        ? await setWeekStartsToday(true)
-        : await setWeekStart(start);
-      onsettingschange?.(settings);
-    } catch (e) {
-      note = { text: String(e), kind: 'error' };
-    }
-  }
-
-  async function saveWeekViewDays(days: WeekViewDays) {
-    try {
-      settings = await setWeekViewDays(days);
+      if (choice.days !== undefined) {
+        await setWeekViewDays(choice.days);
+        settings = await setWeekStartsToday(true);
+      } else {
+        settings = await setWeekStart(choice.id as WeekStartDay);
+      }
       onsettingschange?.(settings);
     } catch (e) {
       note = { text: String(e), kind: 'error' };
@@ -667,40 +711,25 @@
       </p>
 
       <div class="row">
-        <label class="lab" for="week-start">Week view starts on</label>
+        <label class="lab" for="week-view">Week view</label>
         <div class="inline">
           <select
-            id="week-start"
+            id="week-view"
             disabled={!settings}
-            value={settings?.weekStartsToday ? 'today' : (settings?.weekStart ?? 'monday')}
-            onchange={(e) =>
-              saveWeekStart((e.currentTarget as HTMLSelectElement).value as WeekStartChoice)}
+            value={weekViewChoice}
+            onchange={(e) => saveWeekView((e.currentTarget as HTMLSelectElement).value)}
           >
-            {#each WEEK_STARTS as w (w.id)}
+            {#each WEEK_VIEWS as w (w.id)}
               <option value={w.id}>{w.label}</option>
             {/each}
           </select>
         </div>
       </div>
       {#if settings?.weekStartsToday}
-        <div class="row">
-          <label class="lab" for="week-view-days">Days shown</label>
-          <div class="inline">
-            <select
-              id="week-view-days"
-              value={settings.weekViewDays}
-              onchange={(e) =>
-                saveWeekViewDays(Number((e.currentTarget as HTMLSelectElement).value) as WeekViewDays)}
-            >
-              {#each [3, 5, 7] as const as days (days)}
-                <option value={days}>{days} days</option>
-              {/each}
-            </select>
-          </div>
-        </div>
         <p class="hint">
-          Includes today as the first day. Month, Year and Big Year keep their
-          rows aligned to {WEEK_STARTS.find((w) => w.id === settings?.weekStart)?.label ?? 'Monday'}.
+          Today is the first column, and the view rolls forward with it. Month,
+          Year and Big Year keep their rows aligned to {DAY_LABEL[settings.weekStart]}
+          — pick a whole week above to change that.
         </p>
       {:else}
         <p class="hint">

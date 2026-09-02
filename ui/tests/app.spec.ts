@@ -3895,14 +3895,19 @@ test.describe('App: the first day of the week', () => {
     await expect(page.locator('.vswitch button.active')).toBeVisible();
   };
 
-  const chooseStart = async (page: Page, label: string) => {
+  /** Picks a row of the single Week view select — one control since issue
+   *  #31, because the rolling view was unfindable behind two. `day` is the
+   *  weekday name; `rollingDays` picks a "N days from today" row instead. */
+  const chooseWeekView = async (page: Page, label: string) => {
     await page.getByRole('button', { name: 'Menu' }).click();
     await page.getByRole('button', { name: 'Settings…' }).click();
     const modal = page.getByRole('dialog', { name: 'Settings' });
-    await modal.locator('#week-start').selectOption({ label });
+    await modal.locator('#week-view').selectOption({ label });
     await page.keyboard.press('Escape');
     await expect(modal).toHaveCount(0);
   };
+  const chooseStart = (page: Page, day: string) =>
+    chooseWeekView(page, `Whole week, from ${day}`);
 
   /** Month's own header row — the labels the user reads above the grid. */
   const monthHeader = (page: Page) => page.locator('.head span');
@@ -3978,12 +3983,14 @@ test.describe('App: the first day of the week', () => {
     await page.getByRole('button', { name: 'Menu' }).click();
     await page.getByRole('button', { name: 'Settings…' }).click();
     const modal = page.getByRole('dialog', { name: 'Settings' });
-    await modal.locator('#week-start').selectOption({ label: 'Today' });
-
-    const count = modal.locator('#week-view-days');
-    await expect(count).toBeVisible();
-    await expect(count.locator('option')).toHaveText(['3 days', '5 days', '7 days']);
-    await count.selectOption('3');
+    // The whole point of the one-control shape: the rolling sizes are on
+    // the list you are already reading, not behind another answer.
+    const weekView = modal.locator('#week-view');
+    await expect(weekView.locator('option')).toHaveText([
+      'Whole week, from Monday', 'Whole week, from Sunday', 'Whole week, from Saturday',
+      '3 days from today', '5 days from today', '7 days from today',
+    ]);
+    await weekView.selectOption({ label: '3 days from today' });
     await page.keyboard.press('Escape');
 
     const columns = page.locator('[data-testid="week-body"] .col');
@@ -4000,10 +4007,19 @@ test.describe('App: the first day of the week', () => {
     await page.getByRole('button', { name: 'Menu' }).click();
     await page.getByRole('button', { name: 'Settings…' }).click();
     const reopened = page.getByRole('dialog', { name: 'Settings' });
-    await reopened.locator('#week-view-days').selectOption('5');
+    await reopened.locator('#week-view').selectOption({ label: '5 days from today' });
     await expect(columns).toHaveCount(5);
-    await reopened.locator('#week-view-days').selectOption('7');
+    await reopened.locator('#week-view').selectOption({ label: '7 days from today' });
     await expect(columns).toHaveCount(7);
+
+    // And back out of rolling through the same control: seven columns again,
+    // but anchored on the weekday rather than on today. One select has to
+    // carry the return trip as well as the way in.
+    await reopened.locator('#week-view').selectOption({ label: 'Whole week, from Monday' });
+    await expect(columns).toHaveCount(7);
+    await expect(columns.first()).not.toHaveAttribute(
+      'data-start-ms', String(wednesday - 12 * 3_600_000),
+    );
   });
 
   test('a rolling range follows today across midnight but preserves Month alignment', async ({ page }) => {
@@ -4013,7 +4029,7 @@ test.describe('App: the first day of the week', () => {
     await openApp(page);
 
     await chooseStart(page, 'Sunday');
-    await chooseStart(page, 'Today');
+    await chooseWeekView(page, '7 days from today');
     const first = page.locator('[data-testid="week-body"] .col').first();
     const wednesday = wednesdayNoon - 12 * 3_600_000;
     await expect(first).toHaveAttribute('data-start-ms', String(wednesday));
