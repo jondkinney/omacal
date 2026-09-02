@@ -1059,6 +1059,11 @@
    *  as they are typed (2026-08-20, by request). Null when no form is open,
    *  or when its value describes nothing timed. */
   let formPreview = $state<FormGhost | null>(null);
+  /** The open form, for the one thing the grid has to say *to* it: a draft
+   *  that was dragged or resized on the grid. A method call rather than a
+   *  prop, because the form's `value` deliberately stops tracking its props
+   *  the moment the user types — see `applySpan`. */
+  let formEl = $state<{ applySpan: (s: { startMs: number; endMs: number }) => void } | null>(null);
   $effect(() => {
     if (!form) formPreview = null;
   });
@@ -1747,7 +1752,9 @@
                 oncreate={newEventAt} oncreateallday={newAllDayEventOver}
                 onedit={openEdit} ondelete={askDelete}
                 oncopy={copyOccurrence}
-        onmove={moveOccurrence} onresponded={refreshAfterWrite} />
+        onmove={moveOccurrence}
+        ondraftmove={(span) => formEl?.applySpan(span)}
+        onresponded={refreshAfterWrite} />
     {/if}
   {/if}
 </main>
@@ -1820,6 +1827,7 @@
 
 {#if form}
   <EventForm
+    bind:this={formEl}
     anchor={form.anchor}
     initial={form.initial}
     {calendars}

@@ -1811,6 +1811,145 @@ test.describe('App', () => {
   });
 
   /**
+   * A draft can be placed by hand, the way a saved event can (2026-09-02, by
+   * request: "when I create a new meeting I want to be able to move it
+   * visually also").
+   *
+   * Driven through `App` rather than `WeekGrid` alone, because the loop is
+   * the point: the grid reports the gesture, the *form* owns the times, and
+   * the ghost only follows because the new value comes back out again. A
+   * spec against the grid by itself could pass with the form untouched,
+   * which is precisely the bug worth catching — a draft that appears to move
+   * and saves its old time.
+   */
+  test('a new event’s draft can be dragged on the grid, and the form follows', async ({ page }) => {
+    await writable(page);
+    await page.keyboard.press('n');
+    const form = newForm(page);
+    await expect(form).toBeVisible();
+    const startField = form.getByLabel('Start', { exact: true });
+    const endField = form.getByLabel('End', { exact: true });
+    const before = {
+      start: await startField.inputValue(),
+      end: await endField.inputValue(),
+    };
+
+    const ghost = page.locator('[data-testid="form-preview"]').first();
+    await expect(ghost).toBeVisible();
+    const box = (await ghost.boundingBox())!;
+    // A column is 24 hours over its height, so an hour is height/24. Two
+    // slots down — far enough to pass the 4px threshold and to land on a
+    // different quarter hour whatever the rounding.
+    const col = (await page.locator('.col').first().boundingBox())!;
+    const hourPx = col.height / 24;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2 + hourPx, { steps: 6 });
+    await page.mouse.up();
+
+    // The form's own fields moved, which is the fact that survives to a save.
+    await expect
+      .poll(async () => await startField.inputValue(), { timeout: 3000 })
+      .not.toBe(before.start);
+    const after = {
+      start: await startField.inputValue(),
+      end: await endField.inputValue(),
+    };
+    expect(after.end).not.toBe(before.end);
+    // A move, not a resize: the draft kept its length.
+    const mins = (hhmm: string) => {
+      const [h, m] = hhmm.split(':').map(Number);
+      return h * 60 + m;
+    };
+    expect(mins(after.end) - mins(after.start)).toBe(mins(before.end) - mins(before.start));
+    expect(mins(after.start)).toBeGreaterThan(mins(before.start));
+  });
+
+  test('dragging the draft’s bottom edge extends it without moving its start', async ({ page }) => {
+    // The other half of the gesture, and the one a move-only implementation
+    // would silently fail: `edgeAt` decides which this is from where inside
+    // the ghost the press landed.
+    await writable(page);
+    await page.keyboard.press('n');
+    const form = newForm(page);
+    const startField = form.getByLabel('Start', { exact: true });
+    const endField = form.getByLabel('End', { exact: true });
+    const before = {
+      start: await startField.inputValue(),
+      end: await endField.inputValue(),
+    };
+
+    const ghost = page.locator('[data-testid="form-preview"]').first();
+    const box = (await ghost.boundingBox())!;
+    const col = (await page.locator('.col').first().boundingBox())!;
+    const hourPx = col.height / 24;
+    // Inside the bottom resize band, not the middle.
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height - 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height - 2 + hourPx, { steps: 6 });
+    await page.mouse.up();
+
+    await expect
+      .poll(async () => await endField.inputValue(), { timeout: 3000 })
+      .not.toBe(before.end);
+    expect(await startField.inputValue()).toBe(before.start);
+  });
+
+  test('the dragged draft is what the create actually writes', async ({ page }) => {
+    // The whole point of the loop. A ghost that moves on screen and a form
+    // that saves its original time would look right and be wrong, and only a
+    // spec that reads the *request* can tell those apart.
+    await writable(page);
+    await page.keyboard.press('n');
+    const form = newForm(page);
+    const startField = form.getByLabel('Start', { exact: true });
+    const before = await startField.inputValue();
+
+    const ghost = page.locator('[data-testid="form-preview"]').first();
+    const box = (await ghost.boundingBox())!;
+    const col = (await page.locator('.col').first().boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(
+      box.x + box.width / 2, box.y + box.height / 2 + col.height / 24, { steps: 6 },
+    );
+    await page.mouse.up();
+    await expect.poll(async () => await startField.inputValue()).not.toBe(before);
+    const moved = await startField.inputValue();
+
+    await form.getByLabel('Title', { exact: true }).fill('Dragged into place');
+    await form.getByRole('button', { name: 'Create', exact: true }).click();
+
+    const [args] = await callsTo(page, 'create_event');
+    // Read back **in the page**, not in Node: the browser context runs an
+    // emulated zone and the test process does not, so a clock string built
+    // here would be comparing two different days' worth of hours.
+    const hhmm = await page.evaluate((ms: number) => {
+      const d = new Date(ms);
+      const p = (n: number) => String(n).padStart(2, '0');
+      return `${p(d.getHours())}:${p(d.getMinutes())}`;
+    }, args.fields.when.startMs as number);
+    expect(hhmm).toBe(moved);
+  });
+
+  test('the form still sits above its own draft where the two overlap', async ({ page }) => {
+    // The ghost has to rise above the form's scrim to be grabbable at all,
+    // which puts it one layer from the panel itself. If it ever wins that
+    // comparison, the fields under it stop taking clicks — a worse bug than
+    // the one being fixed, and invisible in a screenshot.
+    await writable(page);
+    await page.keyboard.press('n');
+    const form = newForm(page);
+    await expect(form).toBeVisible();
+    const panel = (await form.boundingBox())!;
+    const hit = await page.evaluate(({ x, y }) => {
+      const el = document.elementFromPoint(x, y);
+      return el?.closest('[data-testid="form-preview"]') ? 'ghost' : 'form';
+    }, { x: panel.x + panel.width / 2, y: panel.y + 12 });
+    expect(hit).toBe('form');
+  });
+
+  /**
    * Issue #30. omacal has no theme of its own — it wears Omarchy's — so on
    * any other desktop the dark fallback was the only answer the app had, for
    * good. The palette *application* is pinned by the `theme-changed` specs

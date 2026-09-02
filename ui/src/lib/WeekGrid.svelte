@@ -20,7 +20,7 @@
   import { cursorNamesEvent, type KeyboardCursor } from './keyboardnav';
   import { dateOf } from './eventform';
 
-  let { week, weather = null, formPreview = null, createColor = null, revealNowRequest = 0, keyboardCursor = null, onpan = null, oncreate, oncreateallday, onedit, ondelete, oncopy, onmove, onresponded }: {
+  let { week, weather = null, formPreview = null, createColor = null, revealNowRequest = 0, keyboardCursor = null, onpan = null, oncreate, oncreateallday, onedit, ondelete, oncopy, onmove, ondraftmove = null, onresponded }: {
     week: WeekPayload;
     /** A horizontal wheel/trackpad gesture asking the window to slide by
      *  whole days — positive is forward. Optional: a grid without it (a
@@ -34,6 +34,13 @@
      *  ghost so the user watches the event land while typing its times —
      *  create and edit alike. Null draws nothing. */
     formPreview?: import('./eventform').FormGhost | null;
+    /** The open form's draft was dragged or resized to this span. Fired
+     *  continuously through the gesture, not once at the end: the ghost is
+     *  drawn from `formPreview`, which comes back from the form, so the
+     *  draft follows the pointer only because each move round-trips. Null
+     *  leaves the ghost inert, which is what it was before it could be
+     *  grabbed at all. */
+    ondraftmove?: ((span: { startMs: number; endMs: number }) => void) | null;
     /** The colour a create started here would land in — the calendar the form
      *  will open pre-set to. The sweep wears it so the gesture and the draft
      *  it becomes are the same colour as well as the same shape: releasing
@@ -465,6 +472,92 @@
       // translating it by its own width would land it somewhere arbitrary.
       dx: cols * d.colWidth,
     };
+  }
+
+  /**
+   * Dragging the form's own draft, which is the same gesture as dragging a
+   * saved event and deliberately shares its geometry: `edgeAt` decides move
+   * from resize, `colsMoved` counts days crossed, and `spanForMove` /
+   * `spanForResize` do the snapping, the duration rule and the inversion
+   * clamps. A second implementation of any of that would be a second set of
+   * answers to questions `drag.ts` has already answered once, with a table
+   * each.
+   *
+   * What differs is where the result goes. A saved event's drop calls
+   * `onmove` once, at the end, because the write is a request. A draft has
+   * nothing to write: it reports **every** move to the form, which owns the
+   * times, and the ghost redraws because `formPreview` comes back changed.
+   * The gesture is therefore its own preview, and this function keeps no
+   * preview state at all.
+   */
+  let draftDrag: {
+    originX: number; originY: number; colHeight: number; colWidth: number;
+    dayMs: number; edge: ReturnType<typeof edgeAt>;
+    origin: { startMs: number; endMs: number }; moving: boolean;
+  } | null = null;
+
+  function startDraftDrag(e: PointerEvent, day: { start_ms: number; end_ms: number }) {
+    // Primary button only, and only a timed draft: an all-day ghost is a
+    // ribbon over whole days, placed by the sideways sweep, and `applySpan`
+    // on the form refuses it for the same reason.
+    if (e.button !== 0 || !ondraftmove || formPreview?.kind !== 'timed') return;
+    const target = e.currentTarget as HTMLElement;
+    const col = target.closest('.col');
+    if (!col) return;
+    const colBox = col.getBoundingClientRect();
+    const box = target.getBoundingClientRect();
+
+    // The whole draft, not the slice this column draws: a span crossing
+    // midnight is one event in two columns, and moving it by the piece under
+    // the pointer would stretch it instead.
+    draftDrag = {
+      originX: e.clientX, originY: e.clientY,
+      colHeight: colBox.height, colWidth: colBox.width,
+      dayMs: day.end_ms - day.start_ms,
+      edge: edgeAt(e.clientY - box.top, box.height),
+      origin: { startMs: formPreview.startMs, endMs: formPreview.endMs },
+      moving: false,
+    };
+    e.stopPropagation(); // never also start a sweep underneath
+    window.addEventListener('pointermove', onDraftMove);
+    window.addEventListener('pointerup', endDraftDrag);
+    window.addEventListener('keydown', onDraftKey);
+  }
+
+  function onDraftMove(e: PointerEvent) {
+    if (!draftDrag) return;
+    const dx = e.clientX - draftDrag.originX;
+    const dy = e.clientY - draftDrag.originY;
+    if (!draftDrag.moving && !beganDrag(dx, dy)) return;
+    draftDrag.moving = true;
+
+    const dyFrac = draftDrag.colHeight === 0 ? 0 : dy / draftDrag.colHeight;
+    const cols = draftDrag.edge ? 0 : colsMoved(dx, draftDrag.colWidth);
+    const landed = draftDrag.edge
+      ? spanForResize(draftDrag.origin, draftDrag.edge, dyFrac, draftDrag.dayMs, SNAP_MS)
+      : spanForMove(
+          draftDrag.origin, dyFrac, draftDrag.dayMs, week.days.length, cols, SNAP_MS,
+        );
+    ondraftmove?.(landed);
+  }
+
+  /** Escape puts the draft back where the gesture found it, matching what
+   *  Escape does to a real drag — and leaving the form open, because the
+   *  draft is what the form is about. */
+  function onDraftKey(e: KeyboardEvent) {
+    if (e.key !== 'Escape' || !draftDrag) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const origin = draftDrag.origin;
+    endDraftDrag();
+    ondraftmove?.(origin);
+  }
+
+  function endDraftDrag() {
+    draftDrag = null;
+    window.removeEventListener('pointermove', onDraftMove);
+    window.removeEventListener('pointerup', endDraftDrag);
+    window.removeEventListener('keydown', onDraftKey);
   }
 
   function onDragEnd() {
@@ -1091,12 +1184,24 @@
       {/if}
 
       <!-- The open form's live ghost: above the blocks (a draft usually
-           overlaps something) but translucent and dashed so it reads as
-           not-yet-real, and transparent to the pointer like the sweep. -->
+           overlaps something) and translucent and dashed so it reads as
+           not-yet-real.
+           It takes the pointer when it is a *timed* draft, because a draft
+           should be placeable by hand the way a saved event is; an all-day
+           ghost stays transparent to it, since the gesture that places one
+           is the sideways sweep it must not interrupt. -->
       {#if formPreviewStyle(day)}
         {@const fedge = formPreviewEdges(day)}
-        <div class="formghost" class:cl={fedge.cl} class:cr={fedge.cr}
-             data-testid="form-preview" style={formPreviewStyle(day)}></div>
+        {@const grabbable = !!ondraftmove && formPreview?.kind === 'timed'}
+        <button
+          type="button"
+          class="formghost" class:cl={fedge.cl} class:cr={fedge.cr}
+          class:grabbable data-testid="form-preview" style={formPreviewStyle(day)}
+          tabindex="-1"
+          aria-hidden={grabbable ? undefined : 'true'}
+          aria-label={grabbable ? 'Draft event — drag to move, drag an edge to resize' : undefined}
+          onpointerdown={grabbable ? (e) => startDraftDrag(e, day) : undefined}
+        ></button>
       {/if}
 
       {#each day.placed as p}
@@ -1306,10 +1411,35 @@
      reads through — and in the colour of the calendar it would be written
      to, which the open form can change under it (`--ghost`, declared inline
      by `formPreviewStyle`; `--accent` when the calendar lends no colour). */
-  .formghost { position: absolute; left: 3px; right: 3px; border-radius: 6px;
+  /* A <button> for the reason `.ev` is one: it is grabbed, and an element
+     with a pointer handler owes the keyboard and the screen reader an
+     answer. `appearance` cleared for `.ev`'s reason too — WKWebView keeps
+     native chrome otherwise. Never a tab stop: the keyboard route to these
+     times is the form's own fields, which are two tabs away and can say
+     "09:30" exactly. */
+  .formghost { appearance: none; -webkit-appearance: none; padding: 0;
+               position: absolute; left: 3px; right: 3px; border-radius: 6px;
                background: color-mix(in srgb, var(--ghost, var(--accent)) 18%, transparent);
                border: 1.5px dashed var(--ghost, var(--accent));
                pointer-events: none; z-index: 6; }
+  /* Only a timed draft is grabbed, and it wears the same cursors a saved
+     block does — `grab` over the body, `ns-resize` in the same
+     `RESIZE_EDGE_PX` band at each end — so the gesture is discoverable by
+     the hand rather than only by being told about it. */
+  /* Above the form's scrim, which is `position: fixed; inset: 0; z-index: 40`
+     and otherwise swallows every press on the grid behind it — the draft
+     would be visibly there and untouchable. 41 rather than 42 so the form
+     itself still wins: `.pop` is also 41 and `App` renders the form after
+     the grid, so paint order puts the panel over the ghost where they
+     overlap. Neither `.col` nor `.body` creates a stacking context, so these
+     numbers compare directly. */
+  .formghost.grabbable { pointer-events: auto; cursor: grab; touch-action: none;
+                         z-index: 41; }
+  .formghost.grabbable::before,
+  .formghost.grabbable::after { content: ''; position: absolute; left: 0; right: 0;
+                                height: 6px; cursor: ns-resize; }
+  .formghost.grabbable::before { top: -1.5px; }
+  .formghost.grabbable::after { bottom: -1.5px; }
 
   /* The loudest thing on screen, deliberately. */
   .now { position: absolute; left: 0; right: 0; border-top: 1.5px solid var(--now); z-index: 5;

@@ -15,6 +15,7 @@
   import {
     CUSTOM_REPEAT, REPEAT_OPTIONS, WEEKDAY_OPTIONS, addGuest, endAfterStart, isAddress,
     mailableGuests, normalizedWeeklyDays, previewSpan, removableGuest, removeGuest, ruleInWords,
+    dateOf, timeOf,
     repeatEndProblem, shiftedEndDate, toEventInput, toggledGuestOptional, toggledWeeklyDay, timeProblem,
     toggledAllDay, videoCallProblem, weekdayCodeForDate,
     type EventFormResult, type EventFormValue, type Scope,
@@ -163,6 +164,32 @@
   $effect(() => {
     onvaluechange?.($state.snapshot(value) as EventFormValue);
   });
+
+  /**
+   * The draft's times, set from outside — the grid dragging or resizing the
+   * ghost this form is drawing (2026-09-02, by request: a new event should be
+   * placeable by hand the way a saved one is).
+   *
+   * An exported method rather than a prop the form watches, and the
+   * distinction is the one `value`'s own comment makes: `value` stops
+   * tracking `initial` the moment the user types, so a second prop it *did*
+   * keep tracking would be a second author of the same fields, racing the
+   * keyboard. A call says what happened once, at the moment it happened.
+   *
+   * Ignored for an all-day draft: its ghost is a ribbon over whole days, and
+   * the gesture that places it is the sideways sweep, not this.
+   */
+  export function applySpan(span: { startMs: number; endMs: number }) {
+    if (value.isAllDay) return;
+    value.date = dateOf(span.startMs);
+    value.start = timeOf(span.startMs);
+    value.end = timeOf(span.endMs);
+    // Kept in step for a span that crosses midnight, the same field the drag
+    // path in `App` writes for a saved event.
+    value.endDate = dateOf(span.endMs);
+    error = null;
+    invalidField = null;
+  }
   /** The convenience clock under the time fields: the working span read in
    *  the second zone, when one is set. Derived from `previewSpan` — the
    *  grid ghost's own derivation — so this line and the ghost can never
