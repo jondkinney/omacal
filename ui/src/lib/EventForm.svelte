@@ -1125,16 +1125,16 @@
             padding: 2px 7px; }
   .remhint { font-size: 10px; color: var(--muted); opacity: .8; }
 
-  /* Not the checkboxes: those are drawn app-wide in app.css, and a scoped
-     rule outranks it — this one, left to match every input, turned the
-     all-day box into a padded pill with no tick (2026-09-02). */
-  input:not([type='checkbox']), select, textarea {
+  /* Not the checkboxes or radios: those are drawn app-wide in app.css, and
+     a scoped rule outranks it — this one, left to match every input, turned
+     the all-day box into a padded pill with no tick (2026-09-02). */
+  input:not([type='checkbox']):not([type='radio']), select, textarea {
     font: inherit; font-size: 12px; color: var(--text);
     background: color-mix(in srgb, var(--text) 5%, transparent);
     border: 1px solid var(--hairline); border-radius: 5px;
     padding: 4px 6px; min-width: 0; width: 100%; box-sizing: border-box;
   }
-  input:not([type='checkbox']):focus, select:focus, textarea:focus { outline: 1px solid var(--accent); outline-offset: -1px; }
+  input:not([type='checkbox']):not([type='radio']):focus, select:focus, textarea:focus { outline: 1px solid var(--accent); outline-offset: -1px; }
   /* The appearance/chevron rule is global now — App.svelte, and fix/56's
      commit message for why. Only the background shorthand's reset needs
      compensating here: it clears the global background-image, so the chevron
@@ -1191,7 +1191,6 @@
 
   .scope { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--muted); }
   .scope label { display: flex; align-items: center; gap: 6px; cursor: pointer; }
-  .scope input { width: auto; }
 
   .hint { font-size: 10px; color: var(--muted); opacity: .85; line-height: 1.45; margin: 0; }
 
@@ -1205,7 +1204,6 @@
           white-space: nowrap; }
   .opt { display: flex; align-items: center; gap: 4px; color: var(--muted);
          font-size: 10px; cursor: pointer; flex: none; }
-  .opt input { width: auto; }
   .x { flex: none; font: inherit; font-size: 13px; line-height: 1; cursor: pointer;
        background: none; border: 0; color: var(--muted); padding: 0 2px; }
   .x:hover { color: var(--text); }

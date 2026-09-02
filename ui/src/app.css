@@ -92,6 +92,50 @@ input[type='checkbox']:disabled {
   cursor: default;
 }
 
+/* Radios, the same way and for the same reason — the engine's circle was
+   the one white control left after the checkboxes were drawn (2026-09-02).
+   The box is the checkbox's, rounded; the mark is a dot of `--on-accent`
+   on an `--accent` fill rather than a ring, so a checked radio and a
+   checked checkbox read as the same state in the same colours. */
+input[type='radio'] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  flex: none;
+  vertical-align: -2px;
+  display: inline-grid;
+  place-content: center;
+  cursor: pointer;
+  border: 1px solid color-mix(in srgb, var(--text) 32%, transparent);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+}
+input[type='radio']::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--on-accent);
+  transform: scale(0);
+}
+input[type='radio']:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+input[type='radio']:checked::before {
+  transform: scale(1);
+}
+input[type='radio']:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+input[type='radio']:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 /* The app's chrome is not selectable text. A drag that misses a control —
    easiest of all in list mode, which owns no drag gesture — used to sweep
    a text selection across every row it crossed, and WebKit's selection
