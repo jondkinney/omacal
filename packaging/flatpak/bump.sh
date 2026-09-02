@@ -46,8 +46,16 @@ sed -i \
   -e "\|^ *url: https://github.com/$repo/releases/download/.*[.]deb\$|{n;s|^\( *sha256: \)[0-9a-f]\{64\}\$|\1$sha|}" \
   "$manifest"
 
-sed -i -e "s|<release version=\"[^\"]*\" date=\"[^\"]*\"/>|<release version=\"$version\" date=\"${date:-$(date -u +%F)}\"/>|" \
-  "$metainfo"
+# One new entry at the top of the list, not a rewrite: the metainfo keeps
+# every release, and the substitution that used to live here turned all of
+# them into the new version (bit v0.20.0, 2026-09-02). Idempotent, so a
+# rerun for a version already listed changes nothing.
+entry="<release version=\"$version\" date=\"${date:-$(date -u +%F)}\"/>"
+if grep -q "<release version=\"$version\"" "$metainfo"; then
+  echo "metainfo already lists $version"
+else
+  sed -i -e "0,/^\( *\)<release /s||\1$entry\n\1<release |" "$metainfo"
+fi
 
 echo "manifest now at $version"
 grep -n "url: https://github.com/$repo/releases\|sha256:" "$manifest"
