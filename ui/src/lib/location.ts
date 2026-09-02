@@ -8,7 +8,10 @@ const PROVIDERS: Array<[RegExp, string]> = [
   [/(^|\.)meet\.jit\.si$/i, 'Jitsi'],
 ];
 
-const URL_RE = /https?:\/\/[^\s,;]+/i;
+const URL_RE = /https?:\/\/[^\s,;<>"']+/i;
+// Global counterpart for `meetingUrl`'s walk — see its own doc comment for
+// why the character class excludes `<`, `>`, `"` and `'`.
+const URL_RE_ALL = /https?:\/\/[^\s,;<>"']+/gi;
 
 /** The recognised meeting provider behind one URL, or `null`.
  *
@@ -28,19 +31,32 @@ export function meetingProvider(raw: string | null): string | null {
 }
 
 /**
- * The joinable meeting URL a location holds, or `null`.
+ * The joinable meeting URL a location or description holds, or `null`.
  *
  * **Recognised providers only**, and that is the whole of the restraint here.
  * Google puts a Meet link in structured conference data, which is where the
  * popover's Join control has always come from — but an invitation minted by
- * anybody else arrives with its Zoom or Teams link sitting in `location` and
- * nowhere else, so the app could name the provider (see `locationLabel`) and
- * still give you nothing to click. This closes that.
+ * anybody else arrives with its Zoom or Teams link sitting in `location` or
+ * the description text and nowhere else, so the app could name the provider
+ * (see `locationLabel`) and still give you nothing to click. This closes
+ * that. Rust twin: `location_meeting_url`/`conference_join_url` in
+ * `upcoming.rs`, which is what the Join button's click actually resolves
+ * through — this function only drives the displayed `href` and the
+ * location/description echo check, so keep the two in step rather than
+ * letting them quietly diverge on what counts as joinable.
  *
- * An *unrecognised* link stays unclickable on purpose: a location field is as
- * likely to hold a map pin, a venue's homepage or a ticket as a meeting, and a
- * button labelled "Join video call" that opens a restaurant is worse than no
- * button at all.
+ * An *unrecognised* link stays unclickable on purpose: a location or
+ * description is as likely to hold a map pin, an agenda doc or a ticket as a
+ * meeting, and a button labelled "Join video call" that opens a restaurant is
+ * worse than no button at all.
+ *
+ * Every URL in the text is tried, not just the first — a description that
+ * opens with an agenda link before the meeting link would otherwise give up
+ * on that first, unrecognised one. The character class excludes `<`, `>`,
+ * `"` and `'` so this is safe to call directly on raw HTML: without it, an
+ * invite anchor (`<a href="https://…/j/123?pwd=x">Join Zoom Meeting</a>`)
+ * scans straight through the closing quote into the link text and returns
+ * `…pwd=x">Join`, a URL that looks plausible and 404s.
  *
  * The trailing-punctuation trim matters more than it looks: a link written
  * into a sentence ("dial in at https://…/j/123.") otherwise carries the full
@@ -50,17 +66,19 @@ export function meetingUrl(raw: string | null): string | null {
   const text = (raw ?? '').trim();
   if (!text) return null;
 
-  const match = text.match(URL_RE);
-  if (!match) return null;
-  const url = match[0].replace(/[),.;:!?\]]+$/, '');
-
-  let host = '';
-  try {
-    host = new URL(url).hostname;
-  } catch {
-    return null;
+  URL_RE_ALL.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = URL_RE_ALL.exec(text))) {
+    const url = match[0].replace(/[),.;:!?\]]+$/, '');
+    let host = '';
+    try {
+      host = new URL(url).hostname;
+    } catch {
+      continue;
+    }
+    if (PROVIDERS.some(([re]) => re.test(host))) return url;
   }
-  return PROVIDERS.some(([re]) => re.test(host)) ? url : null;
+  return null;
 }
 
 /**

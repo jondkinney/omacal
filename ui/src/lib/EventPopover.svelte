@@ -209,15 +209,22 @@
   });
 
   /**
-   * The meeting to join, from Google's structured conference data if it is
-   * there and from the location field if it is not.
+   * The meeting to join: Google's structured conference data if it is there,
+   * else a recognised link in `location`, else one in the description text.
    *
    * One control, not two: an event carries at most one meeting, and a second
    * Join button for the second place a link can hide would make the popover
    * argue with itself about which is the real one. Google's own field wins
-   * because it is the only one that cannot be a coincidence.
+   * because it is the only one that cannot be a coincidence; `location`
+   * before `description` matches `open_conference`'s own order
+   * (`conference_join_url` in `upcoming.rs`), which is what actually runs
+   * when this is clicked — this derivation only has to agree with it, not
+   * decide anything, since it drives the displayed `href` and the
+   * `locationShown` echo check below, not the click itself.
    */
-  const joinUrl = $derived(detail.conference_uri ?? meetingUrl(detail.location));
+  const joinUrl = $derived(
+    detail.conference_uri ?? meetingUrl(detail.location) ?? meetingUrl(detail.description),
+  );
 
   async function ask(response: 'accepted' | 'tentative' | 'declined', e: MouseEvent) {
     if (!detail.is_recurring) {
