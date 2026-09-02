@@ -110,6 +110,18 @@ test.describe('WeekGrid', () => {
     await expect(page.locator('.head .wx')).toHaveCount(0);
   });
 
+  // The same fixture as the test above, read through the Fahrenheit rune —
+  // 31°C → 87.8°F → 88°, 2°C → 35.6°F → 36°. Pins the conversion reaching
+  // the header, not just `temperature.ts`'s own arithmetic (`temperature.spec.ts`
+  // covers that directly).
+  test('a day header converts to Fahrenheit when that unit is chosen', async ({ page }) => {
+    await page.goto(show('WeekGrid', 'weather'));
+    await page.evaluate(() => (window as any).__setTemperatureUnit('fahrenheit'));
+    const wx = page.locator('.head .wx');
+    await expect(wx.nth(0)).toHaveText('88°');
+    await expect(wx.nth(2)).toHaveText('36°');
+  });
+
   // Without this, `WEEK_NOW` is unfalsifiable: a `WeekGrid` that had lost the
   // today-highlight and the current-time line entirely would satisfy every
   // other spec in this block and both baselines, because none of them ever

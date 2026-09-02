@@ -16,11 +16,12 @@ import type { EventDetail } from '../../src/lib/eventdetail';
 import type { TimeFormat } from '../../src/lib/timefmt';
 import type { WeekStartDay } from '../../src/lib/weekstart';
 import type { Appearance, StartOnLogin, WeekViewDays } from '../../src/lib/settings';
+import type { TemperatureUnit } from '../../src/lib/temperature';
 import {
   labelledWeek, weekLabel, APP_FIVE_MIN_AGO, APP_NOW, APP_SERIES_ID, APP_SERIES_OCCURRENCE,
   APP_ONE_OFF_ID, APP_ONE_OFF_START, APP_GUESTS_ID, APP_SOLO_SERIES_ID,
   POPOVER_DETAILS, busyDayMonth,
-  appWritableWeek, APP_WRITE_CALENDARS, CREATED_DETAIL, crossZoneWeek,
+  appWritableWeek, APP_WRITE_CALENDARS, APP_WEATHER, CREATED_DETAIL, crossZoneWeek,
   XZONE_WEEK_START, keyboardWeek,
 } from '../fixtures';
 
@@ -523,6 +524,7 @@ type StubSettings = {
   displayTimezone: string | null;
   secondTimezone: string | null;
   weatherEnabled: boolean;
+  temperatureUnit: TemperatureUnit;
   startOnLogin: StartOnLogin;
   quitOnClose: boolean;
   appearance: Appearance;
@@ -556,6 +558,8 @@ const DEFAULT_SETTINGS: StubSettings = {
   secondTimezone: null,
   // The backend's default: on unless somebody turned it off.
   weatherEnabled: true,
+  // The backend's default: Celsius, so no installed copy changes under its user.
+  temperatureUnit: 'celsius',
   // The backend's default too, and for a reason the stub has to reproduce
   // rather than merely copy: every install that predates the setting has the
   // launch entry, so absent must land on `open` or the upgrade changes what
@@ -802,11 +806,16 @@ export function installTauriStub(scenario: string): Harness {
       // Empty on purpose: App-level scenarios stay weatherless, so no
       // existing spec or screenshot grows a sky it never asked for. The
       // rendering itself is proven component-side, where the fixture hands
-      // the map in as a prop.
+      // the map in as a prop — except the `weather` scenario, which needs a
+      // real forecast for the day header's own live-repaint spec to have
+      // something to convert.
       case 'get_weather':
-        return { days: [], place: null };
+        return scenario === 'weather' ? APP_WEATHER : { days: [], place: null };
       case 'set_weather_enabled':
         settings = saveSettings({ ...settings, weatherEnabled: args.on as boolean });
+        return { ...settings };
+      case 'set_temperature_unit':
+        settings = saveSettings({ ...settings, temperatureUnit: args.unit as TemperatureUnit });
         return { ...settings };
       case 'set_start_on_login':
         settings = saveSettings({ ...settings, startOnLogin: args.mode as StartOnLogin });

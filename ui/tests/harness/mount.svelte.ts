@@ -18,6 +18,7 @@ import { FIXTURES } from '../fixtures';
 import { installTauriStub } from './tauri';
 import { setPalette } from '../../src/lib/theme';
 import { setSecondZone } from '../../src/lib/secondzone.svelte';
+import { setTemperatureUnit } from '../../src/lib/tempunit.svelte';
 import { VIEW_BOX_CSS } from './viewbox';
 
 // The form's pure date functions, reachable from a spec.
@@ -40,6 +41,11 @@ import { VIEW_BOX_CSS } from './viewbox';
 // no App above it, so a spec that wants the second clock drawn plays App's
 // one line itself.
 (window as any).__setSecondZone = setSecondZone;
+
+// The temperature-unit rune's writer, reachable from a spec, for
+// `__setSecondZone`'s exact reason: in the app `App` is the only writer, and
+// a component mounted standalone has none above it.
+(window as any).__setTemperatureUnit = setTemperatureUnit;
 
 // Palette normally arrives from the Rust get_palette command; the harness
 // applies the same `fallback_dark` values (`src-tauri/src/theme.rs`) so

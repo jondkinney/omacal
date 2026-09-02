@@ -14,12 +14,13 @@
     setDefaultEventDuration, setStartOnLogin, START_ON_LOGIN_OPTIONS,
     setDisplayTimezone, setFallbackReminders, setNotificationsEnabled,
     setAppearance, APPEARANCE_OPTIONS,
-    setQuitOnClose, setSecondTimezone, setSyncInterval, setTimeFormat, setTrayIcon,
-    setWeatherEnabled, setWeekStart,
+    setQuitOnClose, setSecondTimezone, setSyncInterval, setTemperatureUnit, setTimeFormat,
+    setTrayIcon, setWeatherEnabled, setWeekStart,
     setWeekStartsToday, setWeekViewDays,
     type AppSettings, type Appearance, type StartOnLogin, type WeekViewDays,
   } from './settings';
   import { formatClock, type TimeFormat } from './timefmt';
+  import type { TemperatureUnit } from './temperature';
   import type { WeekStartDay } from './weekstart';
 
   let {
@@ -365,6 +366,17 @@
     } catch (e) {
       note = { text: String(e), kind: 'error' };
       settings = settings ? { ...settings } : null;
+    }
+  }
+
+  /** Same shape as `saveTimeFormat`: nothing to refuse, `TemperatureUnit` has
+   *  no third variant a select could send. */
+  async function saveTemperatureUnit(unit: TemperatureUnit) {
+    try {
+      settings = await setTemperatureUnit(unit);
+      onsettingschange?.(settings);
+    } catch (e) {
+      note = { text: String(e), kind: 'error' };
     }
   }
 
@@ -910,6 +922,33 @@
         address; turning this off ends the only network traffic omacal makes
         beyond your calendar providers.
       </p>
+
+      {#if settings?.weatherEnabled}
+        <div class="row">
+          <label class="lab" for="temperature-unit">Show temperature as</label>
+          <div class="inline">
+            <select
+              id="temperature-unit"
+              disabled={!settings}
+              value={settings?.temperatureUnit ?? 'celsius'}
+              onchange={(e) =>
+                saveTemperatureUnit(
+                  (e.currentTarget as HTMLSelectElement).value as TemperatureUnit,
+                )}
+            >
+              <!-- Each option prints a temperature rather than naming the
+                   scale, `time-format`'s reason: "Celsius" is a word you have
+                   to translate and `22°C` is the thing itself. -->
+              <option value="celsius">22°C</option>
+              <option value="fahrenheit">72°F</option>
+            </select>
+          </div>
+        </div>
+        <p class="hint">
+          The day headers stay a bare number, same as always — this only
+          decides which scale it's read in.
+        </p>
+      {/if}
 
     {:else if tab === 'Calendars'}
       <!-- **The same rows the header's popover shows, from the same

@@ -3516,6 +3516,104 @@ test.describe('App: the clock format', () => {
 });
 
 /**
+ * The temperature unit, from the select in Settings to the forecast high in
+ * the day headings.
+ *
+ * Deliberately end-to-end rather than a second table beside
+ * `temperature.spec.ts`: the arithmetic is proved there, and what can still be
+ * wrong is the wiring. `App` seeds the `tempunit.svelte.ts` rune in **two**
+ * places — once from the startup read of settings, once from the settings
+ * modal's `onsettingschange` — and `components.spec.ts` reaches neither, since
+ * it mounts `WeekGrid` alone and drives the rune directly through
+ * `__setTemperatureUnit`. That proves the conversion and nothing about who
+ * calls it.
+ *
+ * The two call sites need separate instruments, because the rune's own default
+ * is Celsius: an `App` that never seeded it on startup draws exactly what one
+ * that did draws, so the opening headers can witness nothing. Only a session
+ * that *begins* with Fahrenheit already stored can tell those apart, which is
+ * what the reload case below is for.
+ */
+test.describe('App: the temperature unit', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.clock.setFixedTime(APP_NOW);
+  });
+
+  /** The forecast highs in Week's day headers. `APP_WEATHER` covers the Monday
+   *  the app opens on and no other day, so the count is part of the claim: a
+   *  lookup that painted every header the same sky would draw seven of these,
+   *  not one. (`components.spec.ts` pins the same premise with `toHaveCount(3)`
+   *  against its own three-day fixture.) */
+  const highs = (page: Page) => page.locator('.head .wx');
+
+  const chooseUnit = async (page: Page, label: string) => {
+    await page.getByRole('button', { name: 'Menu' }).click();
+    await page.getByRole('button', { name: 'Settings…' }).click();
+    const modal = page.getByRole('dialog', { name: 'Settings' });
+    await modal.locator('#temperature-unit').selectOption({ label });
+    await page.keyboard.press('Escape');
+    await expect(modal).toHaveCount(0);
+  };
+
+  test('the headers open on Celsius, on the covered day alone', async ({ page }) => {
+    await page.goto(app('weather'));
+    await expect(highs(page)).toHaveCount(1);
+    await expect(highs(page).first()).toHaveText('31°');
+  });
+
+  /**
+   * **Without a restart.** 31°C is 87.8°F, so a header that converted an
+   * already-rounded 31° would print 87° and redden here — the same pair
+   * `components.spec.ts` pins, arriving through the settings modal rather
+   * than through a direct call to the rune.
+   */
+  test('choosing Fahrenheit repaints the day header immediately', async ({ page }) => {
+    await page.goto(app('weather'));
+    await expect(highs(page).first()).toHaveText('31°');
+
+    await chooseUnit(page, '72°F');
+
+    await expect(highs(page).first()).toHaveText('88°');
+  });
+
+  /** And back again: a setting that could be turned on and not off is half a
+   *  setting, the rule the clock format above earns its own case for. */
+  test('choosing Celsius puts the headers back', async ({ page }) => {
+    await page.goto(app('weather'));
+    await chooseUnit(page, '72°F');
+    await expect(highs(page).first()).toHaveText('88°');
+
+    await chooseUnit(page, '22°C');
+    await expect(highs(page).first()).toHaveText('31°');
+  });
+
+  /** The **startup** seed, which nothing above can fail against for the reason
+   *  the block comment gives. A reload is the only way to begin a session with
+   *  the preference already stored — the stub's settings outlive one on
+   *  purpose (`loadSettings`, `harness/tauri.ts`). */
+  test('the chosen unit survives a reload', async ({ page }) => {
+    await page.goto(app('weather'));
+    await chooseUnit(page, '72°F');
+    await expect(highs(page).first()).toHaveText('88°');
+
+    await page.reload();
+    await expect(highs(page).first()).toHaveText('88°');
+  });
+
+  /** A second component, reading the same rune. Filmstrip prints the same
+   *  forecast high beside its day heading and rounds it with a `formatTemp`
+   *  call of its own, so Week being right says nothing about it — and
+   *  `components.spec.ts` covers that heading in Celsius only. */
+  test('the filmstrip heading follows the chosen unit too', async ({ page }) => {
+    await page.goto(app('weather'));
+    await chooseUnit(page, '72°F');
+
+    await page.keyboard.press('f');
+    await expect(page.locator('.sdate .wx').first()).toHaveText('88°');
+  });
+});
+
+/**
  * The keyboard sheet, and the table it and the handler both read.
  *
  * The point of the table is that it cannot drift from what the keys actually

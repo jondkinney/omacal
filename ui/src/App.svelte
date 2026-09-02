@@ -33,6 +33,7 @@
   import { setClockFormat } from './lib/clock.svelte';
   import { setSecondZone } from './lib/secondzone.svelte';
   import { setWeekStartDay } from './lib/weekstartstore.svelte';
+  import { setTemperatureUnit } from './lib/tempunit.svelte';
   import ShortcutSheet from './lib/ShortcutSheet.svelte';
   import { SHORTCUT_LIST, type ShortcutId } from './lib/shortcuts';
   import Filmstrip from './lib/Filmstrip.svelte';
@@ -583,6 +584,7 @@
         defaultEventDurationMinutes = s.defaultEventDurationMinutes;
         setClockFormat(s.timeFormat);
         setSecondZone(s.secondTimezone);
+        setTemperatureUnit(s.temperatureUnit);
         if (weekViewChoices === weekBefore) applyWeekSettings(s, false);
         if (listModeChoices !== before) return; // superseded by the user's own choice
         listMode = s.listMode;
@@ -1670,6 +1672,7 @@
       defaultEventDurationMinutes = s.defaultEventDurationMinutes;
       setClockFormat(s.timeFormat);
       setSecondZone(s.secondTimezone);
+      setTemperatureUnit(s.temperatureUnit);
       weekViewChoices += 1;
       applyWeekSettings(s, true);
       // The weather toggle lives in the same modal; refetching on every

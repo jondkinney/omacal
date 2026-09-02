@@ -2,6 +2,8 @@
 <script lang="ts">
   import { clockFormat } from './clock.svelte';
   import { gutterWidth, secondZone } from './secondzone.svelte';
+  import { temperatureUnit } from './tempunit.svelte';
+  import { formatTemp } from './temperature';
   import WeatherGlyph from './WeatherGlyph.svelte';
   import { dateKey, type DayWeather } from './weather';
   import { gutterLabel, zoneAbbrev, zoneGutterLabel } from './timefmt';
@@ -994,7 +996,7 @@
                Absent for any day the forecast does not cover — the past,
                the far future — so the header never guesses. -->
           <span class="wx">
-            <WeatherGlyph bucket={wx.bucket} size={15} />{wx.tmax}°
+            <WeatherGlyph bucket={wx.bucket} size={15} />{formatTemp(wx.tmax, temperatureUnit())}°
           </span>
         {/if}
       </span>

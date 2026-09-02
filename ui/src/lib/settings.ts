@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 
+import type { TemperatureUnit } from './temperature';
 import type { TimeFormat } from './timefmt';
 import type { WeekStartDay } from './weekstart';
 
@@ -109,6 +110,11 @@ export type AppSettings = {
    *  the Omarchy widget's location or the IP), because this is the one
    *  network destination beyond the calendar providers. */
   weatherEnabled: boolean;
+  /** Whether the forecast high is drawn in Celsius or Fahrenheit — Celsius by
+   *  default. Read by `WeekGrid` and `Filmstrip` through the
+   *  `tempunit.svelte.ts` rune, for `timeFormat`'s reason: both print a
+   *  temperature and neither owns the preference. */
+  temperatureUnit: TemperatureUnit;
   /** The IANA zone every time in the app reads in, or `null` for the
    *  system's. Applied by exporting `TZ` before the webview starts, which is
    *  why changing it restarts omacal — the JS engine and libc both capture
@@ -165,6 +171,12 @@ export const setStartOnLogin = (mode: StartOnLogin) =>
  *  so the headers change while the modal is still open. */
 export const setWeatherEnabled = (on: boolean) =>
   invoke<AppSettings>('set_weather_enabled', { on });
+
+/** Stores the temperature unit. Nothing is refetched: the cache is already
+ *  unrounded Celsius regardless of this setting, so the headers just round
+ *  differently on the next paint. */
+export const setTemperatureUnit = (unit: TemperatureUnit) =>
+  invoke<AppSettings>('set_temperature_unit', { unit });
 
 /** Stores the clock format. Nothing is refused: `settings::TimeFormat` has two
  *  variants and the select offers both, so there is no third value to turn
