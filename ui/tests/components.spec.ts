@@ -2086,6 +2086,51 @@ test.describe('EventPopover', () => {
     await expect(page.locator('.pop .loc')).toHaveCount(0);
   });
 
+  test('a meeting link only in the description still becomes a Join button', async ({ page }) => {
+    // Not every provider's invite puts its link in `location` — plenty put it
+    // only in the description, and until now nothing looked there at all.
+    await page.goto(show('description-holds-a-real-zoom-link'));
+    const conf = page.locator('.pop .conf');
+    await expect(conf).toBeVisible();
+    await expect(conf).toHaveText('Join video call');
+    await expect(conf).toHaveAttribute('href', 'https://us02web.zoom.us/j/123456?pwd=x');
+    // The location is an ordinary room, not the link, so it is still shown.
+    await expect(page.locator('.pop .loc')).toHaveText('Room 4A');
+  });
+
+  // Clicking never sends the displayed `href` anywhere — `open_conference`
+  // re-resolves the URL server-side by id, so a button that merely *looks*
+  // right (asserted by `href` alone) can still error on click if the two
+  // disagree. This is the case that broke that way once already: the join
+  // link lived only in the description, which the click path had to be
+  // taught to read too.
+  test('clicking a description-only Join button asks the backend for that event', async ({ page }) => {
+    await page.goto(show('description-holds-a-real-zoom-link'));
+    await page.locator('.pop .conf').click();
+    const calls = await page.evaluate(() => (window as any).__harness.calls);
+    expect(calls.filter((c: any) => c.cmd === 'open_conference')).toEqual([
+      expect.objectContaining({ args: { id: 69 } }),
+    ]);
+  });
+
+  // Real Google descriptions are HTML. The join link sits inside an anchor's
+  // `href`, and a scan that does not stop at the closing quote runs into the
+  // link text and reports a URL that looks plausible and 404s
+  // (`…pwd=x">Join`) — proven red against the code before this fix.
+  test('a meeting link inside an html description becomes a Join button', async ({ page }) => {
+    await page.goto(show('description-holds-an-html-zoom-link'));
+    const conf = page.locator('.pop .conf');
+    await expect(conf).toBeVisible();
+    await expect(conf).toHaveAttribute('href', 'https://us02web.zoom.us/j/123456?pwd=x');
+  });
+
+  test('a meeting link in the location wins over a different one in the description', async ({ page }) => {
+    await page.goto(show('location-and-description-both-hold-a-meeting-link'));
+    const conf = page.locator('.pop .conf');
+    await expect(conf).toBeVisible();
+    await expect(conf).toHaveAttribute('href', 'https://meet.google.com/abc-defg-hij');
+  });
+
   test('a map link in the location is not offered as a meeting', async ({ page }) => {
     await page.goto(show('location-holds-a-map-link'));
     // The popover rendered — otherwise the absence below proves nothing.

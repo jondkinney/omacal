@@ -813,27 +813,28 @@ pub fn assemble_big_year(
 /// never chooses what the browser is pointed at, it can only name an event
 /// the user can already see.
 ///
-/// The URL comes from the same two places the popover's own derivation
-/// reads, in the same order: structured conference data first, then a
-/// recognised meeting link sitting in `location` (`location_meeting_url` —
-/// the widget feed's helper, so all three surfaces agree on what is
-/// joinable).
+/// The URL comes from the same places the popover's own derivation reads,
+/// in the same order: structured conference data first, then a recognised
+/// meeting link in `location`, then one in `description`
+/// (`conference_join_url` — the widget feed's helper, so this, the feed and
+/// the CLI all agree on what is joinable).
 #[tauri::command]
 pub(crate) async fn open_conference(
     state: tauri::State<'_, crate::AppState>,
     id: i64,
 ) -> Result<(), String> {
-    let row: Option<(Option<String>, Option<String>)> =
-        sqlx::query_as("SELECT conference_uri, location FROM events WHERE id = ?1")
-            .bind(id)
-            .fetch_optional(&state.pool)
-            .await
-            .map_err(|e| crate::errors::user_facing(&e.into()))?;
-    let Some((conference, location)) = row else {
+    let row: Option<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT conference_uri, location, description FROM events WHERE id = ?1",
+    )
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| crate::errors::user_facing(&e.into()))?;
+    let Some((conference, location, description)) = row else {
         return Err("This event is no longer on the calendar.".into());
     };
     let url = conference
-        .or_else(|| crate::upcoming::location_meeting_url(location.as_deref()))
+        .or_else(|| crate::upcoming::conference_join_url(location.as_deref(), description.as_deref()))
         .ok_or_else(|| "This event has no meeting link.".to_string())?;
     crate::browser::open_external(&url).map_err(|e| {
         tracing::warn!(%e, "could not open the meeting link");

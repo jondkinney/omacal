@@ -408,10 +408,12 @@ pub(crate) async fn rows_in_window(
                     names.get(&src.calendar_id).map(|(_, email)| email.as_str()).unwrap_or(""),
                     cal_gids.get(&src.calendar_id).map(String::as_str).unwrap_or(""),
                 ),
-                conference: src
-                    .conference_uri
-                    .clone()
-                    .or_else(|| crate::upcoming::location_meeting_url(src.location.as_deref())),
+                conference: src.conference_uri.clone().or_else(|| {
+                    crate::upcoming::conference_join_url(
+                        src.location.as_deref(),
+                        src.description.as_deref(),
+                    )
+                }),
             });
         }
     }
@@ -500,10 +502,9 @@ pub(crate) async fn detail_by_id(pool: &SqlitePool, id: i64) -> anyhow::Result<O
         organizer: is_organizer(ev.organizer_email.as_deref(), &account_email, &cal_gid),
         organizer_email: ev.organizer_email.clone(),
         response: ev.self_response.clone(),
-        conference: ev
-            .conference_uri
-            .clone()
-            .or_else(|| crate::upcoming::location_meeting_url(ev.location.as_deref())),
+        conference: ev.conference_uri.clone().or_else(|| {
+            crate::upcoming::conference_join_url(ev.location.as_deref(), ev.description.as_deref())
+        }),
         guests: ev
             .attendees
             .iter()

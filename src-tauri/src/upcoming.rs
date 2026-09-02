@@ -94,10 +94,90 @@ pub struct FeedEvent {
     pub calendar: Option<String>,
 }
 
-/// The joinable meeting URL a location field holds, or `None` — the Rust
-/// half of `ui/src/lib/location.ts`'s `meetingUrl`, and deliberately the
-/// same rules so the widget's Join button and the popover's agree about
-/// what is joinable.
+const MEETING_PROVIDERS: &[&str] = &[
+    "zoom.us", "meet.google.com", "teams.microsoft.com",
+    "teams.live.com", "webex.com", "meet.jit.si",
+];
+
+/// Walks every URL in `text`, in order, and returns the first one whose host
+/// is a recognised meeting provider — the shared scan behind
+/// [`location_meeting_url`] and [`conference_join_url`]'s description half,
+/// and the Rust twin of `ui/src/lib/location.ts`'s `meetingUrl`.
+///
+/// The URL character class excludes whitespace, `,`, `;`, and — this is the
+/// part that matters over HTML — `<`, `>`, `"` and `'`. `description` is raw
+/// HTML from Google, sanitised later by `descriptionSegments`/`sanitize.ts`,
+/// and an ordinary invite anchor is `<a href="https://…/j/123?pwd=x">Join
+/// Zoom Meeting</a>`: without excluding the quote the scan runs straight
+/// through it into the tag's own text and returns `…pwd=x">Join`, a URL that
+/// looks plausible and 404s. `location` is plain text, where none of those
+/// characters occur anyway, so the same class serves both without a
+/// second implementation to keep in step.
+///
+/// Every match is tried, not just the first: a description that opens with
+/// an agenda link or a shared doc before the meeting link would otherwise
+/// scan that first, unrecognised URL and give up.
+///
+/// The scheme search is case-insensitive — matching the `i` flag on the TS
+/// twin's regex — and takes whichever scheme's match sits earlier in the
+/// text. `rest.find("https://").or_else(|| rest.find("http://"))` looks
+/// equivalent but is not: `.find` searches the whole remainder for each
+/// scheme independently, so a *later* `https://` still wins over an
+/// *earlier* `http://` whenever both are present, and the loop then advances
+/// past that later match — silently dropping the earlier URL for good
+/// rather than revisiting it next iteration.
+fn first_recognised_url(text: &str) -> Option<String> {
+    let mut rest = text;
+    loop {
+        let lower = rest.to_ascii_lowercase();
+        let at = match (lower.find("https://"), lower.find("http://")) {
+            (Some(a), Some(b)) => a.min(b),
+            (Some(a), None) => a,
+            (None, Some(b)) => b,
+            (None, None) => return None,
+        };
+        let tail = &rest[at..];
+        let end = tail
+            .find(|c: char| {
+                c.is_whitespace() || matches!(c, ',' | ';' | '<' | '>' | '"' | '\'')
+            })
+            .unwrap_or(tail.len());
+        let url = tail[..end].trim_end_matches([')', ',', '.', ';', ':', '!', '?', ']']);
+
+        // The hostname: after the scheme, before any path/query/fragment,
+        // with userinfo and port stripped — enough of a parse for an
+        // allow-list.
+        let host = url
+            .split_once("://")
+            .and_then(|(_, after_scheme)| after_scheme.split(['/', '?', '#']).next())
+            .map(|authority| {
+                authority
+                    .rsplit('@')
+                    .next()
+                    .unwrap_or("")
+                    .split(':')
+                    .next()
+                    .unwrap_or("")
+                    .to_ascii_lowercase()
+            })
+            .unwrap_or_default();
+
+        if !host.is_empty()
+            && MEETING_PROVIDERS.iter().any(|p| host == *p || host.ends_with(&format!(".{p}")))
+        {
+            return Some(url.to_string());
+        }
+
+        // Not a recognised link (or not parseable) — keep scanning past it.
+        let consumed = at + end.max(1);
+        if consumed >= rest.len() {
+            return None;
+        }
+        rest = &rest[consumed..];
+    }
+}
+
+/// The joinable meeting URL a location field holds, or `None`.
 ///
 /// **Recognised providers only**, which is the whole of the restraint: a
 /// location is as likely to hold a map pin or a venue's homepage as a
@@ -106,43 +186,20 @@ pub struct FeedEvent {
 /// written into a sentence ("dial in at https://…/j/123.") otherwise
 /// carries the full stop into the URL and 404s.
 pub(crate) fn location_meeting_url(raw: Option<&str>) -> Option<String> {
-    const PROVIDERS: &[&str] = [
-        "zoom.us", "meet.google.com", "teams.microsoft.com",
-        "teams.live.com", "webex.com", "meet.jit.si",
-    ].as_slice();
+    first_recognised_url(raw.unwrap_or("").trim())
+}
 
-    let text = raw.unwrap_or("").trim();
-    let at = text.find("https://").or_else(|| text.find("http://"))?;
-    // A URL runs to whitespace or a separator, matching the TS `URL_RE`.
-    let tail = &text[at..];
-    let end = tail
-        .find(|c: char| c.is_whitespace() || c == ',' || c == ';')
-        .unwrap_or(tail.len());
-    let url = tail[..end].trim_end_matches([')', ',', '.', ';', ':', '!', '?', ']']);
-
-    // The hostname: after the scheme, before any path/query/fragment, with
-    // userinfo and port stripped — enough of a parse for an allow-list.
-    let after_scheme = url.split_once("://")?.1;
-    let authority = after_scheme
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or("");
-    let host = authority
-        .rsplit('@')
-        .next()
-        .unwrap_or("")
-        .split(':')
-        .next()
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    if host.is_empty() {
-        return None;
-    }
-
-    let joinable = PROVIDERS.iter().any(|p| {
-        host == *p || host.ends_with(&format!(".{p}"))
-    });
-    joinable.then(|| url.to_string())
+/// The meeting to join, if any: a recognised link in `location`, and failing
+/// that, one in `description`.
+///
+/// Plenty of invites put their join link only in the description ("Join Zoom
+/// Meeting: https://…"), never in `location` — and this is the one place
+/// that answer is decided. `open_conference`, this feed, and the two
+/// `list`/`show` call sites in `cli.rs` all resolve through it, so the app,
+/// the widget and the CLI never disagree about whether an event has a
+/// meeting.
+pub(crate) fn conference_join_url(location: Option<&str>, description: Option<&str>) -> Option<String> {
+    location_meeting_url(location).or_else(|| first_recognised_url(description.unwrap_or("").trim()))
 }
 
 /// The pure assembly: stored rows in, feed out, no clock or filesystem.
@@ -182,17 +239,17 @@ pub(crate) fn assemble(
                 attendees: src.attendees.len() as u32,
                 response: src.self_response.clone(),
                 // Structured conference data first; failing that, a joinable
-                // link sitting in `location` — see `location_meeting_url`.
-                // Without the fallback the widget's Join button only ever lit
-                // for Google Meet: Google is the one host that files the link
-                // as conference data, while a Zoom or Teams invitation minted
-                // anywhere else arrives with its URL in `location` and
-                // nowhere structured (reported 2026-08-20 — the button
-                // existed and nobody had ever seen it).
-                conference: src
-                    .conference_uri
-                    .clone()
-                    .or_else(|| location_meeting_url(src.location.as_deref())),
+                // link in `location` or `description` — see
+                // `conference_join_url`. Without the fallback the widget's
+                // Join button only ever lit for Google Meet: Google is the
+                // one host that files the link as conference data, while a
+                // Zoom or Teams invitation minted anywhere else arrives with
+                // its URL in `location` or the invite text and nowhere
+                // structured (reported 2026-08-20 — the button existed and
+                // nobody had ever seen it).
+                conference: src.conference_uri.clone().or_else(|| {
+                    conference_join_url(src.location.as_deref(), src.description.as_deref())
+                }),
                 color: src.color_hex.clone(),
                 calendar: calendar_names.get(&src.calendar_id).cloned(),
             });
@@ -447,6 +504,92 @@ mod tests {
         );
         // A lookalike host does not ride the suffix check.
         assert_eq!(location_meeting_url(Some("https://notzoom.us/j/1")), None);
+    }
+
+    /// A description-only invite — the case the fallback exists for.
+    #[test]
+    fn a_description_only_link_is_joinable() {
+        let mut e = event("standalone", T0900Z, T0900Z + HOUR);
+        e.description = Some("Join Zoom Meeting: https://us02web.zoom.us/j/123?pwd=x".into());
+        let feed = assemble(&[e], &names(), T0900Z);
+        assert_eq!(
+            feed.events[0].conference.as_deref(),
+            Some("https://us02web.zoom.us/j/123?pwd=x"),
+        );
+    }
+
+    /// The bug the description fallback shipped with the first time: a real
+    /// Google description is HTML, and a naive scan across an anchor's
+    /// `href` swallows the closing quote and runs into the link text —
+    /// `…pwd=x">Join`, a URL that looks plausible and 404s. Excluding `<`,
+    /// `>`, `"` and `'` from the URL's character class stops the scan at the
+    /// attribute boundary instead.
+    #[test]
+    fn an_html_description_does_not_swallow_the_closing_quote() {
+        let mut e = event("html-invite", T0900Z, T0900Z + HOUR);
+        e.description = Some(
+            r#"<p>Hi team,</p><p><a href="https://us02web.zoom.us/j/123?pwd=x">Join Zoom Meeting</a></p>"#
+                .into(),
+        );
+        let feed = assemble(&[e], &names(), T0900Z);
+        assert_eq!(
+            feed.events[0].conference.as_deref(),
+            Some("https://us02web.zoom.us/j/123?pwd=x"),
+        );
+    }
+
+    /// A link earlier in the text that isn't a recognised provider (an
+    /// agenda doc, say) must not stop the scan before it reaches the real
+    /// meeting link further down.
+    #[test]
+    fn a_leading_unrecognised_link_does_not_shadow_a_later_one() {
+        assert_eq!(
+            first_recognised_url(
+                "Agenda: https://docs.example.com/agenda then join at https://us02web.zoom.us/j/123"
+            ),
+            Some("https://us02web.zoom.us/j/123".into()),
+        );
+    }
+
+    /// `location` still wins over `description` when both carry a link.
+    #[test]
+    fn conference_join_url_prefers_location_over_description() {
+        assert_eq!(
+            conference_join_url(
+                Some("https://us02web.zoom.us/j/111"),
+                Some("https://us02web.zoom.us/j/222"),
+            ),
+            Some("https://us02web.zoom.us/j/111".into()),
+        );
+    }
+
+    /// A regression on the walk itself: `rest.find("https://")
+    /// .or_else(|| rest.find("http://"))` looks like "whichever comes
+    /// first" but is not — `.find` runs against the whole remainder for
+    /// each scheme, so a *later* `https://` link still wins over an
+    /// *earlier* `http://` one whenever a description mixes schemes, and the
+    /// earlier link is then skipped for good rather than picked up on a
+    /// later pass. `meet.jit.si` here is a real allow-listed provider, not a
+    /// contrived host.
+    #[test]
+    fn an_earlier_http_link_is_not_shadowed_by_a_later_https_one() {
+        assert_eq!(
+            first_recognised_url(
+                "Dial in http://meet.jit.si/xyz backup https://docs.example.com/doc"
+            ),
+            Some("http://meet.jit.si/xyz".into()),
+        );
+    }
+
+    /// The scheme match is case-insensitive, matching the `i` flag on the TS
+    /// twin's regex (`location.ts`) — a real invite would not do this, but
+    /// the two implementations disagreeing on identical input is its own bug.
+    #[test]
+    fn the_scheme_match_is_case_insensitive() {
+        assert_eq!(
+            first_recognised_url("Join at HTTPS://us02web.ZOOM.US/j/123"),
+            Some("HTTPS://us02web.ZOOM.US/j/123".into()),
+        );
     }
 
     /// And a cancelled exception silently removes exactly its slot.

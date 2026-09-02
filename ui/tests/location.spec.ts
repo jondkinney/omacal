@@ -108,4 +108,25 @@ test.describe('meetingUrl', () => {
     expect(meetingUrl('   ')).toBe(null);
     expect(meetingUrl('zoom')).toBe(null);
   });
+
+  // The bug the description fallback shipped with the first time: raw HTML
+  // from Google, scanned with a character class built for plain-text
+  // `location`, swallows the closing quote of an anchor's `href` and runs
+  // into the link text — "…pwd=x">Join", a URL that looks plausible and
+  // 404s. Excluding `<`, `>`, `"` and `'` stops the scan at the attribute
+  // boundary, which is what makes it safe to call directly on `description`.
+  test('an html description does not swallow the closing quote', () => {
+    expect(
+      meetingUrl('<p>Hi team,</p><p><a href="https://us02web.zoom.us/j/123?pwd=x">Join Zoom Meeting</a></p>'),
+    ).toBe('https://us02web.zoom.us/j/123?pwd=x');
+  });
+
+  // Every URL in the text is tried, not just the first — a description that
+  // opens with an agenda link before the meeting link would otherwise give
+  // up on that first, unrecognised one.
+  test('a leading unrecognised link does not shadow a later one', () => {
+    expect(
+      meetingUrl('Agenda: https://docs.example.com/agenda then join at https://us02web.zoom.us/j/123'),
+    ).toBe('https://us02web.zoom.us/j/123');
+  });
 });
