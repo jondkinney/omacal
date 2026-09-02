@@ -26,6 +26,7 @@ const QUIT_ON_CLOSE_KEY: &str = "quit_on_close";
 const AUTOSTART_KEY: &str = "autostart";
 const WEATHER_KEY: &str = "weather_enabled";
 const APPEARANCE_KEY: &str = "appearance";
+const WINDOW_FRAME_KEY: &str = "window_frame";
 const TEMPERATURE_UNIT_KEY: &str = "temperature_unit";
 const DISPLAY_TZ_KEY: &str = "display_timezone";
 const SECOND_TZ_KEY: &str = "second_timezone";
@@ -103,6 +104,64 @@ impl TemperatureUnit {
             TemperatureUnit::Fahrenheit => "fahrenheit",
         }
     }
+}
+
+/// Whether the window draws a title bar (issue #36).
+///
+/// Three states for [`StartOnLogin`]'s reason: there are three answers
+/// people want. `Auto` is the one every install had before the setting
+/// existed, now spelled out — no frame where a tiling compositor already
+/// closes and moves the window for you, a frame everywhere else. The two
+/// others are for the person whose desktop the rule gets wrong.
+///
+/// The frame was switched off for Hyprland, where a GTK headerbar only
+/// repeats what SUPER+W and SUPER+drag do and costs a bar's height of
+/// calendar. That reasoning was then applied, silently, to every Linux
+/// desktop — and on GNOME or KDE it left a window with nothing to grab and
+/// no close button. The bug behind the issue was not the frameless look but
+/// that there was no second answer, which is [`crate::theme::Appearance`]'s
+/// story again.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WindowFrame {
+    Auto,
+    Shown,
+    Hidden,
+}
+
+impl WindowFrame {
+    /// The stored spelling — the wire's, for [`TemperatureUnit::as_str`]'s
+    /// reason.
+    fn as_str(self) -> &'static str {
+        match self {
+            WindowFrame::Auto => "auto",
+            WindowFrame::Shown => "shown",
+            WindowFrame::Hidden => "hidden",
+        }
+    }
+}
+
+/// Whether the window should carry a frame, given the choice and whether a
+/// tiling compositor is running the desktop. The decision, kept apart from
+/// the two things that feed it (the row, the environment) so it can be
+/// tested as a table — `tray::hide_instead_of_closing`'s split, and
+/// `lib.rs`'s `setup` and [`apply_window_frame`] do the OS half.
+pub(crate) fn decorated(choice: WindowFrame, tiled: bool) -> bool {
+    match choice {
+        WindowFrame::Shown => true,
+        WindowFrame::Hidden => false,
+        WindowFrame::Auto => !tiled,
+    }
+}
+
+/// Whether this process is running under Hyprland — the one compositor the
+/// frameless default was made for and verified on. Hyprland exports its
+/// instance signature to every client it starts, and nothing else sets it.
+/// Other tiling compositors are not detected on purpose: an install there
+/// keeps a frame by default and has the setting, rather than inheriting a
+/// guess made for a different desktop.
+pub(crate) fn on_hyprland() -> bool {
+    std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some_and(|v| !v.is_empty())
 }
 
 /// What a login should do about omacal.
@@ -282,6 +341,13 @@ pub struct AppSettings {
     /// no theme of its own, so every desktop that is not Omarchy got dark and
     /// had no way to ask for anything else (issue #30).
     pub appearance: crate::theme::Appearance,
+    /// Whether the window draws a title bar, or `None` where the choice is
+    /// not omacal's to make — macOS, whose `titleBarStyle: "Overlay"` puts
+    /// the traffic lights over the content, and where hiding them would
+    /// leave no way to close the window. The modal shows the row only when
+    /// there is an answer, so the platform stays a fact of the backend
+    /// rather than something the form has to know (issue #36).
+    pub window_frame: Option<WindowFrame>,
     /// Whether closing the window quits omacal instead of hiding it.
     ///
     /// **Off by default, and it stays a setting rather than becoming the
@@ -480,6 +546,15 @@ pub async fn read_settings(pool: &SqlitePool) -> AppSettings {
         tray_icon: read(pool, TRAY_ICON_KEY).await.map(|v| v != "0").unwrap_or(true),
         quit_on_close: quit_on_close(pool).await,
         appearance: appearance(pool).await,
+        // `None` is an absence, not a default: on macOS the frame is the
+        // system's, and a row that does nothing is worse than no row.
+        // `cfg!` rather than `#[cfg]` so both arms compile on the
+        // Linux-only CI.
+        window_frame: if cfg!(target_os = "macos") {
+            None
+        } else {
+            Some(window_frame(pool).await)
+        },
         // Same "only a spelling this version writes moves the setting" rule
         // as its three neighbours, and here it is load bearing twice over:
         // absent is every install that predates this setting, and those all
@@ -669,6 +744,21 @@ pub(crate) async fn appearance(pool: &SqlitePool) -> crate::theme::Appearance {
     }
 }
 
+/// The window-frame choice (issue #36), named for [`weather_enabled`]'s
+/// reason: `setup` reads it at launch to decorate the window before it is
+/// shown, and `read_settings` reports it to the form.
+///
+/// Absent, garbage and a spelling a future version writes all resolve to
+/// `Auto` — what every installed copy already had on Hyprland, and the frame
+/// that GNOME and KDE installs were missing.
+pub(crate) async fn window_frame(pool: &SqlitePool) -> WindowFrame {
+    match read(pool, WINDOW_FRAME_KEY).await.as_deref() {
+        Some("shown") => WindowFrame::Shown,
+        Some("hidden") => WindowFrame::Hidden,
+        _ => WindowFrame::Auto,
+    }
+}
+
 /// Whether closing the window should quit (issue #26), named for
 /// [`weather_enabled`]'s reason: `setup` reads it once to seed the flag the
 /// window handler consults, and `read_settings` reports it to the form.
@@ -773,6 +863,38 @@ pub async fn set_appearance(
     let _ = app.emit("theme-changed", palette);
 
     Ok(read_settings(&state.pool).await)
+}
+
+/// Stores the window-frame choice and applies it in the same breath, for
+/// `set_tray_icon`'s reason: a control whose effect waits for the next
+/// launch cannot be told from one that does nothing. The frame is the
+/// compositor's or GTK's to draw, and both take the change live.
+#[tauri::command]
+pub async fn set_window_frame(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    frame: WindowFrame,
+) -> Result<AppSettings, String> {
+    write(&state.pool, WINDOW_FRAME_KEY, frame.as_str())
+        .await
+        .map_err(|e| crate::errors::user_facing(&e))?;
+    apply_window_frame(&app, frame);
+    Ok(read_settings(&state.pool).await)
+}
+
+/// The OS half of [`decorated`]: sets the main window's decorations from a
+/// choice and the desktop it is on. Called by `setup` before the window is
+/// shown, and again from [`set_window_frame`]. A no-op on macOS, where the
+/// overlay title bar is the frame and `read_settings` reports no choice —
+/// `cfg!` so the Linux-only CI still compiles the macOS arm.
+pub(crate) fn apply_window_frame(app: &tauri::AppHandle, frame: WindowFrame) {
+    if cfg!(target_os = "macos") {
+        return;
+    }
+    use tauri::Manager;
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.set_decorations(decorated(frame, on_hyprland()));
+    }
 }
 
 /// Stores the close-behaviour preference and updates the flag the window
@@ -1051,6 +1173,45 @@ mod tests {
             TemperatureUnit::Celsius,
             "the unit omacal has always drawn, so no installed copy changes under its user"
         );
+        assert_eq!(
+            s.window_frame,
+            if cfg!(target_os = "macos") { None } else { Some(WindowFrame::Auto) },
+            "no frame under Hyprland and one everywhere else — what every install already \
+             had, plus the frame the other desktops were missing; and on macOS no row at all"
+        );
+    }
+
+    /// Every spelling round-trips, and an unrecognised row reads as `Auto` —
+    /// the same polarity rule its neighbours take. Read through the parse
+    /// rather than `read_settings`, which on macOS reports no row at all
+    /// (pinned by [`absent_settings_read_as_their_defaults`]).
+    #[tokio::test]
+    async fn the_window_frame_round_trips_and_falls_back_to_auto() {
+        let p = pool().await;
+        for frame in [WindowFrame::Shown, WindowFrame::Hidden, WindowFrame::Auto] {
+            write(&p, WINDOW_FRAME_KEY, frame.as_str()).await.unwrap();
+            assert_eq!(window_frame(&p).await, frame);
+        }
+        for stored in ["", "Shown", "on", "1", "🪟"] {
+            write(&p, WINDOW_FRAME_KEY, stored).await.unwrap();
+            assert_eq!(
+                window_frame(&p).await,
+                WindowFrame::Auto,
+                "{stored:?} is not a spelling this version writes",
+            );
+        }
+    }
+
+    /// The whole rule as a table: a pinned choice ignores the desktop, and
+    /// `Auto` is the frame's absence exactly where a compositor tiles.
+    #[test]
+    fn the_frame_follows_the_desktop_only_when_asked_to() {
+        for tiled in [true, false] {
+            assert!(decorated(WindowFrame::Shown, tiled), "shown means shown, tiled or not");
+            assert!(!decorated(WindowFrame::Hidden, tiled), "hidden means hidden, tiled or not");
+        }
+        assert!(!decorated(WindowFrame::Auto, true), "Hyprland closes and moves the window itself");
+        assert!(decorated(WindowFrame::Auto, false), "anywhere else the frame is what you grab");
     }
 
     /// Every spelling the row can hold, and where each one lands.

@@ -49,6 +49,20 @@ export const APPEARANCE_OPTIONS: ReadonlyArray<[Appearance, string]> = [
   ['dark', 'Dark'],
 ];
 
+/** Whether the window draws a title bar. `'auto'` is no frame where a tiling
+ *  compositor already closes and moves the window for you (Hyprland), and a
+ *  frame everywhere else; the two others are for the desktop the rule gets
+ *  wrong (issue #36). */
+export type WindowFrame = 'auto' | 'shown' | 'hidden';
+
+/** The three rows, in the order the select offers them — `APPEARANCE_OPTIONS`'s
+ *  shape, for the same reason: the component and its test read one list. */
+export const WINDOW_FRAME_OPTIONS: ReadonlyArray<[WindowFrame, string]> = [
+  ['auto', 'Follow the desktop'],
+  ['shown', 'Shown'],
+  ['hidden', 'Hidden'],
+];
+
 export type AppSettings = {
   /** As **stored**, not as clamped. The loop clamps on the way out, because a
    *  row edited by hand with `sqlite3` — until now the only way to set this,
@@ -94,6 +108,12 @@ export type AppSettings = {
    *  exist: off Omarchy there was no theme to wear and dark was the only
    *  answer the app had (issue #30). */
   appearance: Appearance;
+  /** Whether the window draws a title bar, or `null` where the choice is not
+   *  omacal's — macOS, whose overlay title bar *is* the frame. The modal
+   *  shows the row only when there is an answer, so this is the one place
+   *  the platform reaches the form, and it arrives as an absence rather than
+   *  an OS name (issue #36). */
+  windowFrame: WindowFrame | null;
   /** Whether closing the window quits omacal rather than hiding it. Off by
    *  default: reminders only fire while the app runs, so this is the user
    *  choosing to give them up until they open it again, and the hint under
@@ -153,6 +173,11 @@ export const setTrayIcon = (on: boolean) =>
  *  repaint path rather than two, and no restart. */
 export const setAppearance = (appearance: Appearance) =>
   invoke<AppSettings>('set_appearance', { appearance });
+
+/** Stores the frame choice. The backend redecorates the window on the spot,
+ *  so there is nothing to wait for and no restart. */
+export const setWindowFrame = (frame: WindowFrame) =>
+  invoke<AppSettings>('set_window_frame', { frame });
 
 /** Stores the close-behaviour preference. Takes effect on the next close, not
  *  the next launch — the backend keeps its own copy of this one for the

@@ -1237,19 +1237,19 @@ pub fn run() {
                 tracing::warn!(seeded, db = db_name, "DEMO MODE — synthetic data, not your calendar");
             }
 
-            // The GTK headerbar, off. `titleBarStyle: "Overlay"` in
-            // tauri.conf.json is the macOS half of the same intent — traffic
-            // lights over content, no bar — but Linux ignores that option and
-            // draws its full client-side titlebar, which on a tiled Hyprland
-            // desktop only duplicates the compositor (SUPER+W closes,
-            // SUPER+drag moves) and costs a bar's height of calendar. Runtime
-            // rather than a tauri.linux.conf.json, because the platform-merge
-            // replaces the whole `windows` array and a second copy of the
-            // window object is one that drifts.
-            #[cfg(target_os = "linux")]
-            if let Some(w) = tauri::Manager::get_webview_window(app, "main") {
-                let _ = w.set_decorations(false);
-            }
+            // The frame, decided before the window is shown (issue #36).
+            // `titleBarStyle: "Overlay"` in tauri.conf.json is the macOS half
+            // of the intent — traffic lights over content, no bar — but Linux
+            // ignores that option and draws a full client-side titlebar,
+            // which on a tiled Hyprland desktop only duplicates the
+            // compositor (SUPER+W closes, SUPER+drag moves) and costs a bar's
+            // height of calendar. So it is off there and on everywhere else,
+            // unless the setting says otherwise; `settings::decorated` holds
+            // the rule. Runtime rather than a tauri.linux.conf.json, because
+            // the platform-merge replaces the whole `windows` array and a
+            // second copy of the window object is one that drifts.
+            let frame = tauri::async_runtime::block_on(settings::window_frame(&pool));
+            settings::apply_window_frame(app.handle(), frame);
 
             // **The window, as early as there is an answer.**
             //
@@ -1486,6 +1486,7 @@ pub fn run() {
             settings::set_tray_icon,
             settings::set_quit_on_close,
             settings::set_appearance,
+            settings::set_window_frame,
             settings::set_start_on_login,
             settings::set_weather_enabled,
             settings::set_display_timezone,

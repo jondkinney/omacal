@@ -118,7 +118,7 @@ and whenever the window regains focus.
 
 ## Settings
 
-Behind the **hamburger** in the header, in four tabs.
+Behind the **hamburger** in the header, in five tabs.
 
 **General** — the sync interval. Default 5 minutes, and it will not go below one
 minute: Google's quota is finite and a desktop app has no business polling
@@ -141,6 +141,16 @@ launching omacal yourself always shows the window, whatever this is set to.
 The setting applies to the login launch alone, which is why the entry it
 writes carries an `--autostart` flag: that flag is how a launch says where it
 came from.
+
+**Appearance** — how the calendar looks rather than what it does. **Theme**:
+follow the desktop (the Omarchy theme where there is one, dark elsewhere), or
+Light or Dark outright, replacing the whole palette without a restart.
+**Window frame**: on Linux only — a Hyprland desktop tiles the window and
+closes or moves it from the keyboard, so omacal draws no title bar there and
+one on any other desktop, where the frame is what you grab; pick Shown or
+Hidden to overrule that. On macOS the row is absent, because the overlay
+title bar with the traffic lights *is* the frame. **Week view**: a whole week
+from a chosen day, or a rolling 3, 5 or 7 days from today.
 
 **Calendars** — the same rows as the header's picker: **show** and **sync** as
 two separate switches, plus a colour. **Accounts** — what is connected, and

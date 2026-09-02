@@ -18,6 +18,7 @@
     setTrayIcon, setWeatherEnabled, setWeekStart,
     setWeekStartsToday, setWeekViewDays,
     type AppSettings, type Appearance, type StartOnLogin, type WeekViewDays,
+    type WindowFrame, WINDOW_FRAME_OPTIONS, setWindowFrame,
   } from './settings';
   import { formatClock, type TimeFormat } from './timefmt';
   import type { TemperatureUnit } from './temperature';
@@ -497,6 +498,16 @@
     }
   }
 
+  async function saveWindowFrame(frame: WindowFrame) {
+    note = null;
+    try {
+      settings = await setWindowFrame(frame);
+      onsettingschange?.(settings);
+    } catch (e) {
+      note = { text: String(e), kind: 'error' };
+    }
+  }
+
   async function toggleQuitOnClose(on: boolean) {
     note = null;
     try {
@@ -522,15 +533,17 @@
   }
 
   /**
-   * The four tabs of spec §3, in the order it lists them.
+   * The four tabs of spec §3 in the order it lists them, with Appearance
+   * added second (issue #36): General had grown a theme, a window frame and
+   * a week-view control — all about how the calendar looks rather than what
+   * it does — and a reader hunting for "light theme" was reading past sync
+   * intervals to find it. General keeps the behaviour: syncing, defaults,
+   * clocks, the tray, login. Appearance keeps the look.
    *
-   * **Empty in this task, deliberately.** The shell exists so the tabs have
-   * somewhere to live and so the header can be emptied now rather than twice;
-   * what goes inside them is Task 2, and per-calendar colour lands in
-   * Calendars after that. A tab that is present and blank says "not yet" more
-   * honestly than a tab that is missing, which says "never".
+   * The shell predates its contents; a tab that is present and blank says
+   * "not yet" more honestly than a tab that is missing, which says "never".
    */
-  const TABS = ['General', 'Calendars', 'Accounts', 'Notifications'] as const;
+  const TABS = ['General', 'Appearance', 'Calendars', 'Accounts', 'Notifications'] as const;
   type Tab = (typeof TABS)[number];
 
   let tab = $state<Tab>('General');
@@ -738,56 +751,6 @@
       </p>
 
       <div class="row">
-        <label class="lab" for="appearance">Appearance</label>
-        <div class="inline">
-          <select
-            id="appearance"
-            disabled={!settings}
-            value={settings?.appearance ?? 'auto'}
-            onchange={(e) =>
-              saveAppearance((e.currentTarget as HTMLSelectElement).value as Appearance)}
-          >
-            {#each APPEARANCE_OPTIONS as [id, label] (id)}
-              <option value={id}>{label}</option>
-            {/each}
-          </select>
-        </div>
-      </div>
-      <p class="hint">
-        omacal wears your Omarchy theme, and follows it as you switch. On any
-        other desktop there is no theme to follow, which is what Light and Dark
-        are for — they replace the whole palette, your theme's accent included,
-        and take effect without a restart.
-      </p>
-
-      <div class="row">
-        <label class="lab" for="week-view">Week view</label>
-        <div class="inline">
-          <select
-            id="week-view"
-            disabled={!settings}
-            value={weekViewChoice}
-            onchange={(e) => saveWeekView((e.currentTarget as HTMLSelectElement).value)}
-          >
-            {#each WEEK_VIEWS as w (w.id)}
-              <option value={w.id}>{w.label}</option>
-            {/each}
-          </select>
-        </div>
-      </div>
-      {#if settings?.weekStartsToday}
-        <p class="hint">
-          Today is the first column, and the view rolls forward with it. Month,
-          Year and Big Year keep their rows aligned to {DAY_LABEL[settings.weekStart]}
-          — pick a whole week above to change that.
-        </p>
-      {:else}
-        <p class="hint">
-          Week, Month, Year and Big Year all start their rows on this day.
-        </p>
-      {/if}
-
-      <div class="row">
         <label class="lab" for="display-tz">Time zone</label>
         <div class="inline">
           <input
@@ -950,6 +913,85 @@
         </p>
       {/if}
 
+    {:else if tab === 'Appearance'}
+      <div class="row">
+        <label class="lab" for="appearance">Theme</label>
+        <div class="inline">
+          <select
+            id="appearance"
+            disabled={!settings}
+            value={settings?.appearance ?? 'auto'}
+            onchange={(e) =>
+              saveAppearance((e.currentTarget as HTMLSelectElement).value as Appearance)}
+          >
+            {#each APPEARANCE_OPTIONS as [id, label] (id)}
+              <option value={id}>{label}</option>
+            {/each}
+          </select>
+        </div>
+      </div>
+      <p class="hint">
+        omacal wears your Omarchy theme, and follows it as you switch. On any
+        other desktop there is no theme to follow, which is what Light and Dark
+        are for — they replace the whole palette, your theme's accent included,
+        and take effect without a restart.
+      </p>
+
+      <!-- Only where there is a choice: on macOS the backend reports none,
+           because the overlay title bar *is* the frame. While settings are
+           still loading the row shows disabled like its neighbours. -->
+      {#if settings?.windowFrame !== null}
+        <div class="row">
+          <label class="lab" for="window-frame">Window frame</label>
+          <div class="inline">
+            <select
+              id="window-frame"
+              disabled={!settings}
+              value={settings?.windowFrame ?? 'auto'}
+              onchange={(e) =>
+                saveWindowFrame((e.currentTarget as HTMLSelectElement).value as WindowFrame)}
+            >
+              {#each WINDOW_FRAME_OPTIONS as [id, label] (id)}
+                <option value={id}>{label}</option>
+              {/each}
+            </select>
+          </div>
+        </div>
+        <p class="hint">
+          Hyprland tiles omacal and closes or moves it from the keyboard, so a
+          title bar there only repeats the compositor and costs a bar's height
+          of calendar. Following the desktop hides the frame there and shows
+          it on any other desktop, where the frame is what you grab. Takes
+          effect at once.
+        </p>
+      {/if}
+
+      <div class="row">
+        <label class="lab" for="week-view">Week view</label>
+        <div class="inline">
+          <select
+            id="week-view"
+            disabled={!settings}
+            value={weekViewChoice}
+            onchange={(e) => saveWeekView((e.currentTarget as HTMLSelectElement).value)}
+          >
+            {#each WEEK_VIEWS as w (w.id)}
+              <option value={w.id}>{w.label}</option>
+            {/each}
+          </select>
+        </div>
+      </div>
+      {#if settings?.weekStartsToday}
+        <p class="hint">
+          Today is the first column, and the view rolls forward with it. Month,
+          Year and Big Year keep their rows aligned to {DAY_LABEL[settings.weekStart]}
+          — pick a whole week above to change that.
+        </p>
+      {:else}
+        <p class="hint">
+          Week, Month, Year and Big Year all start their rows on this day.
+        </p>
+      {/if}
     {:else if tab === 'Calendars'}
       <!-- **The same rows the header's popover shows, from the same
            component.** Extracted rather than reimplemented, which is what

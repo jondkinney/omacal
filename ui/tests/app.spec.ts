@@ -1961,6 +1961,7 @@ test.describe('App', () => {
     await page.getByRole('button', { name: 'Menu' }).click();
     await page.getByRole('button', { name: 'Settings…' }).click();
     const modal = page.getByRole('dialog', { name: 'Settings' });
+    await modal.getByRole('tab', { name: 'Appearance' }).click();
     const select = modal.locator('#appearance');
     await expect(select).toHaveValue('auto');
     await expect(select.locator('option')).toHaveText([
@@ -1976,7 +1977,80 @@ test.describe('App', () => {
     await expect(modal).toHaveCount(0);
     await page.getByRole('button', { name: 'Menu' }).click();
     await page.getByRole('button', { name: 'Settings…' }).click();
+    await modal.getByRole('tab', { name: 'Appearance' }).click();
     await expect(modal.locator('#appearance')).toHaveValue('light');
+  });
+
+  /**
+   * Issue #36. The row exists, its list is asserted whole so a choice cannot
+   * quietly vanish, the choice reaches the command, and the default is the
+   * one every install already had: follow the desktop.
+   */
+  test('the window frame can be chosen, and still follows the desktop', async ({ page }) => {
+    await writable(page);
+    await page.getByRole('button', { name: 'Menu' }).click();
+    await page.getByRole('button', { name: 'Settings…' }).click();
+    const modal = page.getByRole('dialog', { name: 'Settings' });
+    await modal.getByRole('tab', { name: 'Appearance' }).click();
+    const select = modal.locator('#window-frame');
+    await expect(select).toHaveValue('auto');
+    await expect(select.locator('option')).toHaveText(['Follow the desktop', 'Shown', 'Hidden']);
+
+    await select.selectOption('shown');
+    const [args] = await callsTo(page, 'set_window_frame');
+    expect(args).toEqual({ frame: 'shown' });
+
+    // Reopened, the select shows what was stored rather than its own default.
+    await page.keyboard.press('Escape');
+    await expect(modal).toHaveCount(0);
+    await page.getByRole('button', { name: 'Menu' }).click();
+    await page.getByRole('button', { name: 'Settings…' }).click();
+    await modal.getByRole('tab', { name: 'Appearance' }).click();
+    await expect(modal.locator('#window-frame')).toHaveValue('shown');
+  });
+
+  /**
+   * The macOS half of #36: the backend reports no frame choice there, since
+   * the overlay title bar is the frame and a row that did nothing would be
+   * worse than no row. Seeded as the stub's answer rather than as a platform
+   * flag, because an absent answer is all the form knows about.
+   */
+  test('with no frame choice to make, the row is not offered', async ({ page }) => {
+    await page.addInitScript(() => {
+      sessionStorage.setItem('omacal-stub-settings', JSON.stringify({ windowFrame: null }));
+    });
+    await writable(page);
+    await page.getByRole('button', { name: 'Menu' }).click();
+    await page.getByRole('button', { name: 'Settings…' }).click();
+    const modal = page.getByRole('dialog', { name: 'Settings' });
+    await modal.getByRole('tab', { name: 'Appearance' }).click();
+    // The tab still has its other rows — only the frame is missing.
+    await expect(modal.locator('#appearance')).toHaveCount(1);
+    await expect(modal.locator('#window-frame')).toHaveCount(0);
+  });
+
+  /**
+   * The split itself, since a control can be moved back by accident as
+   * easily as it was moved here: the look lives on Appearance and the
+   * behaviour on General, and neither tab carries the other's rows.
+   */
+  test('Appearance holds the look and General the behaviour', async ({ page }) => {
+    await writable(page);
+    await page.getByRole('button', { name: 'Menu' }).click();
+    await page.getByRole('button', { name: 'Settings…' }).click();
+    const modal = page.getByRole('dialog', { name: 'Settings' });
+    await expect(modal.getByRole('tab')).toHaveText([
+      'General', 'Appearance', 'Calendars', 'Accounts', 'Notifications',
+    ]);
+    const look = ['#appearance', '#window-frame', '#week-view'];
+    const behaviour = ['#sync-interval', '#time-format', '#display-tz', '#start-on-login'];
+
+    for (const id of look) await expect(modal.locator(id)).toHaveCount(0);
+    for (const id of behaviour) await expect(modal.locator(id)).toHaveCount(1);
+
+    await modal.getByRole('tab', { name: 'Appearance' }).click();
+    for (const id of look) await expect(modal.locator(id)).toHaveCount(1);
+    for (const id of behaviour) await expect(modal.locator(id)).toHaveCount(0);
   });
 
   /**
@@ -4169,6 +4243,7 @@ test.describe('App: the first day of the week', () => {
     await page.getByRole('button', { name: 'Menu' }).click();
     await page.getByRole('button', { name: 'Settings…' }).click();
     const modal = page.getByRole('dialog', { name: 'Settings' });
+    await modal.getByRole('tab', { name: 'Appearance' }).click();
     await modal.locator('#week-view').selectOption({ label });
     await page.keyboard.press('Escape');
     await expect(modal).toHaveCount(0);
@@ -4250,6 +4325,7 @@ test.describe('App: the first day of the week', () => {
     await page.getByRole('button', { name: 'Menu' }).click();
     await page.getByRole('button', { name: 'Settings…' }).click();
     const modal = page.getByRole('dialog', { name: 'Settings' });
+    await modal.getByRole('tab', { name: 'Appearance' }).click();
     // The whole point of the one-control shape: the rolling sizes are on
     // the list you are already reading, not behind another answer.
     const weekView = modal.locator('#week-view');
@@ -4274,6 +4350,7 @@ test.describe('App: the first day of the week', () => {
     await page.getByRole('button', { name: 'Menu' }).click();
     await page.getByRole('button', { name: 'Settings…' }).click();
     const reopened = page.getByRole('dialog', { name: 'Settings' });
+    await reopened.getByRole('tab', { name: 'Appearance' }).click();
     await reopened.locator('#week-view').selectOption({ label: '5 days from today' });
     await expect(columns).toHaveCount(5);
     await reopened.locator('#week-view').selectOption({ label: '7 days from today' });

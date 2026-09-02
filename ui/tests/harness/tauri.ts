@@ -15,7 +15,7 @@ import type { Calendar } from '../../src/lib/calendars';
 import type { EventDetail } from '../../src/lib/eventdetail';
 import type { TimeFormat } from '../../src/lib/timefmt';
 import type { WeekStartDay } from '../../src/lib/weekstart';
-import type { Appearance, StartOnLogin, WeekViewDays } from '../../src/lib/settings';
+import type { Appearance, StartOnLogin, WeekViewDays, WindowFrame } from '../../src/lib/settings';
 import type { TemperatureUnit } from '../../src/lib/temperature';
 import {
   labelledWeek, weekLabel, APP_FIVE_MIN_AGO, APP_NOW, APP_SERIES_ID, APP_SERIES_OCCURRENCE,
@@ -528,6 +528,9 @@ type StubSettings = {
   startOnLogin: StartOnLogin;
   quitOnClose: boolean;
   appearance: Appearance;
+  // `WindowFrame | null` on the wire; the stub is Linux-shaped, so a spec
+  // that wants the macOS answer seeds `null` explicitly.
+  windowFrame: WindowFrame | null;
 };
 
 const SETTINGS_KEY = 'omacal-stub-settings';
@@ -571,6 +574,9 @@ const DEFAULT_SETTINGS: StubSettings = {
   // The backend's default: whatever the desktop says, which off Omarchy is
   // the dark fallback — the behaviour every install already has.
   appearance: 'auto',
+  // The backend's default, Linux-shaped: the row exists (macOS reports none)
+  // and follows the desktop.
+  windowFrame: 'auto',
 };
 
 function loadSettings(): StubSettings {
@@ -822,6 +828,9 @@ export function installTauriStub(scenario: string): Harness {
         return { ...settings };
       case 'set_appearance':
         settings = saveSettings({ ...settings, appearance: args.appearance as Appearance });
+        return { ...settings };
+      case 'set_window_frame':
+        settings = saveSettings({ ...settings, windowFrame: args.frame as WindowFrame });
         return { ...settings };
       case 'set_quit_on_close':
         settings = saveSettings({ ...settings, quitOnClose: args.on as boolean });
