@@ -1207,7 +1207,6 @@
           reminders — clear the list to turn this off.
         </p>
       </div>
-      <p class="hint">The tray and start-on-login switches are not built yet.</p>
     {/if}
 
     {#if note}
@@ -1275,7 +1274,11 @@
   .hint { font-size: 11px; color: var(--muted); opacity: .85; line-height: 1.45; margin: 0;
           align-self: stretch; }
 
-  input[type='number'], select {
+  /* Text boxes too, not only number boxes: the two time-zone fields were the
+     one kind of input this rule missed, and they rendered as the platform's
+     own widget — bigger type, a different border — beside styled neighbours
+     (reported 2026-09-02). */
+  input[type='number'], input[type='text'], select {
     font: inherit; font-size: 13px; color: var(--text);
     background-color: color-mix(in srgb, var(--text) 5%, transparent);
     border: 1px solid var(--hairline); border-radius: 5px; padding: 4px 6px;
@@ -1285,6 +1288,9 @@
      any component that restyles a select's padding owes the right side 22px. */
   select { padding-right: 22px; }
   input[type='number'] { width: 72px; }
+  /* Wide enough for "Australia/Lord_Howe"; scoped to the inline rows so the
+     CalDAV form below keeps its own column width. */
+  .inline input[type='text'] { width: 220px; }
   input:focus, select:focus { outline: 1px solid var(--accent); outline-offset: -1px; }
 
   .caldot { width: 10px; height: 10px; border-radius: 3px; flex: none; }

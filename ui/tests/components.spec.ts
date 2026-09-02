@@ -1601,10 +1601,7 @@ test.describe('Header', () => {
     await expect(modal).toContainText('signed out');
   });
 
-  test('what is not built yet says so rather than being absent', async ({ page }) => {
-    // A control that is missing reads as "never"; a line saying it is not built
-    // reads as "not yet", which is the true one. Sign-out graduated out of
-    // this test in v0.2.x; what remains here is the honesty rule itself.
+  test('switching tabs inside the open modal reaches each tab in turn', async ({ page }) => {
     await page.goto(show('Header', 'connected'));
     const modal = await openSettings(page, 'Accounts');
     await expect(modal).toContainText('Signing out removes the account');
@@ -1613,7 +1610,7 @@ test.describe('Header', () => {
     // the hamburger, so a second `openSettings` would be clicking a button
     // nothing can reach.
     await modal.getByRole('tab', { name: 'Notifications' }).click();
-    await expect(modal).toContainText('tray and start-on-login switches are not built');
+    await expect(modal.getByRole('checkbox', { name: 'Show reminders' })).toBeVisible();
   });
 
   test('the settings modal does not close on a click inside it', async ({ page }) => {

@@ -245,6 +245,13 @@ step was skipped. The message names the exact path it looked for.
 
 **Blank window** — check `npm --prefix ui run build` succeeds, then rerun.
 
+**Dropdown menus and checkboxes are light on a dark theme** (AppImage,
+before v0.20.0) — the AppImage's launch hook exported `GTK_THEME=Adwaita:light`,
+which makes GTK ignore the dark hint omacal sets. omacal now drops that
+variable at startup and keeps the widget theme on Adwaita in the variant the
+palette asks for. If you export `APPIMAGE_GTK_THEME` yourself, that still
+wins, as the hook intends.
+
 **The theme does not follow `omarchy-theme-set`** — check
 `~/.local/state/omarchy/current/theme` (Omarchy 4) or
 `~/.config/omarchy/current/theme` (earlier) exists. omacal watches its parent

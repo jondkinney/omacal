@@ -1125,13 +1125,16 @@
             padding: 2px 7px; }
   .remhint { font-size: 10px; color: var(--muted); opacity: .8; }
 
-  input, select, textarea {
+  /* Not the checkboxes: those are drawn app-wide in app.css, and a scoped
+     rule outranks it — this one, left to match every input, turned the
+     all-day box into a padded pill with no tick (2026-09-02). */
+  input:not([type='checkbox']), select, textarea {
     font: inherit; font-size: 12px; color: var(--text);
     background: color-mix(in srgb, var(--text) 5%, transparent);
     border: 1px solid var(--hairline); border-radius: 5px;
     padding: 4px 6px; min-width: 0; width: 100%; box-sizing: border-box;
   }
-  input:focus, select:focus, textarea:focus { outline: 1px solid var(--accent); outline-offset: -1px; }
+  input:not([type='checkbox']):focus, select:focus, textarea:focus { outline: 1px solid var(--accent); outline-offset: -1px; }
   /* The appearance/chevron rule is global now — App.svelte, and fix/56's
      commit message for why. Only the background shorthand's reset needs
      compensating here: it clears the global background-image, so the chevron
@@ -1175,7 +1178,6 @@
   .videohint { margin: 0; color: var(--muted); font-size: 9.5px; line-height: 1.4; }
 
   .allday { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted); cursor: pointer; }
-  .allday input { width: auto; }
 
   /* Two per row, so a date and its time read as one thing. */
   .when { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 8px; }

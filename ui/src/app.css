@@ -41,6 +41,57 @@ textarea::placeholder {
   opacity: 0.55;
 }
 
+/* Checkboxes are drawn here rather than by the engine. Left to itself each
+   engine draws its own: WebKitGTK a white box with the platform's blue tick,
+   Chromium a grey one — on a green Omarchy theme the only blue thing in the
+   window (reported 2026-09-02). `accent-color` was tried first and settles
+   only the tick: WebKitGTK keeps the unchecked box white whatever the
+   colour scheme says, and Playwright's WebKit ignores the property. So the
+   box is a bordered square off the same tokens every other control uses,
+   and the tick is the `::before` clipped to a check — `--on-accent` on
+   `--accent`, the pair the active view chip already uses, so a theme whose
+   accent is pale still gets a legible tick. App-wide for the resets' reason
+   above: settings, the calendar list and the event form should all draw
+   the same box. */
+input[type='checkbox'] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  flex: none;
+  vertical-align: -2px;
+  display: inline-grid;
+  place-content: center;
+  cursor: pointer;
+  border: 1px solid color-mix(in srgb, var(--text) 32%, transparent);
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+}
+input[type='checkbox']::before {
+  content: '';
+  width: 9px;
+  height: 9px;
+  background: var(--on-accent);
+  clip-path: polygon(12% 46%, 0 62%, 40% 100%, 100% 22%, 86% 8%, 40% 70%);
+  transform: scale(0);
+}
+input[type='checkbox']:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+input[type='checkbox']:checked::before {
+  transform: scale(1);
+}
+input[type='checkbox']:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+input[type='checkbox']:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 /* The app's chrome is not selectable text. A drag that misses a control —
    easiest of all in list mode, which owns no drag gesture — used to sweep
    a text selection across every row it crossed, and WebKit's selection

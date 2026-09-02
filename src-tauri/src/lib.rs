@@ -185,6 +185,14 @@ pub(crate) fn apply_gtk_dark_hint(is_dark: bool) {
     {
         use gtk::prelude::GtkSettingsExt;
         if let Some(settings) = gtk::Settings::default() {
+            // Inside an AppImage the widget theme is the bundled GTK's own
+            // Adwaita, whatever the desktop names — the launch hook's rule
+            // ("custom themes are broken" against a bundled toolkit), kept
+            // here now that `apply_gtk_theme_early` has taken the hook's
+            // `GTK_THEME` away so that the *variant* can follow the palette.
+            if std::env::var_os("APPIMAGE").is_some() {
+                settings.set_gtk_theme_name(Some("Adwaita"));
+            }
             settings.set_gtk_application_prefer_dark_theme(is_dark);
         }
     }
@@ -982,6 +990,54 @@ async fn sync_now(
     Ok(n)
 }
 
+/// The values linuxdeploy-plugin-gtk's launch hook exports as `GTK_THEME`
+/// inside every AppImage Tauri builds: `Adwaita:<variant>`, the variant
+/// chosen by asking `gsettings` for the desktop's theme name. It asks with
+/// the bundled GLib already on `LD_LIBRARY_PATH`, which cannot reach the
+/// desktop's dconf, so the answer is the schema default and the variant is
+/// `light` — measured on a box whose desktop theme is Adwaita-dark, where
+/// the running process carried `GTK_THEME=Adwaita:light`. Both spellings
+/// are listed because the hook can in principle produce either, and neither
+/// is a person's choice. The hook honours `APPIMAGE_GTK_THEME` as a user
+/// override; so does [`drop_hook_gtk_theme`].
+const APPIMAGE_HOOK_GTK_THEMES: [&str; 2] = ["Adwaita:light", "Adwaita:dark"];
+
+/// Whether `GTK_THEME` should be taken out of the environment before GTK
+/// reads it: it holds the AppImage hook's value rather than a person's, no
+/// override was given, and the process is in fact an AppImage. Pure, so the
+/// table is testable; [`apply_gtk_theme_early`] does the environment.
+fn drop_hook_gtk_theme(gtk_theme: Option<&str>, user_override: Option<&str>, in_appimage: bool) -> bool {
+    in_appimage
+        && user_override.is_none()
+        && gtk_theme.is_some_and(|t| APPIMAGE_HOOK_GTK_THEMES.contains(&t))
+}
+
+/// Takes the AppImage hook's `GTK_THEME` out of the environment, and **must
+/// run before GTK initialises** — `main`, beside [`apply_display_tz_early`],
+/// for the same reason: GTK reads the variable once, at startup, and a
+/// `GTK_THEME` in the environment outranks `gtk-application-prefer-dark-theme`
+/// for the life of the process. Verified on GTK 3.24 rather than read: with
+/// `GTK_THEME=Adwaita:light` set, flipping the hint repaints nothing, and
+/// the same is true of a variant-less `GTK_THEME=Adwaita`; with the variable
+/// unset, the same flip goes dark.
+///
+/// That variable is why the shipped AppImage drew a white `<select>` menu
+/// and a light checkbox on a dark theme while a dev build did not (reported
+/// 2026-09-02): `apply_gtk_dark_hint` had been saying "dark" since v0.18.0
+/// to a GTK that had been told not to listen. With the variable gone the
+/// hint decides the variant and follows the palette live, which is what it
+/// was written for; the hook's other job — keeping a bundled GTK on the
+/// theme it ships with — moves to `apply_gtk_dark_hint`, which pins the
+/// theme *name* inside an AppImage and leaves the variant to the hint.
+pub fn apply_gtk_theme_early() {
+    let gtk_theme = std::env::var("GTK_THEME").ok();
+    let user_override = std::env::var("APPIMAGE_GTK_THEME").ok();
+    let in_appimage = std::env::var_os("APPIMAGE").is_some();
+    if drop_hook_gtk_theme(gtk_theme.as_deref(), user_override.as_deref(), in_appimage) {
+        std::env::remove_var("GTK_THEME");
+    }
+}
+
 /// Exports `TZ` from the display-tz sidecar, and **must run first thing in
 /// `main`** — before GTK, the webview, or anything else resolves the local
 /// zone, because they all capture it at process start and never ask again.
@@ -1524,6 +1580,25 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The hook's value goes, a person's stays, and outside an AppImage the
+    /// environment is not touched at all — a `GTK_THEME` there is somebody's
+    /// own choice, whatever it says.
+    #[test]
+    fn only_the_appimage_hooks_gtk_theme_is_dropped() {
+        assert!(drop_hook_gtk_theme(Some("Adwaita:light"), None, true));
+        assert!(drop_hook_gtk_theme(Some("Adwaita:dark"), None, true));
+        assert!(
+            !drop_hook_gtk_theme(Some("Adwaita:light"), Some("Adwaita:light"), true),
+            "APPIMAGE_GTK_THEME is the user's, and the hook honours it"
+        );
+        assert!(!drop_hook_gtk_theme(Some("Yaru:dark"), None, true), "not a value the hook writes");
+        assert!(
+            !drop_hook_gtk_theme(Some("Adwaita:light"), None, false),
+            "a person's own GTK_THEME, outside any AppImage"
+        );
+        assert!(!drop_hook_gtk_theme(None, None, true));
+    }
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
