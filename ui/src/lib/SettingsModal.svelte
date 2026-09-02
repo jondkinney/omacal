@@ -13,10 +13,11 @@
     getSettings, listTimezones, minutesOf, msOfMinutes, setDefaultCalendar,
     setDefaultEventDuration, setStartOnLogin, START_ON_LOGIN_OPTIONS,
     setDisplayTimezone, setFallbackReminders, setNotificationsEnabled,
+    setAppearance, APPEARANCE_OPTIONS,
     setQuitOnClose, setSecondTimezone, setSyncInterval, setTimeFormat, setTrayIcon,
     setWeatherEnabled, setWeekStart,
     setWeekStartsToday, setWeekViewDays,
-    type AppSettings, type StartOnLogin, type WeekViewDays,
+    type AppSettings, type Appearance, type StartOnLogin, type WeekViewDays,
   } from './settings';
   import { formatClock, type TimeFormat } from './timefmt';
   import type { WeekStartDay } from './weekstart';
@@ -470,6 +471,20 @@
     }
   }
 
+  /** `saveTimeFormat`'s shape: a closed set, so nothing to refuse, and the
+   *  backend's answer replaces `settings`. The repaint is not this function's
+   *  business — the backend emits `theme-changed` and `App`'s existing
+   *  listener applies it, the same path an Omarchy theme switch takes. */
+  async function saveAppearance(appearance: Appearance) {
+    note = null;
+    try {
+      settings = await setAppearance(appearance);
+      onsettingschange?.(settings);
+    } catch (e) {
+      note = { text: String(e), kind: 'error' };
+    }
+  }
+
   async function toggleQuitOnClose(on: boolean) {
     note = null;
     try {
@@ -708,6 +723,29 @@
       <p class="hint">
         Applies everywhere omacal prints a time, including the hour ruler down
         the side of Day and Week.
+      </p>
+
+      <div class="row">
+        <label class="lab" for="appearance">Appearance</label>
+        <div class="inline">
+          <select
+            id="appearance"
+            disabled={!settings}
+            value={settings?.appearance ?? 'auto'}
+            onchange={(e) =>
+              saveAppearance((e.currentTarget as HTMLSelectElement).value as Appearance)}
+          >
+            {#each APPEARANCE_OPTIONS as [id, label] (id)}
+              <option value={id}>{label}</option>
+            {/each}
+          </select>
+        </div>
+      </div>
+      <p class="hint">
+        omacal wears your Omarchy theme, and follows it as you switch. On any
+        other desktop there is no theme to follow, which is what Light and Dark
+        are for — they replace the whole palette, your theme's accent included,
+        and take effect without a restart.
       </p>
 
       <div class="row">

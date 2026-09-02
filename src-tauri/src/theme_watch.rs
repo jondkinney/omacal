@@ -39,7 +39,19 @@ pub fn spawn(app: AppHandle) {
             return;
         }
 
-        let mut last = crate::theme::resolve(crate::theme::omarchy_theme_dir().as_deref());
+        // The user's own choice, re-read on each change rather than captured:
+        // someone can pin Light while the watcher is already running, and a
+        // captured value would keep repainting the app back to their theme.
+        let appearance = |app: &tauri::AppHandle| {
+            use tauri::Manager;
+            tauri::async_runtime::block_on(crate::settings::appearance(
+                &app.state::<crate::AppState>().pool,
+            ))
+        };
+        let mut last = crate::theme::resolve(
+            crate::theme::omarchy_theme_dir().as_deref(),
+            appearance(&app),
+        );
         for event in &rx {
             if event.is_err() {
                 continue;
@@ -48,7 +60,14 @@ pub fn spawn(app: AppHandle) {
             std::thread::sleep(std::time::Duration::from_millis(150));
             while rx.try_recv().is_ok() {}
 
-            let next = crate::theme::resolve(crate::theme::omarchy_theme_dir().as_deref());
+            let chosen = appearance(&app);
+            // A pinned palette is not following anything, so a theme file
+            // changing under it is not news. Cheaper than resolving and
+            // comparing, and it says the rule out loud.
+            if chosen.is_pinned() {
+                continue;
+            }
+            let next = crate::theme::resolve(crate::theme::omarchy_theme_dir().as_deref(), chosen);
             if next != last {
                 tracing::info!("theme changed, repainting");
                 // GTK's dark hint follows the palette so the webview's native

@@ -34,6 +34,20 @@ export const START_ON_LOGIN_OPTIONS: ReadonlyArray<[StartOnLogin, string]> = [
  * and a second copy of that number in TypeScript is one that drifts from the
  * `sync_loop::MIN_INTERVAL_MS` actually enforced.
  */
+/** Which palette the app wears. `'auto'` is the desktop's — the Omarchy
+ *  theme if there is one, dark if there is not — and the two others are the
+ *  built-in palettes, chosen explicitly. */
+export type Appearance = 'auto' | 'light' | 'dark';
+
+/** The three rows, in the order the select offers them, and the labels the
+ *  spec drives them by. Here rather than in the markup so the component and
+ *  its test read one list. */
+export const APPEARANCE_OPTIONS: ReadonlyArray<[Appearance, string]> = [
+  ['auto', 'Follow the desktop theme'],
+  ['light', 'Light'],
+  ['dark', 'Dark'],
+];
+
 export type AppSettings = {
   /** As **stored**, not as clamped. The loop clamps on the way out, because a
    *  row edited by hand with `sqlite3` — until now the only way to set this,
@@ -74,6 +88,11 @@ export type AppSettings = {
    *  Quit lives. Turning it off is for setups where something else carries
    *  those actions, like Omarchy 4's bar widget. */
   trayIcon: boolean;
+  /** Which palette the app wears. `'auto'` by default — omacal has no theme
+   *  of its own and wears Omarchy's, which is exactly why the other two rows
+   *  exist: off Omarchy there was no theme to wear and dark was the only
+   *  answer the app had (issue #30). */
+  appearance: Appearance;
   /** Whether closing the window quits omacal rather than hiding it. Off by
    *  default: reminders only fire while the app runs, so this is the user
    *  choosing to give them up until they open it again, and the hint under
@@ -122,6 +141,12 @@ export const setNotificationsEnabled = (on: boolean) =>
  *  running tray immediately, so the icon reacts to the click. */
 export const setTrayIcon = (on: boolean) =>
   invoke<AppSettings>('set_tray_icon', { on });
+
+/** Stores the palette choice. The backend repaints on the spot — it emits the
+ *  same `theme-changed` event the Omarchy theme watcher does, so there is one
+ *  repaint path rather than two, and no restart. */
+export const setAppearance = (appearance: Appearance) =>
+  invoke<AppSettings>('set_appearance', { appearance });
 
 /** Stores the close-behaviour preference. Takes effect on the next close, not
  *  the next launch — the backend keeps its own copy of this one for the

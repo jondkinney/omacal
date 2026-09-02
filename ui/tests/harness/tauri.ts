@@ -15,7 +15,7 @@ import type { Calendar } from '../../src/lib/calendars';
 import type { EventDetail } from '../../src/lib/eventdetail';
 import type { TimeFormat } from '../../src/lib/timefmt';
 import type { WeekStartDay } from '../../src/lib/weekstart';
-import type { StartOnLogin, WeekViewDays } from '../../src/lib/settings';
+import type { Appearance, StartOnLogin, WeekViewDays } from '../../src/lib/settings';
 import {
   labelledWeek, weekLabel, APP_FIVE_MIN_AGO, APP_NOW, APP_SERIES_ID, APP_SERIES_OCCURRENCE,
   APP_ONE_OFF_ID, APP_ONE_OFF_START, APP_GUESTS_ID, APP_SOLO_SERIES_ID,
@@ -525,6 +525,7 @@ type StubSettings = {
   weatherEnabled: boolean;
   startOnLogin: StartOnLogin;
   quitOnClose: boolean;
+  appearance: Appearance;
 };
 
 const SETTINGS_KEY = 'omacal-stub-settings';
@@ -563,6 +564,9 @@ const DEFAULT_SETTINGS: StubSettings = {
   // The backend's default: closing hides the window, because a reminder can
   // only fire while the process is alive.
   quitOnClose: false,
+  // The backend's default: whatever the desktop says, which off Omarchy is
+  // the dark fallback — the behaviour every install already has.
+  appearance: 'auto',
 };
 
 function loadSettings(): StubSettings {
@@ -806,6 +810,9 @@ export function installTauriStub(scenario: string): Harness {
         return { ...settings };
       case 'set_start_on_login':
         settings = saveSettings({ ...settings, startOnLogin: args.mode as StartOnLogin });
+        return { ...settings };
+      case 'set_appearance':
+        settings = saveSettings({ ...settings, appearance: args.appearance as Appearance });
         return { ...settings };
       case 'set_quit_on_close':
         settings = saveSettings({ ...settings, quitOnClose: args.on as boolean });

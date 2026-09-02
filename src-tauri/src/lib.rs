@@ -163,8 +163,15 @@ async fn get_status(
 }
 
 #[tauri::command]
-fn get_palette() -> theme::Palette {
-    theme::resolve(theme::omarchy_theme_dir().as_deref())
+async fn get_palette(state: tauri::State<'_, AppState>) -> Result<theme::Palette, String> {
+    // The stored choice decides this, not the theme directory alone — see
+    // `theme::resolve`. Read per call rather than cached: this runs once at
+    // startup and again on a settings change, and a cache would be a second
+    // authority on which palette is current.
+    Ok(theme::resolve(
+        theme::omarchy_theme_dir().as_deref(),
+        settings::appearance(&state.pool).await,
+    ))
 }
 
 /// WebKitGTK draws its form-control popups — the `<select>` menu, the date
@@ -1294,7 +1301,15 @@ pub fn run() {
             // Setup runs on the main thread, and the palette is resolved the
             // same way get_palette resolves it for the page — the two answers
             // cannot disagree on which side of dark the theme is.
-            apply_gtk_dark_hint(theme::resolve(theme::omarchy_theme_dir().as_deref()).is_dark);
+            apply_gtk_dark_hint(
+                theme::resolve(
+                    theme::omarchy_theme_dir().as_deref(),
+                    tauri::async_runtime::block_on(settings::appearance(
+                        &app.state::<AppState>().pool,
+                    )),
+                )
+                .is_dark,
+            );
             theme_watch::spawn(app.handle().clone());
             #[cfg(target_os = "linux")]
             tz_watch::spawn(app.handle().clone());
@@ -1470,6 +1485,7 @@ pub fn run() {
             settings::set_notifications_enabled,
             settings::set_tray_icon,
             settings::set_quit_on_close,
+            settings::set_appearance,
             settings::set_start_on_login,
             settings::set_weather_enabled,
             settings::set_display_timezone,

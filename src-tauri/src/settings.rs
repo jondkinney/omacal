@@ -25,6 +25,7 @@ const TRAY_ICON_KEY: &str = "tray_icon";
 const QUIT_ON_CLOSE_KEY: &str = "quit_on_close";
 const AUTOSTART_KEY: &str = "autostart";
 const WEATHER_KEY: &str = "weather_enabled";
+const APPEARANCE_KEY: &str = "appearance";
 const DISPLAY_TZ_KEY: &str = "display_timezone";
 const SECOND_TZ_KEY: &str = "second_timezone";
 
@@ -247,6 +248,14 @@ pub struct AppSettings {
     /// the Omarchy 4 bar widget being the case this was built for, driving
     /// the app over the single-instance flags (`--sync-now`, `--quit`).
     pub tray_icon: bool,
+    /// Which palette the app wears: the desktop's, or one of the two built
+    /// in. **`Auto` by default**, which is what omacal has always done — the
+    /// Omarchy theme if there is one, the dark fallback if there is not.
+    ///
+    /// The setting exists because that second half was a dead end: omacal has
+    /// no theme of its own, so every desktop that is not Omarchy got dark and
+    /// had no way to ask for anything else (issue #30).
+    pub appearance: crate::theme::Appearance,
     /// Whether closing the window quits omacal instead of hiding it.
     ///
     /// **Off by default, and it stays a setting rather than becoming the
@@ -439,6 +448,7 @@ pub async fn read_settings(pool: &SqlitePool) -> AppSettings {
         // an explicit "0", never a typo.
         tray_icon: read(pool, TRAY_ICON_KEY).await.map(|v| v != "0").unwrap_or(true),
         quit_on_close: quit_on_close(pool).await,
+        appearance: appearance(pool).await,
         // Same "only a spelling this version writes moves the setting" rule
         // as its three neighbours, and here it is load bearing twice over:
         // absent is every install that predates this setting, and those all
@@ -606,6 +616,21 @@ pub(crate) async fn weather_enabled(pool: &SqlitePool) -> bool {
     read(pool, WEATHER_KEY).await.map(|v| v != "0").unwrap_or(true)
 }
 
+/// Which palette to wear (issue #30), named for [`weather_enabled`]'s reason:
+/// `get_palette`, `setup`'s GTK hint and the theme watcher all need the
+/// answer, and three parses of one row is three chances to disagree about
+/// what an absent one means.
+///
+/// Absent, garbage and a spelling a future version writes all resolve to
+/// `Auto` — the behaviour every installed copy already has.
+pub(crate) async fn appearance(pool: &SqlitePool) -> crate::theme::Appearance {
+    match read(pool, APPEARANCE_KEY).await.as_deref() {
+        Some("light") => crate::theme::Appearance::Light,
+        Some("dark") => crate::theme::Appearance::Dark,
+        _ => crate::theme::Appearance::Auto,
+    }
+}
+
 /// Whether closing the window should quit (issue #26), named for
 /// [`weather_enabled`]'s reason: `setup` reads it once to seed the flag the
 /// window handler consults, and `read_settings` reports it to the form.
@@ -679,6 +704,36 @@ pub async fn set_tray_icon(
         .await
         .map_err(|e| crate::errors::user_facing(&e))?;
     crate::tray::set_visible(&app, on);
+    Ok(read_settings(&state.pool).await)
+}
+
+/// Stores the palette choice and repaints on the spot.
+///
+/// Both halves are the point. The webview is repainted by the same
+/// `theme-changed` event the Omarchy watcher emits, so there is one repaint
+/// path rather than two; and GTK's dark hint follows, because WebKitGTK draws
+/// its `<select>` popups from the GTK theme rather than the page — a light app
+/// with black dropdowns is the bug that hint exists for. Through the main
+/// thread, since GTK settings must not be touched from a command's thread.
+#[tauri::command]
+pub async fn set_appearance(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    appearance: crate::theme::Appearance,
+) -> Result<AppSettings, String> {
+    write(&state.pool, APPEARANCE_KEY, appearance.as_str())
+        .await
+        .map_err(|e| crate::errors::user_facing(&e))?;
+
+    let palette = crate::theme::resolve(
+        crate::theme::omarchy_theme_dir().as_deref(),
+        appearance,
+    );
+    let dark = palette.is_dark;
+    let _ = app.run_on_main_thread(move || crate::apply_gtk_dark_hint(dark));
+    use tauri::Emitter;
+    let _ = app.emit("theme-changed", palette);
+
     Ok(read_settings(&state.pool).await)
 }
 

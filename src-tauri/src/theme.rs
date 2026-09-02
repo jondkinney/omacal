@@ -26,6 +26,77 @@ impl Palette {
             is_dark: true,
         }
     }
+
+    /// [`fallback_dark`](Self::fallback_dark)'s counterpart, and the whole of
+    /// issue #30: omacal has no theme of its own, it wears Omarchy's — so on
+    /// any desktop that is not Omarchy, [`omarchy_theme_dir`] answered `None`,
+    /// `resolve` answered the dark fallback, and there was no second answer
+    /// anywhere in the app. Every non-Omarchy user was on dark for good.
+    ///
+    /// Built rather than derived: inverting the dark palette's channels gives
+    /// grey text on grey, because the two ends of a screen are not symmetric.
+    ///
+    /// `surface` is a shade *darker* than `bg`, which is the opposite of the
+    /// dark palette and deliberate: it is the same direction [`parse_colors`]
+    /// shifts a light Omarchy theme's surface, so a card here sits the way a
+    /// card does under Rose Pine Dawn. The CSS has been rendering light themes
+    /// that way since v0.1.8; this is not the place to introduce a second
+    /// convention.
+    ///
+    /// Every value is contrast-led, measured against both `bg` and `surface`
+    /// because text lands on each: `text` at 16.6:1 and 15.2:1, `muted` at
+    /// 5.8:1 and 5.3:1, and `accent` at 5.1:1 and 4.6:1 — all clear of the
+    /// 4.5:1 that small text needs, which the first accent tried here (a
+    /// brighter `#3b6fe0`) did not at 4.1:1 on a card.
+    pub fn fallback_light() -> Self {
+        Self {
+            bg: "#fbfbfd".into(),
+            surface: "#f1f1f4".into(),
+            text: "#1b1b1f".into(),
+            muted: "#63636b".into(),
+            accent: "#3566d6".into(),
+            is_dark: false,
+        }
+    }
+}
+
+/// Which palette the app wears.
+///
+/// `Auto` is what omacal has always done and stays the default, so no
+/// installed copy changes under its user: the Omarchy theme if there is one,
+/// and the dark fallback if there is not.
+///
+/// `Light` and `Dark` are the user overruling that, and they take the built-in
+/// palette **whole** — including on Omarchy, where the theme's own accent is
+/// deliberately *not* kept. An accent picked to sit on a dark terminal has no
+/// obligation to be legible on white (Omarchy ships pale yellows and washed
+/// greens), and the entire point of choosing a palette explicitly is getting
+/// one that works. Someone who wants their theme's colours wants `Auto`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Appearance {
+    Auto,
+    Light,
+    Dark,
+}
+
+impl Appearance {
+    /// The stored spelling — the same string the wire uses, so a row read by
+    /// eye in `sqlite3` says what the settings modal says.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Appearance::Auto => "auto",
+            Appearance::Light => "light",
+            Appearance::Dark => "dark",
+        }
+    }
+
+    /// Whether this choice is the user's own rather than the desktop's — the
+    /// question `theme_watch` asks before repainting on a theme file it has
+    /// been told not to follow.
+    pub fn is_pinned(self) -> bool {
+        !matches!(self, Appearance::Auto)
+    }
 }
 
 #[derive(Deserialize)]
@@ -277,7 +348,16 @@ pub fn parse_alacritty(toml_src: &str) -> Option<Palette> {
 /// theme directory, then the built-in dark palette — and on the alacritty and
 /// fallback bases, `colors.toml`'s explicit `accent` still outranks whatever
 /// the base produced. Never fails.
-pub fn resolve(theme_dir: Option<&Path>) -> Palette {
+///
+/// A pinned [`Appearance`] short-circuits the whole chain, theme directory and
+/// all: it is the user saying which of the two built-in palettes they want,
+/// and a theme file cannot outrank that. `Auto` is the chain exactly as it was.
+pub fn resolve(theme_dir: Option<&Path>, appearance: Appearance) -> Palette {
+    match appearance {
+        Appearance::Light => return Palette::fallback_light(),
+        Appearance::Dark => return Palette::fallback_dark(),
+        Appearance::Auto => {}
+    }
     let Some(dir) = theme_dir else {
         return Palette::fallback_dark();
     };
@@ -372,13 +452,13 @@ blue = "#1e66f5"
 
     #[test]
     fn resolve_falls_back_when_the_directory_is_missing() {
-        let p = resolve(Some(std::path::Path::new("/nonexistent/omarchy/theme")));
+        let p = resolve(Some(std::path::Path::new("/nonexistent/omarchy/theme")), Appearance::Auto);
         assert_eq!(p, Palette::fallback_dark());
     }
 
     #[test]
     fn resolve_falls_back_when_given_nothing() {
-        assert_eq!(resolve(None), Palette::fallback_dark());
+        assert_eq!(resolve(None, Appearance::Auto), Palette::fallback_dark());
     }
 
     #[test]
@@ -398,7 +478,7 @@ blue = "#7aa2f7"
 white = "#a9b1d6"
 "##;
         std::fs::write(&theme_file, toml_content).expect("write temp theme file");
-        let p = resolve(Some(&temp_dir));
+        let p = resolve(Some(&temp_dir), Appearance::Auto);
         assert_eq!(p.bg, "#1a1b26");
         assert_eq!(p.text, "#c0caf5");
         assert_eq!(p.accent, "#7aa2f7");
@@ -423,7 +503,7 @@ white = "#a9b1d6"
         .unwrap();
         std::fs::write(temp_dir.join("colors.toml"), "accent = \"#e0af68\"").unwrap();
 
-        let p = resolve(Some(&temp_dir));
+        let p = resolve(Some(&temp_dir), Appearance::Auto);
         assert_eq!(p.accent, "#e0af68", "the theme said orange; blue was a guess");
         assert_eq!(p.bg, "#1a1b26", "everything else still comes from alacritty");
 
@@ -451,7 +531,7 @@ white = "#a9b1d6"
         )
         .unwrap();
         std::fs::write(temp_dir.join("colors.toml"), "accent = \"nope\"").unwrap();
-        assert_eq!(resolve(Some(&temp_dir)).accent, "#7aa2f7");
+        assert_eq!(resolve(Some(&temp_dir), Appearance::Auto).accent, "#7aa2f7");
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
@@ -539,6 +619,57 @@ light_foreground = "#adb5c4"
         assert!(contrast_ratio(parse_hex(&p.muted).unwrap(), parse_hex(&p.bg).unwrap()) >= 4.5);
     }
 
+    /// The built-in light palette is the one palette in the app nobody else
+    /// checks: an Omarchy theme's colours are the author's business and
+    /// `ensure_text_contrast` lifts what it must, but these five values are
+    /// ours, and if they drift the only symptom is grey-on-grey that someone
+    /// has to notice by eye. Both surfaces, because text lands on each.
+    #[test]
+    fn the_built_in_light_palette_is_readable_on_both_of_its_surfaces() {
+        let p = Palette::fallback_light();
+        assert!(!p.is_dark);
+        let hex = |s: &str| parse_hex(s).unwrap();
+        for (name, on) in [("bg", &p.bg), ("surface", &p.surface)] {
+            for (label, fg) in [("text", &p.text), ("muted", &p.muted), ("accent", &p.accent)] {
+                let ratio = contrast_ratio(hex(fg), hex(on));
+                assert!(ratio >= 4.5, "{label} on {name} is {ratio:.2}:1, below AA");
+            }
+        }
+        // Cards sit the way `parse_colors` makes them sit for a light Omarchy
+        // theme — a shade *darker* than the page, not lighter. One convention.
+        assert!(
+            relative_luminance(hex(&p.surface)) < relative_luminance(hex(&p.bg)),
+            "a light theme's surface is a shade below its background",
+        );
+    }
+
+    /// The setting overrules the theme directory entirely — that is what
+    /// choosing a palette means. Pinned to both directions because the bug it
+    /// prevents is silent: a `Light` that still read `colors.toml` would look
+    /// right on a light Omarchy theme and change nothing for the users this
+    /// exists for.
+    #[test]
+    fn a_pinned_appearance_outranks_whatever_theme_is_installed() {
+        let dir = std::env::temp_dir().join(format!("omacal-appearance-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("colors.toml"),
+            "mode = \"dark\"\nbackground = \"#2e3440\"\nforeground = \"#d8dee9\"\n",
+        )
+        .unwrap();
+
+        assert_eq!(resolve(Some(&dir), Appearance::Light), Palette::fallback_light());
+        assert_eq!(resolve(Some(&dir), Appearance::Dark), Palette::fallback_dark());
+        // Auto still follows the theme, which is every existing install.
+        let auto = resolve(Some(&dir), Appearance::Auto);
+        assert_eq!(auto.bg, "#2e3440", "Auto is the behaviour that must not move");
+
+        // And with no Omarchy at all — the case issue #30 is about.
+        assert_eq!(resolve(None, Appearance::Light), Palette::fallback_light());
+        assert_eq!(resolve(None, Appearance::Auto), Palette::fallback_dark());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     /// Pre-Omarchy-4 and custom themes may have no `light_foreground`. Preserve
     /// their muted hue, but move it toward their own foreground just enough to
     /// make ordinary secondary labels readable.
@@ -597,7 +728,7 @@ muted = "#4c566a"
         )
         .unwrap();
 
-        let p = resolve(Some(&temp_dir));
+        let p = resolve(Some(&temp_dir), Appearance::Auto);
         assert_eq!(p.bg, "#1a1b26");
         assert_eq!(p.text, "#a9b1d6");
         assert_eq!(p.accent, "#e0af68");
@@ -617,7 +748,7 @@ muted = "#4c566a"
         )
         .unwrap();
 
-        let p = resolve(Some(&temp_dir));
+        let p = resolve(Some(&temp_dir), Appearance::Auto);
         assert_eq!(p.bg, "#eff1f5");
         assert_eq!(p.accent, "#1e66f5");
         assert!(!p.is_dark);

@@ -1811,6 +1811,36 @@ test.describe('App', () => {
   });
 
   /**
+   * Issue #30. omacal has no theme of its own — it wears Omarchy's — so on
+   * any other desktop the dark fallback was the only answer the app had, for
+   * good. The palette *application* is pinned by the `theme-changed` specs
+   * above, in both directions; what this pins is that a user can ask for the
+   * other one, and that asking for nothing still means what it always did.
+   */
+  test('the appearance can be chosen, and still defaults to the desktop', async ({ page }) => {
+    await writable(page);
+    await page.getByRole('button', { name: 'Menu' }).click();
+    await page.getByRole('button', { name: 'Settings…' }).click();
+    const modal = page.getByRole('dialog', { name: 'Settings' });
+    const select = modal.locator('#appearance');
+    await expect(select).toHaveValue('auto');
+    await expect(select.locator('option')).toHaveText([
+      'Follow the desktop theme', 'Light', 'Dark',
+    ]);
+
+    await select.selectOption('light');
+    const [args] = await callsTo(page, 'set_appearance');
+    expect(args).toEqual({ appearance: 'light' });
+
+    // Reopened, the select shows what was stored rather than its own default.
+    await page.keyboard.press('Escape');
+    await expect(modal).toHaveCount(0);
+    await page.getByRole('button', { name: 'Menu' }).click();
+    await page.getByRole('button', { name: 'Settings…' }).click();
+    await expect(modal.locator('#appearance')).toHaveValue('light');
+  });
+
+  /**
    * Issue #26. The setting exists; the default does not move. Both halves are
    * asserted here because the second is the one a future edit is likeliest to
    * break — an install that never touches this checkbox must go on hiding on
