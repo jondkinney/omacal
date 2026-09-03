@@ -4524,3 +4524,53 @@ test.describe('App: the first day of the week', () => {
     await expect(monthHeader(page).first()).toHaveText('SUN');
   });
 });
+
+test.describe('App: zooming the hours', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.clock.setFixedTime(APP_NOW);
+  });
+  const colHeight = (page: Page) =>
+    page.locator('.col').first().evaluate((el) => el.getBoundingClientRect().height);
+  const lastStored = (page: Page) => page.evaluate(() => {
+    const writes = window.__harness.calls.filter((c) => c.cmd === 'set_hour_height');
+    return writes.length ? writes[writes.length - 1].args : null;
+  });
+
+  test('Ctrl+= zooms the hours, and the height is kept for next time', async ({ page }) => {
+    await page.goto(app());
+    await expect(page.locator('.col')).toHaveCount(7);
+    expect(await colHeight(page)).toBe(1680);
+
+    await page.keyboard.press('Control+=');
+    await expect.poll(() => colHeight(page)).toBe(88 * 24); // 70 x 1.25 = 87.5, drawn at 88
+    await page.keyboard.press('Control+-');
+    await expect.poll(() => colHeight(page)).toBe(1680);
+    await page.keyboard.press('Control+=');
+    await page.keyboard.press('Control+=');
+    await expect.poll(() => colHeight(page)).toBe(109 * 24); // 109.375, drawn and stored at 109
+
+    // Stored once the keys have gone quiet — whole pixels, the final value.
+    await expect.poll(() => lastStored(page), { timeout: 3000 }).toEqual({ px: 109 });
+
+    // And read back on the next launch: the stub keeps its settings for the tab.
+    await page.reload();
+    await expect(page.locator('.col')).toHaveCount(7);
+    await expect.poll(() => colHeight(page)).toBe(109 * 24);
+
+    // Ctrl+0 is the way back.
+    await page.keyboard.press('Control+0');
+    await expect.poll(() => colHeight(page)).toBe(1680);
+  });
+
+  test('the keys mean nothing where there is no hour grid', async ({ page }) => {
+    await page.goto(app());
+    await expect(page.locator('.col')).toHaveCount(7);
+    await page.keyboard.press('3');
+    await expect(page.locator('.mcell').first()).toBeVisible();
+    await page.keyboard.press('Control+=');
+    await page.keyboard.press('2');
+    await expect(page.locator('.col')).toHaveCount(7);
+    expect(await colHeight(page)).toBe(1680);
+    expect(await lastStored(page)).toBeNull();
+  });
+});

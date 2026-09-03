@@ -14,6 +14,17 @@ use crate::AppState;
 const SYNC_INTERVAL_KEY: &str = "sync_interval_ms";
 const NOTIFICATIONS_KEY: &str = "notifications_enabled";
 const LIST_MODE_KEY: &str = "list_mode";
+const HOUR_HEIGHT_KEY: &str = "hour_height";
+/// Pixels per hour in Day and Week when nobody has zoomed: the grid's own
+/// 70 (see `WeekGrid.svelte`'s `.col`), and what an unusable stored value
+/// falls back to.
+pub const HOUR_HEIGHT_DEFAULT: i64 = 70;
+/// The reach of the zoom. 30 puts a whole day in a laptop pane with the
+/// hour labels still a line apart; 160 is six hours to a tall pane. Mirrored
+/// in `ui/src/lib/zoom.ts`, which clamps the gesture before it ever asks —
+/// this pair is the floor and ceiling the row is held to regardless.
+pub const HOUR_HEIGHT_MIN: i64 = 30;
+pub const HOUR_HEIGHT_MAX: i64 = 160;
 const FALLBACK_KEY: &str = "fallback_reminder_minutes";
 const DEFAULT_CALENDAR_KEY: &str = "default_calendar_id";
 const DEFAULT_EVENT_DURATION_KEY: &str = "default_event_duration_minutes";
@@ -309,6 +320,14 @@ pub struct AppSettings {
     /// `▦`/`☰` beside the view switcher, and a second control for the same
     /// value in a modal would be a second place for it to disagree.
     pub list_mode: bool,
+    /// Pixels per hour in Day and Week (2026-09-03): what a pinch,
+    /// Ctrl+scroll or Ctrl+=/- left the grid at. Here for `list_mode`'s
+    /// reason — a zoom that lasted one session would be redone every
+    /// morning — and, like it, shown by no tab in the modal: the gesture is
+    /// the control. Held to [`HOUR_HEIGHT_MIN`]..=[`HOUR_HEIGHT_MAX`] on
+    /// write; a stored value outside it, or not a number, reads as
+    /// [`HOUR_HEIGHT_DEFAULT`].
+    pub hour_height: i64,
     /// Minutes-before for the fallback reminders (fallback spec §3): what
     /// fires for a timed event that follows its calendar's defaults when the
     /// calendar has none. Minutes alone, because the fallback is popup by
@@ -480,6 +499,11 @@ pub async fn read_settings(pool: &SqlitePool) -> AppSettings {
         // hand-edited row lands on that same default rather than silently
         // turning the calendar into a list.
         list_mode: read(pool, LIST_MODE_KEY).await.map(|v| v == "1").unwrap_or(false),
+        hour_height: read(pool, HOUR_HEIGHT_KEY)
+            .await
+            .and_then(|v| v.parse::<i64>().ok())
+            .filter(|px| (HOUR_HEIGHT_MIN..=HOUR_HEIGHT_MAX).contains(px))
+            .unwrap_or(HOUR_HEIGHT_DEFAULT),
         // **Shipped as 60 and 10, not empty** (fallback spec §3): the gap
         // this fills is real meetings going silent on receive-only shared
         // calendars, and an empty default would leave a fresh install with
@@ -1027,6 +1051,21 @@ pub async fn set_list_mode(
     Ok(read_settings(&state.pool).await)
 }
 
+/// Stores the hour height, clamped rather than refused: the value comes off
+/// a gesture, and the honest answer to "a little past the end" is the end,
+/// not an error surfacing under somebody's fingers mid-pinch.
+#[tauri::command]
+pub async fn set_hour_height(
+    state: tauri::State<'_, AppState>,
+    px: i64,
+) -> Result<AppSettings, String> {
+    let px = px.clamp(HOUR_HEIGHT_MIN, HOUR_HEIGHT_MAX);
+    write(&state.pool, HOUR_HEIGHT_KEY, &px.to_string())
+        .await
+        .map_err(|e| crate::errors::user_facing(&e))?;
+    Ok(read_settings(&state.pool).await)
+}
+
 /// Stores the clock format. Like [`set_list_mode`] nothing is refused, and
 /// here the *type* is the reason rather than the triviality of a boolean:
 /// [`TimeFormat`] has no third variant for a caller to send.
@@ -1138,6 +1177,7 @@ mod tests {
         assert!(s.notifications_enabled, "reminders must be on until turned off");
         assert_eq!(s.min_sync_interval_ms, crate::sync_loop::MIN_INTERVAL_MS);
         assert!(!s.list_mode, "a fresh install draws the grid, not a list");
+        assert_eq!(s.hour_height, HOUR_HEIGHT_DEFAULT, "a fresh install draws 70px hours");
         assert_eq!(
             s.fallback_reminder_minutes,
             vec![60, 10],
@@ -1647,6 +1687,20 @@ mod tests {
         let p = pool().await;
         write(&p, LIST_MODE_KEY, "yes").await.unwrap();
         assert!(!read_settings(&p).await.list_mode);
+    }
+
+    /// The hour height round-trips, and a stored value the gesture could
+    /// never have produced — a hand-edited row, a future build's wider
+    /// range — reads as the default rather than as a 2px or 2000px hour.
+    #[tokio::test]
+    async fn the_hour_height_is_stored_and_read_back_within_its_range() {
+        let p = pool().await;
+        write(&p, HOUR_HEIGHT_KEY, "112").await.unwrap();
+        assert_eq!(read_settings(&p).await.hour_height, 112);
+        for bad in ["2000", "12", "tall", ""] {
+            write(&p, HOUR_HEIGHT_KEY, bad).await.unwrap();
+            assert_eq!(read_settings(&p).await.hour_height, HOUR_HEIGHT_DEFAULT, "stored {bad:?}");
+        }
     }
 
     /// Absent and empty both read as "system" — "" is how the setter clears

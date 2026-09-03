@@ -24,6 +24,7 @@ mod notify_mac;
 mod notify_loop;
 #[cfg(target_os = "linux")]
 mod nvidia;
+mod pinch;
 mod restart;
 mod resume;
 mod search;
@@ -1290,6 +1291,7 @@ pub fn run() {
             // second copy of the window object is one that drifts.
             let frame = tauri::async_runtime::block_on(settings::window_frame(&pool));
             settings::apply_window_frame(app.handle(), frame);
+            pinch::install(app.handle());
 
             // **The window, as early as there is an answer.**
             //
@@ -1542,6 +1544,7 @@ pub fn run() {
             tasks::delete_task_cmd,
             tasks::task_lists,
             settings::set_list_mode,
+            settings::set_hour_height,
             settings::set_fallback_reminders,
             settings::set_default_calendar,
             settings::set_default_event_duration,

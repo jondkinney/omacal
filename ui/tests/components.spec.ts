@@ -4990,3 +4990,91 @@ test.describe('Header invitation tray', () => {
     expect(await page.evaluate(() => (window as any).__inviteAnswers)).toBe(0);
   });
 });
+
+test.describe('WeekGrid: zooming the hours', () => {
+  const show = (f: string) => `/tests/harness/index.html?c=WeekGrid&f=${f}`;
+  const colHeight = (page: Page) =>
+    page.locator('.col').first().evaluate((el) => el.getBoundingClientRect().height);
+  /** The fraction of the day under a point `y` px below the body's top edge
+   *  — the instant a zoom has to hold still. */
+  const instantAt = (page: Page, y: number) =>
+    page.getByTestId('week-body').evaluate((el, y) => (el.scrollTop + y) / el.scrollHeight, y);
+
+  test('Ctrl+scroll makes the hours taller, keeping the instant under the pointer', async ({ page }) => {
+    await page.goto(show('populated'));
+    expect(await colHeight(page)).toBe(1680);
+    const box = (await page.getByTestId('week-body').boundingBox())!;
+    const y = 200;
+    await page.mouse.move(box.x + box.width / 2, box.y + y);
+    const before = await instantAt(page, y);
+
+    await page.keyboard.down('Control');
+    await page.mouse.wheel(0, -200);
+    await page.keyboard.up('Control');
+    await expect.poll(() => colHeight(page)).toBeGreaterThan(1680);
+    expect(await instantAt(page, y)).toBeCloseTo(before, 2);
+
+    // Down brings it back — and a plain scroll, no Ctrl, never touches it.
+    await page.keyboard.down('Control');
+    await page.mouse.wheel(0, 200);
+    await page.keyboard.up('Control');
+    await expect.poll(() => colHeight(page)).toBe(1680);
+    await page.mouse.wheel(0, -200);
+    await page.waitForTimeout(50);
+    expect(await colHeight(page)).toBe(1680);
+  });
+
+  test('a pinch does the same, from either side of the page', async ({ page }) => {
+    await page.goto(show('populated'));
+    const box = (await page.getByTestId('week-body').boundingBox())!;
+    const at = { clientX: box.x + 100, clientY: box.y + 100 };
+
+    // macOS: WebKit's own gesture events, scale cumulative since gesturestart.
+    await page.getByTestId('week-body').evaluate((el, at) => {
+      const fire = (type: string, scale: number) => {
+        const e = new Event(type, { bubbles: true, cancelable: true });
+        Object.assign(e, { scale, ...at });
+        el.dispatchEvent(e);
+      };
+      fire('gesturestart', 1);
+      fire('gesturechange', 1.2);
+      fire('gesturechange', 1.5);
+      fire('gestureend', 1.5);
+    }, at);
+    await expect.poll(() => colHeight(page)).toBe(1680 * 1.5);
+
+    // Linux: the Tauri event `pinch.rs` emits, same shape, widget coordinates.
+    await page.evaluate(async (at) => {
+      const h = (window as any).__harness;
+      await h.emit('pinch', { phase: 'begin', scale: 1, x: at.clientX, y: at.clientY });
+      await h.emit('pinch', { phase: 'update', scale: 0.5, x: at.clientX, y: at.clientY });
+      await h.emit('pinch', { phase: 'end', scale: 1, x: at.clientX, y: at.clientY });
+    }, at);
+    // 105 x 0.5 = 52.5, drawn at 53: the state keeps the fraction, the
+    // column does not (see `clampHourPx`).
+    await expect.poll(() => colHeight(page)).toBe(53 * 24);
+  });
+
+  test("a pinch somewhere else in the window is not this grid's", async ({ page }) => {
+    // The Linux event is app-wide; a pinch over the sidebar or the header
+    // strip is nothing to the hour grid.
+    await page.goto(show('populated'));
+    await page.evaluate(async () => {
+      const h = (window as any).__harness;
+      await h.emit('pinch', { phase: 'begin', scale: 1, x: 5000, y: 5000 });
+      await h.emit('pinch', { phase: 'update', scale: 2, x: 5000, y: 5000 });
+    });
+    await page.waitForTimeout(100);
+    expect(await colHeight(page)).toBe(1680);
+  });
+
+  test('the hours stop at the range', async ({ page }) => {
+    await page.goto(show('populated'));
+    const box = (await page.getByTestId('week-body').boundingBox())!;
+    await page.mouse.move(box.x + 100, box.y + 100);
+    await page.keyboard.down('Control');
+    for (let i = 0; i < 12; i++) await page.mouse.wheel(0, -400);
+    await page.keyboard.up('Control');
+    await expect.poll(() => colHeight(page)).toBe(160 * 24);
+  });
+});

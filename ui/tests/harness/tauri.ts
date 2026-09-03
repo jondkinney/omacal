@@ -513,6 +513,7 @@ type StubSettings = {
   notificationsEnabled: boolean;
   minSyncIntervalMs: number;
   listMode: boolean;
+  hourHeight: number;
   fallbackReminderMinutes: number[];
   defaultCalendarId: number | null;
   defaultEventDurationMinutes: number;
@@ -547,6 +548,8 @@ const DEFAULT_SETTINGS: StubSettings = {
   defaultCalendarId: null,
   defaultEventDurationMinutes: 60,
   listMode: false,
+  // The grid's own 70, so every column golden holds.
+  hourHeight: 70,
   // The clock the app has always drawn, so every existing spec and every
   // committed screenshot golden goes on describing the same pixels.
   timeFormat: '24h',
@@ -839,6 +842,11 @@ export function installTauriStub(scenario: string): Harness {
         return { ...settings };
       case 'set_list_mode':
         settings = saveSettings({ ...settings, listMode: args.on as boolean });
+        return { ...settings };
+      case 'set_hour_height':
+        // The backend clamps; the stub stores what it was told, so a spec
+        // reads back exactly the value the app asked to keep.
+        settings = saveSettings({ ...settings, hourHeight: args.px as number });
         return { ...settings };
       case 'set_week_start':
         settings = saveSettings({

@@ -77,6 +77,10 @@ export type AppSettings = {
    *  view switcher — but it is a preference and is stored beside the others,
    *  which is what makes it survive a restart. */
   listMode: boolean;
+  /** Pixels per hour in Day and Week — what a pinch, Ctrl+scroll or Ctrl+=/-
+   *  left the grid at. Stored for `listMode`'s reason and, like it, shown by
+   *  no tab: the gesture is the control. `zoom.ts` owns the range. */
+  hourHeight: number;
   /** Minutes-before for the fallback reminders (fallback spec §3): what fires
    *  for a timed event that follows its calendar's defaults when the calendar
    *  has none. Popup by construction — omacal never sends email. */
@@ -227,6 +231,11 @@ export const setWeekViewDays = (days: WeekViewDays) =>
  *  there is no value of a boolean the app has to protect anything from. */
 export const setListMode = (on: boolean) =>
   invoke<AppSettings>('set_list_mode', { on });
+
+/** Stores the hour height. The backend clamps rather than refuses — the
+ *  value comes off a gesture, and "a little past the end" means the end. */
+export const setHourHeight = (px: number) =>
+  invoke<AppSettings>('set_hour_height', { px });
 
 /** Stores the fallback reminder rows. The backend refuses out-of-bounds
  *  values with the limit named (fallback spec §3); `[]` is accepted and is

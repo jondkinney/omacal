@@ -8,6 +8,8 @@
   import { dateKey, type DayWeather } from './weather';
   import { gutterLabel, zoneAbbrev, zoneGutterLabel } from './timefmt';
   import { tick } from 'svelte';
+  import { HOUR_PX_DEFAULT, hourPxAfterPinch, hourPxAfterWheel, scrollTopKeeping } from './zoom';
+  import { onPinch, type Pinch } from './pinch';
   import type { WeekPayload, UiEvent } from './api';
   import type { Rect } from './position';
   import EventBlock from './EventBlock.svelte';
@@ -20,8 +22,13 @@
   import { cursorNamesEvent, type KeyboardCursor } from './keyboardnav';
   import { dateOf } from './eventform';
 
-  let { week, weather = null, formPreview = null, createColor = null, revealNowRequest = 0, keyboardCursor = null, onpan = null, oncreate, oncreateallday, onedit, ondelete, oncopy, onmove, ondraftmove = null, onresponded }: {
+  let { week, weather = null, formPreview = null, createColor = null, revealNowRequest = 0, keyboardCursor = null, onpan = null, hourPx = $bindable(HOUR_PX_DEFAULT), oncreate, oncreateallday, onedit, ondelete, oncopy, onmove, ondraftmove = null, onresponded }: {
     week: WeekPayload;
+    /** How tall an hour is (2026-09-03). Bound, because both ends write it:
+     *  the grid, from a pinch or Ctrl+scroll over itself, and `App`, from the
+     *  keys and the stored preference. `zoom.ts` owns the arithmetic and the
+     *  range; this grid only ever asks it. */
+    hourPx?: number;
     /** A horizontal wheel/trackpad gesture asking the window to slide by
      *  whole days — positive is forward. Optional: a grid without it (a
      *  future embedding) simply keeps the wheel native. */
@@ -170,6 +177,57 @@
   // keep where you were looking, which is what every desktop calendar does.
   let bodyEl: HTMLDivElement | undefined = $state();
   let hasScrolled = false;
+
+  // ---- Zoom: the one absolute number, and keeping the pointer's instant put.
+  /** The height the columns currently draw at. Compared against `hourPx` in
+   *  the effect below to tell a change apart from a re-run. */
+  let appliedPx = hourPx;
+  /** Where the next change should hold still, in pixels below the body's
+   *  top edge: the pointer, for a wheel or a pinch. `null` — a key, or the
+   *  stored preference arriving — holds the middle of the pane. */
+  let zoomAnchorY: number | null = null;
+  /** The height when the pinch began; its cumulative scale applies to this. */
+  let pinchStartPx = 0;
+
+  /** Rescale the scroll so the instant under the anchor stays under it.
+   *  `$effect.pre`, because `scrollTop` has to be read *before* the columns
+   *  change height — afterwards a zoom-out may already have clamped it. The
+   *  write waits for the DOM, since until then the taller column does not
+   *  exist to scroll into. */
+  $effect.pre(() => {
+    const target = hourPx;
+    if (target === appliedPx) return;
+    const el = bodyEl;
+    if (!el) { appliedPx = target; return; }
+    const anchorY = zoomAnchorY ?? el.clientHeight / 2;
+    const next = scrollTopKeeping(el.scrollTop, anchorY, appliedPx, target);
+    appliedPx = target;
+    zoomAnchorY = null;
+    tick().then(() => { el.scrollTop = next; });
+  });
+
+  /** A pinch over the grid. Anywhere else in the window — the Linux event
+   *  is app-wide — is not this grid's to answer. Above the body counts: the
+   *  day headers are the grid too, and a pinch that starts on a date and
+   *  drifts is one gesture. */
+  function handlePinch(p: Pinch) {
+    if (!bodyEl) return;
+    const r = bodyEl.getBoundingClientRect();
+    if (p.clientX < r.left || p.clientX > r.right || p.clientY > r.bottom) return;
+    if (p.phase === 'begin') { pinchStartPx = hourPx; return; }
+    if (p.phase === 'end') { pinchStartPx = 0; return; }
+    // An update with no begin — the gesture began off the grid and drifted
+    // on — takes the current height as its start, undoing the scale it has
+    // already accumulated, so it continues from here rather than jumping.
+    if (!pinchStartPx) pinchStartPx = hourPx / p.scale;
+    zoomAnchorY = Math.max(0, p.clientY - r.top);
+    hourPx = hourPxAfterPinch(pinchStartPx, p.scale);
+  }
+
+  $effect(() => {
+    if (!bodyEl) return;
+    return onPinch(bodyEl, handlePinch);
+  });
   let handledRevealNowRequest: number | null = null;
   const INITIAL_VIEWPORT_FRACTION = 1 / 3;
   const NOW_VIEWPORT_FRACTION = 0.45;
@@ -1049,6 +1107,17 @@
   let panAccum = 0;
   let panDecay: ReturnType<typeof setTimeout> | undefined;
   function wheelPan(e: WheelEvent) {
+    // Ctrl+scroll zooms the hours (2026-09-03). `App` has already cancelled
+    // the browser's own page zoom on every Ctrl+wheel, so this only has to
+    // give the gesture a meaning; anchored on the pointer, and on the
+    // *body's* frame even from the day headers above it, which share this
+    // handler but not this scroller.
+    if (e.ctrlKey) {
+      e.preventDefault();
+      if (bodyEl) zoomAnchorY = Math.max(0, e.clientY - bodyEl.getBoundingClientRect().top);
+      hourPx = hourPxAfterWheel(hourPx, e.deltaY);
+      return;
+    }
     if (!onpan || Math.abs(e.deltaX) <= Math.abs(e.deltaY)) return;
     e.preventDefault();
     panAccum += e.deltaX;
@@ -1112,7 +1181,7 @@
   onopen={openPopover}
 />
 
-<div class="grid body" style="--cols:{week.days.length}; --gutter:{gutterWidth()}" bind:this={bodyEl} data-testid="week-body" onwheel={wheelPan}>
+<div class="grid body" style="--cols:{week.days.length}; --gutter:{gutterWidth()}; --hour-px:{Math.round(hourPx)}px" bind:this={bodyEl} data-testid="week-body" onwheel={wheelPan}>
   <div class="gutter">
     {#each HOURS as h}
       {#if secondZone()}
@@ -1315,8 +1384,10 @@
      a cap on hours: the pane divided by 70 is what fits, so a small window
      shows ~12 hours and a tall monitor simply shows more. The initial
      scroll, the sweep math and the hour rules are all fractions of the
-     column, so nothing else knows the number. */
-  .col { position: relative; min-height: 1680px; }
+     column, so nothing else knows the number — which is what made it
+     zoomable (2026-09-03): `--hour-px` is `hourPx`, 70 until a pinch,
+     Ctrl+scroll or Ctrl+=/- says otherwise, and `zoom.ts` holds the range. */
+  .col { position: relative; min-height: calc(var(--hour-px, 70px) * 24); }
   .col.today { background: var(--today-tint); border-radius: 6px; }
   .col.keyboard { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
                   border-radius: 6px; }

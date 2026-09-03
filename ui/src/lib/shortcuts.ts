@@ -145,6 +145,10 @@ export const CHORDS: { label: string; text: string; hint?: string }[] = [
     hint: 'with its popover open — click the event first' },
   { label: `${MOD_LABEL} V`, text: 'Paste as a new event',
     hint: 'opens the form on the day you are looking at, to fine-tune first' },
+  { label: `${MOD_LABEL} =`, text: 'Taller hours',
+    hint: 'Day and Week — a trackpad pinch or Ctrl+scroll over the grid does the same' },
+  { label: `${MOD_LABEL} -`, text: 'Shorter hours' },
+  { label: `${MOD_LABEL} 0`, text: 'Hours back to their usual height' },
 ];
 
 /** A form chord rather than a bare key: it bubbles from any field to the form

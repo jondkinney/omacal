@@ -29,7 +29,8 @@
   import {
     dayCursor, eventAtCursor, moveDay, moveEvent, type KeyboardCursor,
   } from './lib/keyboardnav';
-  import { getSettings, setListMode, type AppSettings, type WeekViewDays } from './lib/settings';
+  import { getSettings, setHourHeight, setListMode, type AppSettings, type WeekViewDays } from './lib/settings';
+  import { HOUR_PX_DEFAULT, hourPxStepped } from './lib/zoom';
   import { setClockFormat } from './lib/clock.svelte';
   import { setSecondZone } from './lib/secondzone.svelte';
   import { setWeekStartDay } from './lib/weekstartstore.svelte';
@@ -312,6 +313,31 @@
    */
   let listMode = $state(false);
 
+  /** How tall an hour is in Day and Week. Bound into `WeekGrid`, which
+   *  changes it from a pinch or Ctrl+scroll over itself; the keys change it
+   *  here; the stored preference seeds it below. Persisted a beat after it
+   *  settles rather than per change — a pinch is dozens of updates, and
+   *  each would be a row write. */
+  let hourPx = $state(HOUR_PX_DEFAULT);
+  let persistedHourPx = HOUR_PX_DEFAULT;
+  let hourPxTimer: ReturnType<typeof setTimeout> | undefined;
+  $effect(() => {
+    const px = hourPx;
+    if (px === persistedHourPx) return;
+    clearTimeout(hourPxTimer);
+    hourPxTimer = setTimeout(() => {
+      persistedHourPx = px;
+      // Whole pixels on the wire — the row is an integer, and so is what
+      // the grid draws (`zoom.ts` says why the state itself is not).
+      setHourHeight(Math.round(px)).catch((err) => {
+        // The zoom on screen stands either way; only the next launch is
+        // affected, and that is worth a line.
+        error = `Hour height not saved · ${String(err)}`;
+      });
+    }, 400);
+    return () => clearTimeout(hourPxTimer);
+  });
+
   const keyboardDays = $derived.by<ListDay[]>(() => {
     if (view === 'month' && month) {
       const days = allDaysFromMonth(month);
@@ -586,6 +612,9 @@
         setSecondZone(s.secondTimezone);
         setTemperatureUnit(s.temperatureUnit);
         if (weekViewChoices === weekBefore) applyWeekSettings(s, false);
+        // Only if nobody has zoomed in the meantime: a pinch made while the
+        // read was in flight is the newer fact, and it is about to be stored.
+        if (hourPx === persistedHourPx) { hourPx = s.hourHeight; persistedHourPx = s.hourHeight; }
         if (listModeChoices !== before) return; // superseded by the user's own choice
         listMode = s.listMode;
       })
@@ -756,13 +785,15 @@
   // The other half of that story: a sync that *fails* has to say so. Nothing
   // else on screen can — the "Synced N ago" label is computed from the last
   // successful sync, so it cannot report its own staleness.
-  // The webview is a browser and zooms like one: Ctrl+scroll — and a
-  // touchpad pinch, which the engine reports as the same gesture — scales
-  // the whole page. Brushing Ctrl while scrolling the grid did exactly
-  // that, and "why is everything suddenly huge" is not a question a
-  // calendar should pose. The wheel default is cancelable, so cancelling
-  // it when Ctrl is down keeps scroll as scroll; `passive: false` is what
-  // makes the preventDefault count.
+  // The webview is a browser and zooms like one: Ctrl+scroll scales the
+  // whole page. Brushing Ctrl while scrolling the grid did exactly that,
+  // and "why is everything suddenly huge" is not a question a calendar
+  // should pose. The wheel default is cancelable, so cancelling it when
+  // Ctrl is down keeps scroll as scroll; `passive: false` is what makes the
+  // preventDefault count. (This used to claim a touchpad pinch arrives as
+  // the same gesture. It does not, in WebKit on either platform — see
+  // `pinch.ts`; the pinch has its own path, and `WeekGrid` gives Ctrl+wheel
+  // its meaning after this has taken the browser's away.)
   $effect(() => {
     const blockZoomWheel = (e: WheelEvent) => {
       if (e.ctrlKey) e.preventDefault();
@@ -1619,6 +1650,20 @@
       }
       return;
     }
+    // Ctrl+= / Ctrl+- / Ctrl+0 zoom the hours in Day and Week — the keyboard's
+    // pinch (2026-09-03). `=` as well as `+`, because on the layouts this
+    // ships to `+` is Shift-`=`, and browsers have always read either as
+    // zoom in; Shift is therefore allowed here alone among the chords. The
+    // webview's own zoom hotkeys are off (`zoomHotkeysEnabled: false`), so
+    // these keys meant nothing before. Claimed only where a grid is on
+    // screen; anywhere else they still mean nothing.
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && ['=', '+', '-', '0'].includes(e.key)) {
+      if ((view === 'day' || view === 'week') && !listMode) {
+        e.preventDefault();
+        hourPx = e.key === '0' ? HOUR_PX_DEFAULT : hourPxStepped(hourPx, e.key === '-' ? -1 : 1);
+      }
+      return;
+    }
     // A modifier means the key belongs to the browser or the OS, not to
     // omacal: ⌘N opens a window and ⌘L focuses a location bar. Every shortcut
     // below is a bare key, so this turns nothing off that ever worked — and it
@@ -1763,7 +1808,7 @@
                  keyboardCursor={visibleKeyboardCursor}
                  onopen={openGridEvent} />
     {:else}
-      <WeekGrid {week} {weather} {formPreview} {createColor} {revealNowRequest}
+      <WeekGrid {week} {weather} {formPreview} {createColor} {revealNowRequest} bind:hourPx
                 keyboardCursor={visibleKeyboardCursor}
                 onpan={panView}
                 oncreate={newEventAt} oncreateallday={newAllDayEventOver}
