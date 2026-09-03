@@ -413,6 +413,7 @@ mod tests {
             etag: None,
             sequence: 0,
             organizer_email: None,
+            guests_can_modify: false,
             attendees: Vec::new(),
             reminders: Reminders { use_default: true, overrides: Vec::new() },
             calendar_default_reminders: Vec::new(),

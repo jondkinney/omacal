@@ -227,6 +227,17 @@ panel reads *Create without notifying* and *Create and notify guests* instead,
 naming the action the button actually takes. A drag never mails anybody
 without asking either.
 
+**An event you were invited to is yours to move — on your calendar.** Google
+keeps a guest's copy of an invitation apart from the organizer's, so dragging
+or editing a meeting somebody else organized changes the time on your calendar
+alone: the organizer and the other guests keep theirs, and nobody is told.
+omacal says so on the move and save panels and offers one button, *Move my
+copy* or *Save my copy*, rather than a notify choice that would reach nobody.
+The exception is an event whose organizer ticked "guests can modify" — then
+the change does reach everyone, the panel says that instead, and the notify
+choice is back. To change somebody else's meeting for everyone otherwise, ask
+them, or answer with a proposed time.
+
 Two rules the form enforces rather than letting Google refuse them: the
 organizer cannot be removed, and an address that is not an address is refused
 before Save rather than coming back as an error afterwards. Removing **yourself**

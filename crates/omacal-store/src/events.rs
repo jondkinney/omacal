@@ -50,6 +50,11 @@ pub struct StoredEvent {
     pub etag: Option<String>,
     pub sequence: i64,
     pub organizer_email: Option<String>,
+    /// Google's `guestsCanModify`: whether attendees other than the organizer
+    /// may change the event for everyone. False is the default and the
+    /// ordinary case, and it is what decides whether a guest's move or save
+    /// reaches anybody but themselves (see `EventDetail::guests_can_modify`).
+    pub guests_can_modify: bool,
     pub attendees: Vec<Attendee>,
     /// What this event asks for: the calendar's defaults, or its own overrides.
     pub reminders: Reminders,
@@ -115,8 +120,8 @@ const SELECT_COLS: &str = "e.id, e.calendar_id, e.google_id, e.summary, e.locati
      e.recurring_event_id, e.original_start_utc,
      e.status, e.self_response, e.conference_uri,
      COALESCE(c.color_override, c.color_hex) AS color_hex, c.timezone,
-     e.description, e.etag, e.sequence, e.organizer_email, e.attendees_json,
-     e.reminders_json, c.default_reminders_json";
+     e.description, e.etag, e.sequence, e.organizer_email, e.guests_can_modify,
+     e.attendees_json, e.reminders_json, c.default_reminders_json";
 
 fn row_to_event(row: &sqlx::sqlite::SqliteRow) -> StoredEvent {
     StoredEvent {
@@ -142,6 +147,7 @@ fn row_to_event(row: &sqlx::sqlite::SqliteRow) -> StoredEvent {
         etag: row.get("etag"),
         sequence: row.get("sequence"),
         organizer_email: row.get("organizer_email"),
+        guests_can_modify: row.get::<i64, _>("guests_can_modify") != 0,
         // A malformed or absent JSON column must not fail the whole window
         // query — most personal events have no guests at all, so `NULL` here
         // is the common path, not an edge case.
@@ -180,7 +186,7 @@ pub async fn upsert_event<'e, E>(exec: E, ev: &StoredEvent) -> anyhow::Result<i6
 where
     E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
 {
-    // 22 columns, 22 placeholders, 22 binds, all in the same order. Keep them
+    // 23 columns, 23 placeholders, 23 binds, all in the same order. Keep them
     // that way: a mismatch here writes a value into the wrong column silently.
     let attendees_json = serde_json::to_string(&ev.attendees)?;
     let reminders_json = serde_json::to_string(&ev.reminders)?;
@@ -188,8 +194,9 @@ where
         "INSERT INTO events (calendar_id, google_id, summary, location, start_utc, end_utc,
              start_tz, end_tz, is_all_day, recurrence, recurring_event_id,
              original_start_utc, status, self_response, conference_uri, updated_at,
-             description, etag, sequence, organizer_email, attendees_json, reminders_json)
-         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)
+             description, etag, sequence, organizer_email, attendees_json, reminders_json,
+             guests_can_modify)
+         VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)
          ON CONFLICT (calendar_id, google_id) DO UPDATE SET
              summary = excluded.summary, location = excluded.location,
              start_utc = excluded.start_utc, end_utc = excluded.end_utc,
@@ -202,7 +209,8 @@ where
              description = excluded.description, etag = excluded.etag,
              sequence = excluded.sequence, organizer_email = excluded.organizer_email,
              attendees_json = excluded.attendees_json,
-             reminders_json = excluded.reminders_json
+             reminders_json = excluded.reminders_json,
+             guests_can_modify = excluded.guests_can_modify
          RETURNING id",
     )
     .bind(ev.calendar_id)          // ?1  calendar_id
@@ -227,6 +235,7 @@ where
     .bind(&ev.organizer_email)     // ?20 organizer_email
     .bind(attendees_json)          // ?21 attendees_json
     .bind(reminders_json)          // ?22 reminders_json
+    .bind(ev.guests_can_modify as i64) // ?23 guests_can_modify
     .fetch_one(exec)
     .await?
     .get("id");
@@ -405,6 +414,19 @@ pub async fn event_by_id(
     id: i64,
 ) -> anyhow::Result<Option<(StoredEvent, String, String)>> {
     Ok(event_row_for_write(pool, id).await?.map(|(ev, role, _, _, tz)| (ev, role, tz)))
+}
+
+/// One event plus what the popover's detail needs to say whose it is: the
+/// calendar's `access_role`, its own `google_id` and the owning account's
+/// email — the two addresses `events::is_organizer` compares the organizer
+/// against — and the calendar's zone. The same row [`event_for_write`]
+/// reads, with nothing dropped; a detail and a write must agree on whose
+/// event it is.
+pub async fn event_for_detail(
+    pool: &SqlitePool,
+    id: i64,
+) -> anyhow::Result<Option<(StoredEvent, String, String, String, String)>> {
+    event_row_for_write(pool, id).await
 }
 
 /// One event plus everything an RSVP write needs beyond it: the calendar's
@@ -680,6 +702,7 @@ mod tests {
             self_response: Some("accepted".into()), conference_uri: None,
             color_hex: None, calendar_timezone: "Europe/Sofia".into(),
             description: None, etag: None, sequence: 0, organizer_email: None,
+            guests_can_modify: false,
             attendees: Vec::new(),
             reminders: Reminders::default(), calendar_default_reminders: Vec::new(),
         }
@@ -1016,6 +1039,7 @@ mod tests {
             conference_uri: Some("https://meet/x".into()), color_hex: None,
             calendar_timezone: "Europe/Sofia".into(),
             description: None, etag: None, sequence: 0, organizer_email: None,
+            guests_can_modify: false,
             attendees: Vec::new(),
             reminders: Reminders::default(), calendar_default_reminders: Vec::new(),
         };
@@ -1263,6 +1287,7 @@ mod tests {
             etag: Some("\"etag-1\"".into()),
             sequence: 3,
             organizer_email: Some("ana@x.com".into()),
+            guests_can_modify: true,
             reminders: Reminders::default(),
             calendar_default_reminders: Vec::new(),
             attendees: vec![
@@ -1283,6 +1308,7 @@ mod tests {
         assert_eq!(got.etag.as_deref(), Some("\"etag-1\""));
         assert_eq!(got.sequence, 3);
         assert_eq!(got.organizer_email.as_deref(), Some("ana@x.com"));
+        assert!(got.guests_can_modify, "guestsCanModify lost in the round trip");
         assert_eq!(got.attendees.len(), 2, "attendees lost in the round trip");
         assert_eq!(got.attendees[1].email, "me@x.com");
         assert!(got.attendees[1].is_self, "the self flag must survive");

@@ -225,6 +225,12 @@ export type EventFormValue = {
   isEdit: boolean;
   /** Part of a series — the only case where a scope choice means anything. */
   isRecurring: boolean;
+  /** The two facts `editReach` reads (`eventdetail.ts`): whether this is the
+   *  user's own event, and whether its organizer lets guests change it for
+   *  everyone. A create is the user's own by definition. Carried on the value
+   *  because the save panel is mounted from it, not from the detail. */
+  isOrganizer: boolean;
+  guestsCanModify: boolean;
 };
 
 export type VideoCall = {
@@ -716,6 +722,8 @@ export function blankValueAt(
     remindersWereDefault: true,
     isEdit: false,
     isRecurring: false,
+    isOrganizer: true,
+    guestsCanModify: false,
   };
 }
 
@@ -968,6 +976,8 @@ export function valueFromDetail(
     remindersWereDefault: detail.reminders.use_default,
     isEdit: true,
     isRecurring: detail.is_recurring,
+    isOrganizer: detail.is_organizer,
+    guestsCanModify: detail.guests_can_modify,
   };
 }
 

@@ -11,7 +11,7 @@
   import { offerableCalendarId, writableCalendars, type Calendar } from './calendars';
   import CalendarPicker from './CalendarPicker.svelte';
   import SaveConfirm from './SaveConfirm.svelte';
-  import type { SendUpdates } from './eventdetail';
+  import { editReach, type SendUpdates } from './eventdetail';
   import {
     CUSTOM_REPEAT, REPEAT_OPTIONS, WEEKDAY_OPTIONS, addGuest, endAfterStart, isAddress,
     mailableGuests, normalizedWeeklyDays, previewSpan, removableGuest, removeGuest, ruleInWords,
@@ -313,6 +313,11 @@
    *  `SaveConfirm`'s doc comment on why a wrong word here is a lie about
    *  whether other people are about to be mailed. */
   const verb = $derived<'Save' | 'Create'>(initial.isEdit ? 'Save' : 'Create');
+  /** Who the save reaches — from the value's two facts rather than a detail,
+   *  because a create has no detail and is the user's own by definition. */
+  const reach = $derived(
+    editReach({ is_organizer: value.isOrganizer, guests_can_modify: value.guestsCanModify }),
+  );
   const showScope = $derived(initial.isEdit && initial.isRecurring);
 
   /** Whether the calendar dot's list is open — bindable into the picker so
@@ -1069,6 +1074,7 @@
 {#if asking}
   <SaveConfirm
     guests={guests}
+    {reach}
     {verb}
     title={value.title.trim() === '' ? '(no title)' : value.title}
     {anchor}

@@ -210,6 +210,7 @@ mod tests {
             etag: None,
             sequence: 0,
             organizer_email: Some("me@x.com".into()),
+            guests_can_modify: false,
             attendees,
             reminders: Default::default(),
             calendar_default_reminders: Vec::new(),

@@ -857,6 +857,7 @@ mod tests {
             self_response: Some("accepted".into()), conference_uri: None,
             color_hex: None, calendar_timezone: "UTC".into(),
             description: None, etag: None, sequence: 0, organizer_email: None,
+            guests_can_modify: false,
             attendees: Vec::new(),
             reminders: Default::default(), calendar_default_reminders: Vec::new(),
         }

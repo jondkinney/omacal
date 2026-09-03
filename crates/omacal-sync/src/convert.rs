@@ -149,6 +149,7 @@ pub fn to_stored(ev: &Event, calendar_id: i64, cal_tz: &str) -> Option<StoredEve
         etag: ev.etag.clone(),
         sequence: ev.sequence,
         organizer_email: (!ev.organizer.email.is_empty()).then(|| ev.organizer.email.clone()),
+        guests_can_modify: ev.guests_can_modify,
         attendees: ev.attendees.iter().map(from_google_attendee).collect(),
         reminders: event_reminders(&ev.reminders),
         // Joined in from `calendars` on read, like `color_hex`; nothing to
@@ -215,6 +216,7 @@ pub fn to_cancelled_exception(ev: &Event, calendar_id: i64, cal_tz: &str) -> Opt
         etag: ev.etag.clone(),
         sequence: ev.sequence,
         organizer_email: (!ev.organizer.email.is_empty()).then(|| ev.organizer.email.clone()),
+        guests_can_modify: ev.guests_can_modify,
         attendees: ev.attendees.iter().map(from_google_attendee).collect(),
         // Usually absent on a tombstone, and nothing fires for a cancelled
         // occurrence anyway — mapped rather than hardcoded for the same reason
@@ -230,6 +232,17 @@ mod tests {
     use super::*;
     use omacal_google::model::{Event, EventDateTime, Organizer};
 
+    /// `guestsCanModify` rides through to the store, and its absence reads as
+    /// false — Google's default, and the case where a guest's edit stays on
+    /// their own copy.
+    #[test]
+    fn guests_can_modify_rides_through_and_defaults_to_false() {
+        let mut ev = timed("2026-08-05T09:00:00+03:00", "2026-08-05T10:00:00+03:00");
+        assert!(!to_stored(&ev, 1, "Europe/Sofia").unwrap().guests_can_modify);
+        ev.guests_can_modify = true;
+        assert!(to_stored(&ev, 1, "Europe/Sofia").unwrap().guests_can_modify);
+    }
+
     fn timed(start: &str, end: &str) -> Event {
         Event {
             id: "e1".into(), status: "confirmed".into(), etag: None, ical_uid: None,
@@ -241,6 +254,7 @@ mod tests {
             recurrence: None, recurring_event_id: None, original_start_time: None,
             hangout_link: None, conference_data: None, attendees: vec![], sequence: 0,
             organizer: Organizer::default(),
+            guests_can_modify: false,
             reminders: Default::default(),
         }
     }

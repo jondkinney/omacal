@@ -321,25 +321,10 @@ pub(crate) struct Row {
     pub conference: Option<String>,
 }
 
-/// The comparison behind [`Row::organizer`], pure for its table below —
-/// **Google's own `organizer.self` semantics**, learned from the first live
-/// row that disproved the naive version: the organizer matches the account
-/// *or the calendar itself*. An event created on a calendar shared into
-/// this account carries the calendar's address as organizer (the Denis
-/// session: organizer `plamen@x3me.net`, calendar `plamen@x3me.net`,
-/// account `marlowbg@…`), and it is still the user's own event from every
-/// seat that matters. Case-insensitive; `None` is `false`, an absence,
-/// never a claim.
-pub(crate) fn is_organizer(
-    organizer_email: Option<&str>,
-    account_email: &str,
-    calendar_google_id: &str,
-) -> bool {
-    organizer_email.is_some_and(|o| {
-        (!account_email.is_empty() && o.eq_ignore_ascii_case(account_email))
-            || (!calendar_google_id.is_empty() && o.eq_ignore_ascii_case(calendar_google_id))
-    })
-}
+/// The comparison behind [`Row::organizer`] — `events::is_organizer`, which
+/// the popover's detail reads through as well, so the CLI and the app never
+/// disagree about whose event it is.
+pub(crate) use crate::events::is_organizer;
 
 /// The window's occurrences, expanded and honest: the same suppression,
 /// cancellation and declined rules the app's own views apply

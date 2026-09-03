@@ -574,6 +574,7 @@ mod tests {
             etag: None,
             sequence: 0,
             organizer_email: Some("ana@x.com".into()),
+            guests_can_modify: false,
             attendees: vec![Attendee {
                 email: "me@x.com".into(),
                 display_name: None,

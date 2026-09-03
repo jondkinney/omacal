@@ -590,7 +590,7 @@ const timedDetail = (startMs: number, endMs: number): EventDetail => ({
   start_date: null, end_date: null, is_all_day: false,
   is_recurring: false, recurrence: null, repeat: 'never', weekly_days: [],
   repeat_end: { kind: 'never' }, color: null,
-  organizer_email: null, self_response: null, can_respond: true, can_edit: true,
+  organizer_email: null, self_response: null, can_respond: true, can_edit: true, is_organizer: true, guests_can_modify: false,
   attendees: [],
   reminders: { use_default: true, overrides: [] }, calendar_default_reminders: [],
 });

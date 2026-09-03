@@ -131,6 +131,7 @@ pub fn caldav_to_stored(
         etag: resource_etag.map(str::to_string),
         sequence: ev.sequence,
         organizer_email: ev.organizer_email.clone(),
+        guests_can_modify: false,
         attendees: ev
             .attendees
             .iter()

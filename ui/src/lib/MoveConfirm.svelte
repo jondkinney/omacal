@@ -2,7 +2,7 @@
 <script lang="ts">
   import ConfirmPanel from './ConfirmPanel.svelte';
   import type { Rect } from './position';
-  import type { EventDetail, SendUpdates } from './eventdetail';
+  import { editReach, type EventDetail, type SendUpdates } from './eventdetail';
   import type { Scope } from './eventform';
 
   let {
@@ -36,6 +36,11 @@
    *  just wrong. */
   const guests = $derived(detail.attendees.filter((a) => !a.is_self).length);
   const title = $derived(detail.title ?? '(no title)');
+  /** Who the move reaches — see `editReach`. A guest's move of their own copy
+   *  has nobody to notify, however many people are on the event, so the
+   *  notify choice is not offered and the panel says why instead. */
+  const reach = $derived(editReach(detail));
+  const organizer = $derived(detail.organizer_email ?? 'the organizer');
 </script>
 
 <ConfirmPanel {anchor} label="Move event" title={`Move “${title}”?`} {oncancel}>
@@ -91,9 +96,20 @@
       </div>
     {/if}
 
-    {#if guests > 0}
+    {#if reach === 'own-copy'}
+      <!-- Google keeps a guest's copy apart from the organizer's: the moved
+           time lands on this calendar alone, and nobody else's changes. Said
+           here, before the write, because the drag itself looks exactly like
+           moving your own meeting — and Google's own UI warns at this point
+           too. -->
+      <p class="notice" data-testid="move-own-copy-notice">
+        You are a guest on this event. Moving it changes only your copy — {organizer} and
+        the other guests keep the original time, and nobody is told.
+      </p>
+    {:else if guests > 0}
       <p class="notice" data-testid="move-guest-notice">
-        {guests}
+        {#if reach === 'shared'}The organizer lets guests change this event, so the move
+          reaches everyone. {/if}{guests}
         {guests === 1 ? 'guest' : 'guests'} can be told by email, or not — the two buttons below
         are the choice.
       </p>
@@ -102,7 +118,19 @@
 
   {#snippet actions()}
     <button type="button" class="ghost" data-cancel onclick={oncancel}>Cancel</button>
-    {#if guests > 0}
+    {#if reach === 'own-copy'}
+      <!-- Nobody to tell: the write is to this calendar's copy alone, so the
+           only honest button names that. `none` because there is no mail to
+           send, not because the user declined to send it. -->
+      <button
+        type="button"
+        class="primary"
+        data-choice
+        data-default-choice-action
+        data-initial-choice={detail.is_recurring ? undefined : ''}
+        onclick={() => onconfirm({ scope, sendUpdates: 'none' })}
+      >Move my copy</button>
+    {:else if guests > 0}
       <!-- **Not notifying is the primary action**, and the order says so:
            sending mail is the deliberate choice, never the default and never a
            side effect of a gesture (spec §2). A drag can happen by accident;

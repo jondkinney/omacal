@@ -130,6 +130,12 @@ pub struct Event {
     pub sequence: i64,
     #[serde(default)]
     pub organizer: Organizer,
+    /// Google's `guestsCanModify`: whether attendees other than the organizer
+    /// may change the event *for everyone*. Absent reads as false, which is
+    /// also Google's default and the ordinary case — a guest's edit otherwise
+    /// lands on their own copy alone.
+    #[serde(default)]
+    pub guests_can_modify: bool,
     /// Already on the wire. `list_events` sends no `fields=` mask, so Google
     /// has been returning this on every event all along — it was parsed into
     /// nothing and discarded. Defaulted because a tombstone omits it.

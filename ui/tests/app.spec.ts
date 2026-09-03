@@ -861,6 +861,54 @@ test.describe('App', () => {
     });
 
     /**
+     * **A guest's drag reaches nobody, and the panel says so.** Google keeps
+     * an invitee's copy apart from the organizer's, so moving somebody else's
+     * meeting changes this calendar alone. The notify choice would be a
+     * promise to mail people about a change none of them receives, so it is
+     * not offered: one button, named for what it does, and `none` on the
+     * wire because there is no mail to send.
+     */
+    test('moving somebody else\'s meeting names it as your copy and offers no notify choice',
+      async ({ page }) => {
+        await writable(page);
+        await dragBy(page, 'Vendor review', 60);
+
+        await expect(movePanel(page)).toBeVisible();
+        await expect(page.getByTestId('move-own-copy-notice')).toContainText('only your copy');
+        await expect(page.getByTestId('move-own-copy-notice')).toContainText('ana@x.com');
+        await expect(page.getByTestId('move-guest-notice')).toHaveCount(0);
+        await expect(
+          movePanel(page).getByRole('button', { name: 'Move and notify guests' }),
+        ).toHaveCount(0);
+
+        await expect(movePanel(page).getByRole('button', { name: 'Move my copy' })).toBeFocused();
+        await page.keyboard.press('Enter');
+
+        await expect.poll(() => callsTo(page, 'update_event')).toHaveLength(1);
+        const [args] = await callsTo(page, 'update_event');
+        expect(args.sendUpdates).toBe('none');
+      });
+
+    /**
+     * The exception, kept a real choice: an organizer who ticked "guests can
+     * modify" made a guest's move reach everyone, so the notify question is
+     * back — and the panel says why it is.
+     */
+    test('when the organizer lets guests modify, the move reaches everyone and asks', async ({ page }) => {
+      await writable(page);
+      await dragBy(page, 'Design review', 60);
+
+      await expect(movePanel(page)).toBeVisible();
+      await expect(page.getByTestId('move-own-copy-notice')).toHaveCount(0);
+      await expect(page.getByTestId('move-guest-notice')).toContainText('reaches everyone');
+      await movePanel(page).getByRole('button', { name: 'Move and notify guests' }).click();
+
+      await expect.poll(() => callsTo(page, 'update_event')).toHaveLength(1);
+      const [args] = await callsTo(page, 'update_event');
+      expect(args.sendUpdates).toBe('all');
+    });
+
+    /**
      * **The only route to `all` in the whole drag path.** Sending mail is the
      * deliberate choice, never the default and never a side effect of a
      * gesture — which is why the *other* button is the primary one.
@@ -2434,6 +2482,29 @@ test.describe('App', () => {
     await expect.poll(() => callsTo(page, 'update_event')).toHaveLength(1);
     const [args] = await callsTo(page, 'update_event');
     expect(args.sendUpdates).toBe('all');
+  });
+
+  /**
+   * The same fact on the save path: editing somebody else's meeting saves
+   * your copy, and the panel says so instead of offering to notify people
+   * whose copies do not change. Asserted at the command as well — the one
+   * button sends `none`, and nothing on this path can send `all`.
+   */
+  test('saving an edit to somebody else\'s meeting names it as your copy', async ({ page }) => {
+    await writable(page);
+    await block(page, 'Vendor review').click();
+    await page.getByRole('button', { name: 'Edit' }).click();
+    await expect(editForm(page)).toBeVisible();
+
+    await editForm(page).getByRole('button', { name: 'Save' }).click();
+    const panel = page.getByRole('dialog', { name: 'Save event' });
+    await expect(panel.getByTestId('save-own-copy-notice')).toContainText('only your copy');
+    await expect(panel.getByRole('button', { name: 'Save and notify guests' })).toHaveCount(0);
+    await panel.getByRole('button', { name: 'Save my copy' }).click();
+
+    await expect.poll(() => callsTo(page, 'update_event')).toHaveLength(1);
+    const [args] = await callsTo(page, 'update_event');
+    expect(args.sendUpdates).toBe('none');
   });
 
   /** §3 again, from the side that matters most: **Cancel writes nothing at

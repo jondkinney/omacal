@@ -593,6 +593,7 @@ mod tests {
             etag: None,
             sequence: 3,
             organizer_email: None,
+            guests_can_modify: false,
             attendees: Vec::new(),
             reminders: omacal_store::Reminders {
                 use_default: false,

@@ -80,6 +80,14 @@ export type EventDetail = {
   self_response: string | null;
   can_respond: boolean;
   can_edit: boolean;
+  /** Whether this is the user's own event (Google's `organizer.self`). Not an
+   *  edit gate — `can_edit` is the calendar's, and a guest may edit their own
+   *  copy of an invitation. It decides what an edit *reaches*: see
+   *  `editReach`. */
+  is_organizer: boolean;
+  /** Google's `guestsCanModify`: the organizer let guests change the event
+   *  for everyone. Meaningful only when `is_organizer` is false. */
+  guests_can_modify: boolean;
   attendees: Attendee[];
   /** What this event asks for: the calendar's defaults, or its own
    *  overrides — the two fields are alternatives (reminders spec §3). */
@@ -90,6 +98,25 @@ export type EventDetail = {
 };
 
 export const getEventDetail = (id: number) => invoke<EventDetail>('event_detail', { id });
+
+/**
+ * Who a change to this event reaches — the fact the move and save dialogs
+ * have to state before the write, because Google's answer differs by who is
+ * asking. `'organizer'`: it is your event and a change goes to everyone, so
+ * whether to email them is a real choice. `'own-copy'`: you are a guest and
+ * Google keeps your copy apart from the organizer's — a moved time lands on
+ * your calendar alone, nobody else's changes and nobody is told, so there is
+ * nothing to choose. `'shared'`: you are a guest but the organizer let guests
+ * change the event for everyone, and the choice is back.
+ *
+ * One function, read by both dialogs, so they cannot describe the same edit
+ * two ways.
+ */
+export type EditReach = 'organizer' | 'own-copy' | 'shared';
+export function editReach(d: { is_organizer: boolean; guests_can_modify: boolean }): EditReach {
+  if (d.is_organizer) return 'organizer';
+  return d.guests_can_modify ? 'shared' : 'own-copy';
+}
 
 /**
  * An `EventDetail` together with the one thing it cannot supply: which

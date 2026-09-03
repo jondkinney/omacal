@@ -2,10 +2,11 @@
 <script lang="ts">
   import ConfirmPanel from './ConfirmPanel.svelte';
   import type { Rect } from './position';
-  import type { SendUpdates } from './eventdetail';
+  import type { EditReach, SendUpdates } from './eventdetail';
 
   let {
     guests,
+    reach,
     verb,
     title,
     anchor,
@@ -16,6 +17,12 @@
      *  it**, which is the count `mailableGuests` already answers and
      *  the same exclusion `MoveConfirm` and `DeleteConfirm` make. */
     guests: number;
+    /** Who the save reaches — `editReach` in `eventdetail.ts`. `'own-copy'`
+     *  is a guest saving their copy of somebody else's event: Google changes
+     *  this calendar alone and tells nobody, so the notify choice is not
+     *  offered and the panel says why instead. A create is always
+     *  `'organizer'`. */
+    reach: EditReach;
     /** What the button under this panel says — `'Save'` on an edit, `'Create'`
      *  on a create. The panel has to name the action it is confirming: "Save"
      *  over a form whose own action reads "Create" is a small lie in the one
@@ -49,15 +56,30 @@
 -->
 <ConfirmPanel {anchor} label="{verb} event" title={`${verb} “${title}”?`} {oncancel}>
   {#snippet body()}
-    <p class="notice" data-testid="save-guest-notice">
-      {guests}
-      {guests === 1 ? 'guest' : 'guests'} can be told by email, or not — the two buttons below are
-      the choice.
-    </p>
+    {#if reach === 'own-copy'}
+      <p class="notice" data-testid="save-own-copy-notice">
+        You are a guest on this event. Saving changes only your copy — the organizer and the
+        other guests keep theirs, and nobody is told.
+      </p>
+    {:else}
+      <p class="notice" data-testid="save-guest-notice">
+        {#if reach === 'shared'}The organizer lets guests change this event, so the save
+          reaches everyone. {/if}{guests}
+        {guests === 1 ? 'guest' : 'guests'} can be told by email, or not — the two buttons below are
+        the choice.
+      </p>
+    {/if}
   {/snippet}
 
   {#snippet actions()}
     <button type="button" class="ghost" data-cancel onclick={oncancel}>Cancel</button>
+    {#if reach === 'own-copy'}
+      <!-- Nobody to tell: the write is to this calendar's copy alone, so the
+           only honest button names that. -->
+      <button type="button" class="primary" data-choice onclick={() => onconfirm('none')}>
+        {verb} my copy
+      </button>
+    {:else}
     <!-- **Not notifying is the primary action**, and the order says so — the
          same ruling as the drag's, for the same reason: sending mail to other
          people is the deliberate choice, never the default. This is also the
@@ -68,6 +90,7 @@
     <button type="button" class="primary" data-choice onclick={() => onconfirm('none')}>
       {verb} without notifying
     </button>
+    {/if}
   {/snippet}
 </ConfirmPanel>
 

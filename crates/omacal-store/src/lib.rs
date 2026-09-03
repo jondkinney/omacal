@@ -27,7 +27,8 @@ pub use tasks::{
     StoredTask, TaskRow,
 };
 pub use events::{
-    delete_event, delete_series, event_by_id, event_for_write, events_in_window, exceptions_from,
+    delete_event, delete_series, event_by_id, event_for_detail, event_for_write, events_in_window,
+    exceptions_from,
     known_guests, move_series_to_calendar, search_events, upsert_event, Attendee, KnownGuest,
     Reminder, Reminders, StoredEvent,
 };

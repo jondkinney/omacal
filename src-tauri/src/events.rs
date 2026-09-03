@@ -62,6 +62,17 @@ pub struct EventDetail {
     pub self_response: Option<String>,
     pub can_respond: bool,
     pub can_edit: bool,
+    /// Whether this is the user's own event — Google's `organizer.self`,
+    /// derived by [`is_organizer`]. Not an edit gate: `can_edit` is the
+    /// calendar's, and a guest may edit their own copy of an invitation.
+    /// What it decides is *what an edit reaches*: the organizer's change
+    /// goes to everyone, a guest's stays on their copy unless
+    /// [`Self::guests_can_modify`] says otherwise, and the move and save
+    /// dialogs say which before the write.
+    pub is_organizer: bool,
+    /// Google's `guestsCanModify`: the organizer let guests change the event
+    /// for everyone. Meaningful only when `is_organizer` is false.
+    pub guests_can_modify: bool,
     pub attendees: Vec<omacal_store::Attendee>,
     /// What this event asks for: the calendar's defaults, or its own
     /// overrides — the store's shape, unconverted (reminders spec §3).
@@ -91,6 +102,26 @@ pub struct EventDetail {
 /// answer.
 pub(crate) fn can_respond(demo: bool, access_role: &str, attendees: &[omacal_store::Attendee]) -> bool {
     !demo && matches!(access_role, "owner" | "writer") && attendees.iter().any(|a| a.is_self)
+}
+
+/// **Google's own `organizer.self` semantics**, learned from the first live
+/// row that disproved the naive version: the organizer matches the account
+/// *or the calendar itself*. An event created on a calendar shared into
+/// this account carries the calendar's address as organizer (the Denis
+/// session: organizer `plamen@x3me.net`, calendar `plamen@x3me.net`,
+/// account `marlowbg@…`), and it is still the user's own event from every
+/// seat that matters. Case-insensitive; `None` is `false`, an absence,
+/// never a claim. Pure for its table below; the CLI's `Row::organizer` and
+/// [`EventDetail::is_organizer`] both read through it.
+pub(crate) fn is_organizer(
+    organizer_email: Option<&str>,
+    account_email: &str,
+    calendar_google_id: &str,
+) -> bool {
+    organizer_email.is_some_and(|o| {
+        (!account_email.is_empty() && o.eq_ignore_ascii_case(account_email))
+            || (!calendar_google_id.is_empty() && o.eq_ignore_ascii_case(calendar_google_id))
+    })
 }
 
 /// Whether the edit and delete controls are shown at all.
@@ -148,9 +179,10 @@ pub async fn event_detail(
 /// at 240 passing tests — while the demo popover started offering three RSVP
 /// buttons again, the exact thing the gate inside exists to prevent.
 pub(crate) async fn event_detail_impl(state: &AppState, id: i64) -> anyhow::Result<EventDetail> {
-    let (event, access_role, cal_tz) = omacal_store::event_by_id(&state.pool, id)
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("that event is no longer here"))?;
+    let (event, access_role, cal_google_id, account_email, cal_tz) =
+        omacal_store::event_for_detail(&state.pool, id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("that event is no longer here"))?;
 
     let can_respond = can_respond(state.demo, &access_role, &event.attendees);
     let is_recurring = is_recurring(&event.recurrence, &event.recurring_event_id);
@@ -162,6 +194,8 @@ pub(crate) async fn event_detail_impl(state: &AppState, id: i64) -> anyhow::Resu
     let recurrence_controls = crate::write::recurrence_controls_from_rrule(
         event.recurrence.as_deref(), event.is_all_day, &event.start_tz,
     );
+    // Before the literal below moves `organizer_email` into the detail.
+    let is_organizer = is_organizer(event.organizer_email.as_deref(), &account_email, &cal_google_id);
     Ok(EventDetail {
         id: event.id,
         calendar_id: event.calendar_id,
@@ -184,6 +218,8 @@ pub(crate) async fn event_detail_impl(state: &AppState, id: i64) -> anyhow::Resu
         self_response: event.self_response,
         can_respond,
         can_edit: can_edit(state.demo, &access_role),
+        is_organizer,
+        guests_can_modify: event.guests_can_modify,
         attendees: event.attendees,
         reminders: event.reminders,
         calendar_default_reminders: event.calendar_default_reminders,
@@ -2731,6 +2767,23 @@ async fn truncate_series(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Google's `organizer.self`, as a table: the account's own address, the
+    /// calendar's own address (an event created on a calendar shared into
+    /// this account is organized *as* the calendar), case-insensitively, and
+    /// nothing else — `None` is an absence, never a claim.
+    #[test]
+    fn the_organizer_is_the_account_or_the_calendar_itself() {
+        assert!(is_organizer(Some("me@x.com"), "me@x.com", "me@x.com"));
+        assert!(is_organizer(Some("Me@X.com"), "me@x.com", ""), "case-insensitive");
+        assert!(
+            is_organizer(Some("shared@x.com"), "me@x.com", "shared@x.com"),
+            "organized as the calendar the event lives on"
+        );
+        assert!(!is_organizer(Some("ana@x.com"), "me@x.com", "me@x.com"), "a guest");
+        assert!(!is_organizer(None, "me@x.com", "me@x.com"), "no organizer is not a claim");
+        assert!(!is_organizer(Some(""), "", ""), "empty strings never match each other");
+    }
     use omacal_store::Attendee;
 
     fn guest(is_self: bool) -> Attendee {
@@ -3091,6 +3144,7 @@ mod tests {
             recurrence: None, recurring_event_id: None, original_start_time: None,
             hangout_link: None, conference_data: None, attendees: vec![], sequence: 0,
             organizer: Default::default(),
+            guests_can_modify: false,
             reminders: Default::default(),
         }
     }
@@ -3151,6 +3205,7 @@ mod tests {
             conference_uri: None, color_hex: None, calendar_timezone: "UTC".into(),
             description: None,
             etag: Some("\"old\"".into()), sequence: 1, organizer_email: None,
+            guests_can_modify: false,
             attendees,
             reminders: Default::default(), calendar_default_reminders: Vec::new(),
         }
@@ -3177,6 +3232,7 @@ mod tests {
             }],
             sequence: 5,
             organizer: Default::default(),
+            guests_can_modify: false,
             reminders: Default::default(),
         };
         merge_patched(&mut row, &patched);
@@ -3887,7 +3943,7 @@ mod tests {
             "conference_uri", "start_ms", "end_ms", "start_date", "end_date",
             "is_all_day", "is_recurring", "recurrence", "repeat", "weekly_days",
             "repeat_end", "color",
-            "organizer_email", "self_response", "can_respond", "can_edit",
+            "organizer_email", "self_response", "can_respond", "can_edit", "is_organizer", "guests_can_modify",
             "attendees", "reminders", "calendar_default_reminders",
         ];
         expected.sort_unstable();

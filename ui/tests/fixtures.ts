@@ -489,6 +489,12 @@ const detail = (o: Partial<EventDetail> & { id: number }): EventDetail => ({
   organizer_email: null,
   self_response: 'needsAction',
   can_respond: true,
+  // The user's own event, with the organizer's reach: what every fixture
+  // here has always behaved as. A spec about a guest's copy sets
+  // `is_organizer: false` on purpose, and it is the one that would have
+  // passed by fixture if the default went the other way.
+  is_organizer: true,
+  guests_can_modify: false,
   // `false`, deliberately, and not because any fixture here wants it: nothing
   // reads this field yet, and Task 10 ships the Edit and Delete controls that
   // will.
@@ -1479,6 +1485,14 @@ export const APP_SOLO_SERIES_ID = 4247;
  *  span needs. */
 const APP_GUESTS_START = APP_MON + 24 * H + 10 * H;
 const APP_SOLO_SERIES_START = APP_MON + 24 * H + 16 * H;
+/** Two events the user was *invited to* — somebody else's meetings on their
+ *  own calendar, which `can_edit` says nothing about. 'Vendor review' is the
+ *  ordinary case, a guest's copy Google keeps apart from the organizer's;
+ *  'Design review' is the one whose organizer ticked "guests can modify". */
+export const APP_GUEST_OF_ID = 4248;
+export const APP_SHARED_ID = 4249;
+const APP_GUEST_OF_START = APP_MON + 48 * H + 10 * H;
+const APP_SHARED_START = APP_MON + 48 * H + 13 * H;
 export const APP_ALLDAY_ID = 4244;
 /** Monday 29 Jan 2024, all day — the all-day series' own DTSTART, and what
  *  `event_detail` reports as its master row's `start_ms`. */
@@ -1555,6 +1569,14 @@ const APP_SOLO_SERIES_BLOCK: UiEvent = ev({
   id: APP_SOLO_SERIES_ID, title: 'Gym',
   start_ms: APP_SOLO_SERIES_START, end_ms: APP_SOLO_SERIES_START + 45 * 60_000,
 });
+const APP_GUEST_OF_BLOCK: UiEvent = ev({
+  id: APP_GUEST_OF_ID, title: 'Vendor review',
+  start_ms: APP_GUEST_OF_START, end_ms: APP_GUEST_OF_START + 30 * 60_000,
+});
+const APP_SHARED_BLOCK: UiEvent = ev({
+  id: APP_SHARED_ID, title: 'Design review',
+  start_ms: APP_SHARED_START, end_ms: APP_SHARED_START + 30 * 60_000,
+});
 /** The band chip. `commands::assemble_week` routes every `is_all_day` event
  *  into `all_day_events` and never into a day column, so a chip is the only
  *  representation this event ever gets — there is no `EventBlock` to fall back
@@ -1599,6 +1621,27 @@ POPOVER_DETAILS[APP_GUESTS_ID] = detail({
 });
 /** One guest, not two: the person doing the moving is never counted. */
 export const APP_GUESTS_COUNT = 1;
+
+POPOVER_DETAILS[APP_GUEST_OF_ID] = detail({
+  id: APP_GUEST_OF_ID, title: 'Vendor review', can_edit: true,
+  calendar_id: APP_PRIMARY_CALENDAR_ID,
+  start_ms: APP_GUEST_OF_START, end_ms: APP_GUEST_OF_START + 30 * 60_000,
+  organizer_email: 'ana@x.com', is_organizer: false, guests_can_modify: false,
+  attendees: [
+    attendee({ email: 'ana@x.com', display_name: 'Ana', response_status: 'accepted' }),
+    attendee({ email: 'me@x.com', is_self: true, response_status: 'accepted' }),
+  ],
+});
+POPOVER_DETAILS[APP_SHARED_ID] = detail({
+  id: APP_SHARED_ID, title: 'Design review', can_edit: true,
+  calendar_id: APP_PRIMARY_CALENDAR_ID,
+  start_ms: APP_SHARED_START, end_ms: APP_SHARED_START + 30 * 60_000,
+  organizer_email: 'ana@x.com', is_organizer: false, guests_can_modify: true,
+  attendees: [
+    attendee({ email: 'ana@x.com', display_name: 'Ana', response_status: 'accepted' }),
+    attendee({ email: 'me@x.com', is_self: true, response_status: 'accepted' }),
+  ],
+});
 
 POPOVER_DETAILS[APP_SOLO_SERIES_ID] = detail({
   id: APP_SOLO_SERIES_ID, title: 'Gym', can_edit: true,
@@ -1665,6 +1708,14 @@ export const appWritableWeek = (): WeekPayload => {
   w.all_day = [
     { idx: 0, lane: 0, start_col: 2, end_col: 2, cont_left: false, cont_right: false },
   ];
+  // Somebody else's meetings, on the third day: what a guest's drag reaches
+  // is the drag dialog's third question, independent of the first two.
+  w.days[2] = {
+    start_ms: APP_MON + 48 * H,
+    end_ms: APP_MON + 72 * H,
+    events: [APP_GUEST_OF_BLOCK, APP_SHARED_BLOCK],
+    placed: [placed(0.02, 0.02, 0, 1, 0), placed(0.06, 0.02, 0, 1, 1)],
+  };
   return w;
 };
 
