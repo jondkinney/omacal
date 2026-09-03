@@ -217,6 +217,22 @@ fn n_day_boundaries(start_ms: i64, n: usize, tz: &str) -> Vec<i64> {
     out
 }
 
+/// The day boundary `days` days away from `start_ms` — negative for earlier —
+/// walked in `tz` so a DST day counts as its real 23 or 25 hours, the same
+/// way `n_day_boundaries` walks forward. The padded window the views fetch
+/// (2026-09-03) begins `pad` days before the day the user is looking at,
+/// which is the one place this walks backwards. Same fallback as its
+/// sibling: an unknown zone still yields a boundary.
+pub fn day_start_shifted(start_ms: i64, days: i64, tz: &str) -> i64 {
+    use jiff::{Timestamp, ToSpan};
+    Timestamp::from_millisecond(start_ms)
+        .ok()
+        .and_then(|t| t.in_tz(tz).ok())
+        .and_then(|z| z.checked_add(days.days()).ok())
+        .map(|z| z.timestamp().as_millisecond())
+        .unwrap_or(start_ms + days * DAY_MS)
+}
+
 /// Local midnight for a civil date, in `tz`, as epoch milliseconds. Falls
 /// back to UTC if the zone is unknown — the grid must still render, the same
 /// fallback philosophy as `n_day_boundaries`.
@@ -2222,5 +2238,31 @@ mod tests {
         assert_eq!(pill.start_col, 23, "Wed 5 Aug");
         assert_eq!(pill.end_col, 25, "Fri 7 Aug — not Sat 8, which the stored instant reaches");
         assert!(!pill.cont_right);
+    }
+}
+
+#[cfg(test)]
+mod shifted_day_tests {
+    use super::*;
+    use jiff::civil::date;
+
+    /// Sofia springs forward on 29 Mar 2026, so the day before 30 Mar is 23
+    /// hours long: a walk by wall-clock days lands on its real midnight, a
+    /// walk by 86 400 000 would land an hour into it.
+    #[test]
+    fn a_day_back_across_a_dst_change_is_the_real_midnight() {
+        let tz = "Europe/Sofia";
+        let mon = local_midnight_ms(date(2026, 3, 30), tz);
+        let sun = local_midnight_ms(date(2026, 3, 29), tz);
+        assert_eq!(day_start_shifted(mon, -1, tz), sun);
+        assert_eq!(mon - sun, 23 * 3_600_000, "the DST day is 23 hours, not 24");
+        assert_eq!(day_start_shifted(sun, 1, tz), mon);
+        // A week back, straight through it.
+        assert_eq!(day_start_shifted(mon, -7, tz), local_midnight_ms(date(2026, 3, 23), tz));
+    }
+
+    #[test]
+    fn an_unknown_zone_still_yields_a_boundary() {
+        assert_eq!(day_start_shifted(1_000 * DAY_MS, -3, "Mars/Olympus"), 997 * DAY_MS);
     }
 }

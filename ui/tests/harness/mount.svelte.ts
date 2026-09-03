@@ -194,11 +194,15 @@ if (name === 'App') {
       (window as any).__lastDelete = null;
       (window as any).__lastMove = null;
       (window as any).__lastCopy = null;
+      // The sideways swipe hands whole days up the same way (`onpan`); the
+      // grid itself never moves a window.
+      (window as any).__lastPan = null;
       // Spread first, then shadow `week` with the live getter — naming only
       // `week` here would silently drop any second prop a fixture grows.
       mount(WeekGrid, {
         target,
         props: {
+          onpan: (days: unknown) => { (window as any).__lastPan = days; },
           ...props,
           get week() { return week; },
           // `endMs` is present only when the grid names one — a sweep does, a

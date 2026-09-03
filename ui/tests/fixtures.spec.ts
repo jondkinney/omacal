@@ -381,7 +381,11 @@ test.describe('the hand-written week fixtures describe payloads assemble_days co
       // Week at `n = 7`, and rolling Week ranges at `n = 3`, `5`, or `7`.
       // No other column count is reachable, so a fixture with two days — or
       // none — is one nothing can serve.
-      expect([1, 3, 5, 7], `${name} has ${w.days.length} day columns`).toContain(w.days.length);
+      // `padded` is the one exception: a week's padding either side of a
+      // fixed week, 21 columns, which `get_week(…, pad: 7)` serves since
+      // 2026-09-03.
+      expect(name === 'padded' ? [21] : [1, 3, 5, 7], `${name} has ${w.days.length} day columns`)
+        .toContain(w.days.length);
 
       for (const [d, col] of w.days.entries()) {
         // `DayColumn { start_ms: bounds[d], end_ms: bounds[d + 1], .. }`

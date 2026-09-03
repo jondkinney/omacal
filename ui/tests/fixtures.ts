@@ -1855,6 +1855,11 @@ export const crossZoneWeek = (): WeekPayload => structuredClone(XZONE_GOLDEN);
 export const FIXTURES: Record<string, Record<string, any>> = {
   WeekGrid: {
     empty: { week: emptyWeek() },
+    /* A padded payload (2026-09-03): a week either side of the window, with
+     * `labelledWeek`'s one event on the first *padding* day — so at rest,
+     * with the window alone on the track, there is nothing to see, and a
+     * block appearing would mean the padding leaked. */
+    padded: { week: labelledWeek(MON - 7 * 24 * H, 21), visibleStartMs: MON, visibleDays: 7 },
     // The empty week under a three-day forecast: Mon/Tue/Wed carry distinct
     // skies, Thu onward is past the horizon and must carry nothing.
     weather: { week: emptyWeek(), weather: WEEK_WEATHER },

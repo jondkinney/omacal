@@ -5078,3 +5078,42 @@ test.describe('WeekGrid: zooming the hours', () => {
     await expect.poll(() => colHeight(page)).toBe(160 * 24);
   });
 });
+
+test.describe('WeekGrid: the padded payload', () => {
+  const show = (f: string) => `/tests/harness/index.html?c=WeekGrid&f=${f}`;
+
+  test('at rest only the window is on the track, and nothing from the padding shows', async ({ page }) => {
+    await page.goto(show('padded'));
+    await expect(page.locator('.col')).toHaveCount(7);
+    await expect(page.locator('.head b')).toHaveCount(7);
+    expect(await page.locator('.col').first().getAttribute('data-start-ms')).toBe(String(MON));
+    // `labelledWeek`'s one block sits on the first padding day.
+    await expect(page.locator('.ev')).toHaveCount(0);
+    // And the window is a full-width grid, the way an unpadded one was:
+    // the track's columns fill the pane and start at its edge.
+    const cols = page.locator('.body .cols');
+    expect(await cols.evaluate((el) => getComputedStyle(el).marginLeft)).toBe('0px');
+  });
+
+  test('a swipe puts the whole payload on the track, and the day under the finger stays put', async ({ page }) => {
+    await page.goto(show('padded'));
+    const box = (await page.getByTestId('week-body').boundingBox())!;
+    const colWidth = (await page.locator('.col').first().boundingBox())!.width;
+    await page.mouse.move(box.x + box.width / 2, box.y + 100);
+    // Half a column: no day crossed, so nothing handed up — but the track
+    // is sliding, all 21 days of it, and the block from the padding is now
+    // on it.
+    await page.mouse.wheel(-Math.round(colWidth / 2), 0);
+    await expect(page.locator('.col')).toHaveCount(21);
+    await expect(page.locator('.ev')).toHaveCount(1);
+    expect(await page.evaluate(() => (window as any).__lastPan ?? null)).toBeNull();
+    // The window's first day is still the first column at the pane's edge,
+    // plus the half column of travel.
+    const first = page.locator(`.col[data-start-ms="${MON}"]`);
+    const left = (await first.boundingBox())!.x - (await page.locator('.body .track').boundingBox())!.x;
+    expect(left).toBeCloseTo(colWidth / 2, 0);
+    // After the lull it settles back to the window, nothing having moved.
+    await expect(page.locator('.col')).toHaveCount(7);
+    expect(await page.locator('.col').first().getAttribute('data-start-ms')).toBe(String(MON));
+  });
+});

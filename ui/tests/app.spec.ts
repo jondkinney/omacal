@@ -4162,23 +4162,43 @@ test.describe('App: week panning', () => {
   });
 
   test('a horizontal wheel slides the week by days and Today re-aligns it', async ({ page }) => {
-    // The aligned start is whatever the app itself first fetched — the
-    // writable fixture runs on the real clock, so a pinned constant here
-    // would be asserting somebody else's week (it was, and failed).
+    // The default scenario rather than the block's `writable`: its stub
+    // echoes the week actually asked for, padding and all, which is what a
+    // slide into the padding has to be seen against. `writable` answers one
+    // fixed week whatever is asked, so it is served unpadded and the grid
+    // shows it whole — right for its specs, blind for this one.
+    await page.goto(app());
+    // The aligned start is whatever the app itself first fetched — this
+    // runs on the real clock, so a pinned constant here would be asserting
+    // somebody else's week (it was, and failed).
+    await expect(page.locator('.col')).toHaveCount(7);
     const [first] = await callsTo(page, 'get_week');
     const aligned = first.weekStartMs;
+    // Padded by a week either side (2026-09-03), so the slide has columns
+    // to reveal; at rest only the window is on the track.
+    expect(first.pad).toBe(7);
+    await expect(page.locator('.col')).toHaveCount(7);
+    const colWidth = (await page.locator('.col').first().boundingBox())!.width;
 
     await page.locator('[data-testid="week-body"]').hover();
-    // 180px at 90px/day = exactly two days forward, in one gesture. The
-    // test environment's zone is UTC, so day arithmetic by constant is safe
-    // *here*; the app's own arithmetic goes through Date, as the spec asks.
-    await page.mouse.wheel(180, 0);
+    // A column's width of travel is a day, whatever the column's width — the
+    // finger and the grid agree. 1.3 columns: one day committed as it is
+    // crossed, the rest settling back after the lull. The test environment's
+    // zone is UTC, so day arithmetic by constant is safe *here*; the app's
+    // own arithmetic goes through Date, as the spec asks.
+    await page.mouse.wheel(Math.round(colWidth * 1.3), 0);
+    // Mid-gesture the whole payload is on the track, padding included.
+    await expect(page.locator('.col')).toHaveCount(21);
     await expect
       .poll(async () => (await callsTo(page, 'get_range')).map((a) => a.dayStartMs))
-      .toContain(aligned + 2 * 86_400_000);
+      .toContain(aligned + 86_400_000);
     const ranges = await callsTo(page, 'get_range');
-    // A panned fixed week still shows its full seven days (spec §3).
-    expect(ranges[ranges.length - 1].dayCount).toBe(7);
+    // A panned fixed week still shows its full seven days (spec §3), padded.
+    expect(ranges[ranges.length - 1]).toMatchObject({ dayCount: 7, pad: 7 });
+    // Settled: the window alone again, a day on.
+    await expect(page.locator('.col')).toHaveCount(7);
+    expect(await page.locator('.col').first().getAttribute('data-start-ms'))
+      .toBe(String(aligned + 86_400_000));
 
     // Today ends the peek: the very next week fetch is the aligned Monday
     // again, through get_week — the pre-pan path, byte for byte.

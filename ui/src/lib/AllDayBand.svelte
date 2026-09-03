@@ -5,8 +5,15 @@
   import { gutterWidth } from './secondzone.svelte';
   import { cursorNamesEvent, type KeyboardCursor } from './keyboardnav';
 
-  let { lanes, events, overflow, columns = 7, dayStarts = [], keyboardCursor = null, onopen }:
+  let { lanes, events, overflow, columns = 7, visible = columns, vis = 0, pan = 0, dayStarts = [], keyboardCursor = null, onopen }:
     { lanes: Lane[]; events: UiEvent[]; overflow: number[]; columns?: number;
+      /** The chips ride `WeekGrid`'s track (2026-09-03): `columns` drawn,
+       *  `visible` of them on screen, `vis` columns of padding before the
+       *  window and `pan` columns of finger travel — the grid's own numbers,
+       *  handed down so the band's columns slide with the day columns or
+       *  the chips shear off their days. The defaults are a band that does
+       *  not slide, which is what every existing mount asks for. */
+      visible?: number; vis?: number; pan?: number;
       dayStarts?: number[];
       keyboardCursor?: KeyboardCursor | null;
       /** Same contract as `EventBlock`'s, and wired to the same
@@ -43,7 +50,8 @@
 {#if lanes.length || overflow.length}
   <div class="band" style="--gutter:{gutterWidth()}">
     <div class="label">ALL-DAY</div>
-    <div class="rows" style="--cols:{columns}">
+    <div class="track">
+    <div class="rows" style="--cols:{columns}; --visible:{visible}; --vis:{vis}; --pan:{pan}">
       {#each lanes as lane}
         {@const ev = events[lane.idx]}
         {@const keyboardSelected = isKeyboardSelected(lane, ev)}
@@ -70,6 +78,7 @@
         </div>
       {/if}
     </div>
+    </div>
   </div>
 {/if}
 
@@ -85,7 +94,12 @@
   /* No gap: a gap here is subtracted from every column, so the band's columns
      drift out of step with the grid below it — by Sunday the chips sit a chip's
      width off their days. The separation lives inside the chip instead. */
-  .rows { display: grid; grid-template-columns: repeat(var(--cols), 1fr); }
+  .rows { display: grid; grid-template-columns: repeat(var(--cols), 1fr);
+          width: calc(100% * var(--cols) / var(--visible));
+          margin-left: calc((var(--pan) - var(--vis)) / var(--visible) * 100%); }
+  /* `WeekGrid`'s `.track`, for `WeekGrid`'s reasons: a margin, not a
+     transform, and `clip`, not `hidden`. */
+  .track { min-width: 0; overflow-x: clip; }
 
   /* A <button>, like EventBlock, rather than a <div> with a click handler
      bolted on: the role, the tab stop and Enter/Space all come for free and

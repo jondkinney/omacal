@@ -64,15 +64,19 @@ export function weekStart(d: Date): number {
   return startOfWeek(d, weekStartDay());
 }
 
-export const getWeek = (weekStartMs: number) =>
-  invoke<WeekPayload>('get_week', { weekStartMs });
+/** `pad` on the three day-grid fetches (2026-09-03): that many days either
+ *  side of the window named, in the same payload, so the grid can slide into
+ *  them under a finger before the fetch for the new window lands. The window
+ *  is still what the caller names; `weekwindow.ts` finds it in the payload. */
+export const getWeek = (weekStartMs: number, pad = 0) =>
+  invoke<WeekPayload>('get_week', { weekStartMs, pad });
 
 /** A rolling Week-view range beginning on the supplied day. */
-export const getRange = (dayStartMs: number, dayCount: 3 | 5 | 7) =>
-  invoke<WeekPayload>('get_range', { dayStartMs, dayCount });
+export const getRange = (dayStartMs: number, dayCount: 3 | 5 | 7, pad = 0) =>
+  invoke<WeekPayload>('get_range', { dayStartMs, dayCount, pad });
 
-export const getDay = (dayStartMs: number) =>
-  invoke<WeekPayload>('get_day', { dayStartMs });
+export const getDay = (dayStartMs: number, pad = 0) =>
+  invoke<WeekPayload>('get_day', { dayStartMs, pad });
 
 export const getMonth = (year: number, month: number) =>
   invoke<MonthPayload>('get_month', { year, month });

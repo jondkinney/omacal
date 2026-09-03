@@ -220,20 +220,39 @@ fn display_tz(pool: &SqlitePool) -> String {
         .to_string()
 }
 
+/// `pad` on every day-grid command (2026-09-03): that many days either side
+/// of the window asked for, in the same payload, so the grid can slide into
+/// them under a finger before a fetch for the new window lands. The window
+/// itself is what the caller names; the padding is the backend's to walk
+/// out in the display zone. Bounded so a malformed invoke cannot widen one
+/// view into an unbounded query, the same reason `get_range` checks its
+/// count.
+const MAX_PAD_DAYS: u8 = 14;
+
+fn checked_pad(pad: Option<u8>) -> Result<usize, String> {
+    let pad = pad.unwrap_or(0);
+    if pad > MAX_PAD_DAYS {
+        return Err(format!("padding is at most {MAX_PAD_DAYS} days"));
+    }
+    Ok(pad as usize)
+}
+
 #[tauri::command]
 async fn get_week(
     state: tauri::State<'_, AppState>,
     week_start_ms: i64,
+    pad: Option<u8>,
 ) -> Result<commands::WeekPayload, String> {
-    get_days_impl(&state.pool, week_start_ms, 7).await
+    get_days_impl(&state.pool, week_start_ms, 7, checked_pad(pad)?).await
 }
 
 #[tauri::command]
 async fn get_day(
     state: tauri::State<'_, AppState>,
     day_start_ms: i64,
+    pad: Option<u8>,
 ) -> Result<commands::WeekPayload, String> {
-    get_days_impl(&state.pool, day_start_ms, 1).await
+    get_days_impl(&state.pool, day_start_ms, 1, checked_pad(pad)?).await
 }
 
 /// A rolling Week-view window beginning at `day_start_ms`. The settings UI
@@ -244,33 +263,44 @@ async fn get_range(
     state: tauri::State<'_, AppState>,
     day_start_ms: i64,
     day_count: u8,
+    pad: Option<u8>,
 ) -> Result<commands::WeekPayload, String> {
     if !matches!(day_count, 3 | 5 | 7) {
         return Err("the rolling week can show 3, 5, or 7 days".to_string());
     }
-    get_days_impl(&state.pool, day_start_ms, day_count as usize).await
+    get_days_impl(&state.pool, day_start_ms, day_count as usize, checked_pad(pad)?).await
 }
 
+/// `day_count` days from `day_start_ms`, with `pad` more on either side —
+/// see `MAX_PAD_DAYS`. The padded start is walked back in the display zone,
+/// so the window the caller named begins exactly `pad` columns in.
 async fn get_days_impl(
     pool: &SqlitePool,
     day_start_ms: i64,
     day_count: usize,
+    pad: usize,
 ) -> Result<commands::WeekPayload, String> {
     let tz = display_tz(pool);
+    let start_ms = if pad == 0 {
+        day_start_ms
+    } else {
+        commands::day_start_shifted(day_start_ms, -(pad as i64), &tz)
+    };
+    let n = day_count + 2 * pad;
     // Widen by a day either side so an event that begins just before the range
     // (or a DST-lengthened final day) is not missed.
     const DAY: i64 = 24 * 3_600_000;
     let events = omacal_store::events_in_window(
         pool,
-        day_start_ms - DAY,
-        day_start_ms + (day_count as i64 + 1) * DAY,
+        start_ms - DAY,
+        start_ms + (n as i64 + 1) * DAY,
     )
     .await
     .map_err(|e| e.to_string())?;
-    Ok(if day_count == 7 {
-        commands::assemble_week(&events, day_start_ms, &tz)
+    Ok(if n == 7 {
+        commands::assemble_week(&events, start_ms, &tz)
     } else {
-        commands::assemble_days(&events, day_start_ms, day_count, &tz)
+        commands::assemble_days(&events, start_ms, n, &tz)
     })
 }
 

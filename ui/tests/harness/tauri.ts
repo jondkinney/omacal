@@ -17,6 +17,7 @@ import type { TimeFormat } from '../../src/lib/timefmt';
 import type { WeekStartDay } from '../../src/lib/weekstart';
 import type { Appearance, StartOnLogin, WeekViewDays, WindowFrame } from '../../src/lib/settings';
 import type { TemperatureUnit } from '../../src/lib/temperature';
+import { sliceWeek } from '../../src/lib/weekwindow';
 import {
   labelledWeek, weekLabel, APP_FIVE_MIN_AGO, APP_NOW, APP_SERIES_ID, APP_SERIES_OCCURRENCE,
   APP_ONE_OFF_ID, APP_ONE_OFF_START, APP_GUESTS_ID, APP_SOLO_SERIES_ID,
@@ -419,6 +420,55 @@ function getWeek(scenario: string, weekStartMs: number, dayCount = 7): Promise<W
 
 const DAY_MS = 24 * 3_600_000;
 
+/** The padding the three day-grid fetches carry since 2026-09-03: `pad`
+ *  days either side of the window asked for, in the same payload, for the
+ *  grid to slide into. **Real days, not empty ones**: the backend's padding
+ *  holds real events, and the app reads it as such — a keyboard move into
+ *  the next week takes that week's first event straight from the padding —
+ *  so an empty stand-in would have the app act on a world the backend never
+ *  shows. Each scenario's own builder supplies its neighbours (`build`), by
+ *  UTC arithmetic, the specs' zone; a scenario whose builder answers one
+ *  fixed week whatever is asked (`null`) is not padded, and the app shows
+ *  its seven days whole, exactly as before. */
+type PadBuilder = (start: number, days: number) => WeekPayload;
+
+function padBuilder(scenario: string): PadBuilder | null {
+  if (scenario === 'writable' || scenario === 'cross-zone') return null;
+  if (scenario === 'keyboard-navigation') return (start, n) => sliceWeek(keyboardWeek(start), 0, n);
+  return (start, n) => labelledWeek(start, n);
+}
+
+function padded(w: WeekPayload, pad: unknown, build: PadBuilder | null): WeekPayload {
+  const n = Number(pad ?? 0);
+  if (!n || !build || w.days.length === 0) return w;
+  const first = w.days[0].start_ms;
+  const last = w.days[w.days.length - 1].end_ms;
+  return stitched(build(first - n * DAY_MS, n), w, build(last, n));
+}
+
+/** Three payloads laid end to end as `assemble_days` would have assembled
+ *  the span: lanes re-columned by where their payload starts and re-indexed
+ *  into the joined event list; the middle's overflow, since that is the
+ *  window's own. */
+function stitched(left: WeekPayload, mid: WeekPayload, right: WeekPayload): WeekPayload {
+  const lanes = (w: WeekPayload, colOff: number, idxOff: number) =>
+    w.all_day.map((l) => ({
+      ...l, start_col: l.start_col + colOff, end_col: l.end_col + colOff, idx: l.idx + idxOff,
+    }));
+  const midIdx = left.all_day_events.length;
+  const rightIdx = midIdx + mid.all_day_events.length;
+  return {
+    days: [...left.days, ...mid.days, ...right.days],
+    all_day: [
+      ...lanes(left, 0, 0),
+      ...lanes(mid, left.days.length, midIdx),
+      ...lanes(right, left.days.length + mid.days.length, rightIdx),
+    ],
+    all_day_events: [...left.all_day_events, ...mid.all_day_events, ...right.all_day_events],
+    overflow: mid.overflow.map((i) => i + midIdx),
+  };
+}
+
 /** Day view's own `get_day` stub: a one-column `WeekPayload`, echoing back
  *  whatever `dayStartMs` was actually asked for — same reasoning as
  *  `getWeek`'s `labelledWeek` above, just with no events to label. No App
@@ -708,11 +758,15 @@ export function installTauriStub(scenario: string): Harness {
       case 'connect_caldav':
         return args.email;
       case 'get_week':
-        return getWeek(scenario, args.weekStartMs);
+        return getWeek(scenario, args.weekStartMs).then((w) => padded(w, args.pad, padBuilder(scenario)));
       case 'get_range':
-        return getWeek(scenario, args.dayStartMs, args.dayCount);
+        return getWeek(scenario, args.dayStartMs, args.dayCount)
+          .then((w) => padded(w, args.pad, padBuilder(scenario)));
       case 'get_day':
-        return getDay(args.dayStartMs);
+        return padded(getDay(args.dayStartMs), args.pad, (start, n) => ({
+          days: Array.from({ length: n }, (_, i) => getDay(start + i * DAY_MS).days[0]),
+          all_day: [], all_day_events: [], overflow: [],
+        }));
       case 'get_month':
         return getMonth();
       case 'get_year':

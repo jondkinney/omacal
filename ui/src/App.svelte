@@ -31,6 +31,7 @@
   } from './lib/keyboardnav';
   import { getSettings, setHourHeight, setListMode, type AppSettings, type WeekViewDays } from './lib/settings';
   import { HOUR_PX_DEFAULT, hourPxStepped } from './lib/zoom';
+  import { padFor, sliceWeek, visibleIndex } from './lib/weekwindow';
   import { setClockFormat } from './lib/clock.svelte';
   import { setSecondZone } from './lib/secondzone.svelte';
   import { setWeekStartDay } from './lib/weekstartstore.svelte';
@@ -352,8 +353,8 @@
         ],
       }));
     }
-    if ((view === 'day' || view === 'week') && week) {
-      return allDaysFromWeek(week);
+    if ((view === 'day' || view === 'week') && visibleWeek) {
+      return allDaysFromWeek(visibleWeek);
     }
     return [];
   });
@@ -662,8 +663,8 @@
   // What to fetch for the view currently on screen, at the date currently
   // anchored — the "$derived picks which loader to call" half of this task.
   type FetchPlan =
-    | { kind: 'day' | 'week'; target: number }
-    | { kind: 'range'; target: number; days: WeekViewDays }
+    | { kind: 'day' | 'week'; target: number; pad: number }
+    | { kind: 'range'; target: number; days: WeekViewDays; pad: number }
     | { kind: 'month'; year: number; monthNum: number }
     | { kind: 'year'; year: number }
     | { kind: 'bigyear'; year: number };
@@ -677,15 +678,18 @@
     // day actually started on — exactly the case for a Month cell whose own
     // start isn't the browser's local midnight (spec §5's anchor-survival
     // guarantee depends on this value reaching Day view unmodified).
-    if (view === 'day') return { kind: 'day', target: anchorMs };
+    // Padded either side (`padFor`) so a sideways swipe has columns to slide
+    // into before the fetch for the new window lands; `visibleWeek` below is
+    // the window itself, and what everything but the grid's track reads.
+    if (view === 'day') return { kind: 'day', target: anchorMs, pad: padFor(1) };
     if (view === 'week') {
       // A panned week is by definition unaligned, so it fetches through the
       // same arbitrary-start range the rolling week uses — a fixed week that
       // slides shows its full 7 days, just starting where the pan left it.
+      const days = weekStartsToday ? weekViewDays : 7;
       return weekStartsToday || weekPanDays !== 0
-        ? { kind: 'range', target: pannedWeekStartMs,
-            days: weekStartsToday ? weekViewDays : 7 }
-        : { kind: 'week', target: pannedWeekStartMs };
+        ? { kind: 'range', target: pannedWeekStartMs, days, pad: padFor(days) }
+        : { kind: 'week', target: pannedWeekStartMs, pad: padFor(7) };
     }
     if (view === 'month') {
       const d = new Date(anchorMs);
@@ -694,6 +698,19 @@
     if (view === 'year') return { kind: 'year', year: yearNum };
     return { kind: 'bigyear', year: bigYearNum };
   })());
+
+  /** The days on screen, cut from the padded payload: what the list, the
+   *  keyboard and the grid's own sense of "today" read. The grid gets the
+   *  whole payload as well, for its track. */
+  const visibleStartMs = $derived(view === 'day' ? anchorMs : pannedWeekStartMs);
+  const visibleCount = $derived(view === 'day' ? 1 : weekStartsToday ? weekViewDays : 7);
+  const visibleWeek = $derived.by(() => {
+    if (!week) return null;
+    const i = visibleIndex(week.days, visibleStartMs);
+    // Not there yet — the window jumped and its payload is still in flight —
+    // so the whole of what is on screen stands in, as it did before padding.
+    return i < 0 ? week : sliceWeek(week, i, visibleCount);
+  });
 
   // Every `week` assignment goes through `loadWeek`, and every `loadWeek`
   // call is stamped — same reasoning as before this task, just widened to
@@ -708,14 +725,14 @@
   let yearReq = 0;
   let bigYearReq = 0;
 
-  async function loadWeek(kind: 'day' | 'week' | 'range', target: number, days?: WeekViewDays) {
+  async function loadWeek(kind: 'day' | 'week' | 'range', target: number, pad: number, days?: WeekViewDays) {
     const req = ++weekReq;
     try {
       const w = kind === 'day'
-        ? await getDay(target)
+        ? await getDay(target, pad)
         : kind === 'range'
-          ? await getRange(target, days ?? 7)
-          : await getWeek(target);
+          ? await getRange(target, days ?? 7, pad)
+          : await getWeek(target, pad);
       if (req !== weekReq) return; // superseded while we were awaiting
       week = w;
       error = null;
@@ -768,8 +785,8 @@
     if (plan.kind === 'month') return loadMonth(plan.year, plan.monthNum);
     if (plan.kind === 'year') return loadYear(plan.year);
     if (plan.kind === 'bigyear') return loadBigYear(plan.year);
-    if (plan.kind === 'range') return loadWeek(plan.kind, plan.target, plan.days);
-    return loadWeek(plan.kind, plan.target);
+    if (plan.kind === 'range') return loadWeek(plan.kind, plan.target, plan.pad, plan.days);
+    return loadWeek(plan.kind, plan.target, plan.pad);
   }
 
   $effect(() => {
@@ -1802,13 +1819,14 @@
         oncreate={newEventOnDay}
       />
     {/if}
-  {:else if week}
+  {:else if week && visibleWeek}
     {#if listMode}
-      <Filmstrip days={daysFromWeek(week)} {weather} {revealNowRequest}
+      <Filmstrip days={daysFromWeek(visibleWeek)} {weather} {revealNowRequest}
                  keyboardCursor={visibleKeyboardCursor}
                  onopen={openGridEvent} />
     {:else}
-      <WeekGrid {week} {weather} {formPreview} {createColor} {revealNowRequest} bind:hourPx
+      <WeekGrid {week} {visibleStartMs} visibleDays={visibleCount}
+                {weather} {formPreview} {createColor} {revealNowRequest} bind:hourPx
                 keyboardCursor={visibleKeyboardCursor}
                 onpan={panView}
                 oncreate={newEventAt} oncreateallday={newAllDayEventOver}

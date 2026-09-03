@@ -10,6 +10,7 @@
   import { tick } from 'svelte';
   import { HOUR_PX_DEFAULT, hourPxAfterPinch, hourPxAfterWheel, scrollTopKeeping } from './zoom';
   import { onPinch, type Pinch } from './pinch';
+  import { panCommit, sliceWeek, snapPlan, visibleIndex } from './weekwindow';
   import type { WeekPayload, UiEvent } from './api';
   import type { Rect } from './position';
   import EventBlock from './EventBlock.svelte';
@@ -22,8 +23,15 @@
   import { cursorNamesEvent, type KeyboardCursor } from './keyboardnav';
   import { dateOf } from './eventform';
 
-  let { week, weather = null, formPreview = null, createColor = null, revealNowRequest = 0, keyboardCursor = null, onpan = null, hourPx = $bindable(HOUR_PX_DEFAULT), oncreate, oncreateallday, onedit, ondelete, oncopy, onmove, ondraftmove = null, onresponded }: {
+  let { week, weather = null, formPreview = null, createColor = null, revealNowRequest = 0, keyboardCursor = null, onpan = null, hourPx = $bindable(HOUR_PX_DEFAULT), visibleStartMs = null, visibleDays = null, oncreate, oncreateallday, onedit, ondelete, oncopy, onmove, ondraftmove = null, onresponded }: {
+    /** Padded since 2026-09-03: `visibleDays` from `visibleStartMs` are what
+     *  is on screen, and the days either side are the track's to slide into
+     *  under a finger (`weekwindow.ts`). Both null — a standalone mount, a
+     *  stub — shows the whole payload, which is what every payload used to
+     *  be. */
     week: WeekPayload;
+    visibleStartMs?: number | null;
+    visibleDays?: number | null;
     /** How tall an hour is (2026-09-03). Bound, because both ends write it:
      *  the grid, from a pinch or Ctrl+scroll over itself, and `App`, from the
      *  keys and the stored preference. `zoom.ts` owns the arithmetic and the
@@ -99,6 +107,17 @@
     onresponded?: () => void;
   } = $props();
 
+  // The window: how many days are on screen, where they start in the
+  // payload, and the payload as if only they had been fetched. Everything
+  // about *what is on screen* — today, the ruler's reference day, the
+  // opening scroll — reads `visibleWeek`; only the track below ever draws
+  // the padding.
+  const vis = $derived(visibleIndex(week.days, visibleStartMs ?? week.days[0]?.start_ms ?? 0));
+  // A payload without the window — see `visibleIndex` — is shown whole.
+  const visible = $derived(vis < 0 ? week.days.length : (visibleDays ?? week.days.length));
+  const visStart = $derived(Math.max(vis, 0));
+  const visibleWeek = $derived(sliceWeek(week, visStart, visible));
+
   // Every hour, not every second one: a rule at 10:00 with nothing at 11:00
   // makes a meeting's edge unplaceable by eye.
   const HOURS = Array.from({ length: 24 }, (_, i) => i);
@@ -122,7 +141,7 @@
   // The gutter labels are shared by all seven columns, so they use the first
   // ordinary-length day; a DST day's own rules still come from its own span.
   const gutterDay = $derived(
-    week.days.find((d) => d.end_ms - d.start_ms === 86_400_000) ?? week.days[0]
+    visibleWeek.days.find((d) => d.end_ms - d.start_ms === 86_400_000) ?? visibleWeek.days[0]
   );
 
   // The instant a primary hour line marks — `hourFrac`'s own Date, kept as
@@ -228,15 +247,68 @@
     if (!bodyEl) return;
     return onPinch(bodyEl, handlePinch);
   });
+
+  // ---- Sideways: the track under the finger.
+  /** The finger's travel in columns, positive when the content has moved
+   *  right; the fraction of a column the track is currently offset by. Whole
+   *  columns are handed up as a shift of the window the moment they are
+   *  crossed (`panCommit`), and the offset compensates in the same flush, so
+   *  the day under the finger never moves — the window's start moves
+   *  through the padding instead, and the payload for the new window
+   *  arrives underneath whenever it does. */
+  let panDays = $state(0);
+  /** While a swipe is in progress or settling, the track draws every day the
+   *  payload holds, padding included, so there is something to slide into.
+   *  At rest it draws the window alone, which is exactly the DOM it drew
+   *  before the payload was padded. */
+  let panActive = $state(false);
+  let panLull: ReturnType<typeof setTimeout> | undefined;
+  let snapRaf = 0;
+  /** A wheel this long unheard is the fingers lifting: WebKit reports no
+   *  gesture phases on a DOM wheel event, so the pause is the only signal.
+   *  Momentum on macOS keeps the events coming and so keeps the track
+   *  moving, which is what a scroll view would do. */
+  const PAN_LULL_MS = 120;
+  const PAN_SNAP_MS = 180;
+
+  /** Any column's width — they are all one width, and the track is sized
+   *  from the visible count, so this is the pane's width over `visible`. */
+  function colWidth(): number {
+    const col = bodyEl?.querySelector('.col');
+    return col ? col.getBoundingClientRect().width : 0;
+  }
+
+  /** The fingers lifted: settle on the nearest whole column — one more day
+   *  if more than half a column is crossed — and ease the remainder out. */
+  function settlePan() {
+    const { shift, from } = snapPlan(panDays);
+    if (shift !== 0) onpan?.(shift);
+    panDays = from;
+    const started = performance.now();
+    const step = (t: number) => {
+      const k = Math.min(1, (t - started) / PAN_SNAP_MS);
+      const eased = 1 - (1 - k) * (1 - k);
+      panDays = from * (1 - eased);
+      if (k < 1) {
+        snapRaf = requestAnimationFrame(step);
+      } else {
+        panDays = 0;
+        panActive = false;
+      }
+    };
+    snapRaf = requestAnimationFrame(step);
+  }
   let handledRevealNowRequest: number | null = null;
   const INITIAL_VIEWPORT_FRACTION = 1 / 3;
   const NOW_VIEWPORT_FRACTION = 0.45;
 
   $effect(() => {
-    if (!bodyEl || week.days.length === 0) return;
+    if (!bodyEl || visibleWeek.days.length === 0) return;
     const el = bodyEl;
     const now = Date.now();
-    const today = week.days.find((d) => now >= d.start_ms && now < d.end_ms);
+    // Among the days on screen: today in the padding is not a reason to
+    // open next week at the current hour.
+    const today = visibleWeek.days.find((d) => now >= d.start_ms && now < d.end_ms);
     if (handledRevealNowRequest === null) handledRevealNowRequest = revealNowRequest;
     const revealRequested = revealNowRequest !== handledRevealNowRequest;
 
@@ -377,6 +449,14 @@
     })),
   );
 
+  /** What the track draws: the window at rest, every day while sliding —
+   *  and the offset that keeps the window's first day at the track's left
+   *  edge either way. `renderVis` is the columns of padding to the left of
+   *  the window, zero at rest because none are drawn. */
+  const renderedDays = $derived(panActive ? effectiveDays : effectiveDays.slice(visStart, visStart + visible));
+  const renderVis = $derived(panActive ? visStart : 0);
+  const renderedLanes = $derived(panActive ? week.all_day : visibleWeek.all_day);
+
   /**
    * An in-flight drag, or `null`.
    *
@@ -503,7 +583,7 @@
     // second derivation of them.
     drag.landed = drag.edge
       ? spanForResize(drag.origin, drag.edge, dyFrac, drag.dayMs, SNAP_MS)
-      : spanForMove(drag.origin, dyFrac, drag.dayMs, week.days.length, cols, SNAP_MS);
+      : spanForMove(drag.origin, dyFrac, drag.dayMs, renderedDays.length, cols, SNAP_MS);
 
     // What is drawn, and **the two axes are drawn separately**: a day is a
     // sideways translation, not a hundred percent of a column's height. Asking
@@ -512,7 +592,7 @@
     // which is exactly what it did.
     const vertical = drag.edge
       ? drag.landed
-      : spanForMove(drag.origin, dyFrac, drag.dayMs, week.days.length, 0, SNAP_MS);
+      : spanForMove(drag.origin, dyFrac, drag.dayMs, renderedDays.length, 0, SNAP_MS);
 
     // Deltas on `Placed`, not absolutes: a block's position comes from the
     // backend's own layout and is not recoverable from its instants.
@@ -594,7 +674,7 @@
     const landed = draftDrag.edge
       ? spanForResize(draftDrag.origin, draftDrag.edge, dyFrac, draftDrag.dayMs, SNAP_MS)
       : spanForMove(
-          draftDrag.origin, dyFrac, draftDrag.dayMs, week.days.length, cols, SNAP_MS,
+          draftDrag.origin, dyFrac, draftDrag.dayMs, renderedDays.length, cols, SNAP_MS,
         );
     ondraftmove?.(landed);
   }
@@ -849,7 +929,7 @@
     // Sideways is read the same way a move-drag reads it, by whole columns,
     // so the two gestures agree about when a column has been crossed.
     sweep.ask = sweepAsk(
-      effectiveDays,
+      renderedDays,
       sweep.dayIndex,
       colsMoved(dx, sweep.colWidth),
       sweep.fromFrac,
@@ -1099,13 +1179,13 @@
     onresponded?.();
   }
 
-  /** Horizontal panning (spec 2026-08-28 §3): 90px of deltaX per day, the
-   *  residue decaying after a 250ms lull so one gesture never leaks into the
-   *  next. Only a dominantly horizontal wheel is consumed — vertical
-   *  scrolling through the hours stays entirely native. */
-  const PAN_STEP_PX = 90;
-  let panAccum = 0;
-  let panDecay: ReturnType<typeof setTimeout> | undefined;
+  /** Horizontal panning (spec 2026-08-28 §3; continuous since 2026-09-03):
+   *  the track follows the finger a column per column, hands whole days up
+   *  as they are crossed, and settles on the nearest day after a lull. The
+   *  old rule was a day per 90px of wheel with nothing moving in between —
+   *  the finger's travel and the column's never matched, and every day was
+   *  a fetch away. Only a dominantly horizontal wheel is consumed —
+   *  vertical scrolling through the hours stays entirely native. */
   function wheelPan(e: WheelEvent) {
     // Ctrl+scroll zooms the hours (2026-09-03). `App` has already cancelled
     // the browser's own page zoom on every Ctrl+wheel, so this only has to
@@ -1120,18 +1200,24 @@
     }
     if (!onpan || Math.abs(e.deltaX) <= Math.abs(e.deltaY)) return;
     e.preventDefault();
-    panAccum += e.deltaX;
-    const days = Math.trunc(panAccum / PAN_STEP_PX);
-    if (days !== 0) {
-      panAccum -= days * PAN_STEP_PX;
-      onpan(days);
+    const w = colWidth();
+    if (w <= 0) return;
+    cancelAnimationFrame(snapRaf);
+    panActive = true;
+    panDays -= e.deltaX / w;
+    const { shift, rest } = panCommit(panDays);
+    if (shift !== 0) {
+      // Both in one flush: the window moves a day and the track moves back
+      // a column, and the day under the finger stays where it is.
+      panDays = rest;
+      onpan(shift);
     }
-    clearTimeout(panDecay);
-    panDecay = setTimeout(() => (panAccum = 0), 250);
+    clearTimeout(panLull);
+    panLull = setTimeout(settlePan, PAN_LULL_MS);
   }
 </script>
 
-<div class="grid" style="--cols:{week.days.length}; --gutter:{gutterWidth()}" onwheel={wheelPan}>
+<div class="grid" style="--cols:{renderedDays.length}; --visible:{visible}; --vis:{renderVis}; --pan:{panDays}; --gutter:{gutterWidth()}" onwheel={wheelPan}>
   <div class="gutter head">
     {#if secondZone()}
       <!-- Which clock is which, Google's own layout: the convenience zone in
@@ -1142,7 +1228,8 @@
       <span class="zl z1">{zoneAbbrev(primaryZone)}</span>
     {/if}
   </div>
-  {#each week.days as d}
+  <div class="track"><div class="cols">
+  {#each renderedDays as d (d.start_ms)}
     <div class="head" class:today={d.start_ms === todayStart}
          class:keyboard={keyboardCursor?.dayStartMs === d.start_ms}>
       <span>{dayName(d.start_ms)}</span>
@@ -1164,6 +1251,7 @@
       </span>
     </div>
   {/each}
+  </div></div>
 </div>
 
 <!-- `openPopover` unchanged, and deliberately so: a chip hands it the same
@@ -1172,16 +1260,19 @@
      `to_ui` per expanded occurrence), which is exactly what
      `occurrenceStartMs` has to carry. -->
 <AllDayBand
-  lanes={week.all_day}
+  lanes={renderedLanes}
   events={week.all_day_events}
   overflow={week.overflow}
-  columns={week.days.length}
-  dayStarts={week.days.map((day) => day.start_ms)}
+  columns={renderedDays.length}
+  {visible}
+  vis={renderVis}
+  pan={panDays}
+  dayStarts={renderedDays.map((day) => day.start_ms)}
   {keyboardCursor}
   onopen={openPopover}
 />
 
-<div class="grid body" style="--cols:{week.days.length}; --gutter:{gutterWidth()}; --hour-px:{Math.round(hourPx)}px" bind:this={bodyEl} data-testid="week-body" onwheel={wheelPan}>
+<div class="grid body" style="--cols:{renderedDays.length}; --visible:{visible}; --vis:{renderVis}; --pan:{panDays}; --gutter:{gutterWidth()}; --hour-px:{Math.round(hourPx)}px" bind:this={bodyEl} data-testid="week-body" onwheel={wheelPan}>
   <div class="gutter">
     {#each HOURS as h}
       {#if secondZone()}
@@ -1195,7 +1286,8 @@
     {/each}
   </div>
 
-  {#each effectiveDays as day, dayIndex}
+  <div class="track"><div class="cols">
+  {#each renderedDays as day, dayIndex (day.start_ms)}
     {@const isToday = day.start_ms === todayStart}
     {@const ghost = sweepStyle(day)}
     <div class="col" class:today={isToday}
@@ -1295,6 +1387,7 @@
       {/if}
     </div>
   {/each}
+  </div></div>
 </div>
 
 {#if selectedId !== null && selectedStartMs !== null && anchor && detail}
@@ -1335,7 +1428,21 @@
      wider when the second clock takes the outer lane. A var rather than two
      hardcodings because the head row here, the body row below and the
      all-day band between them must all move together or the columns shear. */
-  .grid { display: grid; grid-template-columns: var(--gutter, 44px) repeat(var(--cols), 1fr); }
+  .grid { display: grid; grid-template-columns: var(--gutter, 44px) 1fr; }
+  /* The track (2026-09-03): the ruler stays put and the columns slide past
+     it. `.cols` is as many columns wide as the payload has days, each
+     exactly a visible column wide, pulled left by the padding before the
+     window and pushed by the finger's travel — so at rest, with the window
+     alone drawn, it is 100% wide at offset zero, the grid this was before
+     it could slide. A margin rather than a transform, deliberately: a
+     transformed ancestor becomes the containing block of every
+     `position: fixed` descendant, and EventBlock's tooltip is one. `clip`
+     rather than `hidden`, because `hidden` on one axis turns the other into
+     a scroller, and this must never scroll the hours on its own. */
+  .track { min-width: 0; overflow-x: clip; }
+  .cols { display: grid; grid-template-columns: repeat(var(--cols), 1fr);
+          width: calc(100% * var(--cols) / var(--visible));
+          margin-left: calc((var(--pan) - var(--vis)) / var(--visible) * 100%); }
   /* The last of this component's three roots, and the only one that stretches:
      the day-name row and the all-day band above it are content-sized, so
      `flex: 1` here means "the rest of whatever App's `main` has left", rather
