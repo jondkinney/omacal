@@ -197,3 +197,26 @@ export function groupedShortcuts(): {
     .map((group) => ({ group, items: SHORTCUT_LIST.filter((s) => s.group === group) }))
     .filter((g) => g.items.length > 0);
 }
+
+/**
+ * The key a keydown names for the tables above.
+ *
+ * `KeyboardEvent.key` is what the layout *writes*, lowercased so `H` steps
+ * like `h`. On a layout that writes its own script that is not a Latin
+ * letter or digit at all — Persian writes ۱ for the top-row 1, Bulgarian
+ * writes х for the key under H — so no row ever matched, and only the
+ * numpad, which writes Latin digits on every layout, switched views
+ * (issue #38, 2026-09-03). For a single character outside ASCII the key is
+ * read off `KeyboardEvent.code` instead: the physical key, named by its
+ * US-layout cap, which is the letter the tables mean. Latin layouts with
+ * their own arrangement (Dvorak, AZERTY) write ASCII and keep `key`, so a
+ * Dvorak `d` stays `d` and never becomes the QWERTY `h` under it.
+ */
+export function shortcutKeyFor(key: string, code: string): string {
+  const k = key.toLowerCase();
+  // One character, and none of it ASCII: a script of its own.
+  if (!/^[^\x00-\x7f]$/u.test(k)) return k;
+  const m = /^(?:Key([A-Z])|(?:Digit|Numpad)([0-9]))$/.exec(code);
+  if (!m) return k;
+  return (m[1] ?? m[2]).toLowerCase();
+}

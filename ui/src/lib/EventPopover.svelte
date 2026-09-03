@@ -12,7 +12,7 @@
   import { isMachineAddress } from './organizer';
   import { respondToEvent, type Attendee, type EventDetail } from './eventdetail';
   import { focusInitialChoice, handleChoiceKey } from './choicefocus';
-  import { EVENT_SHORTCUT_LIST, type EventShortcutId } from './shortcuts';
+  import { EVENT_SHORTCUT_LIST, type EventShortcutId, shortcutKeyFor } from './shortcuts';
 
   let {
     detail,
@@ -405,7 +405,9 @@
     if (panelEl && handleChoiceKey(panelEl, e)) return;
     if (e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
 
-    const key = e.key.toLowerCase();
+    // Read by the physical key on a layout that writes its own script, as
+    // App's own dispatcher is — see `shortcutKeyFor` (#38).
+    const key = shortcutKeyFor(e.key, e.code);
     const hit = EVENT_SHORTCUT_LIST.find((s) => s.key === key || s.aliases?.includes(key));
     if (!hit) return;
 

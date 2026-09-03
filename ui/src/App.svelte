@@ -37,7 +37,7 @@
   import { setWeekStartDay } from './lib/weekstartstore.svelte';
   import { setTemperatureUnit } from './lib/tempunit.svelte';
   import ShortcutSheet from './lib/ShortcutSheet.svelte';
-  import { SHORTCUT_LIST, type ShortcutId } from './lib/shortcuts';
+  import { SHORTCUT_LIST, shortcutKeyFor, type ShortcutId } from './lib/shortcuts';
   import Filmstrip from './lib/Filmstrip.svelte';
   import WeekGrid from './lib/WeekGrid.svelte';
   import MonthGrid from './lib/MonthGrid.svelte';
@@ -1723,8 +1723,9 @@
 
     // Lowercased, which is what makes `H` step like `h` — the old `switch`
     // did the same, and digits and punctuation are unaffected (`'?'` and
-    // `'/'` lowercase to themselves).
-    const key = e.key.toLowerCase();
+    // `'/'` lowercase to themselves). A layout that writes its own script
+    // is read by the physical key instead — see `shortcutKeyFor`.
+    const key = shortcutKeyFor(e.key, e.code);
     // Enter on a focused control belongs to that control. The alias opens the
     // calendar selection only from the calendar surface itself.
     if (key === 'enter' && (e.target as HTMLElement | null)?.closest?.(

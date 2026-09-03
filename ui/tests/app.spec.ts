@@ -322,6 +322,28 @@ test.describe('App', () => {
     expect(Number(after)).toBe(Number(before) + 1);
   });
 
+  test('the keys work on a layout that writes its own script (#38)', async ({ page }) => {
+    // @xmha97's top-row digits write Persian ۱۲۳, so only the numpad, which
+    // writes Latin digits on every layout, switched views; his `h` writes
+    // something else too. The physical key is read instead when the layout
+    // writes a non-ASCII character. `dispatchEvent` because Playwright's
+    // keyboard cannot type a layout; the app reads the same `key`/`code`
+    // pair a real press would carry.
+    await page.goto(app('connected'));
+    await expect(page.locator('.vswitch button')).toHaveCount(5); // mount race — see above
+    await page.locator('body').dispatchEvent('keydown', { key: '۱', code: 'Digit1' });
+    await expect(page.locator('.col')).toHaveCount(1);
+    await page.locator('body').dispatchEvent('keydown', { key: '۳', code: 'Digit3' });
+    await expect(page.locator('.mcell').first()).toBeVisible();
+    await expect(page.locator('h1')).toHaveText('January 2024');
+    // Bulgarian phonetic: х on the H key steps back a month.
+    await page.locator('body').dispatchEvent('keydown', { key: 'х', code: 'KeyH' });
+    await expect(page.locator('h1')).toHaveText('December 2023');
+    // Dvorak's d on the same physical key means d, which is no shortcut.
+    await page.locator('body').dispatchEvent('keydown', { key: 'd', code: 'KeyH' });
+    await expect(page.locator('h1')).toHaveText('December 2023');
+  });
+
   test('big year reaches this year and next, and no further back', async ({ page }) => {
     // Spec §4: it is a planning surface — what is coming, not what happened.
     await page.goto(app('connected'));
