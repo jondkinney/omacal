@@ -443,6 +443,14 @@ pub(crate) struct Detail {
     pub calendar_id: i64,
     pub organizer: bool,
     pub organizer_email: Option<String>,
+    /// Google's `guestsCanModify`: the organizer let guests change the
+    /// event for everyone. Only meaningful when `organizer` is false.
+    pub guests_can_modify: bool,
+    /// `organizer` | `own-copy` | `shared` — who a change to this event
+    /// reaches (`events::Reach`). `own-copy` is the one that changes what a
+    /// write means: an update lands on the user's calendar alone, nobody
+    /// else's copy moves, and `--notify` has nobody to reach.
+    pub reach: &'static str,
     pub response: Option<String>,
     pub conference: Option<String>,
     pub guests: Vec<DetailGuest>,
@@ -486,6 +494,12 @@ pub(crate) async fn detail_by_id(pool: &SqlitePool, id: i64) -> anyhow::Result<O
         calendar_id: ev.calendar_id,
         organizer: is_organizer(ev.organizer_email.as_deref(), &account_email, &cal_gid),
         organizer_email: ev.organizer_email.clone(),
+        guests_can_modify: ev.guests_can_modify,
+        reach: crate::events::Reach::of(
+            is_organizer(ev.organizer_email.as_deref(), &account_email, &cal_gid),
+            ev.guests_can_modify,
+        )
+        .as_str(),
         response: ev.self_response.clone(),
         conference: ev.conference_uri.clone().or_else(|| {
             crate::upcoming::conference_join_url(ev.location.as_deref(), ev.description.as_deref())
@@ -531,6 +545,11 @@ fn print_detail_human(d: &Detail) {
         d.calendar,
         if d.organizer { "  · your event" } else { "" }
     );
+    match d.reach {
+        "own-copy" => println!("You are a guest: a change here moves only your copy, and nobody is told"),
+        "shared" => println!("You are a guest, and the organizer lets guests change this for everyone"),
+        _ => {}
+    }
     if d.guests.is_empty() {
         println!("Guests: none");
     } else {

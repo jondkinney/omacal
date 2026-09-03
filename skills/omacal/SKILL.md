@@ -41,7 +41,14 @@ Each event row: `eventId`, `title`, `startMs`/`endMs` (epoch ms),
 `calendar`, `calendarId`, `attendees` (count, organizer included; 0 = solo),
 `recurring`, `response` (the user's own RSVP), `organizer` (v0.7.3+: true =
 this is the user's own event — trust it over any inference), `conference`
-(join URL when the meeting has one).
+(join URL when the meeting has one). `events show` adds `reach` (v0.21+):
+`organizer` (the user's event — a change goes to everyone), `own-copy`
+(the user is a guest; Google keeps their copy apart, so a change moves it
+on THEIR calendar alone, nobody else's copy changes and nobody is told)
+or `shared` (a guest, but the organizer lets guests change it for
+everyone), plus `guestsCanModify`. **Read `reach` before promising the
+user that a reschedule will move the meeting for the other people** — on
+`own-copy` it will not; tell them to ask the organizer instead.
 
 ## Writing (requires the app to be running; omacal v0.7+)
 
@@ -61,8 +68,12 @@ omacal events respond 41 yes --json          # yes | maybe | no
   refuses to guess which occurrences you mean. Ask the user if unclear.
 - **An event with guests requires `--notify all|none`** — whether the
   guests get emailed about the change is the user's call, never yours.
-  Ask the user rather than defaulting; `--notify none` on someone else's
-  meeting still changes it under them.
+  Ask the user rather than defaulting. **Exception: `reach` = `own-copy`**
+  (`events show`): an update moves the user's own copy alone and nobody
+  can be notified, so `--notify` is not required there and `--notify all`
+  is refused with the reason (exit 6). `delete` on an own-copy event
+  removes it from the user's calendar only — Google tells the organizer
+  they declined — and still takes `--notify all|none` for that notice.
 - `--guest a@b` repeats for multiple guests on create. Creating with
   guests also requires `--notify`.
 - Times read in the user's display zone, `HH:MM`, strict.

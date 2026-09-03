@@ -2346,6 +2346,30 @@ test.describe('App', () => {
     expect(await callsTo(page, 'delete_event_cmd')).toEqual([]);
   });
 
+  /**
+   * A guest cannot delete somebody else's event, only their copy of it —
+   * and Google's help is explicit that Calendar then tells the organizer
+   * they declined. The panel says that, names the organizer, and labels the
+   * button for what it does; the guest count it used to print would have
+   * been a claim about who loses the event.
+   */
+  test('deleting somebody else\'s meeting is removing your copy, and says so', async ({ page }) => {
+    await writable(page);
+    await block(page, 'Vendor review').click();
+    await page.getByRole('button', { name: 'Delete' }).click();
+
+    await expect(confirmPanel(page)).toBeVisible();
+    await expect(confirmPanel(page).getByTestId('delete-own-copy-notice'))
+      .toContainText('off your calendar only');
+    await expect(confirmPanel(page).getByTestId('delete-own-copy-notice'))
+      .toContainText('tells ana@x.com you declined');
+    await expect(confirmPanel(page).getByTestId('delete-guest-notice')).toHaveCount(0);
+    await expect(confirmPanel(page).getByRole('button', { name: 'Delete' })).toHaveCount(0);
+    await confirmPanel(page).getByRole('button', { name: 'Remove from my calendar' }).click();
+
+    await expect.poll(() => callsTo(page, 'delete_event_cmd')).toHaveLength(1);
+  });
+
   test('a non-recurring event offers no scope choice', async ({ page }) => {
     // Without this, the three-scope spec below passes on a confirmation that
     // always shows three radios, whatever it was given.

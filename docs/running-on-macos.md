@@ -236,7 +236,11 @@ copy* or *Save my copy*, rather than a notify choice that would reach nobody.
 The exception is an event whose organizer ticked "guests can modify" — then
 the change does reach everyone, the panel says that instead, and the notify
 choice is back. To change somebody else's meeting for everyone otherwise, ask
-them, or answer with a proposed time.
+them, or answer with a proposed time. Deleting is different again: only the
+organizer can delete an event for everyone, so *Remove from my calendar* is
+what a guest gets, and Google tells the organizer you declined. The CLI reads
+the same facts — `events show --json` reports `reach` — and its `update` no
+longer asks for `--notify` on your own copy of somebody else's event.
 
 Two rules the form enforces rather than letting Google refuse them: the
 organizer cannot be removed, and an address that is not an address is refused

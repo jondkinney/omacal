@@ -240,6 +240,28 @@ pub(crate) fn scope_for(recurring: bool, asked: Option<&str>) -> Result<&'static
     }
 }
 
+/// [`notify_for`], read through who the change reaches. A guest's own copy
+/// (`Reach::OwnCopy`) has nobody to notify — Google keeps it apart from the
+/// organizer's, so an update moves this calendar alone and no mail goes
+/// anywhere — which makes the flag unnecessary rather than required, and
+/// `--notify all` a promise the CLI refuses to make. The other two reaches
+/// keep the ordinary rule.
+pub(crate) fn notify_for_reach(
+    reach: crate::events::Reach,
+    has_guests: bool,
+    asked: Option<&str>,
+) -> Result<&'static str, String> {
+    match (reach, asked) {
+        (crate::events::Reach::OwnCopy, None | Some("none")) => Ok("none"),
+        (crate::events::Reach::OwnCopy, Some("all")) => Err(
+            "this is your copy of somebody else's event — a change moves it on your calendar \
+             alone and nobody else's copy changes, so there is nobody to notify; drop --notify"
+                .into(),
+        ),
+        _ => notify_for(has_guests, asked),
+    }
+}
+
 /// Whether guests hear about a write. Touching a guest list without an
 /// answer is the refusal; a guestless write quietly mails nobody, which is
 /// the only thing it could honestly do.
@@ -504,6 +526,10 @@ fn finish(json: bool, envelope: serde_json::Value, done_word: &str) -> i32 {
 struct Target {
     recurring: bool,
     has_other_guests: bool,
+    /// Who a change reaches (`events::Reach`): for a guest's own copy the
+    /// notify rule has nobody to apply to, and says so instead of demanding
+    /// an answer.
+    reach: crate::events::Reach,
     all_day: bool,
     start_ms: i64,
     end_ms: i64,
@@ -524,12 +550,19 @@ fn merged_field(flag: &Option<String>, current: &Option<String>) -> Option<Strin
 }
 
 async fn target(pool: &SqlitePool, id: i64) -> Result<Target, String> {
-    let (event, _role, _tz) = omacal_store::event_by_id(pool, id)
-        .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("no event {id} — `omacal events list` prints real ids"))?;
+    let (event, _role, cal_google_id, account_email, _tz) =
+        omacal_store::event_for_detail(pool, id)
+            .await
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("no event {id} — `omacal events list` prints real ids"))?;
+    let is_organizer = crate::events::is_organizer(
+        event.organizer_email.as_deref(),
+        &account_email,
+        &cal_google_id,
+    );
     Ok(Target {
         recurring: event.recurrence.is_some() || event.recurring_event_id.is_some(),
+        reach: crate::events::Reach::of(is_organizer, event.guests_can_modify),
         // The guest-list rule counts *other people*: a solo event mails
         // nobody whatever the flag says, and `mailableGuests` upstream
         // counts the same way.
@@ -591,7 +624,7 @@ pub(crate) async fn execute(pool: &SqlitePool, cmd: &WriteCmd, json: bool) -> i3
                 Ok(s) => s,
                 Err(m) => return refuse(&m),
             };
-            let notify = match notify_for(t.has_other_guests, args.notify.as_deref()) {
+            let notify = match notify_for_reach(t.reach, t.has_other_guests, args.notify.as_deref()) {
                 Ok(n) => n,
                 Err(m) => return refuse(&m),
             };
@@ -765,6 +798,22 @@ mod tests {
         assert!(scope_for(true, Some("weekly")).is_err());
         assert_eq!(scope_for(false, None).unwrap(), "this");
         assert!(scope_for(false, Some("all")).unwrap_err().contains("does not repeat"));
+    }
+
+    /// A guest's own copy: the flag is unnecessary, `none` is accepted as
+    /// what happens anyway, and `all` is refused with the reason. The other
+    /// two reaches are the ordinary rule, unchanged.
+    #[test]
+    fn a_guests_own_copy_has_nobody_to_notify() {
+        use crate::events::Reach;
+        assert_eq!(notify_for_reach(Reach::OwnCopy, true, None).unwrap(), "none");
+        assert_eq!(notify_for_reach(Reach::OwnCopy, true, Some("none")).unwrap(), "none");
+        let err = notify_for_reach(Reach::OwnCopy, true, Some("all")).unwrap_err();
+        assert!(err.contains("nobody to notify"), "{err}");
+        assert!(notify_for_reach(Reach::Organizer, true, None).is_err(), "still asked");
+        assert!(notify_for_reach(Reach::Shared, true, None).is_err(), "still asked");
+        assert_eq!(notify_for_reach(Reach::Shared, true, Some("all")).unwrap(), "all");
+        assert_eq!(notify_for_reach(Reach::Organizer, false, None).unwrap(), "none");
     }
 
     /// §4's notify rule: guests demand an answer, solitude implies none.

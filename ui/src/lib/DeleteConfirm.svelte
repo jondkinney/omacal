@@ -31,6 +31,15 @@
    *  telling somebody they are about to notify themselves is just wrong. */
   const guests = $derived(detail.attendees.filter((a) => !a.is_self).length);
   const title = $derived(detail.title ?? '(no title)');
+  /** A guest cannot delete somebody else's event, only their own copy of
+   *  it — and Google's own help is explicit about what that is: the event
+   *  comes off this calendar alone, and Calendar tells the organizer you
+   *  declined. Unlike a move, `guests_can_modify` changes nothing here:
+   *  modifying is one permission, deleting for everyone is the organizer's
+   *  alone. So the guest count would be a lie about who loses the event,
+   *  and the panel says what actually happens instead. */
+  const ownCopy = $derived(!detail.is_organizer);
+  const organizer = $derived(detail.organizer_email ?? 'the organizer');
 </script>
 
 <ConfirmPanel {anchor} label="Delete event" title={`Delete “${title}”?`} {oncancel}>
@@ -91,7 +100,12 @@
       </div>
     {/if}
 
-    {#if guests > 0}
+    {#if ownCopy}
+      <p class="notice" data-testid="delete-own-copy-notice">
+        You are a guest on this event. Removing it takes it off your calendar only — {organizer}
+        and the other guests keep theirs, and Google tells {organizer} you declined.
+      </p>
+    {:else if guests > 0}
       <!-- `sendUpdates=all` is unconditional on every one of the three paths — the
            DELETE and the "this and following" PATCH alike (see
            `omacal-google`'s `delete_event` and `patch_event`) — so this is not
@@ -117,7 +131,7 @@
       data-choice
       data-default-choice-action
       onclick={() => onconfirm(scope)}
-    >Delete</button>
+    >{ownCopy ? 'Remove from my calendar' : 'Delete'}</button>
   {/snippet}
 </ConfirmPanel>
 

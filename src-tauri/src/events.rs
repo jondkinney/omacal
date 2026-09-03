@@ -124,6 +124,41 @@ pub(crate) fn is_organizer(
     })
 }
 
+/// Who a change to an event reaches — the fact the CLI's `show` reports
+/// and its `update` rule reads, and the same three answers
+/// `eventdetail.ts`'s `editReach` gives the app's dialogs. `Organizer`:
+/// the user's own event, a change goes to everyone and whether to mail
+/// them is a real choice. `OwnCopy`: a guest's copy, which Google keeps
+/// apart from the organizer's — a change lands on this calendar alone and
+/// nobody is told, so there is nobody to notify. `Shared`: a guest on an
+/// event whose organizer set `guestsCanModify`, and the choice is back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Reach {
+    Organizer,
+    OwnCopy,
+    Shared,
+}
+
+impl Reach {
+    pub(crate) fn of(is_organizer: bool, guests_can_modify: bool) -> Self {
+        match (is_organizer, guests_can_modify) {
+            (true, _) => Reach::Organizer,
+            (false, true) => Reach::Shared,
+            (false, false) => Reach::OwnCopy,
+        }
+    }
+
+    /// The wire spelling — the same three words `editReach` uses, so a
+    /// script and the app read one vocabulary.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Reach::Organizer => "organizer",
+            Reach::OwnCopy => "own-copy",
+            Reach::Shared => "shared",
+        }
+    }
+}
+
 /// Whether the edit and delete controls are shown at all.
 ///
 /// Deliberately *not* `can_respond` minus its attendee clause: responding
