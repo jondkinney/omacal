@@ -5104,14 +5104,25 @@ test.describe('WeekGrid: the padded payload', () => {
     // is sliding, all 21 days of it, and the block from the padding is now
     // on it.
     await page.mouse.wheel(-Math.round(colWidth / 2), 0);
-    await expect(page.locator('.col')).toHaveCount(21);
-    await expect(page.locator('.ev')).toHaveCount(1);
-    expect(await page.evaluate(() => (window as any).__lastPan ?? null)).toBeNull();
+    // Read in one go, straight after the wheel: the lull that settles the
+    // track is 120ms away, and on a slow runner separate round trips add up
+    // (CI, 2026-09-03: the offset was read mid-snap and came up short).
+    const mid = await page.evaluate((mon) => {
+      const track = document.querySelector('.body .track')!.getBoundingClientRect();
+      const first = document.querySelector(`.col[data-start-ms="${mon}"]`)!.getBoundingClientRect();
+      return {
+        cols: document.querySelectorAll('.col').length,
+        evs: document.querySelectorAll('.ev').length,
+        left: first.left - track.left,
+        pan: (window as any).__lastPan ?? null,
+      };
+    }, MON);
+    expect(mid.cols).toBe(21);
+    expect(mid.evs).toBe(1);
+    expect(mid.pan).toBeNull();
     // The window's first day is still the first column at the pane's edge,
     // plus the half column of travel.
-    const first = page.locator(`.col[data-start-ms="${MON}"]`);
-    const left = (await first.boundingBox())!.x - (await page.locator('.body .track').boundingBox())!.x;
-    expect(left).toBeCloseTo(colWidth / 2, 0);
+    expect(mid.left).toBeCloseTo(colWidth / 2, 0);
     // After the lull it settles back to the window, nothing having moved.
     await expect(page.locator('.col')).toHaveCount(7);
     expect(await page.locator('.col').first().getAttribute('data-start-ms')).toBe(String(MON));
