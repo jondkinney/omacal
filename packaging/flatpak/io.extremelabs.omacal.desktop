@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
-Name=omacal
+Name=OmaCal
 GenericName=Calendar
 Comment=A minimal desktop calendar for Google Calendar, iCloud and CalDAV
 Exec=omacal

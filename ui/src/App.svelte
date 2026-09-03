@@ -1356,7 +1356,7 @@
       await refreshStatus();
       await reload();
     } catch (e) {
-      error = `The change was made, but omacal could not refresh from Google: ${e}`;
+      error = `The change was made, but OmaCal could not refresh from Google: ${e}`;
     } finally {
       busy = false;
     }

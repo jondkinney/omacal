@@ -118,7 +118,7 @@
     {/if}
 
     <!-- Last, immediately above the button that does it. Google keeps no copy
-         omacal can reach, and for "All events" the past occurrences go with the
+         OmaCal can reach, and for "All events" the past occurrences go with the
          series. -->
     <p class="undo" data-testid="delete-no-undo">This cannot be undone.</p>
   {/snippet}

@@ -21,9 +21,9 @@ export type StartOnLogin = 'off' | 'open' | 'background';
  *  running. Labels here rather than in the markup so the spec that drives the
  *  select and the component that renders it read one list. */
 export const START_ON_LOGIN_OPTIONS: ReadonlyArray<[StartOnLogin, string]> = [
-  ['off', "Don't start omacal"],
-  ['open', 'Start omacal'],
-  ['background', 'Start omacal in the background'],
+  ['off', "Don't start OmaCal"],
+  ['open', 'Start OmaCal'],
+  ['background', 'Start OmaCal in the background'],
 ];
 
 /**

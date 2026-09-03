@@ -681,7 +681,7 @@
         </div>
       </div>
       <p class="hint">
-        Only calendars omacal can write to are offered; if the choice ever
+        Only calendars OmaCal can write to are offered; if the choice ever
         stops being writable, creates fall back to your primary.
       </p>
 
@@ -746,7 +746,7 @@
         </div>
       </div>
       <p class="hint">
-        Applies everywhere omacal prints a time, including the hour ruler down
+        Applies everywhere OmaCal prints a time, including the hour ruler down
         the side of Day and Week.
       </p>
 
@@ -779,8 +779,8 @@
         {/if}
       </div>
       <p class="hint">
-        Every time omacal shows reads in this zone — the grid, reminders, the
-        bar widget's feed. Applying restarts omacal, which is what makes all
+        Every time OmaCal shows reads in this zone — the grid, reminders, the
+        bar widget's feed. Applying restarts OmaCal, which is what makes all
         of them agree.
       </p>
 
@@ -838,10 +838,10 @@
           disabled={!settings}
           onchange={(e) => toggleQuitOnClose(e.currentTarget.checked)}
         />
-        Closing the window quits omacal
+        Closing the window quits OmaCal
       </label>
       <p class="hint">
-        Off by default: closing hides the window and omacal keeps running, so
+        Off by default: closing hides the window and OmaCal keeps running, so
         reminders still arrive and the bar widget stays fed. Turn this on and
         a close ends the app — nothing will fire until you open it again.
       </p>
@@ -865,7 +865,7 @@
       <p class="hint">
         Running in the background keeps reminders firing and the bar widget
         fed, without opening a window — open it any time from the widget, the
-        tray, or your app launcher. Choosing not to start omacal means
+        tray, or your app launcher. Choosing not to start OmaCal means
         notifications arrive only once you have opened it yourself.
       </p>
 
@@ -882,7 +882,7 @@
         A small forecast icon and the day's high, from Open-Meteo — the same
         keyless service the Omarchy bar widget reads. The location comes from
         that widget's setting when there is one, otherwise from your IP
-        address; turning this off ends the only network traffic omacal makes
+        address; turning this off ends the only network traffic OmaCal makes
         beyond your calendar providers.
       </p>
 
@@ -931,7 +931,7 @@
         </div>
       </div>
       <p class="hint">
-        omacal wears your Omarchy theme, and follows it as you switch. On any
+        OmaCal wears your Omarchy theme, and follows it as you switch. On any
         other desktop there is no theme to follow, which is what Light and Dark
         are for — they replace the whole palette, your theme's accent included,
         and take effect without a restart.
@@ -958,7 +958,7 @@
           </div>
         </div>
         <p class="hint">
-          Hyprland tiles omacal and closes or moves it from the keyboard, so a
+          Hyprland tiles OmaCal and closes or moves it from the keyboard, so a
           title bar there only repeats the compositor and costs a bar's height
           of calendar. Following the desktop hides the frame there and shows
           it on any other desktop, where the frame is what you grab. Takes

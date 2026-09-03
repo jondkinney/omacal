@@ -370,7 +370,7 @@ impl DbusNotifier {
 impl Notifier for DbusNotifier {
     fn post(&self, n: &Notification) -> Result<(), NotifyError> {
         let mut builder = notify_rust::Notification::new();
-        builder.summary(&n.title).body(&n.body).appname("omacal");
+        builder.summary(&n.title).body(&n.body).appname("OmaCal");
         if n.sticky {
             // See `Notification::sticky` for why this is urgency and not
             // just a timeout. It does not pierce do-not-disturb: Omarchy's

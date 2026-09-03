@@ -1060,7 +1060,7 @@ async fn create_via_client(
 /// its ordinary post-write sync instead of stopping, which is the heal the
 /// sentence promises.
 pub(crate) const CREATED_NOT_STORED: &str =
-    "The event was created on Google, but omacal could not record it locally. \
+    "The event was created on Google, but OmaCal could not record it locally. \
      The next sync will bring it in — do not create it again.";
 
 /// What a CalDAV move reports when the copy landed and the original would not
@@ -2106,7 +2106,7 @@ async fn split_series(
     // truncating both is the shape a real bug hides in.
     if rules.iter().any(|r| crate::write::has_count(r)) {
         anyhow::bail!(
-            "omacal cannot split a series that ends after a set number of times — \
+            "OmaCal cannot split a series that ends after a set number of times — \
              edit all events instead"
         );
     }
@@ -7648,7 +7648,7 @@ mod tests {
         assert!(err.to_string().contains("set number of times"), "got: {err}");
         assert_eq!(
             crate::errors::user_facing(&err),
-            "omacal cannot split a series that ends after a set number of times — \
+            "OmaCal cannot split a series that ends after a set number of times — \
              edit all events instead"
         );
         let (row, _, _) = omacal_store::event_by_id(&pool, id).await.unwrap().unwrap();

@@ -162,7 +162,7 @@ const SAFE_EXACT: &[&str] = &[
     // `.map_err(..)`. Allowlisted because the user can act on it: "All events"
     // does what they wanted, and OPAQUE here would send them looking in a log
     // for a decision rather than a fault.
-    "omacal cannot split a series that ends after a set number of times — \
+    "OmaCal cannot split a series that ends after a set number of times — \
      edit all events instead",
     // src-tauri/src/events.rs — `split_series`' second write failing after the
     // first landed. Built by `map_err` from a fixed literal that drops the
@@ -367,7 +367,7 @@ mod tests {
             "demo mode — there is nothing to save",
             "demo mode — there is nothing to delete",
             "that occurrence is no longer on the calendar",
-            "omacal cannot split a series that ends after a set number of times — \
+            "OmaCal cannot split a series that ends after a set number of times — \
              edit all events instead",
             "the new series was created but the original could not be shortened — \
              you now have two overlapping series and should delete one",

@@ -1,4 +1,4 @@
-# omacal
+# OmaCal
 
 A desktop calendar for Omarchy Linux — **Google Calendar, iCloud, or any
 CalDAV server**, with full create/edit/RSVP including recurring events at
@@ -7,9 +7,9 @@ not at the Arch machine. Tauri v2, Rust, Svelte 5. **No servers**: your
 events live in a local database, your tokens in your keyring, and nothing
 of yours passes through us.
 
-![omacal's Week view on Omarchy](docs/images/omacal-week.webp)
+![OmaCal's Week view on Omarchy](docs/images/OmaCal-week.webp)
 
-Most of what a calendar must do, every calendar does. What earns omacal
+Most of what a calendar must do, every calendar does. What earns OmaCal
 its place:
 
 ## Your terminal and your agent read the same calendar
@@ -64,7 +64,7 @@ clobbering.
 ## Sign-in with nothing to configure
 
 **No API key, no Google Cloud project, nothing to create.** Installed
-builds carry omacal's own Google-verified client — connecting is the
+builds carry OmaCal's own Google-verified client — connecting is the
 ordinary consent screen and that's it. iCloud connects with an
 app-specific password from appleid.apple.com; any other CalDAV server
 with its own URL. CalDAV **task lists** (VTODO) come along, manageable

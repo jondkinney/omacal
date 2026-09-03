@@ -118,7 +118,7 @@ test.describe('App', () => {
 
     await page.evaluate(() =>
       window.__harness.emit('sync-failed', {
-        message: 'Sync failed — omacal could not reach Google. It will keep trying.',
+        message: 'Sync failed — OmaCal could not reach Google. It will keep trying.',
       }),
     );
     await expect(page.locator('.err')).toContainText('could not reach Google');
@@ -1845,7 +1845,7 @@ test.describe('App', () => {
   test('a create that reached Google heals by syncing, not by retrying', async ({ page }) => {
     await writable(page);
     await page.evaluate(() => window.__harness.failNextCreate(
-      'The event was created on Google, but omacal could not record it locally. ' +
+      'The event was created on Google, but OmaCal could not record it locally. ' +
       'The next sync will bring it in — do not create it again.'));
 
     await page.keyboard.press('n');

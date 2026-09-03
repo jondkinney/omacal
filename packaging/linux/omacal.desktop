@@ -1,0 +1,25 @@
+# The desktop entry the deb, the rpm and the AppImage install, as a
+# Handlebars template for tauri-bundler (`bundle.linux.deb.desktopTemplate`
+# in tauri.conf.json), copied from the bundler's own default with one
+# difference: the name people see is **OmaCal** (issue #40), while the
+# product name that names the package, the binary and the resource
+# directory stays `omacal` — the bundler kebab-cases the product name into
+# the Debian package name, so "OmaCal" there would ship a second package
+# called oma-cal. `Exec`, `StartupWMClass` and `Icon` are the bundler's own
+# values, which is what keeps the window matched to its entry.
+[Desktop Entry]
+Type=Application
+Name=OmaCal
+GenericName=Calendar
+{{#if comment}}
+Comment={{comment}}
+{{/if}}
+Exec={{exec}}
+StartupWMClass={{exec}}
+Icon={{icon}}
+Categories={{categories}}
+Keywords=calendar;event;meeting;invitation;task;caldav;google;icloud;
+Terminal=false
+{{#if mime_type}}
+MimeType={{mime_type}}
+{{/if}}

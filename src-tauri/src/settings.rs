@@ -604,7 +604,7 @@ pub async fn read_settings(pool: &SqlitePool) -> AppSettings {
 /// A named constant for the same reason the other two are: it is pinned by a
 /// test and allowlisted in `errors.rs`, and the two must not drift.
 pub const INTERVAL_TOO_SHORT: &str =
-    "omacal will not sync more often than once a minute — Google's quota is finite and a \
+    "OmaCal will not sync more often than once a minute — Google's quota is finite and a \
      desktop app has no business polling faster than that";
 
 pub const EVENT_DURATION_TOO_SHORT: &str =
@@ -671,7 +671,7 @@ pub async fn set_display_timezone(
     let tz = tz.map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
     if let Some(name) = tz.as_deref() {
         jiff::tz::TimeZone::get(name)
-            .map_err(|_| format!("omacal does not know the time zone \"{name}\""))?;
+            .map_err(|_| format!("OmaCal does not know the time zone \"{name}\""))?;
     }
 
     write(&state.pool, DISPLAY_TZ_KEY, tz.as_deref().unwrap_or(""))
@@ -725,7 +725,7 @@ fn validate_second_timezone(tz: Option<String>) -> Result<Option<String>, String
     let tz = tz.map(|t| t.trim().to_string()).filter(|t| !t.is_empty());
     if let Some(name) = tz.as_deref() {
         jiff::tz::TimeZone::get(name)
-            .map_err(|_| format!("omacal does not know the time zone \"{name}\""))?;
+            .map_err(|_| format!("OmaCal does not know the time zone \"{name}\""))?;
     }
     Ok(tz)
 }
@@ -1422,7 +1422,7 @@ mod tests {
         assert_eq!(validate_second_timezone(None).unwrap(), None);
         assert_eq!(
             validate_second_timezone(Some("Mars/Olympus_Mons".into())).unwrap_err(),
-            "omacal does not know the time zone \"Mars/Olympus_Mons\"",
+            "OmaCal does not know the time zone \"Mars/Olympus_Mons\"",
         );
     }
 

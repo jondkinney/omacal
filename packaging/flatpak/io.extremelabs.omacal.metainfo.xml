@@ -5,7 +5,7 @@
 <component type="desktop-application">
   <id>io.extremelabs.omacal</id>
 
-  <name>omacal</name>
+  <name>OmaCal</name>
   <summary>A minimal desktop calendar for Google, iCloud and CalDAV</summary>
 
   <metadata_license>CC0-1.0</metadata_license>

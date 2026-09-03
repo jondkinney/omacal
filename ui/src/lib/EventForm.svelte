@@ -830,7 +830,7 @@
       <select aria-label="Repeat" bind:value={value.repeat}>
         {#if isCustom}
           <!-- Disabled, not absent: the user has to be able to see the rule
-               they would be replacing. It cannot be chosen because omacal has
+               they would be replacing. It cannot be chosen because OmaCal has
                no way to author it — `write::rrule_for` has no entry for it —
                so picking anything else is the only way out, and doing so is an
                explicit overwrite. The select itself stays enabled for exactly
@@ -896,7 +896,7 @@
     {/if}
     {#if isCustom}
       <p class="hint">
-        omacal cannot write this rule. Choosing any other option replaces it.
+        OmaCal cannot write this rule. Choosing any other option replaces it.
       </p>
     {/if}
     </div>

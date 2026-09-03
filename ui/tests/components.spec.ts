@@ -1227,7 +1227,7 @@ test.describe('Header', () => {
     await expect(pick).toHaveValue('open');
     // All three offered, in least-to-most-running order.
     await expect(pick.locator('option')).toHaveText([
-      "Don't start omacal", 'Start omacal', 'Start omacal in the background',
+      "Don't start OmaCal", 'Start OmaCal', 'Start OmaCal in the background',
     ]);
 
     await pick.selectOption('background');

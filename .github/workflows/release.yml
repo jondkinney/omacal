@@ -169,6 +169,10 @@ jobs:
               exit 1
             fi
             sed -i '/^X-AppImage-/d' "$desktop"
+            # The name people see is OmaCal (issue #40); the desktop template
+            # in packaging/linux already says so, and this holds it even if
+            # the bundler ever stops applying that template to the AppImage.
+            sed -i 's/^Name=omacal$/Name=OmaCal/' "$desktop"
             {
               printf 'X-AppImage-Name=omacal\n'
               printf 'X-AppImage-Version=%s\n' "$version"
@@ -231,7 +235,7 @@ jobs:
           tag="${GITHUB_REF_NAME}"
           gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
             gh release create "$tag" --repo "$GITHUB_REPOSITORY" \
-              --draft --title "omacal $tag" --notes "" || true
+              --draft --title "OmaCal $tag" --notes "" || true
           if [ "$RUNNER_OS" = "Linux" ]; then
             # latest.json is NOT here: it moved to the updater-manifest
             # join job, which needs both platforms' signatures in view —

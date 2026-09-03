@@ -77,7 +77,7 @@ pub fn focus_should_sync(demo: bool, last_sync_ms: Option<i64>, now_ms: i64) -> 
 /// belongs in a payload that crosses into the webview, so the detail stays in
 /// the local log and the user gets a sentence they can act on.
 pub const SYNC_FAILED_MESSAGE: &str =
-    "Sync failed — omacal could not reach Google. It will keep trying.";
+    "Sync failed — OmaCal could not reach Google. It will keep trying.";
 
 /// The `sync-failed` payload. Takes the error so that the omission is visible
 /// at the call site and deliberate here, rather than looking like an oversight.
