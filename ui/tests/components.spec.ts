@@ -2401,17 +2401,29 @@ test.describe('EventPopover', () => {
 
   test('a link written with words keeps the words and the destination', async ({ page }) => {
     // Issue #19. The popover is where this is finally true or not: the
-    // segment carries label and href separately, and the anchor renders the
-    // first with the second behind it. Both halves asserted, because showing
-    // the URL as the text would "fix" the link and lose the sentence.
+    // rendered HTML carries label and href separately, and the anchor shows
+    // the first with the second behind it. Both halves asserted, because
+    // showing the URL as the text would "fix" the link and lose the sentence.
     await page.goto(show('labelled-link-description'));
     const link = page.locator('.desc a');
     await expect(link).toHaveText('the pre-read');
     await expect(link).toHaveAttribute('href', 'https://docs.example.com/pre-read');
-    // The paragraph, not `.desc` — that also holds the Copy button.
-    await expect(page.locator('.desc p')).toHaveText('Please read the pre-read first.');
-    // Copying a link copies where it goes, not what it is called.
+    // The rendered body, not `.desc` — that also holds the Copy button.
+    await expect(page.locator('.desc-content')).toHaveText('Please read the pre-read first.');
+    // Copying a link copies where it goes, not what it is called. Stamped by
+    // `renderedDescriptionHtml` now that the body is HTML rather than segments.
     await expect(link).toHaveAttribute('data-copy-value', 'https://docs.example.com/pre-read');
+  });
+
+  test('safe description formatting and links render as formatting', async ({ page }) => {
+    await page.goto(show('rich-description'));
+    const description = page.locator('.desc');
+    await expect(description.getByRole('heading', { name: 'Preparation' })).toBeVisible();
+    await expect(description.locator('strong')).toHaveText('quarterly numbers');
+    await expect(description.getByRole('link', { name: 'agenda' }))
+      .toHaveAttribute('href', 'https://example.com/agenda');
+    await expect(description.getByRole('link', { name: 'agenda' }))
+      .toHaveAttribute('rel', 'noopener noreferrer');
   });
 
   test('a one-off event offers no scope choice', async ({ page }) => {
@@ -4239,16 +4251,563 @@ test.describe('EventForm', () => {
     await expect(page.getByTestId('guest-notice')).toContainText('4 guests');
   });
 
-  test('a description is rendered as text, never as markup', async ({ page }) => {
+  test('unsafe description markup is removed before it reaches the editor', async ({ page }) => {
     // Anyone who knows the user's email can put an event on their calendar,
     // description included, and this webview can invoke Tauri commands.
     await open(page, 'nasty-description');
     await expect(page.locator('img')).toHaveCount(0);
-    // And byte for byte: sanitising on the way *in* would rewrite what the
-    // author typed and then save the rewrite back over the real event —
-    // `stripTags` alone would leave this field empty.
-    await expect(page.getByLabel('Description', { exact: true }))
-      .toHaveValue('<img src=x onerror=alert(1)>');
+    await expect(page.getByLabel('Description', { exact: true })).toBeEmpty();
+  });
+
+  test('safe existing HTML is editable as formatted content', async ({ page }) => {
+    await open(page, 'rich-description');
+    const editor = page.getByLabel('Description', { exact: true });
+    await expect(editor.getByRole('heading', { name: 'Preparation' })).toBeVisible();
+    await expect(editor.locator('strong')).toHaveText('quarterly numbers');
+  });
+
+  test('the compact toolbar authors bold, italic, underline, heading and links', async ({ page }) => {
+    await open(page, 'create');
+    const box = page.getByTestId('description-editor');
+    const editor = page.getByLabel('Description', { exact: true });
+    await editor.fill('Agenda');
+
+    await editor.selectText();
+    await box.getByRole('button', { name: 'Bold' }).click();
+    await expect(editor.locator('b, strong')).toHaveText('Agenda');
+
+    await editor.selectText();
+    await box.getByRole('button', { name: 'Italic' }).click();
+    await expect(editor.locator('i, em')).toHaveText('Agenda');
+
+    await editor.selectText();
+    await box.getByRole('button', { name: 'Underline' }).click();
+    await expect(editor.locator('u')).toHaveText('Agenda');
+
+    await editor.selectText();
+    await box.getByRole('button', { name: 'Heading' }).click();
+    await expect(editor.locator('h3')).toContainText('Agenda');
+
+    await editor.selectText();
+    await box.getByRole('button', { name: 'Link' }).click();
+    await box.getByLabel('Link URL').fill('example.com/agenda');
+    await box.getByRole('button', { name: 'Apply' }).click();
+    await expect(editor.getByRole('link')).toHaveAttribute('href', 'https://example.com/agenda');
+
+    await page.getByRole('button', { name: 'Create' }).click();
+    const [saved] = await saves(page);
+    expect(saved.fields.description).toContain('href="https://example.com/agenda"');
+    expect(saved.fields.description).not.toContain('style=');
+  });
+
+  test('the compact toolbar authors bulleted and numbered lists', async ({ page }) => {
+    await open(page, 'create');
+    const box = page.getByTestId('description-editor');
+    const editor = page.getByLabel('Description', { exact: true });
+
+    await editor.fill('Bullet item');
+    await editor.selectText();
+    await box.getByRole('button', { name: 'Bulleted list' }).click();
+    await expect(editor.locator('ul > li')).toHaveText('Bullet item');
+
+    await editor.fill('Numbered item');
+    await editor.selectText();
+    await box.getByRole('button', { name: 'Numbered list' }).click();
+    await expect(editor.locator('ol > li')).toHaveText('Numbered item');
+
+    await page.getByRole('button', { name: 'Create' }).click();
+    const [saved] = await saves(page);
+    expect(saved.fields.description).toContain('<ol>');
+    expect(saved.fields.description).toContain('<li>Numbered item</li>');
+  });
+
+  test('Markdown-style line starters immediately become lists and a heading', async ({ page }) => {
+    await open(page, 'create');
+    const editor = page.getByLabel('Description', { exact: true });
+
+    await editor.pressSequentially('- ');
+    expect(await editor.evaluate((element) => {
+      const item = element.querySelector('ul > li');
+      const selection = window.getSelection();
+      const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+      return {
+        collapsed: range?.collapsed,
+        directlyBeforePlaceholder: range?.startContainer === item && range.startOffset === 0,
+        itemText: item?.textContent,
+      };
+    })).toEqual({ collapsed: true, directlyBeforePlaceholder: true, itemText: '' });
+    await page.keyboard.type('Dash item');
+    await expect(editor.locator('ul > li')).toHaveText('Dash item');
+    await expect(editor).not.toContainText('- Dash item');
+
+    await open(page, 'create');
+    await editor.pressSequentially('* ');
+    await page.keyboard.type('Star item');
+    await expect(editor.locator('ul > li')).toHaveText('Star item');
+    await expect(editor).not.toContainText('* Star item');
+
+    await open(page, 'create');
+    await editor.pressSequentially('1. ');
+    await page.keyboard.type('Ordered item');
+    await expect(editor.locator('ol > li')).toHaveText('Ordered item');
+    await expect(editor).not.toContainText('1. Ordered item');
+
+    await open(page, 'create');
+    await editor.pressSequentially('# ');
+    await page.keyboard.type('Planning');
+    await expect(editor.getByRole('heading', { name: 'Planning' })).toBeVisible();
+    await expect(editor).not.toContainText('# Planning');
+
+    // Markers only act as a complete line prefix, never in ordinary prose.
+    await editor.fill('Budget -');
+    await editor.press('Space');
+    await expect(editor.locator('ul, ol')).toHaveCount(0);
+    await expect(editor).toHaveText('Budget - ');
+  });
+
+  test('a Markdown bullet directly after a heading keeps the caret at the bullet', async ({ page }) => {
+    await open(page, 'create');
+    const editor = page.getByLabel('Description', { exact: true });
+
+    await editor.pressSequentially('# ');
+    await page.keyboard.type('Planning');
+    await editor.press('Enter');
+    await editor.pressSequentially('- ');
+
+    expect(await editor.evaluate((element) => {
+      const heading = element.querySelector('h3');
+      const item = element.querySelector('ul > li');
+      const selection = window.getSelection();
+      const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+      return {
+        headingText: heading?.textContent,
+        listFollowsHeading: heading?.nextElementSibling === item?.parentElement,
+        collapsed: range?.collapsed,
+        directlyBeforePlaceholder: range?.startContainer === item && range.startOffset === 0,
+        itemText: item?.textContent,
+      };
+    })).toEqual({
+      headingText: 'Planning',
+      listFollowsHeading: true,
+      collapsed: true,
+      directlyBeforePlaceholder: true,
+      itemText: '',
+    });
+
+    await page.keyboard.type('First point');
+    await expect(editor.locator('h3')).toHaveText('Planning');
+    await expect(editor.locator('ul > li')).toHaveText('First point');
+  });
+
+  test('Tab and bracket shortcuts indent and outdent list items without leaving the editor', async ({ page }) => {
+    await open(page, 'create');
+    const editor = page.getByLabel('Description', { exact: true });
+    await editor.pressSequentially('- ');
+    await page.keyboard.type('Parent');
+    await editor.press('Enter');
+    await page.keyboard.type('Child');
+
+    const topItems = editor.locator('ul').first().locator(':scope > li');
+    const nestedItem = editor.locator('ul > li > ul > li');
+    await editor.press('Tab');
+    await expect(topItems).toHaveCount(1);
+    await expect(nestedItem).toHaveText('Child');
+    await expect(editor).toBeFocused();
+
+    await editor.press('Shift+Tab');
+    await expect(topItems).toHaveCount(2);
+    await expect(topItems.nth(1)).toHaveText('Child');
+    await expect(editor).toBeFocused();
+
+    await editor.press('Control+]');
+    await expect(topItems).toHaveCount(1);
+    await expect(nestedItem).toHaveText('Child');
+    await editor.press('Control+[');
+    await expect(topItems).toHaveCount(2);
+    await expect(topItems.nth(1)).toHaveText('Child');
+
+    await editor.press('Control+]');
+    await page.getByRole('button', { name: 'Create' }).click();
+    const [saved] = await saves(page);
+    expect(saved.fields.description).toContain('<li>Parent<ul><li>Child</li></ul></li>');
+    expect(saved.fields.description).not.toContain('style=');
+  });
+
+  test('Tab indents a list item from the front, middle, or end of its line', async ({ page }) => {
+    const cases = [
+      { position: 'front', expected: 'XChild' },
+      { position: 'middle', expected: 'ChXild' },
+      { position: 'end', expected: 'ChildX' },
+    ] as const;
+
+    for (const { position, expected } of cases) {
+      await open(page, 'create');
+      const editor = page.getByLabel('Description', { exact: true });
+      await editor.pressSequentially('- ');
+      await page.keyboard.type('Parent');
+      await editor.press('Enter');
+      await page.keyboard.type('Child');
+
+      await editor.evaluate((element, caretPosition) => {
+        const list = element.querySelector('ul');
+        const item = list?.querySelectorAll(':scope > li')[1];
+        const text = item?.firstChild;
+        if (!list || !item || !(text instanceof Text)) throw new Error('expected a two-item list');
+
+        (element as HTMLElement).focus();
+        const range = document.createRange();
+        if (caretPosition === 'front') range.setStart(list, 1);
+        else if (caretPosition === 'middle') range.setStart(text, 2);
+        else range.setStart(list, 2);
+        range.collapse(true);
+        const selection = window.getSelection();
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+      }, position);
+
+      await editor.press('Tab');
+      await page.keyboard.type('X');
+      await expect(editor.locator('ul > li > ul > li')).toHaveText(expected);
+      await expect(editor).toBeFocused();
+    }
+  });
+
+  test('Shift+Tab outdents a nested item from the front, middle, or end of its line', async ({ page }) => {
+    const cases = [
+      { position: 'front', expected: 'XChild' },
+      { position: 'middle', expected: 'ChXild' },
+      { position: 'end', expected: 'ChildX' },
+    ] as const;
+
+    for (const { position, expected } of cases) {
+      await open(page, 'create');
+      const editor = page.getByLabel('Description', { exact: true });
+      await editor.pressSequentially('- ');
+      await page.keyboard.type('Parent');
+      await editor.press('Enter');
+      await page.keyboard.type('Child');
+      await editor.press('Tab');
+
+      await editor.evaluate((element, caretPosition) => {
+        const nestedList = element.querySelector('ul > li > ul');
+        const item = nestedList?.querySelector(':scope > li');
+        const text = item?.firstChild;
+        if (!nestedList || !item || !(text instanceof Text)) throw new Error('expected a nested list item');
+
+        (element as HTMLElement).focus();
+        const range = document.createRange();
+        if (caretPosition === 'front') range.setStart(nestedList, 0);
+        else if (caretPosition === 'middle') range.setStart(text, 2);
+        else range.setStart(nestedList, 1);
+        range.collapse(true);
+        const selection = window.getSelection();
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+      }, position);
+
+      await editor.press('Shift+Tab');
+      await page.keyboard.type('X');
+      const topItems = editor.locator('ul').first().locator(':scope > li');
+      await expect(topItems).toHaveCount(2);
+      await expect(topItems.nth(1)).toHaveText(expected);
+      await expect(editor).toBeFocused();
+    }
+  });
+
+  test('WebKitGTK reverse Tab outdents instead of focusing the formatting toolbar', async ({ page }) => {
+    await open(page, 'create');
+    const editor = page.getByLabel('Description', { exact: true });
+    await editor.pressSequentially('- ');
+    await page.keyboard.type('Parent');
+    await editor.press('Enter');
+    await page.keyboard.type('Child');
+    await editor.press('Tab');
+
+    expect(await editor.evaluate((element) => {
+      const event = new KeyboardEvent('keydown', {
+        key: 'ISO_Left_Tab',
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      });
+      return { dispatched: element.dispatchEvent(event), prevented: event.defaultPrevented };
+    })).toEqual({ dispatched: false, prevented: true });
+
+    const topItems = editor.locator('ul').first().locator(':scope > li');
+    await expect(topItems).toHaveCount(2);
+    await expect(topItems.nth(1)).toHaveText('Child');
+    await expect(editor).toBeFocused();
+    await expect(page.getByRole('button', { name: 'Link' })).not.toBeFocused();
+  });
+
+  test('Shift+Tab resolves list carets exposed at parent and editor boundaries', async ({ page }) => {
+    for (const boundary of ['parent', 'editor'] as const) {
+      await open(page, 'create');
+      const editor = page.getByLabel('Description', { exact: true });
+      await editor.evaluate((element, kind) => {
+        element.innerHTML = '<h3>Heading</h3><ul><li id="parent">Parent<ul><li>Child</li></ul></li></ul>';
+        const parent = element.querySelector('#parent');
+        if (!parent) throw new Error('expected a parent list item');
+        (element as HTMLElement).focus();
+        const range = document.createRange();
+        if (kind === 'parent') range.setStart(parent, 1);
+        else range.setStart(element, 2);
+        range.collapse(true);
+        const selection = window.getSelection();
+        selection?.removeAllRanges();
+        selection?.addRange(range);
+      }, boundary);
+
+      await editor.press('Shift+Tab');
+      const topItems = editor.locator('ul').first().locator(':scope > li');
+      await expect(topItems).toHaveCount(2);
+      await expect(topItems.nth(1)).toHaveText('Child');
+      await expect(editor).toBeFocused();
+      await expect(page.getByRole('button', { name: 'Link' })).not.toBeFocused();
+    }
+  });
+
+  test('Shift+Tab restores a displaced WebKit list caret while Description still owns focus', async ({ page }) => {
+    await open(page, 'create');
+    const editor = page.getByLabel('Description', { exact: true });
+    await editor.pressSequentially('- ');
+    await page.keyboard.type('Parent');
+    await editor.press('Enter');
+    await page.keyboard.type('Child');
+    await editor.press('Tab');
+
+    const result = await editor.evaluate((element) => {
+      const childText = element.querySelector('ul > li > ul > li')?.firstChild;
+      const outsideText = document.querySelector('[aria-label="Link"]')?.firstChild;
+      if (!(childText instanceof Text) || !(outsideText instanceof Text)) throw new Error('expected probe text nodes');
+      const selection = window.getSelection();
+      const listCaret = document.createRange();
+      listCaret.setStart(childText, 2);
+      listCaret.collapse(true);
+      selection?.removeAllRanges();
+      selection?.addRange(listCaret);
+      document.dispatchEvent(new Event('selectionchange'));
+
+      // Match WebKit's observed transient state: the contenteditable remains
+      // focused but the document Selection points at text outside it.
+      const displaced = document.createRange();
+      displaced.setStart(outsideText, 0);
+      displaced.collapse(true);
+      selection?.removeAllRanges();
+      selection?.addRange(displaced);
+      document.dispatchEvent(new Event('selectionchange'));
+      const event = new KeyboardEvent('keydown', {
+        key: 'Unidentified', code: 'Tab', shiftKey: true, bubbles: true, cancelable: true,
+      });
+      element.dispatchEvent(event);
+      return { dispatched: !event.defaultPrevented, active: document.activeElement?.getAttribute('aria-label') };
+    });
+
+    expect(result).toEqual({ dispatched: false, active: 'Description' });
+    const topItems = editor.locator('ul').first().locator(':scope > li');
+    await expect(topItems).toHaveCount(2);
+    await expect(topItems.nth(1)).toHaveText('Child');
+  });
+
+  test('list indent controls preserve normal Tab navigation and cannot eject a first item', async ({ page }) => {
+    await open(page, 'create');
+    const editor = page.getByLabel('Description', { exact: true });
+    const box = page.getByTestId('description-editor');
+    await editor.pressSequentially('- ');
+    const before = await editor.evaluate((element) => element.innerHTML);
+
+    // There is no preceding item to nest under. The command is owned by the
+    // editor but deliberately changes nothing and does not move form focus.
+    await editor.press('Tab');
+    await expect(editor).toBeFocused();
+    expect(await editor.evaluate((element) => element.innerHTML)).toBe(before);
+    expect(await editor.evaluate((element) => {
+      const item = element.querySelector('li');
+      const range = window.getSelection()?.getRangeAt(0);
+      return range?.startContainer === item && range.startOffset === 0;
+    })).toBe(true);
+
+    await page.keyboard.type('Parent');
+    await editor.press('Enter');
+    await page.keyboard.type('Child');
+    const topItems = editor.locator('ul').first().locator(':scope > li');
+    await box.getByRole('button', { name: 'Indent list item' }).click();
+    await expect(topItems).toHaveCount(1);
+    await expect(editor.locator('ul > li > ul > li')).toHaveText('Child');
+    await box.getByRole('button', { name: 'Outdent list item' }).click();
+    await expect(topItems).toHaveCount(2);
+
+    // Ordered lists use the same semantic nesting, preserving their type.
+    await open(page, 'create');
+    await editor.pressSequentially('1. ');
+    await page.keyboard.type('One');
+    await editor.press('Enter');
+    await page.keyboard.type('Two');
+    await editor.press('Tab');
+    await expect(editor.locator('ol > li > ol > li')).toHaveText('Two');
+
+    // In ordinary description text, Tab still belongs to the form.
+    await open(page, 'create');
+    await editor.fill('Plain description');
+    await editor.press('Tab');
+    await expect(page.getByLabel('Repeat', { exact: true })).toBeFocused();
+  });
+
+  test('outdenting a top-level item exits the list and keeps its caret', async ({ page }) => {
+    await open(page, 'create');
+    const editor = page.getByLabel('Description', { exact: true });
+    await editor.pressSequentially('- ');
+    await page.keyboard.type('First');
+    await editor.press('Enter');
+    await page.keyboard.type('Second');
+
+    await editor.press('Shift+Tab');
+    expect(await editor.evaluate((element) => Array.from(element.children).map((child) => ({
+      tag: child.tagName,
+      text: child.textContent,
+    })))).toEqual([
+      { tag: 'UL', text: 'First' },
+      { tag: 'DIV', text: 'Second' },
+    ]);
+    await expect(editor).toBeFocused();
+
+    await page.keyboard.type(' continued');
+    await expect(editor.locator('ul > li')).toHaveText('First');
+    await expect(editor.locator(':scope > div')).toHaveText('Second continued');
+    await editor.press('Tab');
+    await expect(page.getByLabel('Repeat', { exact: true })).toBeFocused();
+  });
+
+  test('completed inline Markdown-style runs format immediately without retaining markers', async ({ page }) => {
+    await open(page, 'create');
+    const editor = page.getByLabel('Description', { exact: true });
+
+    await editor.pressSequentially('*bold* _italic_ ++underlined++ **also bold**');
+    await expect(editor.locator('strong')).toHaveCount(2);
+    await expect(editor.locator('strong').nth(0)).toHaveText('bold');
+    await expect(editor.locator('strong').nth(1)).toHaveText('also bold');
+    await expect(editor.locator('em')).toHaveText('italic');
+    await expect(editor.locator('u')).toHaveText('underlined');
+    await expect(editor).toHaveText('bold italic underlined also bold');
+
+    await page.getByRole('button', { name: 'Create' }).click();
+    const [saved] = await saves(page);
+    expect(saved.fields.description).toContain('<strong>bold</strong>');
+    expect(saved.fields.description).toContain('<em>italic</em>');
+    expect(saved.fields.description).toContain('<u>underlined</u>');
+    expect(saved.fields.description).not.toContain('*bold*');
+    expect(saved.fields.description).not.toContain('++underlined++');
+    expect(saved.fields.description).not.toContain('\u200b');
+    expect(saved.fields.description).not.toContain('<span');
+  });
+
+  test('Ctrl+U underlines the selection without requiring the Linux Unicode chord', async ({ page }) => {
+    await open(page, 'create');
+    const editor = page.getByLabel('Description', { exact: true });
+    await editor.fill('Agenda');
+    await editor.selectText();
+    await page.keyboard.press('Control+u');
+    await expect(editor.locator('u')).toHaveText('Agenda');
+  });
+
+  test('safe typed URLs auto-link while active schemes remain plain text', async ({ page }) => {
+    await open(page, 'create');
+    const editor = page.getByLabel('Description', { exact: true });
+    await editor.fill(
+      'Docs: extremelabs.io/docs, https://example.com/agenda. Do not link javascript:alert(1).',
+    );
+
+    // Leaving the whole rich editor reflects the already-safe bound value
+    // back into the contenteditable without disrupting an active caret.
+    await page.getByLabel('Title', { exact: true }).focus();
+    await expect(editor.getByRole('link', { name: 'extremelabs.io/docs' }))
+      .toHaveAttribute('href', 'https://extremelabs.io/docs');
+    await expect(editor.getByRole('link', { name: 'https://example.com/agenda' }))
+      .toHaveAttribute('href', 'https://example.com/agenda');
+    await expect(editor.locator('a[href^="javascript:"]')).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Create' }).click();
+    const [saved] = await saves(page);
+    expect(saved.fields.description).toContain('href="https://extremelabs.io/docs"');
+    expect(saved.fields.description).toContain('href="https://example.com/agenda"');
+    expect(saved.fields.description).not.toContain('href="javascript:');
+  });
+
+  test('Space and Enter link a completed safe URL immediately and leave the caret after it', async ({ page }) => {
+    await open(page, 'create');
+    const editor = page.getByLabel('Description', { exact: true });
+
+    await editor.fill('extremelabs.io/docs');
+    await editor.press('Space');
+    const domain = editor.getByRole('link', { name: 'extremelabs.io/docs' });
+    await expect(domain).toHaveAttribute('href', 'https://extremelabs.io/docs');
+    await page.keyboard.type('after');
+    await expect(domain).toHaveText('extremelabs.io/docs');
+    await expect(editor).toContainText('extremelabs.io/docs after');
+
+    await editor.fill('https://example.com/agenda');
+    await editor.press('Enter');
+    const explicit = editor.getByRole('link', { name: 'https://example.com/agenda' });
+    await expect(explicit).toHaveAttribute('href', 'https://example.com/agenda');
+    await page.keyboard.type('Next line');
+    await expect(explicit).toHaveText('https://example.com/agenda');
+    await expect(editor).toContainText('Next line');
+  });
+
+  test('Space does not link a domain-shaped fragment inside an unsafe scheme', async ({ page }) => {
+    await open(page, 'create');
+    const editor = page.getByLabel('Description', { exact: true });
+    await editor.fill('javascript:example.com');
+    await editor.press('Space');
+    await expect(editor.locator('a')).toHaveCount(0);
+    await expect(editor).toContainText('javascript:example.com ');
+  });
+
+  test('dropped rich text is sanitised before it enters the editor', async ({ page }) => {
+    await open(page, 'create');
+    const editor = page.getByLabel('Description', { exact: true });
+    await editor.evaluate((element) => {
+      const transfer = new DataTransfer();
+      transfer.setData(
+        'text/html',
+        '<img src=x onerror="window.__dropped = true"><strong>Agenda</strong>',
+      );
+      const rect = element.getBoundingClientRect();
+      element.dispatchEvent(new DragEvent('drop', {
+        bubbles: true,
+        cancelable: true,
+        dataTransfer: transfer,
+        clientX: rect.left + 8,
+        clientY: rect.top + 8,
+      }));
+    });
+    await expect(editor.locator('img')).toHaveCount(0);
+    await expect(editor.locator('strong')).toHaveText('Agenda');
+    expect(await page.evaluate(() => (window as any).__dropped)).toBeUndefined();
+  });
+
+  test('reminders use the guest-list remove control', async ({ page }) => {
+    await open(page, 'with-guests');
+    await page.getByRole('button', { name: '+ Add notification' }).click();
+
+    const reminderX = page.getByRole('button', { name: 'Remove reminder' });
+    const guestX = page.getByRole('button', { name: 'Remove petya@x.com' });
+    await expect(reminderX).toHaveText('×');
+    await expect(guestX).toHaveText('×');
+    await expect(reminderX).toHaveClass(/\bx\b/);
+    await expect(guestX).toHaveClass(/\bx\b/);
+  });
+
+  test('every guest reserves the remove column so Optional stays aligned', async ({ page }) => {
+    await open(page, 'with-guests');
+    const rows = page.locator('[data-testid="guests"] .guest');
+    await expect(rows).toHaveCount(5);
+    await expect(rows.locator(':scope > .x, :scope > .xslot')).toHaveCount(5);
+
+    const optionalX = await rows.locator('.opt').evaluateAll((labels) =>
+      labels.map((label) => Math.round(label.getBoundingClientRect().x)),
+    );
+    expect(Math.max(...optionalX) - Math.min(...optionalX)).toBeLessThanOrEqual(1);
   });
 
   test('a new event opens at the next half hour', async ({ page }) => {

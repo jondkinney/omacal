@@ -1,9 +1,12 @@
+import DOMPurify from 'dompurify';
+
 // Anyone who knows a user's email address can put an event on their
 // calendar, description included. That description renders inside a webview
 // that can invoke Tauri commands, so it is attacker-controlled input, not
-// display text. This module never produces HTML: it returns segments that
-// the component renders with `{#each}` and a plain `<a>`, so there is no
-// code path where `{@html}` could be reintroduced by a later edit.
+// trusted display markup. This module offers two deliberately safe outputs:
+// plain text/link segments for callers that want no formatting, and a tiny
+// allowlist of DOMPurify-cleaned HTML for the description viewer/editor.
+// Raw calendar HTML must never be handed to `{@html}` directly.
 
 /**
  * What the component renders: `value` is always the text shown, and a link
@@ -35,6 +38,139 @@ const URL_RE = /https?:\/\/[^\s<>"']+/gi;
 // rather than reject: the popover should still show what fits.
 export const MAX_DESCRIPTION_LENGTH = 32 * 1024;
 
+/** Formatting the compact editor can author and the event reader can show.
+ * No images, media, inline styles, classes or arbitrary attributes: calendar
+ * descriptions are an invitation-sized document, not a miniature web page. */
+const DESCRIPTION_TAGS = [
+  'p', 'div', 'br', 'strong', 'b', 'em', 'i', 'u', 'h2', 'h3', 'a', 'ul', 'ol', 'li',
+];
+const DESCRIPTION_ATTRS = ['href', 'title'];
+
+/** Turn a toolbar/link-dialog value into a link we are prepared to render.
+ * A bare address or domain gets the friendly scheme a person meant; any
+ * explicitly supplied protocol outside http(s)/mailto is refused. */
+export function normalizeDescriptionHref(raw: string): string | null {
+  const value = raw.trim();
+  if (!value) return null;
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) return `mailto:${value}`;
+  if (/^www\./i.test(value)) return `https://${value}`;
+  if (/^[a-z0-9-]+(?:\.[a-z0-9-]+)+(?:[/?#].*)?$/i.test(value)) return `https://${value}`;
+  if (/^https?:\/\/[^\s]+$/i.test(value) || /^mailto:[^\s@]+@[^\s@]+$/i.test(value)) {
+    return value;
+  }
+  return null;
+}
+
+// Deliberately narrower than "anything URL-like": active schemes never enter
+// the candidate set, while explicit http(s), www, domain-shaped text and
+// email addresses cover the things a person reasonably expects an editor to
+// recognise. The normaliser above remains the final scheme gate.
+const AUTO_LINK_RE = /\b(?:https?:\/\/|mailto:|www\.)[^\s<>"']+|\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,63}\b|\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}(?:[/?#][^\s<>"']*)?/gi;
+
+/** Sentence punctuation is not normally part of a link. Balanced closing
+ * brackets are retained for paths such as a Wikipedia title; unmatched ones
+ * are returned to the surrounding text. */
+function autoLinkParts(raw: string): { text: string; suffix: string } {
+  let text = raw;
+  let suffix = '';
+  const peel = () => {
+    suffix = text.slice(-1) + suffix;
+    text = text.slice(0, -1);
+  };
+
+  while (/[.,;:!?]$/.test(text)) peel();
+  for (const [open, close] of [['(', ')'], ['[', ']'], ['{', '}']] as const) {
+    const count = (value: string, needle: string) => value.split(needle).length - 1;
+    while (text.endsWith(close) && count(text, close) > count(text, open)) peel();
+  }
+  return { text, suffix };
+}
+
+/** Add anchors only to inert text nodes. Existing anchors are left alone, so
+ * repeated sanitisation is stable and can never nest links. All nodes and
+ * attributes are created through the DOM rather than interpolated as HTML. */
+function autoLinkText(template: HTMLTemplateElement) {
+  const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_TEXT);
+  const nodes: Text[] = [];
+  let node: Node | null;
+  while ((node = walker.nextNode())) nodes.push(node as Text);
+
+  for (const textNode of nodes) {
+    if (textNode.parentElement?.closest('a')) continue;
+    const source = textNode.data;
+    const fragment = document.createDocumentFragment();
+    let cursor = 0;
+    let linked = false;
+    AUTO_LINK_RE.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = AUTO_LINK_RE.exec(source))) {
+      // Do not make a safe-looking fragment clickable inside an explicitly
+      // supplied scheme token (`javascript:example.com`,
+      // `data:text/html,example.com`, and unknown schemes alike). Explicit
+      // http(s)/mailto candidates begin at the scheme and have no such prefix.
+      const prefixToken = source.slice(0, match.index).match(/\S*$/)?.[0] ?? '';
+      if (/^[a-z][a-z0-9+.-]*:/i.test(prefixToken)) continue;
+      const { text, suffix } = autoLinkParts(match[0]);
+      const href = normalizeDescriptionHref(text);
+      if (!href) continue;
+      fragment.append(source.slice(cursor, match.index));
+      const anchor = document.createElement('a');
+      anchor.setAttribute('href', href);
+      anchor.textContent = text;
+      fragment.append(anchor, suffix);
+      cursor = match.index + match[0].length;
+      linked = true;
+    }
+    if (!linked) continue;
+    fragment.append(source.slice(cursor));
+    textNode.replaceWith(fragment);
+  }
+}
+
+/** DOMPurify is the security boundary; the DOM walk after it narrows links
+ * further and unwraps a rejected anchor without losing its visible words. */
+function descriptionTemplate(raw: string | null): HTMLTemplateElement {
+  const bounded = (raw ?? '').slice(0, MAX_DESCRIPTION_LENGTH);
+  const template = document.createElement('template');
+  template.innerHTML = String(DOMPurify.sanitize(bounded, {
+    ALLOWED_TAGS: DESCRIPTION_TAGS,
+    ALLOWED_ATTR: DESCRIPTION_ATTRS,
+  }));
+  for (const anchor of template.content.querySelectorAll('a')) {
+    const href = normalizeDescriptionHref(anchor.getAttribute('href') ?? '');
+    if (href) anchor.setAttribute('href', href);
+    else anchor.replaceWith(...Array.from(anchor.childNodes));
+  }
+  return template;
+}
+
+/** Safe, compact HTML suitable for saving back to a calendar and loading into
+ * the editor. It intentionally omits browsing-only target/rel attributes. */
+export function sanitizeDescriptionHtml(raw: string | null): string {
+  const template = descriptionTemplate(raw);
+  autoLinkText(template);
+  return template.innerHTML.trim();
+}
+
+/** Safe HTML for the read-only event popover. Recognised links open outside
+ * the app; unsafe schemes have already been unwrapped or left as plain text. */
+export function renderedDescriptionHtml(raw: string | null): string {
+  const template = descriptionTemplate(raw);
+  autoLinkText(template);
+
+  for (const anchor of template.content.querySelectorAll('a')) {
+    anchor.setAttribute('target', '_blank');
+    anchor.setAttribute('rel', 'noopener noreferrer');
+    // What Ctrl+C on a focused link copies: where it goes, not what it is
+    // called. `EventPopover`'s `onCopyKey` reads these off the closest
+    // `[data-copy-value]`, and an anchor is focusable, so a labelled link
+    // stays copyable now that the popover renders HTML rather than segments.
+    anchor.setAttribute('data-copy-label', 'link');
+    anchor.setAttribute('data-copy-value', anchor.getAttribute('href') ?? '');
+  }
+  return template.innerHTML.trim();
+}
+
 // Step 2: everything else that looks like a tag is removed outright, in a
 // single forward pass. This runs on the raw markup, before any entity
 // decoding — see decodeEntities below for why the order matters.
@@ -55,9 +191,8 @@ export const MAX_DESCRIPTION_LENGTH = 32 * 1024;
 // a fixed scan from a quadratic one that just happens to be fast at 32KB.
 // Its output is plain stripped text — not entity-decoded, not link-checked —
 // so it is *not* a general-purpose safe-HTML utility: never pass its result
-// to `{@html}`. Always render a description through descriptionSegments,
-// which runs this as one step among several and returns segments a
-// component renders with `{#each}` instead.
+// to `{@html}`. Use descriptionSegments for inert text, or one of the
+// DOMPurify-backed HTML functions above when formatting is required.
 export function stripTags(input: string): string {
   let out = '';
   let i = 0;
