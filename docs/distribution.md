@@ -89,6 +89,15 @@ minutes; the `config.toml` escape hatch is also the documented courtesy exit
   hand-someone-one-file answer: download, `chmod +x`, run — Arch, Ubuntu,
   Fedora alike. `--no-bundle` (what this machine uses day-to-day) skips all
   of this and emits only the bare binary.
+- The AppImage bundles the build host's ICU, whose time zone data is frozen
+  at the host's (Ubuntu 22.04: ICU 70, tzdata 2021a3), and the webview's
+  JavaScript takes local-time offsets from it — so a zone that changed its
+  rules since, `Asia/Tehran` after 2022, drew an hour off (issue #41). The
+  bundle therefore ships ICU's own time zone update files as a resource
+  (`src-tauri/icu-tz/`, refreshed with its `update.sh`) and the app points
+  ICU at them at startup (`src-tauri/src/icu_tz.rs`). Refresh that directory
+  when a tzdata release matters to a user; the deb and rpm read the system's
+  ICU and only fall back to the bundled set through the same variable.
 - The released AppImage carries **AppImage update information** and ships a
   `.zsync` beside it, added by the repack step in `release.yml` (issue #27):
   `appimagetool -u "gh-releases-zsync|x3me|omacal|latest|omacal_*_amd64.AppImage.zsync"`.

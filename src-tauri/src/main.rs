@@ -10,5 +10,9 @@ fn main() {
     // startup, and inside an AppImage the launch hook has set it to a value
     // that stops the dark hint working. See `apply_gtk_theme_early`.
     omacal_lib::apply_gtk_theme_early();
+    // Third variable, same constraint: ICU reads `ICU_TIMEZONE_FILES_DIR`
+    // when it first loads time zone data, and the webview process inherits
+    // the environment it is spawned with. See `icu_tz`.
+    omacal_lib::apply_icu_tz_early();
     omacal_lib::run()
 }

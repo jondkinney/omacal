@@ -16,6 +16,7 @@ mod fixtures;
 /// that reads or writes `ui/tests/` is compiled into the shipped app.
 #[cfg(test)]
 mod golden;
+mod icu_tz;
 mod invites;
 mod ipc;
 mod notify;
@@ -1062,6 +1063,11 @@ pub fn apply_gtk_theme_early() {
 /// failure is the soft one — the setting silently stays on the system zone —
 /// and `setup`'s sidecar re-sync writes to the real dir every launch, so a
 /// divergence would also heal itself there.
+/// See `icu_tz` — the webview's time zone data, current, on Linux.
+pub fn apply_icu_tz_early() {
+    icu_tz::apply_early();
+}
+
 pub fn apply_display_tz_early() {
     #[cfg(target_os = "linux")]
     let dir = std::env::var_os("XDG_DATA_HOME")
