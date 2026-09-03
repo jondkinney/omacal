@@ -487,7 +487,6 @@ function getBigYearStub(y: number): BigYearPayload {
       pill_events: [],
       overflow: [],
     })),
-    legend: [],
   };
 }
 

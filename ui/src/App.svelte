@@ -10,7 +10,7 @@
   import { getStatus, installUpdate, openLatestRelease, restartApp, signIn, syncNow, takeOpenDate, type AppStatus } from './lib/status';
   import { getWeather, weatherByDate, type DayWeather } from './lib/weather';
   import { changedMeetings, declinedGuests, pendingInvites } from './lib/invites';
-  import { calendarColor, getCalendars, offerableCalendarId, type Calendar } from './lib/calendars';
+  import { calendarColor, getCalendars, offerableCalendarId, setCalendarSelected, type Calendar } from './lib/calendars';
   import {
     createEvent, deleteEvent, getEventDetail, updateEvent,
     type EventDetail, type Occurrence, type SendUpdates,
@@ -608,6 +608,20 @@
 
   // The popover's own reload trigger — a show/hide takes effect the moment
   // the grid re-fetches, since `get_week` filters on `selected` server-side.
+  /** The ribbon's legend flips a calendar's show/hide switch — the same
+   *  `selected` the sidebar's checkbox writes, so the two can never disagree
+   *  about what is on screen. Reloaded even when the write is refused: the
+   *  legend redraws from the calendar list, and after a failed write the
+   *  one honest picture is whatever is actually stored. */
+  async function toggleCalendarShown(c: Calendar) {
+    try {
+      await setCalendarSelected(c.id, !c.selected);
+    } catch (err) {
+      error = `${c.summary} · ${String(err)}`;
+    }
+    await handleCalendarChange();
+  }
+
   async function handleCalendarChange() {
     // Status rides along because the Accounts list is drawn from it: a
     // freshly connected account must appear in the modal the moment its
@@ -1735,6 +1749,8 @@
            lit while it is. Nothing new is tracked here; the state existed. -->
       <BigYearRibbon
         ribbon={bigYear}
+        {calendars}
+        ontoggle={toggleCalendarShown}
         openId={gridSelId}
         openStart={gridSelStart}
         onopen={openGridEvent}

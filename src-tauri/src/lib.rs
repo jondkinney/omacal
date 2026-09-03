@@ -354,23 +354,7 @@ async fn get_big_year_impl(
     )
     .await
     .map_err(|e| e.to_string())?;
-    let mut payload = commands::assemble_big_year(&events, year, now, tz, week_start);
-
-    // `assemble_big_year` takes only `&[StoredEvent]` — deliberately, so it
-    // stays pure over the same shape every other assembler in `commands.rs`
-    // does — and so has no calendar list to draw a real name from. Each
-    // entry's `name` is a placeholder; this command, which does have the
-    // pool, resolves it against `list_calendars` by the entry's own typed
-    // `calendar_id` before the payload ever reaches the UI. A calendar that
-    // has since been removed leaves the placeholder in place rather than
-    // panicking or dropping the entry.
-    let calendars = omacal_store::list_calendars(pool).await.map_err(|e| e.to_string())?;
-    for entry in &mut payload.legend {
-        if let Some(cal) = calendars.iter().find(|c| c.id == entry.calendar_id) {
-            entry.name = cal.summary.clone();
-        }
-    }
-    Ok(payload)
+    Ok(commands::assemble_big_year(&events, year, now, tz, week_start))
 }
 
 pub(crate) const KEYRING_SERVICE: &str = "omacal";
@@ -1804,56 +1788,6 @@ mod tests {
         .execute(pool)
         .await
         .unwrap();
-    }
-
-    /// `assemble_big_year` (Task 3) has no calendar list to draw a real name
-    /// from, so it emits a `"Calendar {id}"` placeholder — `get_big_year_impl`
-    /// is where that gets resolved against `list_calendars`, and this is the
-    /// test that would fail if that join were ever dropped, leaving the
-    /// placeholder to reach the UI.
-    #[tokio::test]
-    async fn the_legend_carries_a_real_calendar_name_not_a_placeholder() {
-        let pool = omacal_store::connect_memory().await.unwrap();
-        let account_id = seed_account(&pool, "sub", "e@x").await;
-        sqlx::query(
-            "INSERT INTO calendars (account_id, google_id, summary, timezone, access_role,
-                 selected, sync_enabled)
-             VALUES (?1, 'cal-1', 'Excitel Team', 'UTC', 'owner', 1, 1)",
-        )
-        .bind(account_id)
-        .execute(&pool)
-        .await
-        .unwrap();
-        let calendar_id: i64 = sqlx::query_scalar("SELECT id FROM calendars WHERE google_id = 'cal-1'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-
-        // An all-day span, 1-2 Jan 2026 UTC, so it lands squarely inside the
-        // ribbon and is placed as a pill rather than dropped or overflowed.
-        let leave = omacal_store::StoredEvent {
-            id: 0, calendar_id, google_id: "leave".into(), summary: Some("Leave".into()),
-            location: None, start_utc: 1_767_225_600_000, end_utc: 1_767_312_000_000,
-            start_tz: "UTC".into(), end_tz: "UTC".into(),
-            is_all_day: true, recurrence: None,
-            recurring_event_id: None, original_start_utc: None,
-            status: "confirmed".into(), self_response: Some("accepted".into()),
-            conference_uri: None, color_hex: None, calendar_timezone: "UTC".into(),
-            description: None, etag: None,
-            sequence: 0, organizer_email: None, guests_can_modify: false, attendees: Vec::new(),
-            reminders: Default::default(), calendar_default_reminders: Vec::new(),
-        };
-        omacal_store::upsert_event(&pool, &leave).await.unwrap();
-
-        let payload =
-            get_big_year_impl(&pool, 2026, "UTC", 1_786_341_600_000, settings::WeekStart::Monday)
-                .await
-                .unwrap();
-        assert!(
-            payload.legend.iter().any(|e| e.name == "Excitel Team"),
-            "legend must carry the real calendar name, not a placeholder: {:?}",
-            payload.legend
-        );
     }
 
     /// The safety property the whole 1c plan rests on: a calendar hidden from

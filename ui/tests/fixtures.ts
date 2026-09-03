@@ -1054,8 +1054,23 @@ function emptyBigYear(
     pill_events: [] as UiEvent[],
     overflow: [] as number[],
   }));
-  return { year, rows, legend: [] };
+  return { year, rows };
 }
+
+/** The legend under the ribbon reads the app's calendar list, not the
+ *  payload: every syncing calendar, dimmed when hidden. Four calendars so a
+ *  spec can tell the three states apart — shown, hidden (listed, dimmed) and
+ *  not syncing at all (not listed: there is nothing to show). */
+export const RIBBON_CALENDARS: Calendar[] = [
+  cal({ id: 1, account_email: 'plamen@excitel.com', summary: 'plamen@excitel.com', color_hex: '#e2a03f' }),
+  cal({ id: 2, account_email: 'plamen@excitel.com', summary: 'work@excitel.com', color_hex: '#2dd4bf' }),
+  cal({ id: 3, account_email: 'plamen@excitel.com', summary: 'Holidays in Bulgaria', selected: false }),
+  cal({ id: 4, account_email: 'plamen@excitel.com', summary: 'Old team', sync_enabled: false }),
+];
+const RIBBON_SAME_NAME_CALENDARS: Calendar[] = [
+  cal({ id: 1, account_email: 'plamen@excitel.com', summary: 'Holidays in Bulgaria', color_hex: '#e2a03f' }),
+  cal({ id: 2, account_email: 'work@excitel.com', summary: 'Holidays in Bulgaria', color_hex: '#2dd4bf' }),
+];
 
 /** 2026's ribbon: two pills on two different calendars, in two different
  *  rows, clear of any row boundary — enough for a two-item legend and a
@@ -1082,11 +1097,6 @@ const bigYear2026 = (): BigYearPayload => {
   b.rows[1].pill_events = [offsite];
   b.rows[1].pills = [
     { idx: 0, lane: 0, start_col: 4, end_col: 6, cont_left: false, cont_right: false },
-  ];
-
-  b.legend = [
-    { name: 'plamen@excitel.com', color: '#e2a03f', calendar_id: 1 },
-    { name: 'work@excitel.com', color: '#2dd4bf', calendar_id: 2 },
   ];
 
   return b;
@@ -1193,23 +1203,6 @@ const pillInksBigYear = (): BigYearPayload => {
   return b;
 };
 
-/** Two legend entries whose `name` is byte-identical, on different calendars.
- *  Reachable the moment a second account is connected (Plan 1c): two accounts
- *  subscribed to the same public calendar both report it under the same
- *  `summary`, and `get_big_year` copies that verbatim into `name`. Keying the
- *  legend's `{#each}` by `name` makes Svelte 5 throw `each_key_duplicate` —
- *  which does not degrade to a broken legend, it takes the whole ribbon down
- *  (`items=0 rows=0`). Same pills as `bigYear2026`, so the spec that reads
- *  this can assert on rows and pills as well as on the legend itself. */
-const sameNameLegendBigYear = (): BigYearPayload => {
-  const b = bigYear2026();
-  b.legend = [
-    { name: 'Holidays in Bulgaria', color: '#e2a03f', calendar_id: 1 },
-    { name: 'Holidays in Bulgaria', color: '#2dd4bf', calendar_id: 2 },
-  ];
-  return b;
-};
-
 /** A single all-day span straddling the row 0/1 boundary: row 0 carries its
  *  clipped tail (`cont_right`), row 1 its clipped head (`cont_left`) —
  *  mirrors the Rust suite's own
@@ -1240,8 +1233,6 @@ const crossingBigYear = (): BigYearPayload => {
   b.rows[1].pills = [
     { idx: 0, lane: 0, start_col: 0, end_col: 1, cont_left: true, cont_right: false },
   ];
-
-  b.legend = [{ name: 'plamen@excitel.com', color: '#5b8def', calendar_id: 1 }];
 
   return b;
 };
@@ -1904,13 +1895,17 @@ export const FIXTURES: Record<string, Record<string, any>> = {
     y2026: { year: y2026() },
   },
   BigYearRibbon: {
-    y2026: { ribbon: bigYear2026() },
-    crossing: { ribbon: crossingBigYear() },
-    'two-pills': { ribbon: twoPillsBigYear() },
-    'same-name-legend': { ribbon: sameNameLegendBigYear() },
-    'three-lanes': { ribbon: threeLanesBigYear() },
-    'three-lanes-exact': { ribbon: threeLanesExactBigYear() },
-    recurring: { ribbon: recurringBigYear() },
+    y2026: { ribbon: bigYear2026(), calendars: RIBBON_CALENDARS },
+    crossing: { ribbon: crossingBigYear(), calendars: RIBBON_CALENDARS },
+    'two-pills': { ribbon: twoPillsBigYear(), calendars: RIBBON_CALENDARS },
+    /* Two calendars reporting the same `summary` — two accounts subscribed to
+     * the same public calendar do. The legend keys by id; keyed by name,
+     * Svelte 5 throws `each_key_duplicate` and the whole ribbon fails to
+     * mount, rows included. */
+    'same-name-legend': { ribbon: bigYear2026(), calendars: RIBBON_SAME_NAME_CALENDARS },
+    'three-lanes': { ribbon: threeLanesBigYear(), calendars: RIBBON_CALENDARS },
+    'three-lanes-exact': { ribbon: threeLanesExactBigYear(), calendars: RIBBON_CALENDARS },
+    recurring: { ribbon: recurringBigYear(), calendars: RIBBON_CALENDARS },
     /* The crossing span with its popover open, which is the only way to reach
      * the `openId`/`openStart` props from a standalone mount: in the app they
      * come from `App.svelte`'s own `gridSelId`/`gridSelStart`, set when it

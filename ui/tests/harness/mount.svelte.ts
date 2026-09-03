@@ -277,6 +277,12 @@ if (name === 'App') {
           oncreate: (dayStartMs: unknown, rect: unknown) => {
             (window as any).__lastCreate = { startMs: dayStartMs, rect };
           },
+          // The legend's toggle is a callback prop too: the ribbon names the
+          // calendar and App does the writing, so a standalone mount can only
+          // assert which calendar was handed up.
+          ontoggle: (calendar: unknown) => {
+            (window as any).__lastToggle = calendar;
+          },
         },
       });
     } else if (name === 'Filmstrip') {

@@ -3,11 +3,23 @@
   import { isWeekendColumn } from './weekstart';
   import { weekStartDay } from './weekstartstore.svelte';
   import type { BigYearPayload, UiEvent } from './api';
+  import type { Calendar } from './calendars';
   import { foregroundFor } from './ink';
   import type { Rect } from './position';
 
-  let { ribbon, onopen, oncreate, openId = null, openStart = null }: {
+  let { ribbon, onopen, oncreate, openId = null, openStart = null, calendars = [], ontoggle = null }: {
     ribbon: BigYearPayload;
+    /** The app's calendar list, which the legend under the rows is drawn
+     *  from: every syncing calendar, dimmed when hidden. Not the payload's
+     *  pills, and deliberately so — a calendar hidden from this legend has
+     *  no pills left to be listed by, and it has to stay listed to be shown
+     *  again from here. Optional so a standalone mount without one simply
+     *  has no legend. */
+    calendars?: Calendar[];
+    /** A legend item was clicked: flip that calendar's show/hide switch.
+     *  Handed up rather than written here, the way every write in the grids
+     *  is — the same `selected` the sidebar's checkbox edits, owned by App. */
+    ontoggle?: ((calendar: Calendar) => void) | null;
     /** Same contract as `WeekGrid`/`MonthGrid`: an anchor rect plus the
      *  clicked event, handed straight to `EventPopover` via `placePopover`. */
     onopen: (event: UiEvent, rect: Rect) => void;
@@ -27,6 +39,10 @@
     openId?: number | null;
     openStart?: number | null;
   } = $props();
+
+  // A calendar that does not sync has nothing to show or hide, so it is not
+  // offered — the sidebar disables its checkbox for the same reason.
+  const legendCalendars = $derived(calendars.filter((c) => c.sync_enabled));
 
   // Which occurrence the cursor is on. Local, because nothing outside this
   // component has any use for it — unlike `openId`/`openStart`, which App owns
@@ -201,20 +217,24 @@
     {/each}
   </div>
 
-  {#if ribbon.legend.length}
-    <div class="legend">
-      <!-- Keyed by `calendar_id`, never by `name`: two accounts subscribed to
-           the same public calendar ("Holidays in Bulgaria") both report it
-           under that identical `summary`, which `get_big_year` copies
-           verbatim into `name`. A duplicate key is not a cosmetic problem in
-           Svelte 5 — `each_key_duplicate` throws, and the whole ribbon fails
-           to render, not just the legend. `calendar_id` is what the Rust side
-           already deduplicated on, so it is unique by construction. -->
-      {#each ribbon.legend as entry (entry.calendar_id)}
-        <div class="item">
-          <i class="dot" style="background:{entry.color ?? 'var(--muted)'}"></i>
-          <span>{entry.name}</span>
-        </div>
+  {#if legendCalendars.length}
+    <!-- The key, and the filter bar (2026-09-03): each entry is the same
+         show/hide switch as the sidebar's checkbox, so the strip you are
+         looking at is where you thin the year down. Keyed by `id`, never by
+         `summary`: two accounts subscribed to the same public calendar
+         ("Holidays in Bulgaria") both report that identical summary, and a
+         duplicate key is not a cosmetic problem in Svelte 5 —
+         `each_key_duplicate` throws, and the whole ribbon fails to render,
+         not just the legend. -->
+    <div class="legend" role="group" aria-label="Calendars">
+      {#each legendCalendars as c (c.id)}
+        <button type="button" class="item" class:off={!c.selected}
+                aria-pressed={c.selected}
+                title={c.selected ? `Hide ${c.summary}` : `Show ${c.summary}`}
+                onclick={() => ontoggle?.(c)}>
+          <i class="dot" style="--c:{c.color_hex ?? 'var(--muted)'}"></i>
+          <span>{c.summary}</span>
+        </button>
       {/each}
     </div>
   {/if}
@@ -468,6 +488,19 @@
            color: var(--accent); letter-spacing: .02em; }
 
   .legend { display: flex; flex-wrap: wrap; gap: 10px 16px; padding: 4px; }
-  .legend .item { display: flex; align-items: center; gap: 5px; font-size: 10px; color: var(--muted); }
-  .legend .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+  /* A button now, drawn to the box the plain item had: the 2px/4px padding
+     is taken back by the negative margin, so the legend's one-line height —
+     which the ribbon's row arithmetic above measures, not assumes — is what
+     it was before the items could be pressed. */
+  .legend .item { display: flex; align-items: center; gap: 5px; font: inherit; font-size: 10px;
+                  color: var(--muted); background: none; border: 0; cursor: pointer;
+                  padding: 2px 4px; margin: -2px -4px; border-radius: 4px; }
+  .legend .item:hover { color: var(--text); background: color-mix(in srgb, var(--text) 8%, transparent); }
+  .legend .dot { width: 7px; height: 7px; border-radius: 50%; flex: none;
+                 background: var(--c); box-shadow: inset 0 0 0 1.5px var(--c); }
+  /* Hidden: hollow dot, struck name, dimmed — three cues, because the dot
+     alone is 7px and the colour alone may be the calendar's own grey. */
+  .legend .item.off { opacity: .55; }
+  .legend .item.off .dot { background: transparent; }
+  .legend .item.off span { text-decoration: line-through; }
 </style>

@@ -649,24 +649,8 @@ pub struct RibbonRow {
 pub struct BigYearPayload {
     pub year: i32,
     pub rows: Vec<RibbonRow>, // always 14
-    /// Every calendar with at least one pill, for the legend.
-    pub legend: Vec<LegendEntry>,
 }
 
-#[derive(Debug, Clone, Serialize)]
-pub struct LegendEntry {
-    pub name: String,
-    pub color: Option<String>,
-    /// The calendar this entry names. `assemble_big_year` has no calendar
-    /// list to draw a real `name` from — its signature takes only
-    /// `&[StoredEvent]`, deliberately, so it stays pure over the same shape
-    /// every other assembler in this file does — so `name` starts out as a
-    /// placeholder and `get_big_year` resolves it against `list_calendars`
-    /// afterwards. Typed here rather than parsed back out of the placeholder
-    /// string, so that join has a real key instead of a format contract two
-    /// files would otherwise share silently.
-    pub calendar_id: i64,
-}
 
 /// The Monday on or before `year`-01-01, at local midnight in `tz` — the
 /// anchor for the 392-day Big Year ribbon.
@@ -726,10 +710,6 @@ pub fn assemble_big_year(
     let (synced_from, synced_to) = crate::synced_window(now_ms);
     let suppressed = suppressed_slots(events);
 
-    // Accumulated across every row: the calendar behind each *placed* pill —
-    // not one that overflowed into "+N more", which never becomes visible.
-    let mut legend_pairs: Vec<(i64, Option<String>)> = Vec::new();
-
     let rows = (0..14)
         .map(|r| {
             let row_bounds = &bounds[r * 28..=r * 28 + 28];
@@ -738,7 +718,6 @@ pub fn assemble_big_year(
             let row_end = row_bounds[28];
 
             let mut pill_events: Vec<UiEvent> = Vec::new();
-            let mut pill_calendars: Vec<(i64, Option<String>)> = Vec::new();
             let mut segments: Vec<Segment> = Vec::new();
 
             for src in events {
@@ -754,7 +733,6 @@ pub fn assemble_big_year(
                     if src.is_all_day {
                         let (start_col, end_col) = all_day_columns(src, &iv, row_dates);
                         segments.push(Segment { idx: pill_events.len(), start_col, end_col });
-                        pill_calendars.push((src.calendar_id, src.color_hex.clone()));
                         pill_events.push(to_ui(src, iv.start_ms, iv.end_ms));
                     }
                 }
@@ -762,10 +740,6 @@ pub fn assemble_big_year(
 
             // Three lanes, matching the spec's row height.
             let (pills, overflow) = pack_lanes(&segments, 28, 3);
-
-            for lane in &pills {
-                legend_pairs.push(pill_calendars[lane.idx].clone());
-            }
 
             let days = (0..28)
                 .map(|c| {
@@ -782,24 +756,7 @@ pub fn assemble_big_year(
         })
         .collect();
 
-    legend_pairs.sort_by_key(|(cid, _)| *cid);
-    legend_pairs.dedup_by_key(|(cid, _)| *cid);
-    let legend = legend_pairs
-        .into_iter()
-        .map(|(cid, color)| LegendEntry {
-            // `StoredEvent` carries no calendar name: `calendars.summary`
-            // exists (see `omacal_store::calendars::CalendarRow`) but
-            // `SELECT_COLS` never joins it in, and this function's signature
-            // takes no calendars list to join it from here either. `name`
-            // stays a placeholder here; `get_big_year` resolves it against
-            // `list_calendars` by `calendar_id` below.
-            name: format!("Calendar {cid}"),
-            color,
-            calendar_id: cid,
-        })
-        .collect();
-
-    BigYearPayload { year, rows, legend }
+    BigYearPayload { year, rows }
 }
 
 /// Opens an event's meeting link with its preferred application — the Join

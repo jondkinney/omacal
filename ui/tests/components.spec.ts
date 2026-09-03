@@ -2937,18 +2937,37 @@ test.describe('BigYearRibbon', () => {
     await expect(page.getByRole('button', { name: CROSSING_TITLE, exact: true })).toHaveCount(2);
   });
 
-  test('the legend names each calendar that has a pill', async ({ page }) => {
+  test('the legend lists every syncing calendar, hidden ones dimmed', async ({ page }) => {
+    // The legend is the app's calendar list, not the pills' (2026-09-03): a
+    // calendar hidden from here has no pills left to be listed by, and it
+    // has to stay listed to be shown again from here. A calendar that does
+    // not sync is not offered — there is nothing of it to show.
     await page.goto(show('y2026'));
-    await expect(page.locator('.legend .item')).toHaveCount(2);
+    const items = page.locator('.legend .item');
+    await expect(items).toHaveCount(3);
+    await expect(items.filter({ hasText: 'Old team' })).toHaveCount(0);
+    const hidden = items.filter({ hasText: 'Holidays in Bulgaria' });
+    await expect(hidden).toHaveClass(/off/);
+    await expect(hidden).toHaveAttribute('aria-pressed', 'false');
+    await expect(items.filter({ hasText: 'work@excitel.com' })).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  test('clicking a legend item hands that calendar up to be toggled', async ({ page }) => {
+    // Handed up, not written: the ribbon contains no `invoke`, the same
+    // property `WeekGrid` keeps. What App does with it is app.spec's.
+    await page.goto(show('y2026'));
+    await page.locator('.legend .item', { hasText: 'work@excitel.com' }).click();
+    const toggled = await page.evaluate(() => (window as any).__lastToggle);
+    expect(toggled?.id).toBe(2);
   });
 
   test('two calendars sharing a name still render the whole ribbon', async ({ page }) => {
     // Two accounts subscribed to the same public calendar report the same
-    // `summary`, which `get_big_year` copies verbatim into `name`. Keying the
-    // legend by `name` makes Svelte 5 throw `each_key_duplicate`, and that is
-    // not a broken legend — the component never mounts, so the rows go with
-    // it. The rows are asserted first for exactly that reason: the legend
-    // count alone would not say which failure mode this is guarding.
+    // `summary`. Keying the legend by it makes Svelte 5 throw
+    // `each_key_duplicate`, and that is not a broken legend — the component
+    // never mounts, so the rows go with it. The rows are asserted first for
+    // exactly that reason: the legend count alone would not say which
+    // failure mode this is guarding.
     await page.goto(show('same-name-legend'));
     await expect(page.locator('.rrow')).toHaveCount(14);
     await expect(page.locator('.pill')).toHaveCount(2);
@@ -3465,7 +3484,7 @@ test.describe('BigYearRibbon', () => {
   });
 
   // The reported defect, at the one place App's own specs cannot see it: its
-  // `get_big_year` stub returns an empty legend, so the App-level height specs
+  // `get_calendars` stub returns no calendars, so the App-level height specs
   // in `app.spec.ts` only ever exercise a ribbon with nothing under its rows.
   // The legend is what made the old rule *look* nearly right — `100vh - 190px`
   // was 150px of guessed chrome plus 40px reserved for a legend that is not
@@ -3475,7 +3494,7 @@ test.describe('BigYearRibbon', () => {
   // the two together reach the bottom of the box the parent gave the ribbon.
   test('the rows take whatever the legend does not', async ({ page }) => {
     await page.goto(show('y2026'));
-    await expect(page.locator('.legend .item')).toHaveCount(2);
+    await expect(page.locator('.legend .item')).toHaveCount(3);
     // Measured against the mount container rather than the window: this
     // component no longer knows anything about the window, which is the fix.
     const gap = await page.evaluate(() => {

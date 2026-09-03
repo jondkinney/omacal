@@ -378,6 +378,25 @@ test.describe('App', () => {
     expect(Number(shown)).toBe(1786320000000);
   });
 
+  test('the legend under the ribbon hides a calendar, and the ribbon reloads', async ({ page }) => {
+    // The strip under Big Year was a read-only key. It now flips the same
+    // `selected` switch the sidebar's checkbox does (2026-09-03), and the
+    // ribbon refetches so its pills follow the switch.
+    await page.goto(app('writable'));
+    await expect(page.locator('.vswitch button')).toHaveCount(5); // mount race — see above
+    await page.keyboard.press('5');
+    await expect(page.locator('.rrow')).toHaveCount(14);
+    await expect(page.locator('.legend .item')).toHaveCount(3);
+    const calls = (cmd: string) => page.evaluate(
+      (c) => window.__harness.calls.filter((call) => call.cmd === c).map((call) => call.args), cmd,
+    );
+    const fetchesBefore = (await calls('get_big_year')).length;
+
+    await page.locator('.legend .item', { hasText: 'Team' }).click();
+    await expect.poll(() => calls('set_calendar_selected')).toEqual([{ id: 8, on: false }]);
+    await expect.poll(async () => (await calls('get_big_year')).length).toBeGreaterThan(fetchesBefore);
+  });
+
   test('the year views are titled by the year alone, and the arrows move it', async ({ page }) => {
     // The `<h1>` formatted month-and-year for every view, so Big Year — a
     // ribbon of the whole year — was headed "September 2026" after the
