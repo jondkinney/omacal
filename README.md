@@ -7,7 +7,7 @@ not at the Arch machine. Tauri v2, Rust, Svelte 5. **No servers**: your
 events live in a local database, your tokens in your keyring, and nothing
 of yours passes through us.
 
-![OmaCal's Week view on Omarchy](docs/images/OmaCal-week.webp)
+![OmaCal's Week view on Omarchy](docs/images/omacal-week.webp)
 
 Most of what a calendar must do, every calendar does. What earns OmaCal
 its place:
