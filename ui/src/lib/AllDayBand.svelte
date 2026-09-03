@@ -55,7 +55,9 @@
     <div class="label">ALL-DAY</div>
     <div class="track">
     <div class="rows" class:sliding style="--cols:{columns}; --visible:{visible}; --vis:{vis}; --pan:{pan}">
-      {#each lanes as lane}
+      <!-- Keyed by the event's index, so a re-pack moves a chip's node rather
+           than tearing it down and building another where it lands. -->
+      {#each lanes as lane (lane.idx)}
         {@const ev = events[lane.idx]}
         {@const keyboardSelected = isKeyboardSelected(lane, ev)}
         <button
@@ -67,6 +69,8 @@
           style="
             grid-row:{lane.lane + 1};
             grid-column:{lane.start_col + 1} / {lane.end_col + 2};
+            --start:{lane.start_col};
+            --span:{lane.end_col - lane.start_col + 1};
             --cal:{ev.color};
           "
           title={ev.title}
@@ -103,6 +107,19 @@
      transform, and only while sliding; `clip`, not `hidden`. */
   .rows.sliding { transform: translateX(calc((var(--pan) - var(--vis)) / var(--cols) * 100%));
                   will-change: transform; }
+  /* While sliding a chip keeps its real extent, so one that begins in the
+     padding has its left edge — and its label — off the pane. The label is
+     pinned to the pane's edge instead: as much padding as the chip's start
+     is to the left of the window's, in the chip's own columns, and none
+     once the start slides into view. Pure CSS off the same `--pan` the
+     track moves by, so it rides every frame with no script. `‹` marks the
+     pinned state the way `cont_left` marks a chip cut by the payload. */
+  .rows.sliding .chip {
+    --offscreen: calc((var(--vis) - var(--pan) - var(--start)) / var(--span));
+    padding-left: calc(7px + max(0px, var(--offscreen) * 100%)); }
+  .rows.sliding .chip:not(.cl)::before {
+    content: '‹ '; display: inline-block; overflow: hidden; vertical-align: bottom;
+    width: clamp(0px, calc(var(--offscreen) * 100000px), 1.2ch); }
   .track { min-width: 0; overflow-x: clip; }
 
   /* A <button>, like EventBlock, rather than a <div> with a click handler

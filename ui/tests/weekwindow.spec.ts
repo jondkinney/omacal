@@ -1,8 +1,8 @@
 import { test, expect } from '@playwright/test';
 import type { WeekPayload } from '../src/lib/api';
 import {
-  FLING_TAU_MS, flingProgress, flingTravel, padFor, panCommit, sliceWeek, snapPlan, velocityOf,
-  visibleIndex, windowHeld,
+  FLING_TAU_MS, flingProgress, flingTravel, packBandLanes, padFor, panCommit, sliceWeek, snapPlan,
+  velocityOf, visibleIndex, windowHeld,
 } from '../src/lib/weekwindow';
 
 const DAY = 86_400_000;
@@ -42,16 +42,46 @@ test.describe('the window on a padded week', () => {
     };
     const w = sliceWeek(week, 7, 7);
     expect(w.days.map((d) => d.start_ms / DAY)).toEqual([7, 8, 9, 10, 11, 12, 13]);
+    // Rows are packed here, by real start: the span straddling everything
+    // starts first and takes row 0; the one from the padding row 1; the
+    // inside one overlaps both and takes row 2; the one running out the far
+    // side fits back into row 1 beside the padding one.
     expect(w.all_day).toEqual([
-      { ...lane(0, 2, 0), cont_left: true },
-      lane(1, 3, 1),
-      { ...lane(5, 6, 2), cont_right: true },
-      { ...lane(0, 6, 4), cont_left: true, cont_right: true },
+      { ...lane(0, 6, 4), lane: 0, cont_left: true, cont_right: true },
+      { ...lane(0, 2, 0), lane: 1, cont_left: true },
+      { ...lane(1, 3, 1), lane: 2 },
+      { ...lane(5, 6, 2), lane: 1, cont_right: true },
     ]);
     // Left whole: lanes index into the events, and the overflow is the
     // wider packing's judgement.
     expect(w.all_day_events).toBe(week.all_day_events);
     expect(w.overflow).toBe(week.overflow);
+  });
+
+  test('the band\'s rows are the window\'s, at rest and while sliding, and never grow for the padding', () => {
+    // 21 days, window at 7..13. A: from the padding into the window. B: in
+    // the window, overlapping A. Three wholly in the padding: C, where row 0
+    // is free; D, overlapping C and A, so it takes row 1; E, overlapping C,
+    // A and D — no free row, so it is left out rather than adding a row the
+    // window does not have.
+    const lanes = [lane(3, 9, 0), lane(8, 10, 1), lane(0, 2, 2), lane(1, 4, 3), lane(2, 5, 4)];
+    const rest = packBandLanes(lanes, 7, 7, false);
+    expect(rest).toEqual([
+      { ...lane(0, 2, 0), lane: 0, cont_left: true },
+      { ...lane(1, 3, 1), lane: 1 },
+    ]);
+    const sliding = packBandLanes(lanes, 7, 7, true);
+    expect(sliding).toEqual([
+      { ...lane(3, 9, 0), lane: 0 },
+      { ...lane(8, 10, 1), lane: 1 },
+      { ...lane(0, 2, 2), lane: 0 },
+      { ...lane(1, 4, 3), lane: 1 },
+    ]);
+    // The reported flicker: the same two chips got rows 2 and 3 from a
+    // payload packed over a wider range. Rows are the window's, whatever
+    // the payload's own numbering says.
+    const renumbered = lanes.map((l, i) => ({ ...l, lane: 3 - i }));
+    expect(packBandLanes(renumbered, 7, 7, false).map((l) => l.lane)).toEqual([0, 1]);
   });
 
   test('a lane already marked continuing stays so after the cut', () => {

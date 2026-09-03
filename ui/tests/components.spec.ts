@@ -5131,3 +5131,57 @@ test.describe('WeekGrid: the padded payload', () => {
     expect(await page.locator('.col').first().getAttribute('data-start-ms')).toBe(String(MON));
   });
 });
+
+test.describe('WeekGrid: the all-day band while sliding', () => {
+  const show = (f: string) => `/tests/harness/index.html?c=WeekGrid&f=${f}`;
+  const rowsOf = (page: Page) => page.locator('.band .rows').evaluate((el) => {
+    const rows = new Set([...el.querySelectorAll('.chip')].map((c) => (c as HTMLElement).style.gridRow));
+    return { rows: rows.size, height: el.getBoundingClientRect().height };
+  });
+
+  test('the rows are the window\'s, keep their height through a swipe, and off-screen labels pin', async ({ page }) => {
+    // Reported 2026-09-03 with a screenshot: two rows at rest became four
+    // during the drag — the payload's own packing over three weeks — and
+    // snapped back to two on release, and the chips' labels sat off-screen
+    // in the padding, so the band read as an empty tinted block.
+    await page.goto(show('padded-allday'));
+    const chips = page.locator('.band .chip');
+    await expect(chips).toHaveCount(2);
+    const rest = await rowsOf(page);
+    expect(rest.rows).toBe(2);
+    // The payload numbered these rows 2 and 3; the band does not care.
+    await expect(chips.filter({ hasText: 'From the padding' })).toHaveClass(/cl/);
+
+    const box = (await page.getByTestId('week-body').boundingBox())!;
+    const colWidth = (await page.locator('.col').first().boundingBox())!.width;
+    await page.mouse.move(box.x + box.width / 2, box.y + 100);
+    await page.mouse.wheel(-Math.round(colWidth / 4), 0);
+    const mid = await page.evaluate(() => {
+      const rows = document.querySelector('.band .rows')!;
+      const chips = [...rows.querySelectorAll('.chip')] as HTMLElement[];
+      const pinned = chips.find((c) => c.textContent!.includes('From the padding'))!;
+      return {
+        sliding: rows.classList.contains('sliding'),
+        count: chips.length,
+        rows: new Set(chips.map((c) => c.style.gridRow)).size,
+        height: rows.getBoundingClientRect().height,
+        pinnedPadding: parseFloat(getComputedStyle(pinned).paddingLeft),
+        pinnedMark: getComputedStyle(pinned, '::before').width,
+        continuing: pinned.classList.contains('cl'),
+      };
+    });
+    expect(mid.sliding).toBe(true);
+    // The padding-only chip joins in the free row; nothing adds a row.
+    expect(mid.count).toBe(3);
+    expect(mid.rows).toBe(2);
+    expect(mid.height).toBe(rest.height);
+    // The chip from the padding runs on into it, uncut — and its label stays
+    // at the pane's edge, with the mark, since its start is off the pane.
+    expect(mid.continuing).toBe(false);
+    expect(mid.pinnedPadding).toBeGreaterThan(7);
+    expect(parseFloat(mid.pinnedMark)).toBeGreaterThan(0);
+
+    await expect(chips).toHaveCount(2);
+    expect((await rowsOf(page)).height).toBe(rest.height);
+  });
+});

@@ -7,14 +7,14 @@
   import WeatherGlyph from './WeatherGlyph.svelte';
   import { dateKey, type DayWeather } from './weather';
   import { gutterLabel, zoneAbbrev, zoneGutterLabel } from './timefmt';
-  import { tick } from 'svelte';
+  import { tick, untrack } from 'svelte';
   import { HOUR_PX_DEFAULT, hourPxAfterPinch, hourPxAfterWheel, scrollTopKeeping } from './zoom';
   import { onPinch, type Pinch } from './pinch';
   import {
-    FLING_TAU_MS, flingProgress, flingTravel, panCommit, sliceWeek, snapPlan, velocityOf,
-    visibleIndex, type PanSample,
+    FLING_TAU_MS, flingProgress, flingTravel, packBandLanes, panCommit, sliceWeek, snapPlan,
+    velocityOf, visibleIndex, type PanSample,
   } from './weekwindow';
-  import type { WeekPayload, UiEvent } from './api';
+  import type { Lane, WeekPayload, UiEvent } from './api';
   import type { Rect } from './position';
   import EventBlock from './EventBlock.svelte';
   import AllDayBand from './AllDayBand.svelte';
@@ -501,7 +501,18 @@
    *  the window, zero at rest because none are drawn. */
   const renderedDays = $derived(panActive ? effectiveDays : effectiveDays.slice(visStart, visStart + visible));
   const renderVis = $derived(panActive ? visStart : 0);
-  const renderedLanes = $derived(panActive ? week.all_day : visibleWeek.all_day);
+  /** The band's rows while sliding: packed for the window the gesture began
+   *  on and held for its whole length — re-packing per day crossed would
+   *  reshuffle rows under the swipe — and only re-packed when the payload
+   *  itself is replaced. At rest, the window's own rows (`sliceWeek`). */
+  let panLanes = $state<Lane[]>([]);
+  $effect.pre(() => {
+    const active = panActive;
+    const lanes = week.all_day;
+    if (!active) return;
+    panLanes = packBandLanes(lanes, untrack(() => visStart), untrack(() => visible), true);
+  });
+  const renderedLanes = $derived(panActive ? panLanes : visibleWeek.all_day);
 
   /**
    * An in-flight drag, or `null`.

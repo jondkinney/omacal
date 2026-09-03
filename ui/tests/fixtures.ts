@@ -1061,6 +1061,29 @@ function emptyBigYear(
  *  payload: every syncing calendar, dimmed when hidden. Four calendars so a
  *  spec can tell the three states apart — shown, hidden (listed, dimmed) and
  *  not syncing at all (not listed: there is nothing to show). */
+/** See the `padded-allday` fixture. Columns are over the 21-day payload:
+ *  the window is columns 7..13. */
+export const paddedAllDayWeek = (): WeekPayload => {
+  const w = labelledWeek(MON - 7 * 24 * H, 21);
+  const allDay = (id: number, title: string, from: number, to: number) => ev({
+    id, title, start_ms: MON + (from - 7) * 24 * H, end_ms: MON + (to - 6) * 24 * H, is_all_day: true,
+  });
+  w.all_day_events = [
+    allDay(701, 'From the padding', 3, 9),
+    allDay(702, 'Inside the window', 8, 10),
+    allDay(703, 'Padding only', 0, 2),
+  ];
+  // The payload's own rows, the other way round from what the band packs
+  // for the window (A above B): a payload packed over a wider range hands
+  // out rows for that range, and the band must not read them.
+  w.all_day = [
+    { idx: 1, lane: 0, start_col: 8, end_col: 10, cont_left: false, cont_right: false },
+    { idx: 2, lane: 1, start_col: 0, end_col: 2, cont_left: false, cont_right: false },
+    { idx: 0, lane: 1, start_col: 3, end_col: 9, cont_left: false, cont_right: false },
+  ];
+  return w;
+};
+
 export const RIBBON_CALENDARS: Calendar[] = [
   cal({ id: 1, account_email: 'plamen@excitel.com', summary: 'plamen@excitel.com', color_hex: '#e2a03f' }),
   cal({ id: 2, account_email: 'plamen@excitel.com', summary: 'work@excitel.com', color_hex: '#2dd4bf' }),
@@ -1860,6 +1883,15 @@ export const FIXTURES: Record<string, Record<string, any>> = {
      * with the window alone on the track, there is nothing to see, and a
      * block appearing would mean the padding leaked. */
     padded: { week: labelledWeek(MON - 7 * 24 * H, 21), visibleStartMs: MON, visibleDays: 7 },
+    /* The same padded payload with all-day spans: one from the padding into
+     * the window, one inside it overlapping the first, one wholly in the
+     * padding where the first row is free — and the payload's own lane
+     * numbers deliberately the other way round from the window's, as a
+     * payload packed over a wider range hands them out (the reported
+     * flicker). */
+    'padded-allday': {
+      week: paddedAllDayWeek(), visibleStartMs: MON, visibleDays: 7,
+    },
     // The empty week under a three-day forecast: Mon/Tue/Wed carry distinct
     // skies, Thu onward is past the horizon and must carry nothing.
     weather: { week: emptyWeek(), weather: WEEK_WEATHER },

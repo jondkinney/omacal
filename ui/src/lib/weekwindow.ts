@@ -42,19 +42,73 @@ export function visibleIndex(days: { start_ms: number }[], visibleStartMs: numbe
  */
 export function sliceWeek(week: WeekPayload, from: number, count: number): WeekPayload {
   if (from === 0 && count >= week.days.length) return week;
+  return {
+    ...week,
+    days: week.days.slice(from, from + count),
+    all_day: packBandLanes(week.all_day, from, count, false),
+  };
+}
+
+/**
+ * The all-day band's rows for a window, packed here rather than taken from
+ * the payload.
+ *
+ * The backend packs lanes first-fit over whatever range it assembled, so
+ * the same chips land in different rows depending on how much padding was
+ * fetched around them — and the band re-drew its rows at the start of every
+ * swipe, at the end, and again when the refetch landed (reported
+ * 2026-09-03: "this zone flickers"). Packed from the window's own chips, in
+ * an order that depends only on them — real start, real end, then index —
+ * the rows are the same whatever range the payload covers.
+ *
+ * `extend` is the sliding state. At rest (`false`) the window's chips are
+ * cut to the window with their continuing marks, exactly as before. While
+ * sliding (`true`) they keep their real extents — so a chip runs on into
+ * the padding as the track reveals it — and chips lying wholly in the
+ * padding fill rows the window's chips left free, or are left out: a row
+ * that exists only while sliding would change the band's height under the
+ * gesture, which is the other half of the flicker. The window's chips get
+ * identical rows in both modes: two contiguous spans that both touch the
+ * window overlap in full if and only if they overlap inside it, and the
+ * order is the same, so first-fit agrees.
+ */
+export function packBandLanes(lanes: Lane[], from: number, count: number, extend: boolean): Lane[] {
   const last = from + count - 1;
-  const all_day: Lane[] = [];
-  for (const lane of week.all_day) {
-    if (lane.end_col < from || lane.start_col > last) continue;
-    all_day.push({
+  const inWindow = (l: Lane) => l.end_col >= from && l.start_col <= last;
+  const byStart = (a: Lane, b: Lane) =>
+    a.start_col - b.start_col || a.end_col - b.end_col || a.idx - b.idx;
+  // Rows as the columns they hold, one span list per row.
+  const rows: { start: number; end: number }[][] = [];
+  const free = (row: { start: number; end: number }[], s: number, e: number) =>
+    row.every((o) => e < o.start || s > o.end);
+  const place = (s: number, e: number, grow: boolean): number => {
+    for (let r = 0; r < rows.length; r++) {
+      if (free(rows[r], s, e)) { rows[r].push({ start: s, end: e }); return r; }
+    }
+    if (!grow) return -1;
+    rows.push([{ start: s, end: e }]);
+    return rows.length - 1;
+  };
+  const out: Lane[] = [];
+  for (const lane of lanes.filter(inWindow).sort(byStart)) {
+    const start_col = extend ? lane.start_col : Math.max(lane.start_col, from) - from;
+    const end_col = extend ? lane.end_col : Math.min(lane.end_col, last) - from;
+    out.push({
       ...lane,
-      start_col: Math.max(lane.start_col, from) - from,
-      end_col: Math.min(lane.end_col, last) - from,
-      cont_left: lane.cont_left || lane.start_col < from,
-      cont_right: lane.cont_right || lane.end_col > last,
+      lane: place(start_col, end_col, true),
+      start_col,
+      end_col,
+      cont_left: lane.cont_left || (!extend && lane.start_col < from),
+      cont_right: lane.cont_right || (!extend && lane.end_col > last),
     });
   }
-  return { ...week, days: week.days.slice(from, from + count), all_day };
+  if (extend) {
+    for (const lane of lanes.filter((l) => !inWindow(l)).sort(byStart)) {
+      const row = place(lane.start_col, lane.end_col, false);
+      if (row >= 0) out.push({ ...lane, lane: row });
+    }
+  }
+  return out;
 }
 
 /**
