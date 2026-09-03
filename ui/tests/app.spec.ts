@@ -397,6 +397,30 @@ test.describe('App', () => {
     await expect.poll(async () => (await calls('get_big_year')).length).toBeGreaterThan(fetchesBefore);
   });
 
+  test('the title reserves its width, so the arrows never move between months', async ({ page }) => {
+    // "September 2026" to "May 2026" moved the arrows, Today and the
+    // switcher by more than an arrow's own width, so stepping months by
+    // repeated clicks misclicked (reported 2026-09-03). The title's box is
+    // now as wide as the widest month in the locale, whichever is shown —
+    // and the year alone, in the year views, sits in the same slot.
+    await page.goto(app('connected'));
+    await expect(page.locator('.vswitch button')).toHaveCount(5); // mount race — see above
+    await page.keyboard.press('3');
+    await expect(page.locator('h1')).toHaveText('January 2024');
+    const next = page.getByRole('button', { name: 'Next month' });
+    const arrowX = (await next.boundingBox())!.x;
+    const switcherX = (await page.locator('.vswitch').boundingBox())!.x;
+
+    for (let i = 0; i < 4; i++) await page.keyboard.press('l');
+    await expect(page.locator('h1')).toHaveText('May 2024');
+    expect((await next.boundingBox())!.x).toBe(arrowX);
+    expect((await page.locator('.vswitch').boundingBox())!.x).toBe(switcherX);
+
+    await page.keyboard.press('4');
+    await expect(page.locator('h1')).toHaveText('2024');
+    expect((await page.getByRole('button', { name: 'Next year' }).boundingBox())!.x).toBe(arrowX);
+  });
+
   test('the year views are titled by the year alone, and the arrows move it', async ({ page }) => {
     // The `<h1>` formatted month-and-year for every view, so Big Year — a
     // ribbon of the whole year — was headed "September 2026" after the

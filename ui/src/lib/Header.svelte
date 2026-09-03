@@ -119,6 +119,14 @@
       : new Date(titleMs).toLocaleDateString(undefined, { month: 'long', year: 'numeric' })
   );
 
+  // Every month's title in this locale, for the slot the title sits in to
+  // be as wide as the widest of them (2026-09-03). A fixed year: with the
+  // tabular digits below every year is the same width, and the locale's
+  // own shape — a suffix, the year first — comes through the same call the
+  // shown title uses, so the slot fits whatever that locale writes.
+  const TITLE_SIZERS = Array.from({ length: 12 }, (_, m) =>
+    new Date(2000, m, 1).toLocaleDateString(undefined, { month: 'long', year: 'numeric' }));
+
   // `‹`/`›` step the current view's unit, exactly as `H`/`L` do (`App`'s own
   // `step`), so the label has to follow the view too: a control announced as
   // "Previous week" that moves the grid by a month — or, in Month view,
@@ -269,7 +277,21 @@
      sibling of `<header>`, outside it, so nothing about it depends on this. -->
 <header class:overlay={status?.overlay_titlebar} data-tauri-drag-region>
   <div class="left">
-    <h1 data-tauri-drag-region>{title}</h1>
+    <!-- The title's slot: twelve hidden sizers stacked under the shown title,
+         so the box never changes width and nothing after it — the arrows,
+         Today, the switcher — ever moves. "September 2026" to "May 2026"
+         moved the arrows by more than their own width, a misclick every
+         time (reported 2026-09-03). Stacked in a grid rather than measured
+         in JavaScript, so a font that lands late re-sizes the slot by
+         itself. The sizers come first in the DOM so the `<h1>` paints on
+         top and stays the element a drag from the title lands on; hidden
+         by visibility, they take no clicks of their own. -->
+    <div class="title">
+      <div class="sizers" aria-hidden="true">
+        {#each TITLE_SIZERS as sizer}<span>{sizer}</span>{/each}
+      </div>
+      <h1 data-tauri-drag-region>{title}</h1>
+    </div>
     <div class="nav">
       <button onclick={onPrev} aria-label="Previous {unit}">‹</button>
       <button onclick={onNext} aria-label="Next {unit}">›</button>
@@ -521,6 +543,14 @@
   header.overlay { padding-left: 60px; }
   .left, .right { display: flex; align-items: center; gap: 8px; }
   h1 { font-size: 20px; font-weight: 600; letter-spacing: -.025em; margin: 0; white-space: nowrap; }
+  /* The slot — see the markup. Tabular digits so the year never nudges it
+     either; every sizer shares the h1's face so the widest of them is the
+     widest title this locale can show. */
+  .title { display: grid; font-variant-numeric: tabular-nums; }
+  .title > * { grid-area: 1 / 1; }
+  .sizers { visibility: hidden; display: grid; font-size: 20px; font-weight: 600;
+            letter-spacing: -.025em; white-space: nowrap; }
+  .sizers > span { grid-area: 1 / 1; }
   .nav { display: flex; gap: 1px; }
   button { font: inherit; font-size: 12px; color: var(--muted); cursor: pointer;
            background: color-mix(in srgb, var(--text) 6%, transparent);
