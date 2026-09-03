@@ -378,6 +378,30 @@ test.describe('App', () => {
     expect(Number(shown)).toBe(1786320000000);
   });
 
+  test('the year views are titled by the year alone, and the arrows move it', async ({ page }) => {
+    // The `<h1>` formatted month-and-year for every view, so Big Year — a
+    // ribbon of the whole year — was headed "September 2026" after the
+    // anchor's month, and `›`, which steps a whole year, appeared to leave
+    // the title alone (reported 2026-09-03). The clock is frozen to Jan
+    // 2024, which is also Big Year's lower bound (spec §4).
+    await page.goto(app('connected'));
+    await expect(page.locator('.vswitch button')).toHaveCount(5); // mount race — see above
+    await page.keyboard.press('4');
+    await expect(page.locator('h1')).toHaveText('2024');
+    await page.keyboard.press('l');
+    await expect(page.locator('h1')).toHaveText('2025');
+
+    await page.keyboard.press('5');
+    await expect(page.locator('h1')).toHaveText('2024');
+    await page.getByRole('button', { name: 'Next year' }).click();
+    await expect(page.locator('h1')).toHaveText('2025');
+
+    // And back in a month-shaped view the month returns — the anchor never
+    // moved while the year counters did.
+    await page.keyboard.press('2');
+    await expect(page.locator('h1')).toHaveText('January 2024');
+  });
+
   test('the anchor date reaches Year view too, but never Big Year', async ({ page }) => {
     // Spec §5 says "every switch", and Year is a switch. `yearNum` is its own
     // counter seeded from the real clock, so Year used to open on the current

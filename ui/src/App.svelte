@@ -1665,6 +1665,7 @@
   <Header
     bind:settingsOpen
     {status} {anchorMs} weekStartMs={pannedWeekStartMs} {weekStartsToday} weekDays={weekViewDays}
+    yearShown={view === 'bigyear' ? bigYearNum : yearNum}
     {busy} {error} {calendars} {view} {listMode}
     onToggleList={toggleList}
     onPrev={() => step(-1)}

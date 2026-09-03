@@ -13,6 +13,7 @@
 
   let {
     status, anchorMs, weekStartMs, weekStartsToday = false, weekDays = 7,
+    yearShown = new Date(anchorMs).getFullYear(),
     busy, error, calendars, view, onpick,
     onsettingschange,
     listMode, onToggleList,
@@ -34,6 +35,12 @@
     weekStartsToday?: boolean;
     /** Total columns in that rolling range. Ignored for fixed weeks. */
     weekDays?: 3 | 5 | 7;
+    /** The year Year and Big Year are showing — `App`'s own `yearNum` or
+     *  `bigYearNum`, whichever the view reads. Neither is `anchorMs`'s year:
+     *  the two counters are deliberately kept apart from the anchor (see
+     *  their declarations in `App`), so a title derived from the anchor
+     *  named the wrong year the moment either had stepped away from it. */
+    yearShown?: number;
     busy: boolean;
     error: string | null;
     calendars: Calendar[];
@@ -99,8 +106,17 @@
   // grid titled "August"), and in one from Day view on any 1st-of-month that
   // isn't a Monday.
   const titleMs = $derived(view === 'week' ? weekStartMs : anchorMs);
+  // Year and Big Year are titled by the year alone. The month-and-year
+  // format above was applied to every view, so a ribbon showing all of 2026
+  // was headed "September 2026" — the anchor's month, which that view does
+  // not even read — and the `‹`/`›` beside it, which step whole years, looked
+  // like they were doing nothing to the title (reported 2026-09-03). Formatted
+  // through the same locale call as the month titles, so a locale that
+  // writes its years with a suffix keeps it here too.
   const title = $derived(
-    new Date(titleMs).toLocaleDateString(undefined, { month: 'long', year: 'numeric' })
+    view === 'year' || view === 'bigyear'
+      ? new Date(yearShown, 0, 1).toLocaleDateString(undefined, { year: 'numeric' })
+      : new Date(titleMs).toLocaleDateString(undefined, { month: 'long', year: 'numeric' })
   );
 
   // `‹`/`›` step the current view's unit, exactly as `H`/`L` do (`App`'s own
