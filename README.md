@@ -74,15 +74,14 @@ from the app.
 
     curl -fsSL https://extremelabs.io/omacal/install.sh | sh
 
-Linux x86_64 — the AppImage lands in `~/.local/bin` with a desktop entry,
-and from then on the app updates itself: when a release exists, the header
-grows an **Update** button. A native `.deb` and `.rpm` are on the
-[releases page](https://github.com/x3me/omacal/releases).
-
-**macOS** (Apple Silicon): [download the
-.dmg](https://github.com/x3me/omacal/releases/latest/download/omacal.dmg),
-drag to Applications, double-click — signed and notarized, no right-click
-ritual, same self-update.
+One line for Linux x86_64 and macOS on Apple Silicon. On Linux the AppImage
+lands in `~/.local/bin` with a desktop entry; on a Mac, OmaCal.app lands in
+Applications with the `omacal` command on your PATH, signed and notarized,
+no right-click ritual. From then on the app updates itself: when a release
+exists, the header grows an **Update** button. A native `.deb` and `.rpm`
+are on the [releases page](https://github.com/x3me/omacal/releases), and so
+is the [.dmg](https://github.com/x3me/omacal/releases/latest/download/omacal.dmg)
+for anyone who would rather drag than paste.
 
 First sign-in stores the token in your keyring, so a minimal Hyprland
 session needs gnome-keyring, KeePassXC or kwallet running.
@@ -95,8 +94,8 @@ That is the AppImage and the macOS app both.
 
 Otherwise, by how you installed it:
 
-- **AppImage from the install line** — re-run the same line any time. It
-  replaces the copy in `~/.local/bin` with the current release.
+- **From the install line**, Linux or Mac — re-run the same line any time.
+  It replaces the installed copy with the current release.
 - **`.deb` / `.rpm`** — these do not self-update. Take the new package from
   the [releases page](https://github.com/x3me/omacal/releases) and install it
   over the old one.
