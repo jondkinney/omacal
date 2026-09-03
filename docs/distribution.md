@@ -98,6 +98,11 @@ minutes; the `config.toml` escape hatch is also the documented courtesy exit
   ICU at them at startup (`src-tauri/src/icu_tz.rs`). Refresh that directory
   when a tzdata release matters to a user; the deb and rpm read the system's
   ICU and only fall back to the bundled set through the same variable.
+- The icon's source is `src-tauri/icons/icon.svg`; every raster beside it,
+  the favicon and the CLI logo are generated from it (the file's header
+  says how). Linux bundles install the SVG as the scalable hicolor icon and
+  a 512px raster besides the usual sizes (issue #39), the Flatpak manifest
+  copies both, and the macOS `.icns` carries every size to 1024px.
 - The released AppImage carries **AppImage update information** and ships a
   `.zsync` beside it, added by the repack step in `release.yml` (issue #27):
   `appimagetool -u "gh-releases-zsync|x3me|omacal|latest|omacal_*_amd64.AppImage.zsync"`.
