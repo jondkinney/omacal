@@ -80,3 +80,64 @@ export function snapPlan(panDays: number): { shift: number; from: number } {
   const nearest = Math.round(panDays);
   return { shift: -nearest + 0, from: panDays - nearest };
 }
+
+/**
+ * Whether `days` holds the window *and* `margin` days beyond it on each
+ * side — the case in which a fetch can wait. A pan inside the padding needs
+ * nothing fetched to draw, so the refetch that recentres the padding is
+ * deferred until the gesture settles (App); fetching per day crossed
+ * re-rendered three weeks of blocks under every wheel event, and that was
+ * the lag (2026-09-03). At the padding's edge the fetch is immediate again:
+ * one more column and there would be nothing to slide into.
+ */
+export function windowHeld(
+  days: { start_ms: number }[], visibleStartMs: number, visible: number, margin: number,
+): boolean {
+  const i = visibleIndex(days, visibleStartMs);
+  return i >= margin && i + visible + margin <= days.length;
+}
+
+/** A wheel event's contribution to the pan, for the velocity estimate. */
+export type PanSample = { t: number; days: number };
+
+/**
+ * The pan's speed in columns per millisecond over the samples' span, or 0
+ * for fewer than two of them. Only the last `WINDOW_MS` of samples count,
+ * so a long slow drag that ends in a flick reports the flick.
+ */
+export function velocityOf(samples: PanSample[], windowMs = 100): number {
+  if (samples.length < 2) return 0;
+  const last = samples[samples.length - 1].t;
+  const recent = samples.filter((s) => last - s.t <= windowMs);
+  if (recent.length < 2) return 0;
+  const span = recent[recent.length - 1].t - recent[0].t;
+  if (span <= 0) return 0;
+  // The first sample marks the start of the span; its own days were
+  // travelled before it.
+  const days = recent.slice(1).reduce((acc, s) => acc + s.days, 0);
+  return days / span;
+}
+
+/** Momentum's time constant: after the fingers lift, the speed decays as
+ *  e^(-t/τ), so a flick at `v` columns/ms travels `v * τ` more columns. 400
+ *  puts a brisk flick two to three days on, a hard one a week. Linux has no
+ *  inertia of its own on a wheel — libinput stops at lift — and macOS's own
+ *  momentum events keep our lull from firing until they have decayed, by
+ *  which time the speed is low and this adds nothing. */
+export const FLING_TAU_MS = 400;
+/** Below this, the fingers stopped rather than flicked: settle at once. */
+export const FLING_MIN_V = 0.0015;
+/** Never further than the padding on one side minus a column: momentum
+ *  that outran the payload would slide into nothing. */
+export const FLING_MAX_DAYS = 6;
+
+/** How far a fling at `v` columns/ms will travel, capped. Signed. */
+export function flingTravel(v: number, tau = FLING_TAU_MS, cap = FLING_MAX_DAYS): number {
+  if (Math.abs(v) < FLING_MIN_V) return 0;
+  const d = v * tau;
+  return Math.max(-cap, Math.min(cap, d));
+}
+
+/** Where a fling stands `t` ms after lift, as a fraction of its travel:
+ *  1 - e^(-t/τ), which is the integral of the decaying speed. */
+export const flingProgress = (t: number, tau = FLING_TAU_MS) => 1 - Math.exp(-t / tau);

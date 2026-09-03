@@ -5090,9 +5090,11 @@ test.describe('WeekGrid: the padded payload', () => {
     // `labelledWeek`'s one block sits on the first padding day.
     await expect(page.locator('.ev')).toHaveCount(0);
     // And the window is a full-width grid, the way an unpadded one was:
-    // the track's columns fill the pane and start at its edge.
+    // the track's columns fill the pane, start at its edge, and carry no
+    // transform at rest — a transformed ancestor would trap the blocks'
+    // fixed-position tooltip.
     const cols = page.locator('.body .cols');
-    expect(await cols.evaluate((el) => getComputedStyle(el).marginLeft)).toBe('0px');
+    expect(await cols.evaluate((el) => getComputedStyle(el).transform)).toBe('none');
   });
 
   test('a swipe puts the whole payload on the track, and the day under the finger stays put', async ({ page }) => {
@@ -5100,10 +5102,11 @@ test.describe('WeekGrid: the padded payload', () => {
     const box = (await page.getByTestId('week-body').boundingBox())!;
     const colWidth = (await page.locator('.col').first().boundingBox())!.width;
     await page.mouse.move(box.x + box.width / 2, box.y + 100);
-    // Half a column: no day crossed, so nothing handed up — but the track
-    // is sliding, all 21 days of it, and the block from the padding is now
-    // on it.
-    await page.mouse.wheel(-Math.round(colWidth / 2), 0);
+    // A quarter column of wheel, which the gain makes half a column of
+    // track: no day crossed, so nothing handed up — but the track is
+    // sliding, all 21 days of it, and the block from the padding is now on
+    // it.
+    await page.mouse.wheel(-Math.round(colWidth / 4), 0);
     // Read in one go, straight after the wheel: the lull that settles the
     // track is 120ms away, and on a slow runner separate round trips add up
     // (CI, 2026-09-03: the offset was read mid-snap and came up short).

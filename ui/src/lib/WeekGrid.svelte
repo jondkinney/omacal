@@ -10,7 +10,10 @@
   import { tick } from 'svelte';
   import { HOUR_PX_DEFAULT, hourPxAfterPinch, hourPxAfterWheel, scrollTopKeeping } from './zoom';
   import { onPinch, type Pinch } from './pinch';
-  import { panCommit, sliceWeek, snapPlan, visibleIndex } from './weekwindow';
+  import {
+    FLING_TAU_MS, flingProgress, flingTravel, panCommit, sliceWeek, snapPlan, velocityOf,
+    visibleIndex, type PanSample,
+  } from './weekwindow';
   import type { WeekPayload, UiEvent } from './api';
   import type { Rect } from './position';
   import EventBlock from './EventBlock.svelte';
@@ -264,6 +267,17 @@
   let panActive = $state(false);
   let panLull: ReturnType<typeof setTimeout> | undefined;
   let snapRaf = 0;
+  /** A column's width, measured once when a gesture begins. Measuring on
+   *  every wheel event forced a layout per event on top of the one the
+   *  move itself cost — the lag (2026-09-03). */
+  let panColWidth = 0;
+  /** The last wheel events, for the speed at lift. */
+  let panSamples: PanSample[] = [];
+  /** Finger travel to column travel. One to one made a week the whole
+   *  width of a touchpad, since a wheel's pixels are the finger's; at two,
+   *  a week is a comfortable swipe and a day still lands where you meant.
+   *  Tuned by feel on the omarchy box, 2026-09-03. */
+  const PAN_GAIN = 2;
   /** A wheel this long unheard is the fingers lifting: WebKit reports no
    *  gesture phases on a DOM wheel event, so the pause is the only signal.
    *  Momentum on macOS keeps the events coming and so keeps the track
@@ -278,9 +292,41 @@
     return col ? col.getBoundingClientRect().width : 0;
   }
 
-  /** The fingers lifted: settle on the nearest whole column — one more day
-   *  if more than half a column is crossed — and ease the remainder out. */
+  /** The fingers lifted. A flick keeps going with momentum first — the
+   *  speed at lift decaying away, whole days handed up as their columns
+   *  pass — and then, or at once for a stop, the track settles on the
+   *  nearest whole column (one more day past half) and eases the
+   *  remainder out. */
   function settlePan() {
+    const travel = flingTravel(velocityOf(panSamples));
+    panSamples = [];
+    if (travel === 0) {
+      snapToColumn();
+      return;
+    }
+    const from = panDays;
+    const started = performance.now();
+    let handed = 0;
+    const glide = (t: number) => {
+      const target = from + travel * flingProgress(t - started);
+      // Commit the whole columns the glide has passed, the way the wheel
+      // does, so the window walks through the padding under the motion.
+      const { shift, rest } = panCommit(target - handed);
+      if (shift !== 0) {
+        handed -= shift;
+        onpan?.(shift);
+      }
+      panDays = rest;
+      if (t - started < FLING_TAU_MS * 4) {
+        snapRaf = requestAnimationFrame(glide);
+      } else {
+        snapToColumn();
+      }
+    };
+    snapRaf = requestAnimationFrame(glide);
+  }
+
+  function snapToColumn() {
     const { shift, from } = snapPlan(panDays);
     if (shift !== 0) onpan?.(shift);
     panDays = from;
@@ -1200,11 +1246,17 @@
     }
     if (!onpan || Math.abs(e.deltaX) <= Math.abs(e.deltaY)) return;
     e.preventDefault();
-    const w = colWidth();
-    if (w <= 0) return;
+    if (!panActive) {
+      panColWidth = colWidth();
+      panSamples = [];
+    }
+    if (panColWidth <= 0) return;
     cancelAnimationFrame(snapRaf);
     panActive = true;
-    panDays -= e.deltaX / w;
+    const days = -(e.deltaX * PAN_GAIN) / panColWidth;
+    panDays += days;
+    panSamples.push({ t: performance.now(), days });
+    if (panSamples.length > 12) panSamples.shift();
     const { shift, rest } = panCommit(panDays);
     if (shift !== 0) {
       // Both in one flush: the window moves a day and the track moves back
@@ -1228,7 +1280,7 @@
       <span class="zl z1">{zoneAbbrev(primaryZone)}</span>
     {/if}
   </div>
-  <div class="track"><div class="cols">
+  <div class="track"><div class="cols" class:sliding={panActive}>
   {#each renderedDays as d (d.start_ms)}
     <div class="head" class:today={d.start_ms === todayStart}
          class:keyboard={keyboardCursor?.dayStartMs === d.start_ms}>
@@ -1267,6 +1319,7 @@
   {visible}
   vis={renderVis}
   pan={panDays}
+  sliding={panActive}
   dayStarts={renderedDays.map((day) => day.start_ms)}
   {keyboardCursor}
   onopen={openPopover}
@@ -1286,7 +1339,7 @@
     {/each}
   </div>
 
-  <div class="track"><div class="cols">
+  <div class="track"><div class="cols" class:sliding={panActive}>
   {#each renderedDays as day, dayIndex (day.start_ms)}
     {@const isToday = day.start_ms === todayStart}
     {@const ghost = sweepStyle(day)}
@@ -1441,8 +1494,19 @@
      a scroller, and this must never scroll the hours on its own. */
   .track { min-width: 0; overflow-x: clip; }
   .cols { display: grid; grid-template-columns: repeat(var(--cols), 1fr);
-          width: calc(100% * var(--cols) / var(--visible));
-          margin-left: calc((var(--pan) - var(--vis)) / var(--visible) * 100%); }
+          width: calc(100% * var(--cols) / var(--visible)); }
+  /* Moved by transform only while sliding (2026-09-03): a margin re-laid
+     out three weeks of columns on every wheel event, and that was the lag.
+     A transform is the compositor's alone — but a transformed ancestor is
+     the containing block of every `position: fixed` descendant, and
+     EventBlock's tooltip is one, so the transform exists only during the
+     gesture, when nothing is being hovered, and the tooltip is hidden for
+     its duration. At rest there is no transform at all and the window's
+     first column sits at the track's edge by construction. The percentage
+     is of `.cols`' own width, `--cols` columns wide. */
+  .cols.sliding { transform: translateX(calc((var(--pan) - var(--vis)) / var(--cols) * 100%));
+                  will-change: transform; }
+  .cols.sliding :global(.tip) { display: none; }
   /* The last of this component's three roots, and the only one that stretches:
      the day-name row and the all-day band above it are content-sized, so
      `flex: 1` here means "the rest of whatever App's `main` has left", rather

@@ -1,6 +1,9 @@
 import { test, expect } from '@playwright/test';
 import type { WeekPayload } from '../src/lib/api';
-import { padFor, panCommit, sliceWeek, snapPlan, visibleIndex } from '../src/lib/weekwindow';
+import {
+  FLING_TAU_MS, flingProgress, flingTravel, padFor, panCommit, sliceWeek, snapPlan, velocityOf,
+  visibleIndex, windowHeld,
+} from '../src/lib/weekwindow';
 
 const DAY = 86_400_000;
 const days = (n: number, from = 0) =>
@@ -76,5 +79,46 @@ test.describe('the window on a padded week', () => {
     expect(snapPlan(0.6)).toEqual({ shift: -1, from: expect.closeTo(-0.4, 9) });
     expect(snapPlan(-0.6)).toEqual({ shift: 1, from: expect.closeTo(0.4, 9) });
     expect(snapPlan(0)).toEqual({ shift: 0, from: 0 });
+  });
+});
+
+test.describe('the pan\'s feel: what waits, and what flies', () => {
+  test('a window inside the padding, with a margin, holds; at the edge it does not', () => {
+    // 21 days, window of 7 at index 7: seven days of padding each side.
+    expect(windowHeld(days(21), 7 * DAY, 7, 2)).toBe(true);
+    // At index 2 the margin is exactly met; at 1 it is not.
+    expect(windowHeld(days(21), 2 * DAY, 7, 2)).toBe(true);
+    expect(windowHeld(days(21), 1 * DAY, 7, 2)).toBe(false);
+    // At the far edge likewise: 12 + 7 + 2 = 21 holds, 13 does not.
+    expect(windowHeld(days(21), 12 * DAY, 7, 2)).toBe(true);
+    expect(windowHeld(days(21), 13 * DAY, 7, 2)).toBe(false);
+    // Not in the payload at all: fetch now.
+    expect(windowHeld(days(21), 40 * DAY, 7, 2)).toBe(false);
+    // An unpadded payload never holds.
+    expect(windowHeld(days(7), 0, 7, 2)).toBe(false);
+  });
+
+  test('the speed at lift is read off the last hundred milliseconds', () => {
+    // A slow drag, then a flick: 0.1 columns over 100ms each for a while,
+    // then 0.5 columns in 40ms.
+    const samples = [
+      { t: 0, days: 0 }, { t: 100, days: 0.1 }, { t: 200, days: 0.1 }, { t: 300, days: 0.1 },
+      { t: 320, days: 0.25 }, { t: 340, days: 0.25 },
+    ];
+    expect(velocityOf(samples)).toBeCloseTo(0.5 / 40, 6);
+    expect(velocityOf([{ t: 0, days: 1 }])).toBe(0);
+    expect(velocityOf([])).toBe(0);
+  });
+
+  test('a stop settles at once, a flick travels with its speed, and never past the padding', () => {
+    expect(flingTravel(0.001)).toBe(0);
+    expect(flingTravel(0.005)).toBeCloseTo(2, 9);   // 5 col/s × 0.4s
+    expect(flingTravel(-0.005)).toBeCloseTo(-2, 9);
+    expect(flingTravel(0.1)).toBe(6);
+    expect(flingTravel(-0.1)).toBe(-6);
+    // The glide's shape: nothing at lift, all of it eventually, 63% at τ.
+    expect(flingProgress(0)).toBe(0);
+    expect(flingProgress(FLING_TAU_MS)).toBeCloseTo(1 - Math.exp(-1), 9);
+    expect(flingProgress(FLING_TAU_MS * 10)).toBeCloseTo(1, 4);
   });
 });

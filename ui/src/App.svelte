@@ -1,7 +1,7 @@
 <!-- ui/src/App.svelte -->
 <script lang="ts">
   import { listen } from '@tauri-apps/api/event';
-  import { tick } from 'svelte';
+  import { tick, untrack } from 'svelte';
   import { applyPalette, setPalette, type Palette } from './lib/theme';
   import {
     getWeek, getDay, getRange, getMonth, getYear, getBigYear, weekStart,
@@ -31,7 +31,7 @@
   } from './lib/keyboardnav';
   import { getSettings, setHourHeight, setListMode, type AppSettings, type WeekViewDays } from './lib/settings';
   import { HOUR_PX_DEFAULT, hourPxStepped } from './lib/zoom';
-  import { padFor, sliceWeek, visibleIndex } from './lib/weekwindow';
+  import { padFor, sliceWeek, visibleIndex, windowHeld } from './lib/weekwindow';
   import { setClockFormat } from './lib/clock.svelte';
   import { setSecondZone } from './lib/secondzone.svelte';
   import { setWeekStartDay } from './lib/weekstartstore.svelte';
@@ -789,6 +789,11 @@
     return loadWeek(plan.kind, plan.target, plan.pad);
   }
 
+  /** How many days of padding must remain beyond the window for a fetch
+   *  to wait — `windowHeld`'s margin. Two: a column to slide into, and one
+   *  more so the fetch lands before it is reached at a swipe's pace. */
+  const HELD_MARGIN_DAYS = 2;
+  let deferredFetch: ReturnType<typeof setTimeout> | undefined;
   $effect(() => {
     // Reading it here, synchronously, is what makes this effect depend on
     // `fetchPlan` — and, transitively, on `view` and `anchorMs`.
@@ -796,7 +801,24 @@
     // A new view or a new date is a new attempt: a stale failure must not
     // outlive the switch.
     error = null;
-    runFetchPlan(plan);
+    // A window still inside the padded payload needs no fetch to draw — the
+    // days are already here — so the refetch that recentres the padding
+    // waits for the gesture, or the run of `h`/`l`, to settle. Fetching per
+    // day crossed re-rendered three weeks of blocks under every wheel
+    // event (2026-09-03). `week` is read untracked: this must not re-run,
+    // and refetch, on the very payload the deferred fetch brings back.
+    const held = (plan.kind === 'day' || plan.kind === 'week' || plan.kind === 'range')
+      && untrack(() => {
+        const w = week;
+        return w !== null && windowHeld(w.days, visibleStartMs, visibleCount, HELD_MARGIN_DAYS);
+      });
+    clearTimeout(deferredFetch);
+    if (!held) {
+      runFetchPlan(plan);
+      return;
+    }
+    deferredFetch = setTimeout(() => runFetchPlan(plan), 250);
+    return () => clearTimeout(deferredFetch);
   });
 
   // The other half of that story: a sync that *fails* has to say so. Nothing

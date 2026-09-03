@@ -4205,12 +4205,13 @@ test.describe('App: week panning', () => {
     const colWidth = (await page.locator('.col').first().boundingBox())!.width;
 
     await page.locator('[data-testid="week-body"]').hover();
-    // A column's width of travel is a day, whatever the column's width — the
-    // finger and the grid agree. 1.3 columns: one day committed as it is
-    // crossed, the rest settling back after the lull. The test environment's
-    // zone is UTC, so day arithmetic by constant is safe *here*; the app's
-    // own arithmetic goes through Date, as the spec asks.
-    await page.mouse.wheel(Math.round(colWidth * 1.3), 0);
+    // Half a column's width of wheel is a day of track — the gain is two, so
+    // a week is a swipe and not the width of a touchpad. 0.65 columns of
+    // wheel: one day committed as its column is crossed, the rest settling
+    // back after the lull. The test environment's zone is UTC, so day
+    // arithmetic by constant is safe *here*; the app's own arithmetic goes
+    // through Date, as the spec asks.
+    await page.mouse.wheel(Math.round(colWidth * 0.65), 0);
     // Mid-gesture the whole payload is on the track, padding included.
     await expect(page.locator('.col')).toHaveCount(21);
     await expect
