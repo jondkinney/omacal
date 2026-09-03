@@ -1,0 +1,22 @@
+<!-- The OmaCal app icon: the mark on its tile, as vector.
+
+     The rasters beside this file were generated on 2026-08-14 from a 512px
+     PNG of this same design (see 19c9d39), and the PNG's source was never
+     committed. Reconstructed on 2026-09-03 by measuring icon.png — the tile's
+     bounds and corner, each bar's rows and x-extent, the dot's centre — and
+     proven against it: rendered at 512px, the two differ in 50 edge pixels of
+     262,144 (`magick compare -metric AE -fuzz 8%`). Same palette as tray.svg
+     (periwinkle #8DA9F0, orange #F97316); the tile is #0F1420. The bars are
+     full pills (rx = half the height), the dot sits at the left of the
+     second row, and the tile's corner radius is 112 of 480.
+
+     Regenerate every raster from here, never from a PNG:
+       cargo tauri icon src-tauri/icons/icon.svg -o src-tauri/icons
+       rsvg-convert -w 512 -h 512 icon.svg -o icon.png   (if only the PNG) -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="#0F1420"/>
+  <rect x="112" y="150" width="288" height="48" rx="24" fill="#8DA9F0"/>
+  <circle cx="136" cy="256" r="24" fill="#F97316"/>
+  <rect x="184" y="232" width="216" height="48" rx="24" fill="#8DA9F0"/>
+  <rect x="112" y="314" width="192" height="48" rx="24" fill="#8DA9F0"/>
+</svg>
