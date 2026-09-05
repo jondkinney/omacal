@@ -1,0 +1,54 @@
+{
+  "04-background35-events0-rounded": {
+    "eventFillPixel": [
+      49,
+      58,
+      76
+    ],
+    "calendarPixel": [
+      105,
+      111,
+      123
+    ],
+    "eventCropSha256": "7fce735175ac8a914ec58afe4c58ec8ddcf3875f61aeaf809bd7350dd8d8b13a"
+  },
+  "07-background0-events0": {
+    "eventFillPixel": [
+      49,
+      58,
+      76
+    ],
+    "calendarPixel": [
+      46,
+      52,
+      64
+    ],
+    "eventCropSha256": "7fce735175ac8a914ec58afe4c58ec8ddcf3875f61aeaf809bd7350dd8d8b13a"
+  },
+  "08-background100-events0": {
+    "eventFillPixel": [
+      49,
+      58,
+      76
+    ],
+    "calendarPixel": [
+      216,
+      222,
+      233
+    ],
+    "eventCropSha256": "7fce735175ac8a914ec58afe4c58ec8ddcf3875f61aeaf809bd7350dd8d8b13a"
+  },
+  "05-background35-events100-rounded": {
+    "eventFillPixel": [
+      105,
+      111,
+      123
+    ],
+    "calendarPixel": [
+      105,
+      111,
+      123
+    ],
+    "eventCropSha256": "b12eb83ec05a3dbcd6cee726b7e70fdd0037f7158c1646122380de96a3369e54"
+  }
+}

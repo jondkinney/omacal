@@ -1,0 +1,22 @@
+{
+  "upstream": {
+    "commit": "21e8e3665b1b359dfda7f0094fb6b8b227364ddb",
+    "binarySha256": "9cb3bfc537b6ebe5743c16651a615a39fb6d92ad20cd049c36c7953e18bfb841",
+    "sourceChanges": ""
+  },
+  "appearance": {
+    "commit": "aefa01c2152c562b694a05346d799865155057fe",
+    "binarySha256": "f9907c346fb804a7b7563d17d262811c758530316d86311c76610353d4ed4be8",
+    "sourceChanges": ""
+  },
+  "historical": {
+    "commit": "961015fc17df87431a56169b7a2b8f760cea6e56",
+    "binarySha256": "4e13ef07a03b20f294f7d42a9c7b8c25597c4aaabac76315ea48a642c58df0d1",
+    "sourceChanges": ""
+  },
+  "contrast": {
+    "commit": "36f944dffe248346a1e09ff30d79af05104f217a",
+    "binarySha256": "ebc45e9f204b9250f08b57bb3475ea3e3fef57d46ca12cf88f4e79793f09fe93",
+    "sourceChanges": ""
+  }
+}
