@@ -6,9 +6,10 @@
 #     of hand-set comment and literal layout), and a gate nobody intends to
 #     satisfy is noise. Match the style around you instead.
 #   - Screenshot comparisons (`--ignore-snapshots`): the committed goldens are
-#     rendered on specific machines (Arch and macOS), and Ubuntu's font stack
-#     draws them a few pixels differently. Behavioural assertions all still
-#     run; pixel review happens on the machines that own the baselines.
+#     rendered on one Arch machine, and Ubuntu's font stack draws them a few
+#     pixels differently. Behavioural assertions all still run; pixel review
+#     happens on the machine that owns the baselines, and the baselines are
+#     Linux-only by policy (playwright.config.ts skips them elsewhere).
 
 name: ci
 

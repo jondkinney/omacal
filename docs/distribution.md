@@ -130,9 +130,9 @@ minutes; the `config.toml` escape hatch is also the documented courtesy exit
 - Local builds need a Mac — no realistic cross-compile for Tauri — but
   **GitHub Actions macOS runners lift that constraint for releases**: the
   release workflow builds, signs and notarizes the `.dmg` in CI with
-  secrets. A local Mac session is still the moment to regenerate the stale
-  darwin snapshot baselines (`npx playwright test components.spec.ts
-  --update-snapshots`).
+  secrets. A Mac session owes the UI suite nothing: the visual baselines are
+  Linux-only by policy, and `playwright.config.ts` skips the screenshot
+  assertions on any other platform.
 - **Unsigned**: Gatekeeper blocks on first open; right-click → Open works and
   is acceptable for a handful of testers, and nobody else.
 - **Real distribution needs an Apple Developer account** ($99/yr): Developer

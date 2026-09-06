@@ -65,6 +65,13 @@ export default defineConfig({
   // PWDEBUG already forces a single worker inside Playwright, so this cannot
   // rescue a debug run of the whole suite — debug one test, not 106.
   workers: process.env.PWDEBUG ? 1 : 6,
+  // The baselines are Linux's, and only Linux compares against them. There
+  // were darwin baselines beside them until 2026-09-06, rendered on a Mac in
+  // August and exercised by nothing since: CI is Linux-only, so every golden
+  // they held was stale and nothing could say so. Elsewhere the screenshot
+  // assertions are skipped by policy rather than failed against another OS's
+  // font rendering; the behavioural assertions all still run.
+  ignoreSnapshots: process.platform !== 'linux',
   // Snapshots are the point of this suite; a stale one must fail, not silently update.
   updateSnapshots: 'missing',
   // Zero counted pixels, and a per-pixel threshold well below the default.
