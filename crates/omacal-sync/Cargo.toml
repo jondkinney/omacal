@@ -8,7 +8,6 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 jiff = "0.2.35"
-omacal-core = { version = "0.1.0", path = "../omacal-core" }
 omacal-google = { version = "0.1.0", path = "../omacal-google" }
 omacal-caldav = { path = "../omacal-caldav" }
 omacal-store = { version = "0.1.0", path = "../omacal-store" }

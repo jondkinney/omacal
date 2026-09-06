@@ -3187,7 +3187,6 @@ dependencies = [
  "anyhow",
  "jiff",
  "omacal-caldav",
- "omacal-core",
  "omacal-google",
  "omacal-store",
  "reqwest 0.12.28",
