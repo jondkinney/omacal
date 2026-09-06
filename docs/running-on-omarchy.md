@@ -1,7 +1,7 @@
 # Running omacal on Omarchy
 
 > **Just want to use it?**
-> `curl -fsSL https://extremelabs.io/omacal/install.sh | sh` installs the
+> `curl -fsSL https://omacal.app/install.sh | sh` installs the
 > latest release, credentials included: no Google Cloud project, no config
 > file. Everything below is for building and running from source.
 

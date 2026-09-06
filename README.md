@@ -1,5 +1,7 @@
 # OmaCal
 
+**Site, downloads and the CLI guide: [omacal.app](https://omacal.app)**
+
 A desktop calendar for Omarchy Linux — **Google Calendar, iCloud, or any
 CalDAV server**, with full create/edit/RSVP including recurring events at
 all three scopes, and a signed, notarized macOS build for the days you're
@@ -72,7 +74,7 @@ from the app.
 
 ## Install
 
-    curl -fsSL https://extremelabs.io/omacal/install.sh | sh
+    curl -fsSL https://omacal.app/install.sh | sh
 
 One line for Linux x86_64 and macOS on Apple Silicon. On Linux the AppImage
 lands in `~/.local/bin` with a desktop entry; on a Mac, OmaCal.app lands in
