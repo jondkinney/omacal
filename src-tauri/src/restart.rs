@@ -14,9 +14,21 @@
 //! the design: everything this app must not lose is already durable —
 //! calendar state lives in SQLite behind WAL, tokens in the keyring,
 //! settings in the same database, every write transactional — and the one
-//! thing teardown "orderliness" was buying was the hang. The renderer,
-//! orphaned instead of walked through WebKit's shutdown, gets its sockets
-//! closed and goes down the boring path.
+//! thing teardown "orderliness" was buying was the hang.
+//!
+//! The renderer was first left to itself: orphaned instead of walked
+//! through WebKit's shutdown, it would get its sockets closed and go down
+//! the boring path. The field evidence of 2026-09-06 says the boring path
+//! is `exit()`, and `exit()` is the same gauntlet — the renderer aborted
+//! out of glibc's exit-time checks sixteen seconds after every update, one
+//! coredump notification each. Worse, while it and the network process
+//! were still standing they held the AppImage mount busy, so the AppImage
+//! runtime under us could not unmount and never left: after two updates
+//! the box carried two idle runtimes executing deleted files, and three
+//! `/tmp/.mount_omacal*` mounts. So before spawning, [`stop_webkit_helpers`]
+//! sends WebKit's helper processes SIGTERM — they are about to lose their
+//! UI process either way, and a signal ends them without any `exit()` —
+//! waits the moment they need, and the runtime then finds its mount free.
 //!
 //! The image to spawn is `$APPIMAGE` when set — the file the updater just
 //! replaced, which is exactly the point — and the current executable
@@ -89,6 +101,13 @@ fn enclosing_app_bundle(exe: &std::path::Path) -> Option<PathBuf> {
 /// webview first" rule from `settings::restart_app`) is unchanged; what
 /// changed is only how the old process leaves once the reply is out.
 pub(crate) fn hard_restart() -> ! {
+    // Before the spawn, not after: the new instance must not find these
+    // still alive (nothing of the new one is a child of this process, so
+    // the sweep cannot touch it), and the old window going blank for the
+    // tens of milliseconds this takes is a restart looking like one.
+    if cfg!(target_os = "linux") {
+        stop_webkit_helpers();
+    }
     match restart_target(
         std::env::var_os("APPIMAGE"),
         std::env::current_exe().ok(),
@@ -121,6 +140,128 @@ pub(crate) fn hard_restart() -> ! {
     }
     #[cfg(not(unix))]
     std::process::exit(0)
+}
+
+/// One line of `/proc/<pid>/stat`: the pid, the parent's pid, the state
+/// letter and the command name.
+///
+/// The name sits in parentheses and may itself hold spaces or a `)`, so the
+/// fields after it are counted from the *last* `)`, never the first.
+pub(crate) fn parse_stat(stat: &str) -> Option<(u32, u32, char, String)> {
+    let open = stat.find('(')?;
+    let close = stat.rfind(')')?;
+    let pid: u32 = stat[..open].trim().parse().ok()?;
+    let comm = stat[open + 1..close].to_string();
+    let mut rest = stat[close + 1..].split_whitespace();
+    let state = rest.next()?.chars().next()?;
+    let ppid: u32 = rest.next()?.parse().ok()?;
+    Some((pid, ppid, state, comm))
+}
+
+/// Whether a process is one of ours to stop: a live child of `me` whose
+/// name is one of WebKit's helpers. The kernel keeps fifteen bytes of a
+/// name, so the renderer is `WebKitWebProces` and the network process
+/// `WebKitNetworkPr`; the prefix is the stable part. `bwrap` and
+/// `xdg-dbus-proxy` are the sandbox WebKit puts its D-Bus proxy in where it
+/// can (seen under a private session bus, not on the box's own), and they
+/// bind the same mount. A zombie is already gone and holds nothing, so it is
+/// not a target — counting one would only make the wait below run out its
+/// clock.
+pub(crate) fn is_webkit_helper_of(me: u32, pid: u32, ppid: u32, state: char, comm: &str) -> bool {
+    ppid == me
+        && pid != me
+        && state != 'Z'
+        && state != 'X'
+        && (comm.starts_with("WebKit") || comm == "bwrap" || comm == "xdg-dbus-proxy")
+}
+
+/// The pids of this process's live WebKit helpers, from `/proc`. Empty
+/// where there is no `/proc` to read, which is every platform but Linux.
+fn webkit_helpers(me: u32) -> Vec<u32> {
+    let Ok(dir) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    dir.filter_map(|entry| {
+        let entry = entry.ok()?;
+        entry.file_name().to_str()?.parse::<u32>().ok()?;
+        let stat = std::fs::read_to_string(entry.path().join("stat")).ok()?;
+        let (pid, ppid, state, comm) = parse_stat(&stat)?;
+        is_webkit_helper_of(me, pid, ppid, state, &comm).then_some(pid)
+    })
+    .collect()
+}
+
+/// Stops the WebKit helpers this process launched — the renderer and the
+/// network process — and reaps them, so that nothing of ours is left
+/// holding the AppImage mount when this process leaves. See the module doc
+/// for the field evidence.
+///
+/// SIGTERM first, and a short wait for them to go; anything still standing
+/// after that gets SIGKILL, and a last sweep right before returning catches
+/// a helper WebKit relaunched in the meantime. Reaping is what makes a
+/// stopped helper disappear from the table rather than sit there as a
+/// zombie for the whole wait.
+pub(crate) fn stop_webkit_helpers() {
+    let me = std::process::id();
+    let first = webkit_helpers(me);
+    if first.is_empty() {
+        return;
+    }
+    for &pid in &first {
+        // SAFETY: plain libc calls on pids read from /proc; a pid that has
+        // already gone makes kill fail, which is the outcome wanted anyway.
+        unsafe {
+            libc::kill(pid as libc::pid_t, libc::SIGTERM);
+        }
+    }
+    // Wait for the ones signalled to exit, reaping as they go. The check is
+    // on those pids, not on a fresh listing: a fresh listing hides a zombie
+    // (which still needs reaping) and shows a relaunch (which the sweep
+    // below is for).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1500);
+    loop {
+        reap(&first);
+        if first.iter().all(|&pid| !alive(pid)) || std::time::Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    // Whatever stands now — a straggler, or a helper WebKit relaunched in
+    // the meantime — is killed outright and reaped.
+    let left = webkit_helpers(me);
+    for &pid in &left {
+        unsafe {
+            libc::kill(pid as libc::pid_t, libc::SIGKILL);
+        }
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
+    loop {
+        reap(&left);
+        if left.iter().all(|&pid| !alive(pid)) || std::time::Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    tracing::info!(stopped = first.len(), killed = left.len(), "webkit helpers stopped before the restart");
+}
+
+/// Whether `pid` is still a running process: present in `/proc` and not a
+/// zombie. A reaped process has no entry at all.
+fn alive(pid: u32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .ok()
+        .and_then(|stat| parse_stat(&stat))
+        .is_some_and(|(_, _, state, _)| state != 'Z' && state != 'X')
+}
+
+/// Collects whichever of `pids` have exited, without blocking on the rest.
+fn reap(pids: &[u32]) {
+    for &pid in pids {
+        let mut status = 0;
+        unsafe {
+            libc::waitpid(pid as libc::pid_t, &mut status, libc::WNOHANG);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -188,5 +329,87 @@ mod tests {
             restart_target(None, Some(PathBuf::from("/opt/omacal.app/Contents/MacOS/omacal")), false),
             Some(Restart::Exec(PathBuf::from("/opt/omacal.app/Contents/MacOS/omacal")))
         );
+    }
+
+    /// The two lines the box actually shows, and one with a name that
+    /// would fool a parser counting from the first `)`.
+    #[test]
+    fn a_stat_line_yields_pid_parent_state_and_name() {
+        assert_eq!(
+            parse_stat("325025 (WebKitWebProces) S 324939 1889743 1889743 0 -1 41943"),
+            Some((325025, 324939, 'S', "WebKitWebProces".to_string()))
+        );
+        assert_eq!(
+            parse_stat("325006 (WebKitNetworkPr) S 324939 1889743 1889743 0 -1 41943"),
+            Some((325006, 324939, 'S', "WebKitNetworkPr".to_string()))
+        );
+        assert_eq!(
+            parse_stat("12 (a b) c) R 1 12 12 0 -1 4194560"),
+            Some((12, 1, 'R', "a b) c".to_string()))
+        );
+        assert_eq!(parse_stat("garbage"), None);
+    }
+
+    /// Only a live, WebKit-named child of this process is a target: not the
+    /// new instance we are about to spawn, not a grandchild, not a zombie,
+    /// and not the process itself.
+    #[test]
+    fn only_live_webkit_children_are_stopped() {
+        let me = 100;
+        assert!(is_webkit_helper_of(me, 200, me, 'S', "WebKitWebProces"));
+        assert!(is_webkit_helper_of(me, 201, me, 'S', "WebKitNetworkPr"));
+        assert!(is_webkit_helper_of(me, 205, me, 'S', "bwrap"), "WebKit's sandbox for its proxy");
+        assert!(is_webkit_helper_of(me, 206, me, 'S', "xdg-dbus-proxy"));
+        assert!(!is_webkit_helper_of(me, 202, me, 'S', "omacal"), "the new instance");
+        assert!(!is_webkit_helper_of(me, 203, 200, 'S', "WebKitWebProces"), "a grandchild");
+        assert!(!is_webkit_helper_of(me, 204, me, 'Z', "WebKitWebProces"), "a zombie");
+        assert!(!is_webkit_helper_of(me, me, 1, 'S', "WebKitWebProces"), "itself");
+    }
+
+    /// The real thing, on Linux: a child that is named like a WebKit helper
+    /// (a symlink to `sleep`, since the kernel names a process after the
+    /// file it executed) is found, stopped and reaped, and a child that is
+    /// not named like one is left alone.
+    #[test]
+    fn a_child_named_like_a_webkit_helper_is_stopped_and_an_ordinary_one_is_not() {
+        if !cfg!(target_os = "linux") {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("omacal-restart-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fake = dir.join("WebKitFakeHelper");
+        let _ = std::fs::remove_file(&fake);
+        std::os::unix::fs::symlink("/bin/sleep", &fake).unwrap();
+        let mut helper = std::process::Command::new(&fake).arg("30").spawn().unwrap();
+        let mut bystander = std::process::Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        let me = std::process::id();
+        // Give the kernel a moment to have the child exec'd and named.
+        let seen = (0..50).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+            webkit_helpers(me).contains(&helper.id())
+        });
+        assert!(seen, "the fake helper must be listed as ours");
+
+        stop_webkit_helpers();
+
+        assert!(!webkit_helpers(me).contains(&helper.id()), "the fake helper must be gone");
+        let reaped = (0..50).any(|_| {
+            let gone = !std::path::Path::new(&format!("/proc/{}", helper.id())).exists();
+            if !gone {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            gone
+        });
+        assert!(reaped, "and reaped, not left as a zombie");
+        assert!(
+            std::path::Path::new(&format!("/proc/{}", bystander.id())).exists(),
+            "the ordinary child is untouched"
+        );
+        bystander.kill().unwrap();
+        bystander.wait().unwrap();
+        // Already reaped by `stop_webkit_helpers`; this only satisfies the
+        // handle (and the zombie lint) and gets ECHILD back.
+        let _ = helper.wait();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
