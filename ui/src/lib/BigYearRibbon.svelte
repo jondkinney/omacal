@@ -421,10 +421,22 @@
       var(--event-fill) var(--event-fill-opacity),
       transparent
     );
-    /* `--ink` is chosen for a solid calendar-colour fill. Once that fill is
-       translucent, theme text mixed toward the calendar colour is the stable
-       contrast target instead. */
-    color: color-mix(in srgb, var(--cal) 60%, var(--text));
+    /* `--ink` was chosen against the solid calendar colour. The fill is that
+       colour at `--event-fill-opacity` over the canvas, so while most of it
+       is there the ink still fits it, and once most of it has gone the
+       theme's own text — chosen for the canvas — fits better. A step at
+       half, not a blend: halfway between a near-black and a near-white ink
+       is a grey that reads on neither. The `clamp` is that step in CSS:
+       any fill over 50% resolves to all `--ink`, any under to all `--text`.
+       At 0% transparency — the default off Omarchy — and at Omarchy's 4%,
+       this is exactly `--ink`. (1.9.0 mixed the *calendar colour* into the
+       theme text here, which on a pale calendar drew pale on pale; the
+       tooltip was the only way to read the pill.) */
+    color: color-mix(
+      in srgb,
+      var(--ink) clamp(0%, calc((var(--event-fill-opacity) - 50%) * 1000), 100%),
+      var(--text)
+    );
   }
   :global(:root[data-event-transparency]) .pill.cl { border-left-color: currentColor; }
   :global(:root[data-event-transparency]) .pill.lit {
