@@ -34,10 +34,30 @@ const EVENT_TRANSPARENCY_KEY: &str = "event_transparency";
 const EVENT_CORNER_STYLE_KEY: &str = "event_corner_style";
 const APPEARANCE_TRANSPARENCY_SEMANTICS_KEY: &str = "appearance_transparency_semantics";
 const ABSOLUTE_TRANSPARENCY_SEMANTICS: &str = "absolute-v1";
-/// Omarchy previously multiplied the whole inactive window by 0.96. The app
-/// now opts out of that compositor rule and owns the alpha itself, so the
-/// ranges start at the same visible baseline while 0 can finally mean opaque.
+/// Omarchy's `default-opacity` rule blends every window a little — 98.5%
+/// focused, 96% unfocused — this one included, and did before these controls
+/// existed. On Omarchy the ranges start here, so an install that never
+/// touched them looks as it always did. The compositor's share stays on top:
+/// the app edits nobody's Hyprland rules (running-on-omarchy.md shows the
+/// opt-out).
 pub const DEFAULT_APPEARANCE_TRANSPARENCY: u8 = 4;
+
+/// The transparency a fresh install starts at: the Omarchy baseline where
+/// Omarchy blended the window already, opaque anywhere else.
+///
+/// No other desktop ever blended the window, so a 4 there would be a change
+/// nobody asked for — and on X11 without a compositor a transparent region
+/// is not blended at all but drawn black. `omarchy` is the theme directory's
+/// existence, the same fact the palette reads (`theme::omarchy_theme_dir`),
+/// passed in rather than read here so a test can tell both stories on one
+/// host.
+pub(crate) fn appearance_baseline(omarchy: bool) -> u8 {
+    if omarchy {
+        DEFAULT_APPEARANCE_TRANSPARENCY
+    } else {
+        0
+    }
+}
 const TIME_FORMAT_KEY: &str = "time_format";
 const WEEK_START_KEY: &str = "week_start";
 const WEEK_STARTS_TODAY_KEY: &str = "week_starts_today";
@@ -386,7 +406,8 @@ pub struct AppSettings {
     /// Sixty preserves the existing behavior for installs without this row.
     pub default_event_duration_minutes: u32,
     /// Absolute transparency of the calendar canvas. Zero is fully opaque;
-    /// the default reproduces Omarchy's former whole-window baseline.
+    /// the default is [`appearance_baseline`]: Omarchy's former whole-window
+    /// blend there, opaque anywhere else.
     pub background_transparency: u8,
     /// Absolute transparency of event fills only. Zero is fully opaque; text,
     /// colour spines, outlines and controls stay fully painted throughout.
@@ -394,6 +415,14 @@ pub struct AppSettings {
     /// Rounded preserves the shapes omacal shipped with; square removes the
     /// corner radius from every event representation, not from other UI.
     pub event_corner_style: EventCornerStyle,
+    /// Whether the window can be seen through at all. The Linux window has a
+    /// transparent backing store (`tauri.linux.conf.json`); the macOS one
+    /// does not, since that needs Tauri's private-API feature, which this
+    /// app does not enable. Where this is false the background slider would
+    /// move nothing, so the modal leaves it out — `window_frame`'s `None` is
+    /// the precedent: the platform reaches the form as a fact about the
+    /// window, never as an OS name.
+    pub transparent_window: bool,
     /// Whether the system tray icon is shown. **On by default** — the tray is
     /// where Quit lives, and an app that hides its only quit affordance on a
     /// fresh install has made a decision nobody asked it to. Turning it off
@@ -519,14 +548,16 @@ pub(crate) async fn write(pool: &SqlitePool, key: &str, value: &str) -> anyhow::
     Ok(())
 }
 
-/// Reads one percentage under either side of the one-time semantics change.
+/// Reads one percentage under either side of the one-time semantics change,
+/// against the desktop's `baseline` ([`appearance_baseline`]).
 ///
 /// Legacy values were extra transparency multiplied after the compositor's
-/// 4% baseline. Preserve their effective alpha with
-/// `4 + round(legacy * 96 / 100)`. New rows are already absolute. Garbage on
-/// either side lands on the old visible baseline, never on an extreme.
-fn appearance_transparency(stored: Option<String>, absolute: bool) -> u8 {
-    let fallback = if absolute { DEFAULT_APPEARANCE_TRANSPARENCY } else { 0 };
+/// blend. Preserve their effective alpha with
+/// `baseline + round(legacy * (100 - baseline) / 100)`, which off Omarchy is
+/// the value itself. New rows are already absolute. Garbage on either side
+/// lands on the baseline, never on an extreme.
+fn appearance_transparency(stored: Option<String>, absolute: bool, baseline: u8) -> u8 {
+    let fallback = if absolute { baseline } else { 0 };
     let value = stored
         .and_then(|v| v.parse::<u8>().ok())
         .filter(|&percent| percent <= 100)
@@ -534,9 +565,8 @@ fn appearance_transparency(stored: Option<String>, absolute: bool) -> u8 {
     if absolute {
         value
     } else {
-        let remaining = 100_u16 - u16::from(DEFAULT_APPEARANCE_TRANSPARENCY);
-        DEFAULT_APPEARANCE_TRANSPARENCY
-            + ((u16::from(value) * remaining + 50) / 100) as u8
+        let remaining = 100_u16 - u16::from(baseline);
+        baseline + ((u16::from(value) * remaining + 50) / 100) as u8
     }
 }
 
@@ -545,6 +575,13 @@ fn appearance_transparency(stored: Option<String>, absolute: bool) -> u8 {
 /// Absent is the ordinary case on a fresh install and is not an error:
 /// nothing writes these until the user opens the modal.
 pub async fn read_settings(pool: &SqlitePool) -> AppSettings {
+    let baseline = appearance_baseline(crate::theme::omarchy_theme_dir().is_some());
+    read_settings_with(pool, baseline).await
+}
+
+/// [`read_settings`] with the appearance baseline supplied, so a test can
+/// tell the Omarchy story and the other one on whichever host runs it.
+pub(crate) async fn read_settings_with(pool: &SqlitePool, baseline: u8) -> AppSettings {
     let absolute_transparency = read(pool, APPEARANCE_TRANSPARENCY_SEMANTICS_KEY)
         .await
         .as_deref()
@@ -617,11 +654,14 @@ pub async fn read_settings(pool: &SqlitePool) -> AppSettings {
         background_transparency: appearance_transparency(
             read(pool, BACKGROUND_TRANSPARENCY_KEY).await,
             absolute_transparency,
+            baseline,
         ),
         event_transparency: appearance_transparency(
             read(pool, EVENT_TRANSPARENCY_KEY).await,
             absolute_transparency,
+            baseline,
         ),
+        transparent_window: cfg!(target_os = "linux"),
         event_corner_style: match read(pool, EVENT_CORNER_STYLE_KEY).await.as_deref() {
             Some("square") => EventCornerStyle::Square,
             _ => EventCornerStyle::Rounded,
@@ -1357,15 +1397,16 @@ mod tests {
             60,
             "new events remain one hour long until somebody chooses otherwise",
         );
+        let baseline = appearance_baseline(crate::theme::omarchy_theme_dir().is_some());
         assert_eq!(
             s.background_transparency,
-            DEFAULT_APPEARANCE_TRANSPARENCY,
-            "the slider names the former Omarchy baseline instead of calling it zero",
+            baseline,
+            "a fresh install starts at this desktop's baseline: 4 where Omarchy blended the window, 0 elsewhere",
         );
         assert_eq!(
             s.event_transparency,
-            DEFAULT_APPEARANCE_TRANSPARENCY,
-            "event alpha starts at the same former whole-window baseline",
+            baseline,
+            "event alpha starts at the same baseline",
         );
         assert_eq!(
             s.event_corner_style,
@@ -1543,13 +1584,19 @@ mod tests {
     async fn legacy_extra_transparency_is_migrated_to_the_same_absolute_alpha() {
         let p = pool().await;
 
-        // No semantics row is the additive version. Its 0 was really the
-        // compositor's 4%; 50 was 50% alpha multiplied by 96%, or 52% total.
+        // No semantics row is the additive version. On Omarchy its 0 was
+        // really the compositor's 4%; 50 was 50% alpha multiplied by 96%, or
+        // 52% total.
         write(&p, BACKGROUND_TRANSPARENCY_KEY, "0").await.unwrap();
         write(&p, EVENT_TRANSPARENCY_KEY, "50").await.unwrap();
-        let legacy = read_settings(&p).await;
+        let legacy = read_settings_with(&p, DEFAULT_APPEARANCE_TRANSPARENCY).await;
         assert_eq!(legacy.background_transparency, 4);
         assert_eq!(legacy.event_transparency, 52);
+        // Off Omarchy nothing multiplied the window, so a legacy value was
+        // already the whole alpha and reads back as itself.
+        let plain = read_settings_with(&p, 0).await;
+        assert_eq!(plain.background_transparency, 0);
+        assert_eq!(plain.event_transparency, 50);
 
         // Any new write marks the whole tuple absolute, including a real 0.
         let absolute = set_appearance_preferences_impl(&p, 0, 50, EventCornerStyle::Rounded)
@@ -1570,17 +1617,19 @@ mod tests {
         for stored in ["", "101", "-1", "half", "255"] {
             write(&p, BACKGROUND_TRANSPARENCY_KEY, stored).await.unwrap();
             write(&p, EVENT_TRANSPARENCY_KEY, stored).await.unwrap();
-            let s = read_settings(&p).await;
-            assert_eq!(
-                s.background_transparency,
-                DEFAULT_APPEARANCE_TRANSPARENCY,
-                "{stored:?} changed the canvas",
-            );
-            assert_eq!(
-                s.event_transparency,
-                DEFAULT_APPEARANCE_TRANSPARENCY,
-                "{stored:?} changed event fills",
-            );
+            for baseline in [0, DEFAULT_APPEARANCE_TRANSPARENCY] {
+                let s = read_settings_with(&p, baseline).await;
+                assert_eq!(
+                    s.background_transparency,
+                    baseline,
+                    "{stored:?} changed the canvas at baseline {baseline}",
+                );
+                assert_eq!(
+                    s.event_transparency,
+                    baseline,
+                    "{stored:?} changed event fills at baseline {baseline}",
+                );
+            }
         }
 
         write(&p, EVENT_CORNER_STYLE_KEY, "square").await.unwrap();
@@ -1593,6 +1642,21 @@ mod tests {
                 "{stored:?} is not a style this version writes",
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_fresh_install_starts_opaque_unless_omarchy_blended_the_window_already() {
+        let p = pool().await;
+        let plain = read_settings_with(&p, appearance_baseline(false)).await;
+        assert_eq!((plain.background_transparency, plain.event_transparency), (0, 0));
+        let omarchy = read_settings_with(&p, appearance_baseline(true)).await;
+        assert_eq!(
+            (omarchy.background_transparency, omarchy.event_transparency),
+            (DEFAULT_APPEARANCE_TRANSPARENCY, DEFAULT_APPEARANCE_TRANSPARENCY),
+        );
+        // The real read passes the host's own answer, whichever it is.
+        let detected = appearance_baseline(crate::theme::omarchy_theme_dir().is_some());
+        assert_eq!(read_settings(&p).await.background_transparency, detected);
     }
 
     #[test]

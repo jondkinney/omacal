@@ -572,6 +572,7 @@ type StubSettings = {
   backgroundTransparency: number;
   eventTransparency: number;
   eventCornerStyle: EventCornerStyle;
+  transparentWindow: boolean;
   timeFormat: TimeFormat;
   weekStart: WeekStartDay;
   weekStartsToday: boolean;
@@ -603,10 +604,13 @@ const DEFAULT_SETTINGS: StubSettings = {
   defaultCalendarId: null,
   defaultEventDurationMinutes: 60,
   // The app now owns the old 4% Omarchy baseline so the ranges are absolute:
-  // 0 is genuinely opaque and the shipped appearance is honestly labelled 4.
-  backgroundTransparency: 4,
-  eventTransparency: 4,
+  // The stub is Linux off Omarchy: opaque until told otherwise, with a
+  // window that can be seen through. A spec telling the Omarchy story seeds
+  // 4; one wanting the macOS answer seeds `transparentWindow: false`.
+  backgroundTransparency: 0,
+  eventTransparency: 0,
   eventCornerStyle: 'rounded',
+  transparentWindow: true,
   listMode: false,
   // The mark, which is what the tray has always worn.
   showDate: false,

@@ -112,7 +112,14 @@ test.describe('App', () => {
     await expect(event.locator('b')).toHaveCSS('opacity', '1');
   });
 
-  test('the former 4% baseline can be previewed all the way down to opaque', async ({ page }) => {
+  test("Omarchy's 4% baseline can be previewed all the way down to opaque", async ({ page }) => {
+    // The stub starts opaque, as Linux off Omarchy does; this is the Omarchy
+    // story, where the backend answers 4 to match the compositor's blend.
+    await page.addInitScript(() => {
+      sessionStorage.setItem('omacal-stub-settings', JSON.stringify({
+        backgroundTransparency: 4, eventTransparency: 4,
+      }));
+    });
     await page.goto(app());
     await expect.poll(() => page.evaluate(() => ({
       background: document.documentElement.dataset.backgroundTransparency,

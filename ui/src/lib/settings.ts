@@ -98,6 +98,12 @@ export type AppSettings = {
   eventTransparency: number;
   /** The shared corner treatment for every event representation. */
   eventCornerStyle: EventCornerStyle;
+  /** Whether the window can be seen through at all: true on Linux, whose
+   *  window has a transparent backing store, false on macOS, whose does not.
+   *  The modal offers the background slider only when it is true, the way
+   *  `windowFrame`'s `null` hides the frame row — a fact about the window,
+   *  not an OS name. */
+  transparentWindow: boolean;
   /** Whether the app draws `13:30` or `1:30 PM`. Read by `timefmt.ts` through
    *  the `clock.svelte.ts` rune rather than as a prop — six components print a
    *  time and none of them owns the preference. */

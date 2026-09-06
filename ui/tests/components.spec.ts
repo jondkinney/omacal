@@ -1255,22 +1255,40 @@ test.describe('Header', () => {
     return modal;
   };
 
-  test('Appearance starts at the former baseline and persists absolute values', async ({ page }) => {
+  /**
+   * The macOS half of #21's follow-up: that window has no transparent
+   * backing store, so a background slider there would move nothing. Seeded
+   * as the stub's answer about the window, not as a platform name, the way
+   * the frame row's absence is (#36).
+   */
+  test('where the window cannot be seen through, the background slider is not offered', async ({ page }) => {
+    await page.addInitScript(() => {
+      sessionStorage.setItem('omacal-stub-settings', JSON.stringify({ transparentWindow: false }));
+    });
+    await page.goto(show('Header', 'connected'));
+    const modal = await openSettings(page, 'Appearance');
+    // The rest of the tab is still there — only the canvas slider is missing.
+    await expect(modal.getByRole('slider', { name: 'Event transparency' })).toHaveCount(1);
+    await expect(modal.getByRole('radio', { name: 'Rounded' })).toHaveCount(1);
+    await expect(modal.getByRole('slider', { name: 'Background transparency' })).toHaveCount(0);
+  });
+
+  test('Appearance starts opaque off Omarchy and persists absolute values', async ({ page }) => {
     await page.goto(show('Header', 'connected'));
     let modal = await openSettings(page, 'Appearance');
     const background = modal.getByRole('slider', { name: 'Background transparency' });
     const events = modal.getByRole('slider', { name: 'Event transparency' });
 
-    await expect(background).toHaveValue('4');
-    await expect(events).toHaveValue('4');
+    await expect(background).toHaveValue('0');
+    await expect(events).toHaveValue('0');
     await expect(modal.getByRole('radio', { name: 'Rounded' })).toBeChecked();
-    await expect(modal).toContainText('4% matches the previous Omarchy window baseline');
+    await expect(modal).toContainText('0% is opaque');
     expect(await page.evaluate(() => ({
       data: document.documentElement.dataset.backgroundTransparency,
       fill: document.documentElement.style.getPropertyValue('--background-fill-opacity'),
       eventData: document.documentElement.dataset.eventTransparency,
       eventFill: document.documentElement.style.getPropertyValue('--event-fill-opacity'),
-    }))).toEqual({ data: '4', fill: '96%', eventData: '4', eventFill: '96%' });
+    }))).toEqual({ data: '0', fill: '100%', eventData: '0', eventFill: '100%' });
 
     // `input` is the live preview and deliberately makes no database call.
     await background.evaluate((el) => {

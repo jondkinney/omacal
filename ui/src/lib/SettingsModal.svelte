@@ -1077,6 +1077,10 @@
         </p>
       {/if}
 
+      <!-- The canvas can only fade where the window can be seen through, and
+           macOS's cannot (AppSettings.transparentWindow); a slider that moved
+           nothing would read as broken, so there is no slider there. -->
+      {#if settings?.transparentWindow ?? true}
       <section class="appearance-section" aria-labelledby="background-style-heading">
         <h2 id="background-style-heading">Calendar background</h2>
         <div class="range-row">
@@ -1100,10 +1104,12 @@
           </output>
         </div>
         <p class="hint">
-          4% matches the previous Omarchy window baseline. 0% is fully opaque;
-          100% makes the calendar canvas clear.
+          0% is opaque; 100% makes the calendar canvas clear. Omarchy blends
+          every window a little on its own, so there the app starts at 4% to
+          match, and the compositor's share stays on top.
         </p>
       </section>
+      {/if}
 
       <section class="appearance-section" aria-labelledby="event-style-heading">
         <h2 id="event-style-heading">Event styling</h2>
@@ -1128,8 +1134,8 @@
           </output>
         </div>
         <p class="hint">
-          4% matches the previous Omarchy window baseline. Only event fills
-          fade; titles, colour spines, outlines and controls remain visible.
+          Only event fills fade; titles, colour spines, outlines and controls
+          remain visible.
         </p>
 
         <fieldset class="shape" disabled={!settings}>
