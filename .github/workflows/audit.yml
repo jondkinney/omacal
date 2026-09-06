@@ -1,0 +1,35 @@
+# Advisories, on a schedule rather than in the PR gate: a new advisory
+# against a crate nobody touched should not turn an unrelated PR red. A red
+# run here is a fix or an entry in .cargo/audit.toml with the reason written
+# beside it, never a silence.
+#
+# cargo-audit is built on the runner rather than fetched: one more
+# third-party action is a worse trade than two minutes a week.
+
+name: audit
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  cargo:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo install cargo-audit --locked
+      - run: cargo audit
+
+  npm:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      # From the lockfile alone; the registry answers without an install.
+      - run: npm --prefix ui audit --audit-level=high

@@ -27,7 +27,7 @@ jobs:
     # into a fast, named failure instead of an hour of runner smoke.
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -46,19 +46,28 @@ jobs:
       - run: cargo test --workspace --no-fail-fast
 
   ui:
+    # One runner per engine. The two projects share nothing at run time,
+    # and a runner that installs one browser and runs one project finishes
+    # in about half the time of one that does both; the checks before the
+    # suite are cheap enough to repeat. fail-fast is off so a failure in one
+    # engine still shows what the other did.
+    strategy:
+      fail-fast: false
+      matrix:
+        engine: [webkit, chromium]
     runs-on: ubuntu-22.04
     timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: ui/package-lock.json
       - run: npm --prefix ui ci
       - run: npm --prefix ui run check
-      - name: Install Playwright browsers
-        run: cd ui && npx playwright install --with-deps webkit chromium
+      - name: Install Playwright ${{ matrix.engine }}
+        run: cd ui && npx playwright install --with-deps ${{ matrix.engine }}
       # One spec is skipped by name, its debt on record rather than hidden
       # in a green run: "a standalone view gets the same box the app gives
       # it" — its APP_CHROME_PX constant bakes a macOS font metric and reads
@@ -66,7 +75,7 @@ jobs:
       # delete the filter so it gates again. (The create_event specs used to
       # be here too; their cause — a form that grew past the viewport after
       # placement — was found and fixed on 2026-08-14.)
-      - name: UI suite
+      - name: UI suite (${{ matrix.engine }})
         run: |
-          cd ui && npx playwright test --ignore-snapshots \
+          cd ui && npx playwright test --project=${{ matrix.engine }} --ignore-snapshots \
             --grep-invert "a standalone view gets the same box the app gives it"
