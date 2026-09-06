@@ -76,6 +76,20 @@ because `omarchy-theme-set` replaces the theme wholesale — Omarchy 4 swaps in
 a freshly staged directory, pre-4 relinked a symlink — rather than editing
 files beneath it; watching the theme path would never fire.
 
+### Opacity
+
+Omarchy blends every window a little on its own — 98.5% focused, 96%
+unfocused, the `default-opacity` tag in
+`/usr/share/omarchy/default/hypr/windows.lua` — and always did to this one.
+Settings → Appearance starts the calendar background at 4% here to match
+(anywhere else it starts at 0), and the slider runs on top of the
+compositor's share, so 0% is not physically opaque on Omarchy. If you want it
+to be, take the window out of the tag in `~/.config/hypr/hyprland.lua`:
+
+    o.window("^omacal$", { tag = "-default-opacity", opacity = "1 override 1 override" })
+
+Hyprland reloads on save; `hyprctl configerrors` should print nothing.
+
 ## Connecting your real calendar
 
 Identical to the macOS guide's steps 1–4 — see
