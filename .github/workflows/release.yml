@@ -34,9 +34,9 @@ jobs:
           - platform: macos-latest
     runs-on: ${{ matrix.platform }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
 
@@ -101,6 +101,12 @@ jobs:
             echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/apple-api-key.p8" >> "$GITHUB_ENV"
           fi
 
+      # Held at v0 on purpose (2026-09-06). action-v1 names the macOS
+      # `.app.tar.gz` and its `.sig` with the version, and writes GitHub API
+      # URLs into latest.json in place of browser download URLs; the rename
+      # step and the manifest job below both build on v0's names. Moving to
+      # v1 is a change to those two, not a version edit, and Dependabot is
+      # told the same in .github/dependabot.yml.
       - name: Build the bundles
         uses: tauri-apps/tauri-action@v0
         env:
@@ -298,7 +304,7 @@ jobs:
       # them a few days, long enough to hand one to a tester.
       - name: Upload artifacts (smoke test)
         if: ${{ !startsWith(github.ref, 'refs/tags/') }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: omacal-${{ matrix.platform }}
           path: |
