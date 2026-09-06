@@ -146,3 +146,13 @@ rule was tested. It was also false, twice, somewhere else.
 Not by reading output. `grep` over a log has reported "clean" over a real
 failure, `${PIPESTATUS[0]}` is empty under zsh, and a stale output file has
 described a run that never happened.
+
+## 10. A symbol exported only for a spec stays a plain export
+
+Twenty-odd functions under `ui/src/lib` have no caller but a spec —
+`ambiguousLocalTime` in `eventform.ts` is one. The 2026-09-06 review counted
+them and asked whether they belong behind a `__test` namespace or a re-export
+barrel. They do not. The bundle is an application, not a library: an export
+costs nothing at its boundary, and a second surface for specs would be one
+more thing to keep in step with the first. A spec imports the module the way
+the app does, and a reader who finds no caller in `src` looks in `tests` next.

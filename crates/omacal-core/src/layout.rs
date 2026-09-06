@@ -7,13 +7,6 @@ pub struct Interval {
     pub end_ms: i64,
 }
 
-impl Interval {
-    #[allow(dead_code)]
-    fn overlaps(&self, other: &Interval) -> bool {
-        self.start_ms < other.end_ms && other.start_ms < self.end_ms
-    }
-}
-
 /// Computed geometry for one event in a day column.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct Placed {
