@@ -1,6 +1,14 @@
 <!doctype html>
 <html>
-  <head><meta charset="utf-8" /><title>omacal harness</title></head>
+  <head>
+    <meta charset="utf-8" />
+    <!-- The app's Content-Security-Policy from tauri.conf.json, plus Vite's
+         HMR socket. The suite runs under it so a new inline script, remote
+         image or eval fails here and not as a blank window on a user's
+         desktop; csp.spec.ts holds this copy and the config together. -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'; connect-src 'self' ipc: http://ipc.localhost ws://localhost:5199; object-src 'none'; base-uri 'self'" />
+    <title>omacal harness</title>
+  </head>
   <body style="margin:0">
     <div id="app"></div>
     <script type="module" src="/tests/harness/mount.svelte.ts"></script>
