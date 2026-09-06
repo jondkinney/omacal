@@ -1,7 +1,7 @@
 use anyhow::{bail, Context};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use rand::RngCore;
+use rand::Rng;
 use sha2::{Digest, Sha256};
 
 pub const AUTH_ENDPOINT: &str = "https://accounts.google.com/o/oauth2/v2/auth";
