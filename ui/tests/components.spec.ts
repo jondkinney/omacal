@@ -829,6 +829,82 @@ test.describe('EventBlock hover occludes what it covers', () => {
   });
 });
 
+/**
+ * A Big Year pill is the one place a calendar's own colour is the fill, so
+ * its ink is chosen per event from that colour's luminance (`ink.ts`). 1.9.0
+ * replaced that ink, whenever the transparency attribute was present — which
+ * is always — with the calendar colour mixed into the theme text: on a pale
+ * calendar, pale on pale, and a Mac user read the pills by their tooltips.
+ * The property that matters is contrast, so that is what is asserted, from
+ * the computed colours composited the way the screen does it.
+ */
+test.describe('Big Year pill ink', () => {
+  type RGBA = [number, number, number, number];
+  /** A computed colour in either serialisation an engine uses: legacy
+   *  `rgb()`/`rgba()`, or `color(srgb r g b / a)` for a `color-mix()`. */
+  const rgba = (css: string): RGBA => {
+    let m = /^rgba?\(([^)]+)\)$/.exec(css.trim());
+    if (m) {
+      const [r, g, b, a = '1'] = m[1].split(/[\s,/]+/).filter(Boolean);
+      return [Number(r), Number(g), Number(b), Number(a)];
+    }
+    m = /^color\(srgb\s+([^)]+)\)$/.exec(css.trim());
+    if (m) {
+      const [r, g, b, a = '1'] = m[1].split(/[\s/]+/).filter(Boolean);
+      return [Number(r) * 255, Number(g) * 255, Number(b) * 255, Number(a)];
+    }
+    throw new Error(`not a computed colour: ${css}`);
+  };
+  const over = (fg: RGBA, bg: RGBA): RGBA => [
+    fg[0] * fg[3] + bg[0] * (1 - fg[3]),
+    fg[1] * fg[3] + bg[1] * (1 - fg[3]),
+    fg[2] * fg[3] + bg[2] * (1 - fg[3]),
+    1,
+  ];
+  const luminance = ([r, g, b]: RGBA): number => {
+    const lin = (v: number) => { const s = v / 255; return s <= 0.04045 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4; };
+    return 0.2126 * lin(r) + 0.7152 * lin(g) + 0.0722 * lin(b);
+  };
+  const contrast = (a: RGBA, b: RGBA): number => {
+    const [hi, lo] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+    return (hi + 0.05) / (lo + 0.05);
+  };
+
+  for (const [name, transparency, fill] of [
+    ['solid', '0', '100%'],
+    ["Omarchy's default", '4', '96%'],
+    ['half faded', '50', '50%'],
+    ['faded away', '100', '0%'],
+  ] as const) {
+    test(`a pale calendar's pill stays readable on a ${name} fill`, async ({ page }) => {
+      await page.goto(show('BigYearRibbon', 'two-pills'));
+      const pill = page.getByRole('button', { name: 'Team offsite' });  // #2dd4bf, needs dark ink
+      await expect(pill).toBeVisible();
+      await page.evaluate(([t, f]) => {
+        const root = document.documentElement;
+        root.dataset.eventTransparency = t;
+        root.style.setProperty('--event-fill-opacity', f);
+      }, [transparency, fill]);
+      const { ink, pillFill, canvas } = await pill.evaluate((el) => {
+        const cs = getComputedStyle(el);
+        const canvasEl = el.closest('.ribbon') ?? document.body;
+        return {
+          ink: cs.color,
+          pillFill: cs.backgroundColor,
+          canvas: getComputedStyle(canvasEl).backgroundColor,
+        };
+      });
+      // What the eye meets: the fill over the canvas, then the ink over that.
+      let ground = rgba(canvas);
+      if (ground[3] === 0) ground = [24, 24, 24, 1];  // the harness's dark canvas when unset
+      const surface = over(rgba(pillFill), ground);
+      const text = over(rgba(ink), surface);
+      expect(contrast(text, surface), `${name}: ink ${ink} on ${pillFill} over ${canvas}`)
+        .toBeGreaterThanOrEqual(3);
+    });
+  }
+});
+
 test.describe('event appearance reaches every calendar representation', () => {
   const cases = [
     ['timed block', show('EventBlock', 'rsvp-accepted-15'), '.ev', true],
