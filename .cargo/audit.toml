@@ -1,0 +1,14 @@
+# cargo-audit's exceptions. Each names the advisory and the reason, and the
+# reason is a claim about this tree with the command that re-checks it
+# beside it. Remove an entry when the advisory gains a fix; the next audit
+# run says whether the entry was still needed.
+[advisories]
+ignore = [
+    # rsa 0.9's Marvin timing side channel has no fixed release. rsa is in
+    # Cargo.lock only because a lockfile resolves every feature of every
+    # dependency, and sqlx's mysql feature depends on it; no build of this
+    # workspace enables that feature, so no rsa code is compiled here.
+    # Check: `cargo tree --workspace --all-features --target all -i rsa`
+    # prints nothing.
+    "RUSTSEC-2023-0071",
+]

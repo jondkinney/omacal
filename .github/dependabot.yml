@@ -1,0 +1,37 @@
+# Monthly, grouped. Everything semver-compatible in an ecosystem arrives as
+# one PR; a major arrives as a PR of its own, because a major is a migration
+# and should pass or fail alone. Advisories in between are the audit
+# workflow's job, not this file's.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      cargo-compatible:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /ui
+    schedule:
+      interval: monthly
+    groups:
+      npm-compatible:
+        patterns: ["*"]
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]
+    ignore:
+      # Held at v0 on purpose: action-v1 renames the macOS bundle with the
+      # version and rewrites latest.json's URLs, which the release workflow's
+      # rename step and manifest job both build on. See release.yml.
+      - dependency-name: tauri-apps/tauri-action
+        update-types: ["version-update:semver-major"]
