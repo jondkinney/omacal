@@ -50,6 +50,14 @@ precedence pinned by four tests proven against two mutations):**
   secret at release-build time. It is extractable from binaries regardless —
   keeping it out of source dodges scrapers and keeps rotation meaningful.
 
+**The webview runs under a Content Security Policy** (`app.security.csp` in
+`tauri.conf.json`, since 2026-09-06): the bundled scripts and styles, no
+remote loads, and the IPC origins the backend answers on. Inline styles stay
+allowed because Svelte positions events with them. The UI suite runs under
+the same policy (`ui/tests/harness/index.html`, held to the config by
+`ui/tests/csp.spec.ts`), so a change that would need loosening it fails a
+test before it blanks a window.
+
 ## 2. The Google consent screen, per audience
 
 All users of the official binaries share one Cloud project, so its state is
