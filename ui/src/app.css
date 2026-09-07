@@ -166,3 +166,14 @@ textarea,
   -webkit-user-select: text;
   user-select: text;
 }
+
+/* The calendar's own scrollers draw no bar (2026-09-07, by request). The
+   wheel, the trackpad, the keys and the sideways pan all still move them,
+   and the hour ruler and the now line already say where you are — a bar
+   beside the week was a second ruler nobody read, and on macOS a louder one
+   than the content it measured. Only the views carry the class: a settings
+   page or a guest list has no ruler of its own, so their dialogs keep the
+   bar. Two declarations because the engines split: `scrollbar-width` is the
+   standard one, the pseudo-element is what WebKit honoured first. */
+.quiet-scroll { scrollbar-width: none; }
+.quiet-scroll::-webkit-scrollbar { display: none; }

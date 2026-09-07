@@ -5652,3 +5652,31 @@ test.describe('Weather card', () => {
     await expect(c).toContainText('High 92° · Low 77°');
   });
 });
+
+/**
+ * The calendar's scrollers draw no bar (2026-09-07); the dialogs keep
+ * theirs. Hiding the bar must not cost the scrolling itself, so the week
+ * body is moved and read back.
+ */
+test.describe('quiet scrolling', () => {
+  test('the week body and the filmstrip scroll without a bar, and still scroll', async ({ page }) => {
+    await page.goto(show('WeekGrid', 'populated'));
+    const body = page.locator('.body');
+    expect(await body.evaluate((el) => getComputedStyle(el).scrollbarWidth)).toBe('none');
+    const moved = await body.evaluate((el) => {
+      el.scrollTop = 200;
+      return el.scrollTop;
+    });
+    expect(moved).toBe(200);
+
+    await page.goto(show('Filmstrip', 'week'));
+    expect(await page.locator('.strip').evaluate((el) => getComputedStyle(el).scrollbarWidth)).toBe('none');
+  });
+
+  test('a dialog keeps its bar', async ({ page }) => {
+    await page.goto(show('EventPopover', 'standup'));
+    const pop = page.getByRole('dialog').first();
+    await expect(pop).toBeVisible();
+    expect(await pop.evaluate((el) => getComputedStyle(el).scrollbarWidth)).toBe('auto');
+  });
+});

@@ -115,7 +115,7 @@
 </script>
 
 <div class="ribbon" data-year={ribbon.year}>
-  <div class="rows">
+  <div class="rows quiet-scroll">
     {#each ribbon.rows as row, r (r)}
       <div class="rrow">
         <!-- The day cells come first and the pills second, and the order is

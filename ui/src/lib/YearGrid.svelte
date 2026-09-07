@@ -36,7 +36,7 @@
   });
 </script>
 
-<div class="ygrid" data-year={year.year}>
+<div class="ygrid quiet-scroll" data-year={year.year}>
   {#each year.months as month (month.month)}
     <div class="ymonth">
       <div class="mname">{MONTH_NAMES[month.month - 1]}</div>

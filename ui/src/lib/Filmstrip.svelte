@@ -124,7 +124,7 @@
 <!-- **No drag handlers anywhere below, and that is the feature** (spec §6): a
      list has no geometry to drop onto, so they are absent rather than disabled.
      Creating still works through `n` and through the form. -->
-<div class="strip" bind:this={stripEl}>
+<div class="strip quiet-scroll" bind:this={stripEl}>
   {#if days.length === 0}
     <!-- Spec §3: a period with nothing in it says so, plainly, rather than
          rendering as blank. Empty days being skipped is exactly what makes an
