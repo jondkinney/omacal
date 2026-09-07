@@ -1133,6 +1133,15 @@ export function installTauriStub(scenario: string): Harness {
         taskRows = taskRows.map((t) =>
           t.id === args.id ? { ...t, completed: args.completed as boolean } : t);
         return taskRows;
+      case 'update_task':
+        taskRows = taskRows.map((t) => t.id === args.id ? {
+          ...t,
+          summary: args.summary as string,
+          dueMs: (args.dueMs as number | null) ?? null,
+          dueAllDay: args.dueAllDay as boolean,
+          notes: (args.notes as string | null) ?? null,
+        } : t);
+        return taskRows;
       case 'delete_task_cmd':
         taskRows = taskRows.filter((t) => t.id !== args.id);
         return taskRows;

@@ -522,6 +522,141 @@ fn fmt_utc(ts: Timestamp) -> String {
 /// touching nothing else in the resource. Physical-line surgery on purpose:
 /// re-serializing the parse tree would normalize every line and lose
 /// vendor extensions this module does not model.
+/// Rewrites the one VTODO in `raw` whose UID matches, leaving every other
+/// component and every line this does not name exactly as it found them.
+///
+/// Line surgery rather than a re-serialise, for the reason the whole CalDAV
+/// side works this way: a resource carries properties omacal does not model
+/// — categories, RELATED-TO, an organiser's X- lines, another client's
+/// alarms — and a round trip through our own struct would drop every one of
+/// them. `rewrite` is handed the matching VTODO's lines, without its BEGIN
+/// and END, and returns the lines to put back.
+fn patch_todo<F>(raw: &str, uid: &str, rewrite: F) -> Option<String>
+where
+    F: Fn(&[String]) -> Vec<String>,
+{
+    let mut out: Vec<String> = Vec::new();
+    let mut block: Vec<String> = Vec::new();
+    let mut in_todo = false;
+    let mut touched = false;
+    for raw_line in raw.split('\n') {
+        let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
+        if line.eq_ignore_ascii_case("BEGIN:VTODO") {
+            in_todo = true;
+            block.clear();
+            block.push(line.to_string());
+            continue;
+        }
+        if !in_todo {
+            out.push(line.to_string());
+            continue;
+        }
+        if line.eq_ignore_ascii_case("END:VTODO") {
+            block.push(line.to_string());
+            let joined = block.join("\n");
+            let this_uid = parse(&format!("BEGIN:VCALENDAR\n{joined}\nEND:VCALENDAR")).and_then(|r| {
+                r.components("VTODO").next().and_then(|t| t.prop_value("UID").map(|u| u.trim().to_string()))
+            });
+            if this_uid.as_deref() == Some(uid) {
+                touched = true;
+                let inner = &block[1..block.len() - 1];
+                out.push(block[0].clone());
+                out.extend(rewrite(inner));
+                out.push(block[block.len() - 1].clone());
+            } else {
+                out.extend(block.iter().cloned());
+            }
+            in_todo = false;
+            block.clear();
+            continue;
+        }
+        block.push(line.to_string());
+    }
+    // A resource that never held this UID is not something to write back.
+    (touched && !out.is_empty()).then(|| out.join("\r\n"))
+}
+
+/// What an edit sets on a task. Every field is the whole answer rather than
+/// a change to apply: the editor always knows the complete state, and a
+/// "leave this alone" third state would be one more thing for a caller to
+/// get wrong. `None` on an optional field means the property goes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TodoEdit<'a> {
+    pub summary: &'a str,
+    pub due: Option<TodoDue>,
+    pub description: Option<&'a str>,
+}
+
+/// When a task is due: a bare date, or an instant.
+///
+/// The distinction is the user's, not a detail — a task due "Thursday" and
+/// one due "Thursday at 18:00" are different promises, and iCalendar spells
+/// them differently (`VALUE=DATE` against a UTC stamp).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TodoDue {
+    Date(Date),
+    At(Timestamp),
+}
+
+impl TodoDue {
+    fn line(&self) -> String {
+        match self {
+            TodoDue::Date(d) => {
+                format!("DUE;VALUE=DATE:{:04}{:02}{:02}", d.year(), d.month(), d.day())
+            }
+            TodoDue::At(t) => format!("DUE:{}", fmt_utc(*t)),
+        }
+    }
+}
+
+/// Applies an edit to the task with this UID.
+///
+/// SEQUENCE goes up and LAST-MODIFIED/DTSTAMP are restamped, which is what
+/// tells every other client that this version supersedes the one they hold.
+/// A task with no SEQUENCE is treated as 0, per the RFC.
+pub fn patch_todo_fields(raw: &str, uid: &str, edit: &TodoEdit, now: Timestamp) -> Option<String> {
+    patch_todo(raw, uid, |inner| {
+        let sequence = inner
+            .iter()
+            .find(|l| l.to_ascii_uppercase().starts_with("SEQUENCE:"))
+            .and_then(|l| l.split_once(':'))
+            .and_then(|(_, v)| v.trim().parse::<i64>().ok())
+            .unwrap_or(0);
+        let mut kept: Vec<String> = inner
+            .iter()
+            .filter(|l| {
+                let u = l.to_ascii_uppercase();
+                // A continuation line (RFC 5545 folding) belongs to whichever
+                // property it follows; these are all short enough that omacal
+                // never writes one, but a server's copy may have folded the
+                // description we are replacing, so unfolded input is the
+                // contract — `parse` unfolds before anything reaches here.
+                !(u.starts_with("SUMMARY:")
+                    || u.starts_with("SUMMARY;")
+                    || u.starts_with("DUE:")
+                    || u.starts_with("DUE;")
+                    || u.starts_with("DESCRIPTION:")
+                    || u.starts_with("DESCRIPTION;")
+                    || u.starts_with("SEQUENCE:")
+                    || u.starts_with("LAST-MODIFIED:")
+                    || u.starts_with("DTSTAMP:"))
+            })
+            .cloned()
+            .collect();
+        kept.push(format!("SUMMARY:{}", escape(edit.summary)));
+        if let Some(due) = edit.due {
+            kept.push(due.line());
+        }
+        if let Some(text) = edit.description {
+            kept.push(format!("DESCRIPTION:{}", escape(text)));
+        }
+        kept.push(format!("SEQUENCE:{}", sequence + 1));
+        kept.push(format!("DTSTAMP:{}", fmt_utc(now)));
+        kept.push(format!("LAST-MODIFIED:{}", fmt_utc(now)));
+        kept
+    })
+}
+
 pub fn patch_todo_status(raw: &str, uid: &str, completed: bool, now: Timestamp) -> Option<String> {
     let mut out: Vec<String> = Vec::new();
     let mut block: Vec<String> = Vec::new();
@@ -1254,6 +1389,90 @@ mod tests {
 
     /// The whole point of line-surgery: complete a task and the vendor
     /// extension line survives untouched.
+    /// An edit rewrites what it names and nothing else. The categories and
+    /// the alarm here are the point: a resource carries properties omacal
+    /// does not model, and a round trip through our own struct would drop
+    /// every one of them.
+    #[test]
+    fn an_edit_rewrites_its_own_fields_and_leaves_the_rest_alone() {
+        let raw = "BEGIN:VCALENDAR\r\nVERSION:2.0\r\nBEGIN:VTODO\r\nUID:t-9\r\n\
+            SUMMARY:Old title\r\nDUE;VALUE=DATE:20260910\r\nDESCRIPTION:old note\r\n\
+            CATEGORIES:home\r\nSEQUENCE:3\r\nSTATUS:NEEDS-ACTION\r\nPRIORITY:5\r\n\
+            BEGIN:VALARM\r\nACTION:DISPLAY\r\nTRIGGER:-PT30M\r\nEND:VALARM\r\n\
+            END:VTODO\r\nEND:VCALENDAR\r\n";
+        let now: Timestamp = "2026-09-07T09:00:00Z".parse().unwrap();
+        let edit = TodoEdit {
+            summary: "New title",
+            due: Some(TodoDue::At("2026-09-11T12:30:00Z".parse().unwrap())),
+            description: Some("new note"),
+        };
+        let out = patch_todo_fields(raw, "t-9", &edit, now).unwrap();
+
+        assert!(out.contains("SUMMARY:New title"), "{out}");
+        assert!(!out.contains("Old title"));
+        assert!(out.contains("DUE:20260911T123000Z"), "{out}");
+        assert!(!out.contains("VALUE=DATE"), "the old date-only DUE is gone");
+        assert!(out.contains("DESCRIPTION:new note"));
+        // SEQUENCE is what tells other clients this supersedes their copy.
+        assert!(out.contains("SEQUENCE:4"), "{out}");
+        assert!(out.contains("LAST-MODIFIED:20260907T090000Z"));
+        // Untouched, all of it.
+        assert!(out.contains("CATEGORIES:home"));
+        assert!(out.contains("PRIORITY:5"));
+        assert!(out.contains("STATUS:NEEDS-ACTION"));
+        assert!(out.contains("BEGIN:VALARM") && out.contains("TRIGGER:-PT30M"));
+    }
+
+    /// Clearing is a real answer: no due date and no note means the
+    /// properties go, not that they keep their old values.
+    #[test]
+    fn an_edit_can_clear_the_due_date_and_the_note() {
+        let raw = "BEGIN:VCALENDAR\r\nBEGIN:VTODO\r\nUID:t-1\r\nSUMMARY:Thing\r\n\
+            DUE;VALUE=DATE:20260910\r\nDESCRIPTION:note\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
+        let now: Timestamp = "2026-09-07T09:00:00Z".parse().unwrap();
+        let out = patch_todo_fields(
+            raw, "t-1",
+            &TodoEdit { summary: "Thing", due: None, description: None },
+            now,
+        ).unwrap();
+        assert!(!out.contains("DUE"), "{out}");
+        assert!(!out.contains("DESCRIPTION"), "{out}");
+        assert!(out.contains("SEQUENCE:1"), "an absent SEQUENCE counts as 0");
+    }
+
+    /// A date-only due date keeps its shape: "Thursday" and "Thursday at
+    /// 18:00" are different promises and iCalendar spells them differently.
+    #[test]
+    fn a_date_only_due_stays_date_only() {
+        let raw = "BEGIN:VCALENDAR\r\nBEGIN:VTODO\r\nUID:t-1\r\nSUMMARY:Thing\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
+        let now: Timestamp = "2026-09-07T09:00:00Z".parse().unwrap();
+        let out = patch_todo_fields(
+            raw, "t-1",
+            &TodoEdit {
+                summary: "Thing",
+                due: Some(TodoDue::Date(jiff::civil::date(2026, 9, 10))),
+                description: None,
+            },
+            now,
+        ).unwrap();
+        assert!(out.contains("DUE;VALUE=DATE:20260910"), "{out}");
+    }
+
+    /// Only the matching task is touched, and a UID that is not in the
+    /// resource writes nothing at all rather than a copy with no edit.
+    #[test]
+    fn a_second_task_in_the_same_resource_is_untouched_and_a_stranger_is_refused() {
+        let raw = "BEGIN:VCALENDAR\r\nBEGIN:VTODO\r\nUID:a\r\nSUMMARY:First\r\nEND:VTODO\r\n\
+            BEGIN:VTODO\r\nUID:b\r\nSUMMARY:Second\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
+        let now: Timestamp = "2026-09-07T09:00:00Z".parse().unwrap();
+        let edit = TodoEdit { summary: "Renamed", due: None, description: None };
+        let out = patch_todo_fields(raw, "b", &edit, now).unwrap();
+        assert!(out.contains("SUMMARY:First"), "{out}");
+        assert!(out.contains("SUMMARY:Renamed"));
+        assert!(!out.contains("SUMMARY:Second"));
+        assert_eq!(patch_todo_fields(raw, "nobody", &edit, now), None);
+    }
+
     #[test]
     fn completing_a_todo_preserves_what_we_do_not_model() {
         let now = Timestamp::from_millisecond(1_786_352_400_000).unwrap();

@@ -208,6 +208,45 @@ pub async fn mark_task_status(
     Ok(())
 }
 
+/// Writes an edited task's fields back — after (never before) the server
+/// took the same edit, which is the rule every write here follows.
+///
+/// The etag and the resource are written unconditionally rather than
+/// through `COALESCE`, unlike `mark_task_status`: an edit that could not be
+/// stored would leave the row describing the old text with the new etag,
+/// and the next sync would see a matching etag and never correct it.
+#[allow(clippy::too_many_arguments)]
+pub async fn update_task_fields(
+    pool: &SqlitePool,
+    id: i64,
+    summary: &str,
+    description: Option<&str>,
+    due_utc: Option<i64>,
+    due_tz: Option<&str>,
+    due_all_day: bool,
+    etag: Option<&str>,
+    raw_ics: &str,
+    updated_at: i64,
+) -> anyhow::Result<()> {
+    sqlx::query(
+        "UPDATE tasks SET summary = ?2, description = ?3, due_utc = ?4, due_tz = ?5,
+            due_all_day = ?6, etag = ?7, raw_ics = ?8, updated_at = ?9
+         WHERE id = ?1",
+    )
+    .bind(id)
+    .bind(summary)
+    .bind(description)
+    .bind(due_utc)
+    .bind(due_tz)
+    .bind(due_all_day)
+    .bind(etag)
+    .bind(raw_ics)
+    .bind(updated_at)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// Deletes one task row — after (never before) the server delete succeeded.
 pub async fn delete_task(pool: &SqlitePool, id: i64) -> anyhow::Result<u64> {
     Ok(sqlx::query("DELETE FROM tasks WHERE id = ?1")

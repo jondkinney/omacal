@@ -4877,72 +4877,113 @@ test.describe("App: showing today's date", () => {
  * every task until you say otherwise" is the behaviour a filter is most
  * likely to break.
  */
-test.describe('the tasks panel', () => {
+test.describe('the tasks sidebar', () => {
   const openTasks = async (page: import('@playwright/test').Page) => {
+    // The groups are relative to now, so the clock is fixed to the same
+    // Monday the fixtures are dated against.
+    await page.clock.setFixedTime(APP_NOW);
     await page.goto(app());
     await page.getByRole('button', { name: 'Menu' }).click();
     await page.getByRole('button', { name: 'Tasks…' }).click();
-    return page.getByRole('dialog', { name: 'Tasks' });
+    return page.getByRole('complementary', { name: 'Tasks' });
   };
 
-  test('opens on every list, and the picker filters to one', async ({ page }) => {
-    const panel = await openTasks(page);
-    await expect(panel.getByText('Buy milk')).toBeVisible();
-    await expect(panel.getByText('Ship the release')).toBeVisible();
-    await expect(panel.getByText('Old standup note')).toBeVisible();
-    await expect(panel.getByRole('combobox', { name: 'Task list' })).toHaveValue('');
+  /** The sidebar sits beside the week rather than over it: tasks are worked
+   *  next to the calendar, and a panel covering the grid hides the thing the
+   *  dates refer to. */
+  test('opens beside the calendar, leaving the week visible', async ({ page }) => {
+    const side = await openTasks(page);
+    await expect(side).toBeVisible();
+    await expect(page.locator('.ev').first()).toBeVisible();
 
-    await panel.getByRole('combobox', { name: 'Task list' }).selectOption({ label: 'Work' });
-    await expect(panel.getByText('Buy milk')).toHaveCount(0);
-    await expect(panel.getByText('Ship the release')).toBeVisible();
-    // The Done section is filtered by the same rule, not left behind.
-    await expect(panel.getByText('Old standup note')).toBeVisible();
-
-    await panel.getByRole('combobox', { name: 'Task list' }).selectOption({ label: 'Personal' });
-    await expect(panel.getByText('Buy milk')).toBeVisible();
-    await expect(panel.getByText('Ship the release')).toHaveCount(0);
-    await expect(panel.getByText('Old standup note')).toHaveCount(0);
-
-    await panel.getByRole('combobox', { name: 'Task list' }).selectOption({ label: 'All lists' });
-    await expect(panel.getByText('Buy milk')).toBeVisible();
-    await expect(panel.getByText('Ship the release')).toBeVisible();
+    const [sideBox, gridBox] = await Promise.all([
+      side.boundingBox(), page.locator('.workspace .view').boundingBox(),
+    ]);
+    expect(sideBox!.x + sideBox!.width).toBeLessThanOrEqual(gridBox!.x + 1);
   });
 
-  test('a new task lands on the chosen list, and the filter keeps it in view', async ({ page }) => {
-    const panel = await openTasks(page);
-    await panel.getByRole('combobox', { name: 'Task list' }).selectOption({ label: 'Work' });
-    await panel.getByRole('textbox', { name: 'New task title' }).fill('Cut 2.3.0');
-    await panel.getByRole('textbox', { name: 'New task title' }).press('Enter');
+  /** One control, one job: the rows regroup and nothing else changes. */
+  test('the grouping swaps between By when and By list', async ({ page }) => {
+    const side = await openTasks(page);
+    await expect(side.getByRole('button', { name: 'By when' })).toHaveAttribute('aria-pressed', 'true');
+    await expect(side.locator('.hlabel', { hasText: /^Overdue$/ })).toBeVisible();
+    await expect(side.locator('.hlabel', { hasText: /^Today$/ })).toBeVisible();
 
-    await expect(panel.getByText('Cut 2.3.0')).toBeVisible();
-    // It landed on Work, so Personal does not have it.
-    await panel.getByRole('combobox', { name: 'Task list' }).selectOption({ label: 'Personal' });
-    await expect(panel.getByText('Cut 2.3.0')).toHaveCount(0);
+    await side.getByRole('button', { name: 'By list' }).click();
+    await expect(side.getByRole('button', { name: 'By list' })).toHaveAttribute('aria-pressed', 'true');
+    await expect(side.locator('.hlabel', { hasText: /^Overdue$/ })).toHaveCount(0);
+    await expect(side.locator('.hlabel', { hasText: /^Work$/ })).toBeVisible();
+    await expect(side.locator('.hlabel', { hasText: /^Personal$/ })).toBeVisible();
+
+    // Same tasks either way — only the headings changed.
+    for (const t of ['Buy milk', 'Ship the release', 'Answer the issue']) {
+      await expect(side.getByText(t)).toBeVisible();
+    }
+  });
+
+  test('an overdue task is marked, and a done one never is', async ({ page }) => {
+    const side = await openTasks(page);
+    await expect(side.locator('.due.overdue')).toHaveCount(1);
+    await expect(side.locator('.hlabel', { hasText: /^Done$/ })).toBeVisible();
+    await expect(side.getByText('Old standup note')).toBeVisible();
+  });
+
+  /** The feature the panel never had: a task can be given a date, and the
+   *  date can be changed afterwards. */
+  test('a task takes a due date, and the row shows it', async ({ page }) => {
+    const side = await openTasks(page);
+    await side.getByRole('button', { name: 'Buy milk' }).click();
+    await side.getByRole('button', { name: 'Tomorrow' }).click();
+    await side.getByRole('button', { name: 'Save' }).click();
+
+    await expect.poll(() => page.evaluate(() =>
+      (window as any).__harness.calls.filter((c: any) => c.cmd === 'update_task').pop()?.args,
+    )).toMatchObject({ summary: 'Buy milk', dueAllDay: true });
+    await expect(side.locator('.due', { hasText: /^Tomorrow$/ })).toHaveCount(1);
+  });
+
+  test('a due date can be cleared again', async ({ page }) => {
+    const side = await openTasks(page);
+    await side.getByRole('button', { name: 'Ship the release' }).click();
+    await side.getByRole('button', { name: 'Clear' }).click();
+    await side.getByRole('button', { name: 'Save' }).click();
+
+    await expect.poll(() => page.evaluate(() =>
+      (window as any).__harness.calls.filter((c: any) => c.cmd === 'update_task').pop()?.args.dueMs,
+    )).toBe(null);
+  });
+
+  test('the title and the note are editable too', async ({ page }) => {
+    const side = await openTasks(page);
+    await side.getByRole('button', { name: 'Answer the issue' }).click();
+    await side.getByRole('textbox', { name: 'Task title', exact: true }).fill('Answer #66');
+    await side.getByRole('textbox', { name: 'Notes' }).fill('spec first');
+    await side.getByRole('button', { name: 'Save' }).click();
+
+    await expect.poll(() => page.evaluate(() =>
+      (window as any).__harness.calls.filter((c: any) => c.cmd === 'update_task').pop()?.args,
+    )).toMatchObject({ summary: 'Answer #66', notes: 'spec first' });
+    await expect(side.getByText('Answer #66')).toBeVisible();
+  });
+
+  test('a new task lands on the chosen list', async ({ page }) => {
+    const side = await openTasks(page);
+    await side.getByRole('combobox', { name: 'Task list' }).selectOption({ label: 'Work' });
+    await side.getByRole('textbox', { name: 'New task title' }).fill('Cut 2.3.0');
+    await side.getByRole('textbox', { name: 'New task title' }).press('Enter');
+    await expect(side.getByText('Cut 2.3.0')).toBeVisible();
+
+    await expect.poll(() => page.evaluate(() =>
+      (window as any).__harness.calls.filter((c: any) => c.cmd === 'create_task').pop()?.args.calendarId,
+    )).toBe(2);
   });
 
   /** On "All lists" a task still has to land somewhere, and the input says
    *  where rather than leaving it to be discovered afterwards. */
   test('on every list, the input names where a new task will land', async ({ page }) => {
-    const panel = await openTasks(page);
-    const input = panel.getByRole('textbox', { name: 'New task title' });
-    await expect(input).toHaveAttribute('placeholder', 'Add to Personal…');
-
-    await panel.getByRole('combobox', { name: 'Task list' }).selectOption({ label: 'Work' });
-    await expect(input).toHaveAttribute('placeholder', 'Add a task…');
-  });
-
-  /** A list with nothing in it is not the same as having no task lists,
-   *  and the empty panel must not claim the second. */
-  test('an empty list says it is empty, not that there are no lists', async ({ page }) => {
-    const panel = await openTasks(page);
-    await panel.getByRole('combobox', { name: 'Task list' }).selectOption({ label: 'Personal' });
-    await expect(panel.getByText('Buy milk')).toBeVisible();
-
-    // The delete button is hidden until its row is hovered.
-    await panel.locator('li', { hasText: 'Buy milk' }).hover();
-    await panel.getByRole('button', { name: 'Delete Buy milk' }).click();
-    await expect(panel.getByText('Nothing in Personal.')).toBeVisible();
-    await expect(panel.getByText('No tasks yet.')).toHaveCount(0);
+    const side = await openTasks(page);
+    await expect(side.getByRole('textbox', { name: 'New task title' }))
+      .toHaveAttribute('placeholder', 'Add to Personal…');
   });
 });
 

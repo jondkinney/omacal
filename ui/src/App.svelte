@@ -12,6 +12,7 @@
   import { dateKey, freshness, getWeather, weatherByDate, type DayWeather, type WeatherReport } from './lib/weather';
   import WeatherPopover from './lib/WeatherPopover.svelte';
   import ImportPanel from './lib/ImportPanel.svelte';
+  import TasksSidebar from './lib/TasksSidebar.svelte';
   import { isIcs } from './lib/importics';
   import { changedMeetings, declinedGuests, pendingInvites } from './lib/invites';
   import { calendarColor, getCalendars, offerableCalendarId, setCalendarSelected, type Calendar } from './lib/calendars';
@@ -273,6 +274,11 @@
    *  Recomputed with the report and on each hourly poll, which is often
    *  enough for a six-hour threshold. */
   let weatherStale = $state(false);
+
+  /** Whether the tasks list is open beside the calendar. Opened from the
+   *  menu, closed from its own corner; the calendar keeps working either
+   *  way, which is why this is a layout row and not a modal. */
+  let tasksOpen = $state(false);
 
   /** The `.ics` a user dropped on the window, or null for no import in
    *  progress (#67). Tauri delivers the drop as paths rather than as HTML5
@@ -1822,6 +1828,7 @@
     onToday={goToday}
     onQuickAdd={openQuickAdd}
     onSearch={() => (searchOpen = true)}
+    ontasks={() => (tasksOpen = !tasksOpen)}
     onappearancechange={(s) => {
       appearanceChoices += 1;
       applyAppearance(s);
@@ -1860,61 +1867,72 @@
        `WeekGrid` and `MonthGrid` are not mounted at all while it is on, which
        is what makes "drag is absent, not disabled" (spec §6) a property of the
        markup rather than a flag somebody has to keep passing down. -->
-  {#if view === 'month'}
-    {#if month}
+  <!-- The calendar and, when it is open, the tasks list beside it. A row
+       rather than an overlay: tasks are something you work *next to* the
+       week, and a panel over the grid hides the thing the dates refer to. -->
+  <div class="workspace">
+    {#if tasksOpen}
+      <TasksSidebar onclose={() => (tasksOpen = false)} onchange={() => { void refreshAfterWrite(); }} />
+    {/if}
+    <div class="view">
+    {#if view === 'month'}
+      {#if month}
+        {#if listMode}
+          <Filmstrip days={daysFromMonth(month)} {weather} {weatherStale} onweather={openWeather} {revealNowRequest}
+                     keyboardCursor={visibleKeyboardCursor}
+                     onopen={openGridEvent} />
+        {:else}
+          <MonthGrid {month} keyboardCursor={visibleKeyboardCursor} onopen={openGridEvent}
+                     ondaypick={handleDayPick} oncreate={newEventOnDay} />
+        {/if}
+      {/if}
+    {:else if view === 'year'}
+      <!-- No `oncreate` here, and deliberately: every day in Year view is
+           already a button that opens that day (`ondaypick`, spec §5), so there
+           is no empty space in the grid left to mean anything else. The route to
+           a new event from Year is the one the view is for — pick the day, then
+           create in it, or press `n`. -->
+      {#if year}
+        <YearGrid {year} ondaypick={handleDayPick} />
+      {/if}
+    {:else if view === 'bigyear'}
+      {#if bigYear}
+        <!-- `gridSelId`/`gridSelStart` are handed straight down: they already
+             name the occurrence whose popover is open — `isGridSelected` above
+             tests exactly this pair — and the ribbon keeps every segment of it
+             lit while it is. Nothing new is tracked here; the state existed. -->
+        <BigYearRibbon
+          ribbon={bigYear}
+          {calendars}
+          ontoggle={toggleCalendarShown}
+          openId={gridSelId}
+          openStart={gridSelStart}
+          onopen={openGridEvent}
+          oncreate={newEventOnDay}
+        />
+      {/if}
+    {:else if week && visibleWeek}
       {#if listMode}
-        <Filmstrip days={daysFromMonth(month)} {weather} {weatherStale} onweather={openWeather} {revealNowRequest}
+        <Filmstrip days={daysFromWeek(visibleWeek)} {weather} {weatherStale} onweather={openWeather} {revealNowRequest}
                    keyboardCursor={visibleKeyboardCursor}
                    onopen={openGridEvent} />
       {:else}
-        <MonthGrid {month} keyboardCursor={visibleKeyboardCursor} onopen={openGridEvent}
-                   ondaypick={handleDayPick} oncreate={newEventOnDay} />
+        <WeekGrid {week} {visibleStartMs} visibleDays={visibleCount}
+                  onerror={(m) => (error = m)}
+                  {weather} {weatherStale} onweather={openWeather} {formPreview} {createColor} {revealNowRequest} bind:hourPx
+                  keyboardCursor={visibleKeyboardCursor}
+                  onpan={panView}
+                  oncreate={newEventAt} oncreateallday={newAllDayEventOver}
+                  onedit={openEdit} ondelete={askDelete}
+                  oncopy={copyOccurrence}
+          onmove={moveOccurrence}
+          ondraftmove={(span) => formEl?.applySpan(span)}
+          onresponded={refreshAfterWrite} />
       {/if}
     {/if}
-  {:else if view === 'year'}
-    <!-- No `oncreate` here, and deliberately: every day in Year view is
-         already a button that opens that day (`ondaypick`, spec §5), so there
-         is no empty space in the grid left to mean anything else. The route to
-         a new event from Year is the one the view is for — pick the day, then
-         create in it, or press `n`. -->
-    {#if year}
-      <YearGrid {year} ondaypick={handleDayPick} />
-    {/if}
-  {:else if view === 'bigyear'}
-    {#if bigYear}
-      <!-- `gridSelId`/`gridSelStart` are handed straight down: they already
-           name the occurrence whose popover is open — `isGridSelected` above
-           tests exactly this pair — and the ribbon keeps every segment of it
-           lit while it is. Nothing new is tracked here; the state existed. -->
-      <BigYearRibbon
-        ribbon={bigYear}
-        {calendars}
-        ontoggle={toggleCalendarShown}
-        openId={gridSelId}
-        openStart={gridSelStart}
-        onopen={openGridEvent}
-        oncreate={newEventOnDay}
-      />
-    {/if}
-  {:else if week && visibleWeek}
-    {#if listMode}
-      <Filmstrip days={daysFromWeek(visibleWeek)} {weather} {weatherStale} onweather={openWeather} {revealNowRequest}
-                 keyboardCursor={visibleKeyboardCursor}
-                 onopen={openGridEvent} />
-    {:else}
-      <WeekGrid {week} {visibleStartMs} visibleDays={visibleCount}
-                onerror={(m) => (error = m)}
-                {weather} {weatherStale} onweather={openWeather} {formPreview} {createColor} {revealNowRequest} bind:hourPx
-                keyboardCursor={visibleKeyboardCursor}
-                onpan={panView}
-                oncreate={newEventAt} oncreateallday={newAllDayEventOver}
-                onedit={openEdit} ondelete={askDelete}
-                oncopy={copyOccurrence}
-        onmove={moveOccurrence}
-        ondraftmove={(span) => formEl?.applySpan(span)}
-        onresponded={refreshAfterWrite} />
-    {/if}
-  {/if}
+    </div>
+  </div>
+
 </main>
 
 {#if pendingMove}
@@ -2064,6 +2082,13 @@
      drawn to and not just the header's. */
   main { padding: 0 16px 14px; box-sizing: border-box; height: 100%;
          display: flex; flex-direction: column; }
+  /* The sidebar and the view side by side. `min-height: 0` on both so the
+     view keeps sizing itself off the window the way it did when it was
+     `main`'s own child, rather than off its content. */
+  /* Not `.body`: `WeekGrid`'s own scroller already owns that name, and a
+     spec measuring one would find two. */
+  .workspace { flex: 1; display: flex; min-height: 0; gap: 12px; }
+  .view { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   .kbd-status { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
                 overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 </style>
