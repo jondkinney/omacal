@@ -1578,6 +1578,9 @@ export const APP_WEATHER: WeatherReport = {
   place: 'Gurugram',
   source: 'detected',
   current: { bucket: 'clear', temp: 26.4, feels: 29.1, humidity: 73, wind_kmh: 4.3, at: `${utcDate(APP_MON)}T07:15` },
+  // Twenty minutes before the app's frozen now, so the app scenario is a
+  // fresh forecast and its headers are not faded.
+  fetched_at: APP_NOW - 20 * 60_000,
 };
 
 /** The card on its own, for `components.spec.ts`: today's "now" over the
@@ -1596,6 +1599,10 @@ const CARD_REPORT: WeatherReport = {
   place: 'Gurugram',
   source: 'detected',
   current: { bucket: 'clear', temp: 26.4, feels: 29.1, humidity: 73, wind_kmh: 4.3, at: '2026-09-07T07:15' },
+  // Relative to the wall clock rather than a literal: the card reads
+  // `Date.now()`, which these component specs do not freeze, so a fixed
+  // stamp would age into a staleness warning overnight and redden a golden.
+  fetched_at: Date.now() - 20 * 60_000,
 };
 export const WEATHER_CARD_FIXTURES = {
   today: { day: CARD_DAY, report: CARD_REPORT, today: true, anchor: CARD_ANCHOR, onclose: () => {} },
@@ -1603,6 +1610,14 @@ export const WEATHER_CARD_FIXTURES = {
   configured: {
     day: CARD_LATER, report: { ...CARD_REPORT, place: 'Sofia', source: 'configured' as const },
     today: false, anchor: CARD_ANCHOR, onclose: () => {},
+  },
+  /** Three days old: the case the age line exists for — every number on
+   *  this card is the same shape as the fresh one, and only the age says
+   *  not to trust it. */
+  stale: {
+    day: CARD_DAY,
+    report: { ...CARD_REPORT, fetched_at: Date.now() - 3 * 24 * 3600_000 },
+    today: true, anchor: CARD_ANCHOR, onclose: () => {},
   },
   // A cache from before the card: today, but no `current` and no extras.
   bare: {

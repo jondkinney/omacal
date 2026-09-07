@@ -4143,6 +4143,26 @@ test.describe('App: the temperature unit', () => {
     await expect(card).toContainText('3 mph');
   });
 
+  /** The header's own signal: a stale forecast fades its sky, so somebody
+   *  notices without opening anything — and the label says why, for a
+   *  reader who never sees the fade. The app scenario is fresh, so this
+   *  seeds an old fetch and reloads. */
+  test('a stale forecast fades the sky in the header, and says why', async ({ page }) => {
+    await page.goto(app('weather'));
+    const sky = page.getByRole('button', { name: /^Weather for/ }).first();
+    await expect(sky).toHaveCSS('opacity', '1');
+
+    await page.evaluate(() => {
+      const s = JSON.parse(sessionStorage.getItem('omacal-stub-weather') ?? '{}');
+      sessionStorage.setItem('omacal-stub-weather', JSON.stringify({ ...s, staleFetch: true }));
+    });
+    await page.reload();
+
+    const stale = page.getByRole('button', { name: /^Weather for/ }).first();
+    await expect(stale).toHaveAttribute('aria-label', /possibly out of date$/);
+    await expect(stale).toHaveCSS('opacity', '0.45');
+  });
+
   /** The filmstrip's heading opens the same card. */
   test('the filmstrip heading opens the card too', async ({ page }) => {
     await page.goto(app('weather'));

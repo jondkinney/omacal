@@ -126,6 +126,52 @@ pub struct WeatherReport {
     /// treats as detected — the honest default.
     #[serde(default)]
     pub source: Option<LocationSource>,
+    /// When this forecast was fetched, ms epoch — **stamped on read**, from
+    /// the row the cache writer has always kept, so a cache written before
+    /// this field existed still reports its true age. `None` only where
+    /// there is no cache at all.
+    ///
+    /// It exists because a stale forecast is otherwise indistinguishable
+    /// from a fresh one: `refresh` keeps the last good answer when the
+    /// endpoint cannot be reached, deliberately, and a laptop that spent
+    /// two days asleep comes back to a two-day-old sky. The surfaces say
+    /// the age, so a wrong number gets reported rather than believed.
+    #[serde(default)]
+    pub fetched_at: Option<i64>,
+}
+
+/// Past this, a forecast is old enough to say so loudly: two missed
+/// refresh cycles, so an ordinary late tick never cries wolf.
+pub const STALE_AFTER_MS: i64 = 2 * REFRESH_EVERY.as_millis() as i64;
+
+/// The age of a forecast in the words every surface uses, and whether it is
+/// stale enough to warn about.
+///
+/// A cache with no timestamp counts as stale, and so does one stamped in
+/// the future: not knowing when a reading was taken is not a reason to
+/// present it as current.
+pub(crate) fn freshness(fetched_at: Option<i64>, now_ms: i64) -> (String, bool) {
+    let Some(at) = fetched_at else {
+        return ("Updated at an unknown time".into(), true);
+    };
+    if at > now_ms {
+        return ("Updated at an unknown time".into(), true);
+    }
+    let age = now_ms - at;
+    let stale = age >= STALE_AFTER_MS;
+    let minutes = age / 60_000;
+    let label = if minutes < 2 {
+        "Updated just now".to_string()
+    } else if minutes < 60 {
+        format!("Updated {minutes} minutes ago")
+    } else if minutes < 24 * 60 {
+        let h = minutes / 60;
+        format!("Updated {h} hour{} ago", if h == 1 { "" } else { "s" })
+    } else {
+        let d = minutes / (24 * 60);
+        format!("Updated {d} day{} ago", if d == 1 { "" } else { "s" })
+    };
+    (label, stale)
 }
 
 /// Same gate, same shape, same reason as [`crate::update::may_check`]: demo
@@ -259,7 +305,10 @@ pub(crate) fn parse_open_meteo(
             at: c.get("time")?.as_str()?.to_string(),
         })
     });
-    Some(WeatherReport { days, place, current, source: Some(source) })
+    // `fetched_at` is stamped by `cached_report` on the way out, from the
+    // row the writer keeps, rather than here: that way it is right for a
+    // cache written before the field existed too.
+    Some(WeatherReport { days, place, current, source: Some(source), fetched_at: None })
 }
 
 /// The `HH:MM` of an Open-Meteo local timestamp (`2026-09-07T06:05`), or
@@ -316,6 +365,9 @@ pub(crate) fn synthetic_report(today: jiff::civil::Date) -> WeatherReport {
             at: format!("{today}T09:00"),
         }),
         source: Some(LocationSource::Demo),
+        // Demo fetches nothing, so its sky is as fresh as the moment it is
+        // asked for — a demo screenshot must not carry a staleness warning.
+        fetched_at: Some(jiff::Timestamp::now().as_millisecond()),
     }
 }
 
@@ -516,9 +568,13 @@ pub(crate) async fn get_weather(
 /// window both read, so `omacal weather` can never show a different sky
 /// from the header.
 pub(crate) async fn cached_report(pool: &SqlitePool) -> Option<WeatherReport> {
-    crate::settings::read(pool, CACHE_KEY)
+    let mut report: WeatherReport = crate::settings::read(pool, CACHE_KEY)
         .await
-        .and_then(|json| serde_json::from_str(&json).ok())
+        .and_then(|json| serde_json::from_str(&json).ok())?;
+    report.fetched_at = crate::settings::read(pool, CACHE_AT_KEY)
+        .await
+        .and_then(|v| v.parse().ok());
+    Some(report)
 }
 
 #[cfg(test)]
@@ -582,6 +638,23 @@ mod tests {
         assert_eq!(r.current, None);
     }
 
+    /// The age a surface prints, and the line past which it warns.
+    #[test]
+    fn a_forecasts_age_is_said_in_words_and_warns_past_two_missed_cycles() {
+        let now = 1_700_000_000_000_i64;
+        let ago = |ms: i64| freshness(Some(now - ms), now);
+        assert_eq!(ago(30_000), ("Updated just now".into(), false));
+        assert_eq!(ago(20 * 60_000), ("Updated 20 minutes ago".into(), false));
+        assert_eq!(ago(60 * 60_000), ("Updated 1 hour ago".into(), false));
+        assert_eq!(ago(5 * 3_600_000), ("Updated 5 hours ago".into(), false));
+        assert!(!ago(STALE_AFTER_MS - 60_000).1, "one late tick is not a warning");
+        assert!(ago(STALE_AFTER_MS).1, "two missed cycles is");
+        assert_eq!(ago(26 * 3_600_000), ("Updated 1 day ago".into(), true));
+        assert_eq!(ago(3 * 24 * 3_600_000), ("Updated 3 days ago".into(), true));
+        assert_eq!(freshness(None, now), ("Updated at an unknown time".into(), true));
+        assert!(freshness(Some(now + 60_000), now).1, "a future stamp is not fresh");
+    }
+
     /// The whole answer the card needs, in Open-Meteo's own shapes: the
     /// daily extras and the `current` block, temperatures unrounded, the
     /// sun times cut to the clock, the wind in the km/h it arrives in.
@@ -621,7 +694,27 @@ mod tests {
         assert_eq!(r.days[0].rain_chance, None);
         assert_eq!(r.current, None);
         assert_eq!(r.source, None);
+        assert_eq!(r.fetched_at, None);
         assert_eq!(r.place.as_deref(), Some("Gurgaon"));
+    }
+
+    /// The age comes off the row the cache writer has always kept, stamped
+    /// on the way out — so a cache written before the field existed still
+    /// reports its true age rather than "unknown". That is the whole reason
+    /// it is read here rather than stored in the JSON.
+    #[tokio::test]
+    async fn a_cached_forecast_is_stamped_with_when_it_was_fetched() {
+        let pool = omacal_store::connect_memory().await.unwrap();
+        let json = r#"{"days":[{"date":"2026-09-06","bucket":"clear","tmax":32.0,"tmin":25.0}],"place":"Gurgaon"}"#;
+        crate::settings::write(&pool, CACHE_KEY, json).await.unwrap();
+        crate::settings::write(&pool, CACHE_AT_KEY, "1700000000000").await.unwrap();
+
+        let r = cached_report(&pool).await.unwrap();
+        assert_eq!(r.fetched_at, Some(1_700_000_000_000));
+        assert_eq!(freshness(r.fetched_at, 1_700_000_000_000 + 25 * 3_600_000).0, "Updated 1 day ago");
+
+        let empty = omacal_store::connect_memory().await.unwrap();
+        assert!(cached_report(&empty).await.is_none(), "no cache is no report, not an ageless one");
     }
 
     /// wttr.in's location line is what the bar prints; the first part is

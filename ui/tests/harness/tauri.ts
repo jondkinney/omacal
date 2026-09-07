@@ -887,8 +887,15 @@ export function installTauriStub(scenario: string): Harness {
       // the map in as a prop — except the `weather` scenario, which needs a
       // real forecast for the day header's own live-repaint spec to have
       // something to convert.
-      case 'get_weather':
-        return scenario === 'weather' ? APP_WEATHER : { days: [], place: null };
+      case 'get_weather': {
+        if (scenario !== 'weather') return { days: [], place: null };
+        // A spec asking for an old forecast gets the same report with its
+        // fetch stamp pushed back — the one field staleness turns on.
+        const stale = JSON.parse(sessionStorage.getItem('omacal-stub-weather') ?? '{}').staleFetch;
+        return stale
+          ? { ...APP_WEATHER, fetched_at: (APP_WEATHER.fetched_at ?? Date.now()) - 3 * 24 * 3600_000 }
+          : APP_WEATHER;
+      }
       case 'set_weather_enabled':
         settings = saveSettings({ ...settings, weatherEnabled: args.on as boolean });
         return { ...settings };

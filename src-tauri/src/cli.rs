@@ -643,7 +643,11 @@ fn print_rows_human(rows: &[Row]) {
 /// decided, because that place may not be where they are; then now; then
 /// the days. Units follow the app's setting, rounded here once, the way
 /// `temperature.ts` does for the header.
-pub(crate) fn weather_lines(report: &crate::weather::WeatherReport, fahrenheit: bool) -> Vec<String> {
+pub(crate) fn weather_lines(
+    report: &crate::weather::WeatherReport,
+    fahrenheit: bool,
+    now_ms: i64,
+) -> Vec<String> {
     use crate::weather::LocationSource;
     let temp = |c: f64| -> String {
         let v = if fahrenheit { c * 9.0 / 5.0 + 32.0 } else { c };
@@ -662,6 +666,10 @@ pub(crate) fn weather_lines(report: &crate::weather::WeatherReport, fahrenheit: 
         Some(LocationSource::Detected) | None => "from your connection's location, which may be a city off",
     };
     out.push(format!("{place} ({how})"));
+    // Second, before any number: an agent reading a two-day-old forecast
+    // must be able to say so rather than pass it on as today's.
+    let (age, stale) = crate::weather::freshness(report.fetched_at, now_ms);
+    out.push(if stale { format!("{age} — this may be out of date") } else { age });
     if let Some(now) = &report.current {
         let at = now.at.split_once('T').map_or(now.at.as_str(), |(_, t)| t);
         out.push(format!(
@@ -850,7 +858,8 @@ pub(crate) fn run(inv: Invocation) -> i32 {
                             .await
                             .as_deref()
                             == Some("fahrenheit");
-                        for line in weather_lines(&report, fahrenheit) {
+                        let now_ms = jiff::Timestamp::now().as_millisecond();
+                        for line in weather_lines(&report, fahrenheit, now_ms) {
                             println!("{line}");
                         }
                     }
@@ -1277,30 +1286,39 @@ mod tests {
                 at: "2026-09-07T07:15".into(),
             }),
             source: Some(LocationSource::Detected),
+            fetched_at: Some(1_700_000_000_000),
         };
-        let c = weather_lines(&report, false);
+        let now = 1_700_000_000_000 + 20 * 60_000;
+        let c = weather_lines(&report, false, now);
         assert_eq!(c[0], "Gurugram (from your connection's location, which may be a city off)");
-        assert_eq!(c[1], "Now 26° clear, feels 29°, wind 4 km/h, humidity 73% (as of 07:15)");
-        assert_eq!(c[2], "2026-09-07  clear    33° / 25°  rain 10%  wind 12 km/h  sun 06:05–18:30");
+        assert_eq!(c[1], "Updated 20 minutes ago");
+        assert_eq!(c[2], "Now 26° clear, feels 29°, wind 4 km/h, humidity 73% (as of 07:15)");
+        assert_eq!(c[3], "2026-09-07  clear    33° / 25°  rain 10%  wind 12 km/h  sun 06:05–18:30");
 
-        let f = weather_lines(&report, true);
-        assert_eq!(f[1], "Now 80° clear, feels 84°, wind 3 mph, humidity 73% (as of 07:15)");
-        assert!(f[2].starts_with("2026-09-07  clear    92° / 77°"), "{}", f[2]);
+        let f = weather_lines(&report, true, now);
+        assert_eq!(f[2], "Now 80° clear, feels 84°, wind 3 mph, humidity 73% (as of 07:15)");
+        assert!(f[3].starts_with("2026-09-07  clear    92° / 77°"), "{}", f[3]);
+
+        // An old forecast says so on its own line, second, where a reader
+        // and an agent both meet it before any number.
+        let old_now = 1_700_000_000_000 + 3 * 24 * 3_600_000;
+        assert_eq!(weather_lines(&report, false, old_now)[1], "Updated 3 days ago — this may be out of date");
 
         let configured = WeatherReport { source: Some(LocationSource::Configured), ..report.clone() };
-        assert_eq!(weather_lines(&configured, false)[0], "Gurugram (set in the bar's weather panel)");
+        assert_eq!(weather_lines(&configured, false, now)[0], "Gurugram (set in the bar's weather panel)");
 
         let old = WeatherReport {
             days: vec![DayWeather {
                 date: "2026-09-06".into(), bucket: "rain".into(), tmax: 30.0, tmin: 24.0,
                 rain_chance: None, wind_max_kmh: None, sunrise: None, sunset: None,
             }],
-            place: None, current: None, source: None,
+            place: None, current: None, source: None, fetched_at: None,
         };
-        let o = weather_lines(&old, false);
+        let o = weather_lines(&old, false, now);
         assert_eq!(o[0], "Unknown place (from your connection's location, which may be a city off)");
-        assert_eq!(o[1], "2026-09-06  rain     30° / 24°");
-        assert_eq!(o.len(), 2, "no current line without a current block");
+        assert_eq!(o[1], "Updated at an unknown time — this may be out of date");
+        assert_eq!(o[2], "2026-09-06  rain     30° / 24°");
+        assert_eq!(o.len(), 3, "no current line without a current block");
     }
 
     /// The embedded logo is the generator's output: truecolor half-blocks,
