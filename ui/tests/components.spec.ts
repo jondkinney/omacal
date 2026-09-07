@@ -5642,6 +5642,41 @@ test.describe('Weather card', () => {
     await expect(c).not.toContainText('Sunrise');
   });
 
+  /**
+   * The age line, which is the whole answer to "would anyone notice we are
+   * showing yesterday's sky". It is on every card, so it means something
+   * when it turns: a forecast the app could not refresh is kept and shown
+   * rather than blanked, and without an age a two-day-old reading looks
+   * exactly like a fresh one. The reading's own "as of 07:15" cannot carry
+   * this — a stale cache repeats it unchanged.
+   */
+  test('a fresh card says how old it is, quietly', async ({ page }) => {
+    await page.goto(show('WeatherPopover', 'today'));
+    const c = card(page, 'Monday, September 7');
+    await expect(c.locator('.age')).toHaveText('Updated 20 minutes ago');
+    await expect(c.locator('.age.stale')).toHaveCount(0);
+  });
+
+  test('a stale card says so, loudly, and every number still shows', async ({ page }) => {
+    await page.goto(show('WeatherPopover', 'stale'));
+    const c = card(page, 'Monday, September 7');
+    await expect(c.locator('.age')).toHaveText('Updated 3 days ago · may be out of date');
+    await expect(c.locator('.age.stale')).toHaveCount(1);
+    // The numbers are still the best there are; the card does not blank them.
+    await expect(c).toContainText('26°C');
+    await expect(c).toContainText('High 33° · Low 25°');
+    await expect(c).toHaveScreenshot('weather-card-stale.png');
+  });
+
+  /** A cache with no timestamp is stale by the same rule: not knowing when
+   *  a reading was taken is not a reason to call it current. */
+  test('a card that cannot date its forecast says that too', async ({ page }) => {
+    await page.goto(show('WeatherPopover', 'bare'));
+    await expect(card(page, 'Monday, September 7').locator('.age')).toHaveText(
+      'Updated at an unknown time · may be out of date',
+    );
+  });
+
   test('Fahrenheit takes mph with it', async ({ page }) => {
     await page.goto(show('WeatherPopover', 'today'));
     await page.evaluate(() => (window as any).__setTemperatureUnit('fahrenheit'));

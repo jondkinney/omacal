@@ -26,7 +26,7 @@
   import { cursorNamesEvent, type KeyboardCursor } from './keyboardnav';
   import { dateOf } from './eventform';
 
-  let { week, weather = null, onweather = null, formPreview = null, createColor = null, revealNowRequest = 0, keyboardCursor = null, onpan = null, hourPx = $bindable(HOUR_PX_DEFAULT), visibleStartMs = null, visibleDays = null, onerror = null, oncreate, oncreateallday, onedit, ondelete, oncopy, onmove, ondraftmove = null, onresponded }: {
+  let { week, weather = null, weatherStale = false, onweather = null, formPreview = null, createColor = null, revealNowRequest = 0, keyboardCursor = null, onpan = null, hourPx = $bindable(HOUR_PX_DEFAULT), visibleStartMs = null, visibleDays = null, onerror = null, oncreate, oncreateallday, onedit, ondelete, oncopy, onmove, ondraftmove = null, onresponded }: {
     /** Padded since 2026-09-03: `visibleDays` from `visibleStartMs` are what
      *  is on screen, and the days either side are the track's to slide into
      *  under a finger (`weekwindow.ts`). Both null — a standalone mount, a
@@ -48,6 +48,10 @@
      *  yet fetched, or failed all look the same here: a header with no sky,
      *  which is what this header looked like for its whole life until now. */
     weather?: Map<string, DayWeather> | null;
+    /** Whether the forecast behind `weather` is old enough to warn about
+     *  (`weather.ts`'s `freshness`). The glyph fades and says so, so a
+     *  stale sky is noticed without opening a card. */
+    weatherStale?: boolean;
     /** The sky in a day header was clicked: that day's start and the
      *  glyph's own rect, for App to open the weather card over. Optional —
      *  a grid without it keeps the glyph as the label it always was. */
@@ -1344,8 +1348,8 @@
         <!-- A button since the card (2026-09-07): the same label it was,
              now the way into the forecast for that day and, first of all,
              for which place. -->
-        <button type="button" class="wx"
-                aria-label="Weather for {dayName(d.start_ms)} {new Date(d.start_ms).getDate()}: {wx.bucket}, {formatTemp(wx.tmax, temperatureUnit())}°"
+        <button type="button" class="wx" class:stale={weatherStale}
+                aria-label="Weather for {dayName(d.start_ms)} {new Date(d.start_ms).getDate()}: {wx.bucket}, {formatTemp(wx.tmax, temperatureUnit())}°{weatherStale ? ', possibly out of date' : ''}"
                 onclick={(e) => {
                   e.stopPropagation();
                   onweather?.(d.start_ms, (e.currentTarget as HTMLElement).getBoundingClientRect());
@@ -1603,6 +1607,9 @@
         appearance: none; -webkit-appearance: none; background: none; border: 0;
         padding: 0; margin: 0; font-family: inherit; cursor: pointer; }
   .wx:hover, .wx:focus-visible { color: var(--text); }
+  /* Faded, not hidden: the number is still the best one there is, and the
+     fade is what makes somebody click and find out it is two days old. */
+  .wx.stale { opacity: .45; }
   @container (max-width: 104px) { .wx { display: none; } }
   .head b { font-size: 15px; color: var(--text);
             font-weight: 500; letter-spacing: -.02em; }

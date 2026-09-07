@@ -6,7 +6,7 @@
   import { temperatureUnit } from './tempunit.svelte';
   import { formatTemp, formatWind } from './temperature';
   import WeatherGlyph from './WeatherGlyph.svelte';
-  import { sourceLine, type DayWeather, type WeatherReport } from './weather';
+  import { freshness, sourceLine, type DayWeather, type WeatherReport } from './weather';
 
   /** The card behind a day header's sky. Its first rule is the place: the
    *  forecast is for `report.place`, decided the way `report.source` says,
@@ -31,6 +31,14 @@
     }),
   );
   const asOf = $derived(now?.at.split('T')[1]?.slice(0, 5) ?? null);
+  /** How old the whole report is — not the reading's own clock, which says
+   *  nothing about whether the app has been able to reach the forecast.
+   *  Read once at mount: a card lives for one click. */
+  const age = $derived(freshness(report.fetched_at, Date.now()));
+  // One string rather than markup: a conditional inside the paragraph loses
+  // the space in front of it. The middle dot is the card's own separator,
+  // the one under the temperatures.
+  const ageLine = $derived(age.stale ? `${age.label} · may be out of date` : age.label);
   const heading = $derived(now ? `Now${asOf ? `, as of ${asOf}` : ''}` : today ? 'Today' : dayLabel);
 
   // Placed once on mount, like `EventPopover`: App mounts a fresh card per
@@ -87,6 +95,12 @@
   {#if day.sunrise && day.sunset}
     <p class="sun">Sunrise {day.sunrise} · Sunset {day.sunset}</p>
   {/if}
+  <!-- Always, not only when old: a card that says its age every time is one
+       a reader learns to trust, and the warning below then means something.
+       This is the app's own last contact with the forecast — the "as of"
+       line above is the reading's clock, which a stale cache repeats
+       unchanged and which would otherwise pass for freshness. -->
+  <p class="age" class:stale={age.stale}>{ageLine}</p>
 </div>
 
 <style>
@@ -111,4 +125,9 @@
   dd { margin: 0; font-size: 14px; font-weight: 500; font-variant-numeric: tabular-nums; }
   .range, .sun { margin: 8px 0 0; color: var(--muted); font-size: 11px;
                  font-variant-numeric: tabular-nums; }
+  .age { margin: 8px 0 0; padding-top: 8px; border-top: 1px solid var(--hairline);
+         color: var(--muted); font-size: 10.5px; }
+  /* Loud on purpose: this is the line that has to make somebody say "that's
+     wrong" rather than believe a two-day-old number. */
+  .age.stale { color: var(--error); font-weight: 600; }
 </style>

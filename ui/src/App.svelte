@@ -9,7 +9,7 @@
     type WeekPayload, type MonthPayload, type YearPayload, type BigYearPayload, type UiEvent,
   } from './lib/api';
   import { getStatus, installUpdate, openLatestRelease, restartApp, signIn, syncNow, takeOpenDate, type AppStatus } from './lib/status';
-  import { dateKey, getWeather, weatherByDate, type DayWeather, type WeatherReport } from './lib/weather';
+  import { dateKey, freshness, getWeather, weatherByDate, type DayWeather, type WeatherReport } from './lib/weather';
   import WeatherPopover from './lib/WeatherPopover.svelte';
   import { changedMeetings, declinedGuests, pendingInvites } from './lib/invites';
   import { calendarColor, getCalendars, offerableCalendarId, setCalendarSelected, type Calendar } from './lib/calendars';
@@ -261,11 +261,16 @@
       const report = await getWeather();
       weatherReport = report;
       weather = weatherByDate(report);
+      weatherStale = report.days.length > 0 && freshness(report.fetched_at, Date.now()).stale;
     } catch { /* keep the last sky */ }
   }
   /** The day whose sky was clicked and the glyph to anchor the card to,
    *  or null for no card. */
   let weatherCard = $state<{ dayStartMs: number; anchor: import('./lib/position').Rect } | null>(null);
+  /** Whether the headers should show their sky as possibly out of date.
+   *  Recomputed with the report and on each hourly poll, which is often
+   *  enough for a six-hour threshold. */
+  let weatherStale = $state(false);
   const openWeather = (dayStartMs: number, anchor: import('./lib/position').Rect) => {
     weatherCard = { dayStartMs, anchor };
   };
@@ -1839,7 +1844,7 @@
   {#if view === 'month'}
     {#if month}
       {#if listMode}
-        <Filmstrip days={daysFromMonth(month)} {weather} onweather={openWeather} {revealNowRequest}
+        <Filmstrip days={daysFromMonth(month)} {weather} {weatherStale} onweather={openWeather} {revealNowRequest}
                    keyboardCursor={visibleKeyboardCursor}
                    onopen={openGridEvent} />
       {:else}
@@ -1874,13 +1879,13 @@
     {/if}
   {:else if week && visibleWeek}
     {#if listMode}
-      <Filmstrip days={daysFromWeek(visibleWeek)} {weather} onweather={openWeather} {revealNowRequest}
+      <Filmstrip days={daysFromWeek(visibleWeek)} {weather} {weatherStale} onweather={openWeather} {revealNowRequest}
                  keyboardCursor={visibleKeyboardCursor}
                  onopen={openGridEvent} />
     {:else}
       <WeekGrid {week} {visibleStartMs} visibleDays={visibleCount}
                 onerror={(m) => (error = m)}
-                {weather} onweather={openWeather} {formPreview} {createColor} {revealNowRequest} bind:hourPx
+                {weather} {weatherStale} onweather={openWeather} {formPreview} {createColor} {revealNowRequest} bind:hourPx
                 keyboardCursor={visibleKeyboardCursor}
                 onpan={panView}
                 oncreate={newEventAt} oncreateallday={newAllDayEventOver}

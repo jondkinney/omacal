@@ -131,6 +131,10 @@ When showing the calendar to the user (not piping into a script):
   calendars --json` shows what is hidden.
 - Times are in the user's display zone; trust `start`/`end` for prose and
   `startMs`/`endMs` for arithmetic.
+- Weather can be stale: `fetched_at` is when the app last reached the
+  forecast, and it keeps the last good answer when offline. Check it before
+  answering — past about six hours say so ("the forecast is from yesterday
+  morning"), and never present an old reading as current.
 - Weather is for `place`, which may not be where the user is: `source`
   `"detected"` (or absent) means it was guessed from the connection's IP
   and can be a city off; `"configured"` means they set it in the Omarchy

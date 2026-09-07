@@ -45,6 +45,44 @@ export type WeatherReport = {
   /** Absent in caches from before the card, which read as detected — the
    *  honest default for a place nobody chose. */
   source?: LocationSource | null;
+  /** When the backend last fetched this, ms epoch. It is stamped on read
+   *  from a row the cache writer has always kept, so it is right even for
+   *  a cache written before the field existed; `null` only where there is
+   *  no cache at all. */
+  fetched_at?: number | null;
+};
+
+/** Past this a forecast is old enough to warn about: two missed refresh
+ *  cycles (the backend fetches every three hours), so one late tick never
+ *  cries wolf. Mirrors `weather::STALE_AFTER_MS`. */
+export const STALE_AFTER_MS = 6 * 3600_000;
+
+/** The age of a forecast in words, and whether to warn about it.
+ *
+ *  The warning is the point of the whole field: a forecast the app could
+ *  not refresh is kept and shown rather than blanked — deliberately, since
+ *  a sky an hour out of date beats no sky — and without an age on it a
+ *  two-day-old reading looks exactly like a fresh one. No timestamp, or one
+ *  from the future, counts as stale: not knowing when a reading was taken
+ *  is not a reason to present it as current. */
+export const freshness = (
+  fetchedAt: number | null | undefined,
+  nowMs: number,
+): { label: string; stale: boolean } => {
+  if (fetchedAt == null || fetchedAt > nowMs) {
+    return { label: 'Updated at an unknown time', stale: true };
+  }
+  const age = nowMs - fetchedAt;
+  const stale = age >= STALE_AFTER_MS;
+  const minutes = Math.floor(age / 60_000);
+  if (minutes < 2) return { label: 'Updated just now', stale };
+  if (minutes < 60) return { label: `Updated ${minutes} minutes ago`, stale };
+  if (minutes < 24 * 60) {
+    const h = Math.floor(minutes / 60);
+    return { label: `Updated ${h} hour${h === 1 ? '' : 's'} ago`, stale };
+  }
+  const d = Math.floor(minutes / (24 * 60));
+  return { label: `Updated ${d} day${d === 1 ? '' : 's'} ago`, stale };
 };
 
 /** The line under the place, in the card's own words. */
