@@ -2001,8 +2001,40 @@ export const TASKS = [
     completed: true, calendar: 'Work', color: '#2dd4bf', priority: 0, canWrite: true },
 ];
 
+/** What `plan_ics_import` answers, by the shape a spec asks for: a file
+ *  with something to import and something refused, and one with nothing.
+ *  Two guest entries, because the panel's whole job is saying that out
+ *  loud before anything is written. */
+export const IMPORT_PLANS: Record<string, any[]> = {
+  mixed: [
+    { kind: 'import', summary: 'Lunch', start_ms: 1788910200000, all_day: false,
+      repeat: null, dropped_guests: 2 },
+    { kind: 'import', summary: 'Standup', start_ms: 1788910200000, all_day: false,
+      repeat: 'weekdays', dropped_guests: 0 },
+    { kind: 'skip', summary: 'Third Thursday',
+      reason: 'repeats in a way this version cannot store; import it from the app that wrote it' },
+  ],
+  nothing: [],
+};
+
+export const IMPORT_PANEL_FIXTURES = {
+  mixed: {
+    path: '/home/u/Downloads/work.ics', calendars: APP_WRITE_CALENDARS,
+    onclose: () => {}, onimported: () => {},
+  },
+  nothing: {
+    path: '/home/u/Downloads/nothing.ics', calendars: APP_WRITE_CALENDARS,
+    onclose: () => {}, onimported: () => {},
+  },
+  unreadable: {
+    path: '/home/u/Downloads/bad.ics', calendars: APP_WRITE_CALENDARS,
+    onclose: () => {}, onimported: () => {},
+  },
+};
+
 export const FIXTURES: Record<string, Record<string, any>> = {
   WeatherPopover: WEATHER_CARD_FIXTURES,
+  ImportPanel: IMPORT_PANEL_FIXTURES,
   WeekGrid: {
     empty: { week: emptyWeek() },
     /* A padded payload (2026-09-03): a week either side of the window, with

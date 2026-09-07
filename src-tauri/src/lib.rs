@@ -17,6 +17,7 @@ mod fixtures;
 #[cfg(test)]
 mod golden;
 mod icu_tz;
+mod import;
 mod invites;
 mod ipc;
 mod notify;
@@ -1592,6 +1593,8 @@ pub fn run() {
             update::install_update,
             commands::open_conference,
             weather::get_weather,
+            import::plan_ics_import,
+            import::run_ics_import,
             calendars::get_calendars,
             calendars::set_calendar_selected,
             calendars::set_calendar_sync,

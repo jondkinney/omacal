@@ -5715,3 +5715,47 @@ test.describe('quiet scrolling', () => {
     expect(await pop.evaluate((el) => getComputedStyle(el).scrollbarWidth)).toBe('auto');
   });
 });
+
+/**
+ * Importing a dropped `.ics` (#67). The panel is a preview first and an
+ * action second, and these pin that order: what will happen, what will not,
+ * and what is being left behind, all before there is anything to confirm.
+ */
+test.describe('the ICS import panel', () => {
+  const panel = (page: import('@playwright/test').Page, file: string) =>
+    page.getByRole('dialog', { name: `Import ${file}` });
+
+  test('says what it will import, what it will skip and why, and what it drops', async ({ page }) => {
+    await page.goto(show('ImportPanel', 'mixed'));
+    const p = panel(page, 'work.ics');
+    await expect(p).toBeVisible();
+    await expect(p.getByText('2 events to import, 1 skipped, 2 guest entries left behind')).toBeVisible();
+    // The refusal is named, not counted.
+    await expect(p.getByText('Third Thursday')).toBeVisible();
+    await expect(p.getByText(/repeats in a way this version cannot store/)).toBeVisible();
+    await expect(p.getByText('Guests are never invited by an import.')).toBeVisible();
+    await expect(p.getByRole('button', { name: 'Import 2' })).toBeEnabled();
+  });
+
+  test('a file with nothing to import cannot be imported', async ({ page }) => {
+    await page.goto(show('ImportPanel', 'nothing'));
+    const p = panel(page, 'nothing.ics');
+    await expect(p.getByText('0 events to import, 0 skipped')).toBeVisible();
+    await expect(p.getByRole('button', { name: 'Import 0' })).toBeDisabled();
+  });
+
+  test('a file that is not a calendar says so instead of a plan', async ({ page }) => {
+    await page.goto(show('ImportPanel', 'unreadable'));
+    const p = panel(page, 'bad.ics');
+    await expect(p.getByRole('alert')).toContainText('not an iCalendar file');
+    await expect(p.getByRole('button', { name: /^Import/ })).toBeDisabled();
+  });
+
+  test('importing reports what landed', async ({ page }) => {
+    await page.goto(show('ImportPanel', 'mixed'));
+    const p = panel(page, 'work.ics');
+    await p.getByRole('button', { name: 'Import 2' }).click();
+    await expect(p.getByText('2 events imported.')).toBeVisible();
+    await expect(p.getByRole('button', { name: 'Done' })).toBeVisible();
+  });
+});
