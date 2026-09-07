@@ -4867,3 +4867,81 @@ test.describe("App: showing today's date", () => {
     await expect(modal.getByLabel("Show today's date")).toBeChecked();
   });
 });
+
+/**
+ * The tasks panel's list picker, which does two jobs (#68, @xmha97): it
+ * chooses where a new task lands *and* filters the rows to that list.
+ *
+ * The panel had no coverage at all before this; these are its first specs,
+ * so they pin the default view as well as the filtering, because "shows
+ * every task until you say otherwise" is the behaviour a filter is most
+ * likely to break.
+ */
+test.describe('the tasks panel', () => {
+  const openTasks = async (page: import('@playwright/test').Page) => {
+    await page.goto(app());
+    await page.getByRole('button', { name: 'Menu' }).click();
+    await page.getByRole('button', { name: 'Tasks…' }).click();
+    return page.getByRole('dialog', { name: 'Tasks' });
+  };
+
+  test('opens on every list, and the picker filters to one', async ({ page }) => {
+    const panel = await openTasks(page);
+    await expect(panel.getByText('Buy milk')).toBeVisible();
+    await expect(panel.getByText('Ship the release')).toBeVisible();
+    await expect(panel.getByText('Old standup note')).toBeVisible();
+    await expect(panel.getByRole('combobox', { name: 'Task list' })).toHaveValue('');
+
+    await panel.getByRole('combobox', { name: 'Task list' }).selectOption({ label: 'Work' });
+    await expect(panel.getByText('Buy milk')).toHaveCount(0);
+    await expect(panel.getByText('Ship the release')).toBeVisible();
+    // The Done section is filtered by the same rule, not left behind.
+    await expect(panel.getByText('Old standup note')).toBeVisible();
+
+    await panel.getByRole('combobox', { name: 'Task list' }).selectOption({ label: 'Personal' });
+    await expect(panel.getByText('Buy milk')).toBeVisible();
+    await expect(panel.getByText('Ship the release')).toHaveCount(0);
+    await expect(panel.getByText('Old standup note')).toHaveCount(0);
+
+    await panel.getByRole('combobox', { name: 'Task list' }).selectOption({ label: 'All lists' });
+    await expect(panel.getByText('Buy milk')).toBeVisible();
+    await expect(panel.getByText('Ship the release')).toBeVisible();
+  });
+
+  test('a new task lands on the chosen list, and the filter keeps it in view', async ({ page }) => {
+    const panel = await openTasks(page);
+    await panel.getByRole('combobox', { name: 'Task list' }).selectOption({ label: 'Work' });
+    await panel.getByRole('textbox', { name: 'New task title' }).fill('Cut 2.3.0');
+    await panel.getByRole('textbox', { name: 'New task title' }).press('Enter');
+
+    await expect(panel.getByText('Cut 2.3.0')).toBeVisible();
+    // It landed on Work, so Personal does not have it.
+    await panel.getByRole('combobox', { name: 'Task list' }).selectOption({ label: 'Personal' });
+    await expect(panel.getByText('Cut 2.3.0')).toHaveCount(0);
+  });
+
+  /** On "All lists" a task still has to land somewhere, and the input says
+   *  where rather than leaving it to be discovered afterwards. */
+  test('on every list, the input names where a new task will land', async ({ page }) => {
+    const panel = await openTasks(page);
+    const input = panel.getByRole('textbox', { name: 'New task title' });
+    await expect(input).toHaveAttribute('placeholder', 'Add to Personal…');
+
+    await panel.getByRole('combobox', { name: 'Task list' }).selectOption({ label: 'Work' });
+    await expect(input).toHaveAttribute('placeholder', 'Add a task…');
+  });
+
+  /** A list with nothing in it is not the same as having no task lists,
+   *  and the empty panel must not claim the second. */
+  test('an empty list says it is empty, not that there are no lists', async ({ page }) => {
+    const panel = await openTasks(page);
+    await panel.getByRole('combobox', { name: 'Task list' }).selectOption({ label: 'Personal' });
+    await expect(panel.getByText('Buy milk')).toBeVisible();
+
+    // The delete button is hidden until its row is hovered.
+    await panel.locator('li', { hasText: 'Buy milk' }).hover();
+    await panel.getByRole('button', { name: 'Delete Buy milk' }).click();
+    await expect(panel.getByText('Nothing in Personal.')).toBeVisible();
+    await expect(panel.getByText('No tasks yet.')).toHaveCount(0);
+  });
+});

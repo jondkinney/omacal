@@ -1985,6 +1985,22 @@ POPOVER_DETAILS[XZONE_ID] = detail({
  *  would leak into the next `get_week` of the same run. */
 export const crossZoneWeek = (): WeekPayload => structuredClone(XZONE_GOLDEN);
 
+/** Two task lists with tasks on both, which is the only shape in which a
+ *  picker that filters can be told from one that does not (#68). `Work`
+ *  carries a done row as well, so the Done section is filtered too. */
+export const TASK_LISTS = [
+  { calendarId: 1, name: 'Personal', color: '#5b8def' },
+  { calendarId: 2, name: 'Work', color: '#2dd4bf' },
+];
+export const TASKS = [
+  { id: 11, calendarId: 1, summary: 'Buy milk', notes: null, dueMs: null, dueAllDay: false,
+    completed: false, calendar: 'Personal', color: '#5b8def', priority: 0, canWrite: true },
+  { id: 12, calendarId: 2, summary: 'Ship the release', notes: null, dueMs: null, dueAllDay: false,
+    completed: false, calendar: 'Work', color: '#2dd4bf', priority: 0, canWrite: true },
+  { id: 13, calendarId: 2, summary: 'Old standup note', notes: null, dueMs: null, dueAllDay: false,
+    completed: true, calendar: 'Work', color: '#2dd4bf', priority: 0, canWrite: true },
+];
+
 export const FIXTURES: Record<string, Record<string, any>> = {
   WeatherPopover: WEATHER_CARD_FIXTURES,
   WeekGrid: {
