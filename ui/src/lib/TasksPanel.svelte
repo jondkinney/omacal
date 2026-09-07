@@ -15,7 +15,14 @@
   let busyIds = $state<Set<number>>(new Set());
 
   let newTitle = $state('');
-  let newListId = $state<number | null>(null);
+  /** The list the picker is on, or null for all of them.
+   *
+   *  One control, two jobs (#68): it filters the rows to that list *and*
+   *  it is where a new task lands. Null is the default and stays the
+   *  default — opening the panel shows every task, as it always has, and
+   *  a picker that started on one list would look like the others had
+   *  gone. */
+  let filterListId = $state<number | null>(null);
   let adding = $state(false);
 
   $effect(() => {
@@ -24,7 +31,6 @@
         const [t, l] = await Promise.all([listTasks(), taskLists()]);
         tasks = t;
         lists = l;
-        if (newListId === null && l.length > 0) newListId = l[0].calendarId;
       } catch (e) {
         note = String(e);
         tasks = [];
@@ -34,8 +40,28 @@
 
   escapeCloses(() => true, () => onclose());
 
-  const open = $derived((tasks ?? []).filter((t) => !t.completed));
-  const done = $derived((tasks ?? []).filter((t) => t.completed));
+  /** Where a new task lands: the chosen list, or the first when the picker
+   *  is on "All lists". `taskLists` only ever offers lists a task can be
+   *  created on, so the first is a safe target rather than a guess — and
+   *  the input names it either way, so it is never a silent one. */
+  const targetList = $derived(
+    filterListId === null
+      ? (lists[0] ?? null)
+      : (lists.find((l) => l.calendarId === filterListId) ?? null),
+  );
+  const shown = $derived(
+    filterListId === null
+      ? (tasks ?? [])
+      : (tasks ?? []).filter((t) => t.calendarId === filterListId),
+  );
+  const open = $derived(shown.filter((t) => !t.completed));
+  const done = $derived(shown.filter((t) => t.completed));
+  /** A list chosen from the picker that holds nothing — different from
+   *  having no tasks at all, and told apart so the empty panel does not
+   *  claim there are no task lists. */
+  const emptyList = $derived(
+    tasks !== null && tasks.length > 0 && shown.length === 0 ? targetList : null,
+  );
 
   async function toggle(task: Task) {
     if (busyIds.has(task.id)) return;
@@ -62,11 +88,11 @@
   }
 
   async function add() {
-    if (adding || newListId === null || newTitle.trim() === '') return;
+    if (adding || targetList === null || newTitle.trim() === '') return;
     note = null;
     adding = true;
     try {
-      tasks = await createTask(newListId, newTitle, null);
+      tasks = await createTask(targetList.calendarId, newTitle, null);
       newTitle = '';
     } catch (e) {
       note = String(e);
@@ -108,15 +134,21 @@
         void add();
       }}
     >
+      <!-- The placeholder names the target whenever the picker does not —
+           on "All lists" a task still has to land somewhere, and a guess
+           the user cannot see is the thing worth avoiding. -->
       <input
         type="text"
-        placeholder="Add a task…"
+        placeholder={filterListId === null && lists.length > 1 && targetList
+          ? `Add to ${targetList.name}…`
+          : 'Add a task…'}
         aria-label="New task title"
         bind:value={newTitle}
         disabled={adding}
       />
       {#if lists.length > 1}
-        <select aria-label="Task list" bind:value={newListId} disabled={adding}>
+        <select aria-label="Task list" bind:value={filterListId} disabled={adding}>
+          <option value={null}>All lists</option>
           {#each lists as l (l.calendarId)}
             <option value={l.calendarId}>{l.name}</option>
           {/each}
@@ -132,6 +164,8 @@
       No tasks yet. Task lists arrive with an iCloud or CalDAV account
       (Settings → Accounts).
     </p>
+  {:else if emptyList}
+    <p class="empty">Nothing in {emptyList.name}.</p>
   {:else}
     <ul>
       {#each open as t (t.id)}
