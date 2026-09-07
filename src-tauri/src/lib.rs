@@ -1593,6 +1593,7 @@ pub fn run() {
             update::install_update,
             commands::open_conference,
             weather::get_weather,
+            tasks::update_task,
             import::plan_ics_import,
             import::run_ics_import,
             calendars::get_calendars,

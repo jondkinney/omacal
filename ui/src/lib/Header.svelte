@@ -7,7 +7,6 @@
   import CalendarPopover from './CalendarPopover.svelte';
   import InviteTray from './InviteTray.svelte';
   import SettingsModal from './SettingsModal.svelte';
-  import TasksPanel from './TasksPanel.svelte';
   import ViewSwitcher, { type View } from './ViewSwitcher.svelte';
   import type { ChangeNotice, DeclineNotice, PendingInvite } from './invites';
 
@@ -17,7 +16,7 @@
     busy, error, calendars, view, onpick,
     onsettingschange, onappearancechange,
     listMode, onToggleList,
-    onPrev, onNext, onToday, onQuickAdd, onSearch, onSignIn, onSync, oncalendarchange,
+    onPrev, onNext, onToday, onQuickAdd, onSearch, onSignIn, onSync, oncalendarchange, ontasks,
     onWhatsNew, onRestart, onUpdate,
     invites = [], declines = [], changes = [], oninvitesanswered = () => {},
     settingsOpen = $bindable(false),
@@ -62,6 +61,9 @@
     onSearch: () => void;
     /** Opens the centred natural-language quick-add editor. */
     onQuickAdd: () => void;
+    /** Asked to open the tasks list. The header no longer owns it: it sits
+     *  beside the calendar in `App`'s layout rather than over it. */
+    ontasks?: () => void;
     /** Passed straight through to `SettingsModal` — see its own comment. */
     onsettingschange?: (s: import('./settings').AppSettings) => void;
     /** The modal's range-input preview, kept separate from stored settings
@@ -209,7 +211,6 @@
   /** The hamburger's menu. Everything that used to sit in the header and is
    *  used rarely now lives here (spec §1). */
   let menuOpen = $state(false);
-  let tasksOpen = $state(false);
 
   function openSettings() {
     menuOpen = false;
@@ -218,7 +219,7 @@
 
   function openTasks() {
     menuOpen = false;
-    tasksOpen = true;
+    ontasks?.();
   }
 
   /** Runs `fn` and shuts the menu — every item in it is a one-shot action, and
@@ -413,9 +414,6 @@
   </div>
 </header>
 
-{#if tasksOpen}
-  <TasksPanel onclose={() => (tasksOpen = false)} />
-{/if}
 
 {#if settingsOpen}
   <SettingsModal

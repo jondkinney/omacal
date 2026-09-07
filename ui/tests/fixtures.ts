@@ -1993,11 +1993,17 @@ export const TASK_LISTS = [
   { calendarId: 2, name: 'Work', color: '#2dd4bf' },
 ];
 export const TASKS = [
-  { id: 11, calendarId: 1, summary: 'Buy milk', notes: null, dueMs: null, dueAllDay: false,
+  // Dated against `APP_NOW` (Mon 29 Jan 2024), so "By when" has an overdue
+  // row, a today row and an undated one — the three groups that differ.
+  { id: 11, calendarId: 1, summary: 'Buy milk', notes: null, dueMs: null, dueAllDay: true,
     completed: false, calendar: 'Personal', color: '#5b8def', priority: 0, canWrite: true },
-  { id: 12, calendarId: 2, summary: 'Ship the release', notes: null, dueMs: null, dueAllDay: false,
+  { id: 12, calendarId: 2, summary: 'Ship the release', notes: null,
+    dueMs: APP_MON + 12 * H, dueAllDay: true,
     completed: false, calendar: 'Work', color: '#2dd4bf', priority: 0, canWrite: true },
-  { id: 13, calendarId: 2, summary: 'Old standup note', notes: null, dueMs: null, dueAllDay: false,
+  { id: 14, calendarId: 2, summary: 'Answer the issue', notes: 'the offline one',
+    dueMs: APP_MON - 3 * 24 * H, dueAllDay: true,
+    completed: false, calendar: 'Work', color: '#2dd4bf', priority: 0, canWrite: true },
+  { id: 13, calendarId: 2, summary: 'Old standup note', notes: null, dueMs: null, dueAllDay: true,
     completed: true, calendar: 'Work', color: '#2dd4bf', priority: 0, canWrite: true },
 ];
 

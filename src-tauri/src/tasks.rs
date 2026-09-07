@@ -87,7 +87,7 @@ pub async fn set_task_completed(
 async fn set_completed_impl(state: &AppState, id: i64, on: bool) -> anyhow::Result<()> {
     let task = omacal_store::task_by_id(&state.pool, id)
         .await?
-        .ok_or_else(|| anyhow::anyhow!("that task is no longer here"))?;
+        .ok_or_else(|| anyhow::anyhow!(TASK_GONE))?;
     let raw = task.raw_ics.as_deref().ok_or_else(|| anyhow::anyhow!("task has no resource"))?;
     let href = task.caldav_href.as_deref().ok_or_else(|| anyhow::anyhow!("task has no href"))?;
     let (client, _, _) = client_for_task_calendar(state, task.calendar_id).await?;
@@ -121,6 +121,115 @@ async fn set_completed_impl(state: &AppState, id: i64, on: bool) -> anyhow::Resu
     Ok(())
 }
 
+/// Edits a task: its title, its due date and its note, in one write.
+///
+/// Every field is the whole answer rather than a change to apply — the
+/// editor knows the complete state, so there is no "leave this alone" to
+/// get wrong, and clearing a due date is saying `None` rather than
+/// omitting it.
+///
+/// `due_all_day` is the difference between "by Thursday" and "by Thursday
+/// at 18:00", and it is the user's distinction, not a storage detail: a
+/// date-only due goes on the wire as `VALUE=DATE` and an instant as a UTC
+/// stamp. A due date resolves against the *calendar's* zone, the same one
+/// the sync reads it back in, so a task does not move a day when the
+/// display zone differs.
+#[tauri::command]
+pub async fn update_task(
+    state: tauri::State<'_, AppState>,
+    id: i64,
+    summary: String,
+    due_ms: Option<i64>,
+    due_all_day: bool,
+    notes: Option<String>,
+) -> Result<Vec<TaskVm>, String> {
+    crate::demo_sync_guard(state.demo)?;
+    update_impl(&state, id, &summary, due_ms, due_all_day, notes.as_deref())
+        .await
+        .map_err(|e| crate::errors::user_facing(&e))?;
+    list_tasks(state).await
+}
+
+async fn update_impl(
+    state: &AppState,
+    id: i64,
+    summary: &str,
+    due_ms: Option<i64>,
+    due_all_day: bool,
+    notes: Option<&str>,
+) -> anyhow::Result<()> {
+    let summary = summary.trim();
+    if summary.is_empty() {
+        anyhow::bail!(TASK_NEEDS_A_TITLE);
+    }
+    let notes = notes.map(str::trim).filter(|n| !n.is_empty());
+
+    let task = omacal_store::task_by_id(&state.pool, id)
+        .await?
+        .ok_or_else(|| anyhow::anyhow!(TASK_GONE))?;
+    let raw = task.raw_ics.as_deref().ok_or_else(|| anyhow::anyhow!(TASK_GONE))?;
+    let href = task.caldav_href.as_deref().ok_or_else(|| anyhow::anyhow!(TASK_GONE))?;
+    let (client, _, _) = client_for_task_calendar(state, task.calendar_id).await?;
+    let cal_tz: String = sqlx::query_scalar("SELECT timezone FROM calendars WHERE id = ?1")
+        .bind(task.calendar_id)
+        .fetch_one(&state.pool)
+        .await?;
+
+    let due = due_for(due_ms, due_all_day, &cal_tz)?;
+    let now = jiff::Timestamp::from_millisecond(crate::now_ms())?;
+    let edit = omacal_caldav::TodoEdit { summary, due, description: notes };
+    let patched = omacal_caldav::patch_todo_fields(raw, &task.uid, &edit, now)
+        .ok_or_else(|| anyhow::anyhow!("could not rewrite the task's resource"))?;
+
+    let new_etag = client
+        .put(href, &patched, task.etag.as_deref())
+        .await
+        .map_err(|e| match e {
+            omacal_caldav::CalDavError::PreconditionFailed => anyhow::anyhow!(TASK_CHANGED_ON_SERVER),
+            other => anyhow::Error::from(other),
+        })?;
+
+    omacal_store::update_task_fields(
+        &state.pool,
+        id,
+        summary,
+        notes,
+        due_ms,
+        due.is_some().then_some(cal_tz.as_str()),
+        due_all_day,
+        new_etag.as_deref(),
+        &patched,
+        crate::now_ms(),
+    )
+    .await?;
+    crate::upcoming::refresh_soon(state.pool.clone(), state.demo);
+    Ok(())
+}
+
+/// The wire's `(ms, all_day)` pair as iCalendar spells it.
+///
+/// Split out and pure so the one thing worth checking — that an all-day due
+/// takes its date in the *calendar's* zone rather than UTC — is checkable
+/// without a server. In Kolkata a task due at 00:30 local is 19:00 UTC the
+/// day before, and reading the UTC date would file it a day early: the same
+/// class of bug as #44.
+pub(crate) fn due_for(
+    due_ms: Option<i64>,
+    all_day: bool,
+    cal_tz: &str,
+) -> anyhow::Result<Option<omacal_caldav::TodoDue>> {
+    let Some(ms) = due_ms else { return Ok(None) };
+    let ts = jiff::Timestamp::from_millisecond(ms)?;
+    if !all_day {
+        return Ok(Some(omacal_caldav::TodoDue::At(ts)));
+    }
+    let tz = jiff::tz::TimeZone::get(cal_tz).unwrap_or(jiff::tz::TimeZone::UTC);
+    Ok(Some(omacal_caldav::TodoDue::Date(ts.to_zoned(tz).date())))
+}
+
+pub(crate) const TASK_NEEDS_A_TITLE: &str = "a task needs a title";
+pub(crate) const TASK_GONE: &str = "that task is no longer here";
+
 #[tauri::command]
 pub async fn create_task(
     state: tauri::State<'_, AppState>,
@@ -141,7 +250,7 @@ async fn create_impl(
 ) -> anyhow::Result<()> {
     let summary = summary.trim();
     if summary.is_empty() {
-        anyhow::bail!("a task needs a title");
+        anyhow::bail!(TASK_NEEDS_A_TITLE);
     }
     let (client, collection_url, _) = client_for_task_calendar(state, calendar_id).await?;
     let cal_tz: String = sqlx::query_scalar("SELECT timezone FROM calendars WHERE id = ?1")
@@ -237,4 +346,38 @@ pub async fn task_lists(state: tauri::State<'_, AppState>) -> Result<Vec<TaskLis
         .into_iter()
         .map(|(calendar_id, name, color)| TaskListVm { calendar_id, name, color })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An all-day due date takes its date in the **calendar's** zone.
+    ///
+    /// The case that matters is the one that bit #44: in Kolkata a task due
+    /// at 00:30 local is 19:00 UTC the day before, so reading the UTC date
+    /// would file it a day early. A timed due is the instant itself and has
+    /// no such question.
+    #[test]
+    fn an_all_day_due_takes_the_calendars_own_date() {
+        // 2026-09-11T00:30 in Asia/Kolkata is 2026-09-10T19:00Z.
+        let ms: i64 = "2026-09-10T19:00:00Z".parse::<jiff::Timestamp>().unwrap().as_millisecond();
+
+        let kolkata = due_for(Some(ms), true, "Asia/Kolkata").unwrap();
+        assert_eq!(kolkata, Some(omacal_caldav::TodoDue::Date(jiff::civil::date(2026, 9, 11))));
+        let utc = due_for(Some(ms), true, "UTC").unwrap();
+        assert_eq!(utc, Some(omacal_caldav::TodoDue::Date(jiff::civil::date(2026, 9, 10))));
+
+        // A timed due is the instant, whatever the calendar's zone.
+        let at = due_for(Some(ms), false, "Asia/Kolkata").unwrap();
+        assert_eq!(at, Some(omacal_caldav::TodoDue::At(jiff::Timestamp::from_millisecond(ms).unwrap())));
+
+        // No date is no date, not an instant at zero.
+        assert_eq!(due_for(None, true, "Asia/Kolkata").unwrap(), None);
+        assert_eq!(due_for(None, false, "UTC").unwrap(), None);
+
+        // A zone the machine does not know falls back rather than refusing:
+        // a task filed on the wrong day beats a task that cannot be saved.
+        assert!(due_for(Some(ms), true, "Mars/Olympus").unwrap().is_some());
+    }
 }
