@@ -35,6 +35,8 @@ const REPLY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
 #[derive(Debug, PartialEq)]
 pub(crate) enum WriteCmd {
     Create(CreateArgs),
+    /// The task verbs, parsed and executed by `cli_tasks`.
+    Task(crate::cli_tasks::TaskCmd),
     Update(UpdateArgs),
     Delete(DeleteArgs),
     Respond(RespondArgs),
@@ -581,12 +583,17 @@ async fn target(pool: &SqlitePool, id: i64) -> Result<Target, String> {
 /// so a request that reaches the app is one the app can only judge on its
 /// own guards.
 pub(crate) async fn execute(pool: &SqlitePool, cmd: &WriteCmd, json: bool) -> i32 {
+    if let WriteCmd::Task(task) = cmd {
+        return crate::cli_tasks::execute(pool, task, json).await;
+    }
     let tz = jiff::tz::TimeZone::system();
     let tz_name = tz.iana_name().unwrap_or("UTC").to_string();
 
     let refuse = |m: &str| fail(json, "usage", m, EXIT_USAGE);
 
     let (request, done_word) = match cmd {
+        // Taken above; the compiler wants it named all the same.
+        WriteCmd::Task(_) => unreachable!("handled at the top of execute"),
         WriteCmd::Create(args) => {
             let notify = match notify_for(!args.guests.is_empty(), args.notify.as_deref()) {
                 Ok(n) => n,
@@ -706,7 +713,16 @@ pub(crate) async fn execute(pool: &SqlitePool, cmd: &WriteCmd, json: bool) -> i3
         }
     };
 
-    match call(&request) {
+    send(&request, json, done_word)
+}
+
+/// Sends one request to the running app and reports what came back.
+///
+/// Shared with `cli_tasks`: the socket, the three failure shapes and the
+/// "the write's fate is unknown" wording are the same contract whichever
+/// verb asked, and two copies of it would be two chances to drift.
+pub(crate) fn send(request: &serde_json::Value, json: bool, done_word: &str) -> i32 {
+    match call(request) {
         Ok(envelope) => finish(json, envelope, done_word),
         Err(CallError::NotRunning) => fail(
             json,

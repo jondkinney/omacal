@@ -69,6 +69,37 @@ pub(crate) enum Request {
     Delete { id: i64, scope: String, occurrence_start_ms: i64 },
     #[serde(rename = "events-respond")]
     Respond { id: i64, response: String, scope: String, occurrence_start_ms: i64 },
+    /// The task verbs. Fewer than the event ones on purpose: an agent's job
+    /// here is what still needs doing and what to add to the list.
+    #[serde(rename = "tasks-create")]
+    TaskCreate {
+        /// Absent means the first list a task can be created on.
+        #[serde(default)]
+        calendar_id: Option<i64>,
+        summary: String,
+        #[serde(default)]
+        due_ms: Option<i64>,
+        #[serde(default = "yes")]
+        due_all_day: bool,
+    },
+    #[serde(rename = "tasks-complete")]
+    TaskComplete { id: i64, done: bool },
+    #[serde(rename = "tasks-update")]
+    TaskUpdate {
+        id: i64,
+        summary: String,
+        #[serde(default)]
+        due_ms: Option<i64>,
+        due_all_day: bool,
+        #[serde(default)]
+        notes: Option<String>,
+    },
+}
+
+/// A due date with no time is a whole day, which is what a request that
+/// does not mention it means.
+fn yes() -> bool {
+    true
 }
 
 /// One request line to a [`Request`], or the usage message to refuse it
@@ -173,6 +204,38 @@ pub(crate) async fn dispatch(state: &AppState, req: Request) -> serde_json::Valu
             .await
             {
                 Ok(detail) => ok_env(serde_json::json!(detail)),
+                Err(m) => fail_env("refused", &m),
+            }
+        }
+        Request::TaskCreate { calendar_id, summary, due_ms, due_all_day } => {
+            let calendar_id = match calendar_id {
+                Some(id) => id,
+                None => match crate::tasks::first_writable_list(&state.pool).await {
+                    Some(id) => id,
+                    None => {
+                        return fail_env(
+                            "refused",
+                            "no task list to add to — task lists arrive with an iCloud or CalDAV account",
+                        );
+                    }
+                },
+            };
+            match crate::tasks::create_body(state, calendar_id, &summary, due_ms, due_all_day).await {
+                Ok(tasks) => ok_env(serde_json::json!(tasks)),
+                Err(m) => fail_env("refused", &m),
+            }
+        }
+        Request::TaskComplete { id, done } => {
+            match crate::tasks::complete_body(state, id, done).await {
+                Ok(tasks) => ok_env(serde_json::json!(tasks)),
+                Err(m) => fail_env("refused", &m),
+            }
+        }
+        Request::TaskUpdate { id, summary, due_ms, due_all_day, notes } => {
+            match crate::tasks::update_body(state, id, &summary, due_ms, due_all_day, notes.as_deref())
+                .await
+            {
+                Ok(tasks) => ok_env(serde_json::json!(tasks)),
                 Err(m) => fail_env("refused", &m),
             }
         }
