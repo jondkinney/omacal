@@ -22,6 +22,8 @@ omacal events show 41 --json         # ONE event whole (v0.7.4+): the guest
                                      # organizer, join link, description
 omacal search quarterly review --json
 omacal calendars --json              # every calendar with ids
+omacal weather --json                # the app's forecast (v2.2+): place +
+                                     # how it was decided, now, eight days
 omacal commands --json               # machine-readable catalog of every
                                      # command and flag (v0.8.1+) — check
                                      # here before assuming a flag exists
@@ -129,3 +131,8 @@ When showing the calendar to the user (not piping into a script):
   calendars --json` shows what is hidden.
 - Times are in the user's display zone; trust `start`/`end` for prose and
   `startMs`/`endMs` for arithmetic.
+- Weather is for `place`, which may not be where the user is: `source`
+  `"detected"` (or absent) means it was guessed from the connection's IP
+  and can be a city off; `"configured"` means they set it in the Omarchy
+  bar. Name the place when answering about weather ("In Gurugram, Thursday
+  looks like rain"). Temperatures are Celsius, unrounded; wind is km/h.

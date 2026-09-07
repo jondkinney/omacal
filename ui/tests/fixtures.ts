@@ -1568,10 +1568,48 @@ export const APP_ALLDAY_OCCURRENCE = APP_MON + 2 * 24 * H;
  *  One day and not seven, so "every header drew the same sky" is a different
  *  count rather than the same one. */
 export const APP_WEATHER: WeatherReport = {
-  days: [{ date: utcDate(APP_MON), bucket: 'clear', tmax: 31, tmin: 24 }],
-  // Null rather than a name: nothing in `ui/src` reads `place`, and the
-  // weatherless branch beside this one answers null already.
-  place: null,
+  days: [{
+    date: utcDate(APP_MON), bucket: 'clear', tmax: 31, tmin: 24,
+    rain_chance: 10, wind_max_kmh: 12.4, sunrise: '06:05', sunset: '18:30',
+  }],
+  // The card (2026-09-07) leads with the place and how it was decided, so
+  // the scenario carries both — and a `current`, since `APP_MON` is the
+  // app's frozen today and today's card is "now".
+  place: 'Gurugram',
+  source: 'detected',
+  current: { bucket: 'clear', temp: 26.4, feels: 29.1, humidity: 73, wind_kmh: 4.3, at: `${utcDate(APP_MON)}T07:15` },
+};
+
+/** The card on its own, for `components.spec.ts`: today's "now" over the
+ *  day's range, a later day's forecast, and a place the user chose. */
+const CARD_ANCHOR = { top: 40, left: 320, width: 44, height: 18 };
+const CARD_DAY: DayWeather = {
+  date: '2026-09-07', bucket: 'clear', tmax: 33.2, tmin: 25.1,
+  rain_chance: 10, wind_max_kmh: 12.4, sunrise: '06:05', sunset: '18:30',
+};
+const CARD_LATER: DayWeather = {
+  date: '2026-09-10', bucket: 'drizzle', tmax: 31.0, tmin: 24.6,
+  rain_chance: 85, wind_max_kmh: 18.0, sunrise: '06:06', sunset: '18:29',
+};
+const CARD_REPORT: WeatherReport = {
+  days: [CARD_DAY, CARD_LATER],
+  place: 'Gurugram',
+  source: 'detected',
+  current: { bucket: 'clear', temp: 26.4, feels: 29.1, humidity: 73, wind_kmh: 4.3, at: '2026-09-07T07:15' },
+};
+export const WEATHER_CARD_FIXTURES = {
+  today: { day: CARD_DAY, report: CARD_REPORT, today: true, anchor: CARD_ANCHOR, onclose: () => {} },
+  later: { day: CARD_LATER, report: CARD_REPORT, today: false, anchor: CARD_ANCHOR, onclose: () => {} },
+  configured: {
+    day: CARD_LATER, report: { ...CARD_REPORT, place: 'Sofia', source: 'configured' as const },
+    today: false, anchor: CARD_ANCHOR, onclose: () => {},
+  },
+  // A cache from before the card: today, but no `current` and no extras.
+  bare: {
+    day: { date: '2026-09-07', bucket: 'rain', tmax: 30, tmin: 24 },
+    report: { days: [{ date: '2026-09-07', bucket: 'rain', tmax: 30, tmin: 24 }], place: null },
+    today: true, anchor: CARD_ANCHOR, onclose: () => {},
+  },
 };
 
 /** The calendar a create must land on: the user's own primary. Third in the
@@ -1933,6 +1971,7 @@ POPOVER_DETAILS[XZONE_ID] = detail({
 export const crossZoneWeek = (): WeekPayload => structuredClone(XZONE_GOLDEN);
 
 export const FIXTURES: Record<string, Record<string, any>> = {
+  WeatherPopover: WEATHER_CARD_FIXTURES,
   WeekGrid: {
     empty: { week: emptyWeek() },
     /* A padded payload (2026-09-03): a week either side of the window, with

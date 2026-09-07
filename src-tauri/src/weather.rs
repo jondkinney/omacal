@@ -61,13 +61,71 @@ pub struct DayWeather {
     /// into 90°F, and 31.6°C is 89°F.
     pub tmax: f64,
     pub tmin: f64,
+    /// The day card's extras (2026-09-07), each absent where Open-Meteo did
+    /// not say — and absent in every cache written before they existed,
+    /// which `serde(default)` reads as the same thing. The card prints a
+    /// line for what is there and nothing for what is not.
+    /// Chance of rain, per cent (`precipitation_probability_max`).
+    #[serde(default)]
+    pub rain_chance: Option<u8>,
+    /// The day's strongest wind, km/h — Open-Meteo's own unit; the card
+    /// prints mph beside Fahrenheit (`temperature.ts`).
+    #[serde(default)]
+    pub wind_max_kmh: Option<f64>,
+    /// `HH:MM`, local to the location.
+    #[serde(default)]
+    pub sunrise: Option<String>,
+    #[serde(default)]
+    pub sunset: Option<String>,
+}
+
+/// Conditions right now, for today's card — Open-Meteo's `current` block,
+/// which arrives in the same call as the days.
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
+pub struct CurrentWeather {
+    pub bucket: String,
+    /// Celsius, unrounded, like every temperature here.
+    pub temp: f64,
+    /// Apparent temperature, the "feels like".
+    pub feels: f64,
+    /// Relative humidity, per cent.
+    pub humidity: u8,
+    /// km/h.
+    pub wind_kmh: f64,
+    /// When these held, ISO local to the location (`2026-09-07T07:15`) —
+    /// a reading can be up to a refresh interval old, and the card says so.
+    pub at: String,
+}
+
+/// Where the forecast's place came from. **The card always says it**,
+/// because the place may not be where the user is: a detected one is a
+/// guess from the connection's IP, which can be a city off, or a country
+/// off through a VPN, and a forecast for the wrong place with no way to
+/// tell is worse than none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LocationSource {
+    /// The Omarchy bar's weather setting — the user chose it.
+    Configured,
+    /// Learned from the connection's IP.
+    Detected,
+    /// Demo mode's fixed sky.
+    Demo,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize, Default)]
 pub struct WeatherReport {
     pub days: Vec<DayWeather>,
-    /// Where this forecast is for, when known — the settings hint names it.
+    /// Where this forecast is for, when known — the settings hint names it,
+    /// and the card leads with it.
     pub place: Option<String>,
+    /// Right now, when the answer carried it; absent in older caches.
+    #[serde(default)]
+    pub current: Option<CurrentWeather>,
+    /// How `place` was decided; absent in older caches, which the card
+    /// treats as detected — the honest default.
+    #[serde(default)]
+    pub source: Option<LocationSource>,
 }
 
 /// Same gate, same shape, same reason as [`crate::update::may_check`]: demo
@@ -140,16 +198,29 @@ pub(crate) fn parse_geocoding(raw: &str) -> Option<(f64, f64)> {
     Some((hit.get("latitude")?.as_f64()?, hit.get("longitude")?.as_f64()?))
 }
 
-/// Open-Meteo's daily forecast → our report. Temperatures pass through
-/// unrounded — the rounding happens once, at display, in whichever unit the
-/// header prints (see the note on `DayWeather::tmax`).
-pub(crate) fn parse_open_meteo(raw: &str, place: Option<String>) -> Option<WeatherReport> {
+/// Open-Meteo's forecast → our report. Temperatures pass through unrounded
+/// — the rounding happens once, at display, in whichever unit the header
+/// prints (see the note on `DayWeather::tmax`).
+///
+/// The four daily fields the headers always needed are required; the
+/// card's extras and the `current` block are each optional, so an answer
+/// missing one of them still draws the headers it always drew.
+pub(crate) fn parse_open_meteo(
+    raw: &str,
+    place: Option<String>,
+    source: LocationSource,
+) -> Option<WeatherReport> {
     let v: serde_json::Value = serde_json::from_str(raw).ok()?;
     let daily = v.get("daily")?;
     let dates = daily.get("time")?.as_array()?;
     let codes = daily.get("weather_code")?.as_array()?;
     let tmax = daily.get("temperature_2m_max")?.as_array()?;
     let tmin = daily.get("temperature_2m_min")?.as_array()?;
+    let extra = |key: &str| daily.get(key).and_then(|a| a.as_array());
+    let rain = extra("precipitation_probability_max");
+    let wind = extra("wind_speed_10m_max");
+    let sunrise = extra("sunrise");
+    let sunset = extra("sunset");
 
     let mut days = Vec::with_capacity(dates.len());
     for i in 0..dates.len() {
@@ -166,9 +237,44 @@ pub(crate) fn parse_open_meteo(raw: &str, place: Option<String>) -> Option<Weath
             bucket: bucket_for_code(code as u16).to_string(),
             tmax: hi,
             tmin: lo,
+            rain_chance: rain
+                .and_then(|a| a.get(i))
+                .and_then(|x| x.as_u64())
+                .map(|x| x.min(100) as u8),
+            wind_max_kmh: wind.and_then(|a| a.get(i)).and_then(|x| x.as_f64()),
+            sunrise: sunrise.and_then(|a| a.get(i)).and_then(|x| x.as_str()).map(clock_of),
+            sunset: sunset.and_then(|a| a.get(i)).and_then(|x| x.as_str()).map(clock_of),
         });
     }
-    (!days.is_empty()).then_some(WeatherReport { days, place })
+    if days.is_empty() {
+        return None;
+    }
+    let current = v.get("current").and_then(|c| {
+        Some(CurrentWeather {
+            bucket: bucket_for_code(c.get("weather_code")?.as_u64()? as u16).to_string(),
+            temp: c.get("temperature_2m")?.as_f64()?,
+            feels: c.get("apparent_temperature")?.as_f64()?,
+            humidity: c.get("relative_humidity_2m")?.as_u64()?.min(100) as u8,
+            wind_kmh: c.get("wind_speed_10m")?.as_f64()?,
+            at: c.get("time")?.as_str()?.to_string(),
+        })
+    });
+    Some(WeatherReport { days, place, current, source: Some(source) })
+}
+
+/// The `HH:MM` of an Open-Meteo local timestamp (`2026-09-07T06:05`), or
+/// the string as it came if it is not one — the card prints it either way.
+fn clock_of(iso: &str) -> String {
+    iso.split_once('T').map_or(iso, |(_, t)| t).chars().take(5).collect()
+}
+
+/// The place out of wttr.in's own location line (`?format=%l`), which is
+/// what the Omarchy bar prints — `Gurugram, Haryana, India` — where the
+/// `j1` area name still says `Gurgaon`. The first part, so both sides call
+/// the same place by the same name. Blank for a blank answer.
+pub(crate) fn wttr_place_name(line: &str) -> Option<String> {
+    let first = line.split(',').next()?.trim();
+    (!first.is_empty()).then(|| first.to_string())
 }
 
 /// Whether a cache written at `at_ms` still answers at `now_ms`.
@@ -192,9 +298,25 @@ pub(crate) fn synthetic_report(today: jiff::civil::Date) -> WeatherReport {
             bucket: bucket_for_code(*code).to_string(),
             tmax: *hi,
             tmin: *lo,
+            rain_chance: Some(((i * 15) % 100) as u8),
+            wind_max_kmh: Some(8.0 + i as f64 * 3.0),
+            sunrise: Some("06:05".into()),
+            sunset: Some("18:30".into()),
         })
         .collect();
-    WeatherReport { days, place: Some("Demo".into()) }
+    WeatherReport {
+        days,
+        place: Some("Demo".into()),
+        current: Some(CurrentWeather {
+            bucket: "clear".into(),
+            temp: 26.4,
+            feels: 29.1,
+            humidity: 73,
+            wind_kmh: 4.0,
+            at: format!("{today}T09:00"),
+        }),
+        source: Some(LocationSource::Demo),
+    }
 }
 
 /// Where the Omarchy widget keeps its configured location. `None` off
@@ -224,8 +346,12 @@ async fn http_get(url: &str) -> anyhow::Result<String> {
 
 /// The location to forecast for, resolved in the widget's order: its file
 /// (coordinates as given, a bare name geocoded), then coordinates this
-/// module auto-detected recently, then one wttr.in call to learn them.
-async fn resolve_location(pool: &SqlitePool, now_ms: i64) -> Option<(f64, f64, Option<String>)> {
+/// module auto-detected recently, then one wttr.in call to learn them —
+/// and, with them, where the answer came from, which the card says.
+async fn resolve_location(
+    pool: &SqlitePool,
+    now_ms: i64,
+) -> Option<(f64, f64, Option<String>, LocationSource)> {
     if let Some(path) = omarchy_location_path() {
         if let Some((coords, name)) = tokio::fs::read_to_string(&path)
             .await
@@ -233,14 +359,14 @@ async fn resolve_location(pool: &SqlitePool, now_ms: i64) -> Option<(f64, f64, O
             .and_then(|raw| parse_omarchy_location(&raw))
         {
             if let Some((lat, lon)) = coords {
-                return Some((lat, lon, Some(name)));
+                return Some((lat, lon, Some(name), LocationSource::Configured));
             }
             let url = format!(
                 "https://geocoding-api.open-meteo.com/v1/search?name={}&count=1&language=en&format=json",
                 urlencoding_encode(&name)
             );
             if let Some((lat, lon)) = http_get(&url).await.ok().and_then(|r| parse_geocoding(&r)) {
-                return Some((lat, lon, Some(name)));
+                return Some((lat, lon, Some(name), LocationSource::Configured));
             }
             // A name that will not geocode falls through to auto-detect
             // rather than to nothing: a misspelled city should not turn the
@@ -260,17 +386,24 @@ async fn resolve_location(pool: &SqlitePool, now_ms: i64) -> Option<(f64, f64, O
                     .and_then(|(a, b)| Some((a.parse().ok()?, b.parse().ok()?)))
                 {
                     let name = (!name.is_empty()).then(|| name.to_string());
-                    return Some((lat, lon, name));
+                    return Some((lat, lon, name, LocationSource::Detected));
                 }
             }
         }
     }
 
     let raw = http_get("https://wttr.in/?format=j1").await.ok()?;
-    let (lat, lon, name) = parse_wttr_coords(&raw)?;
+    let (lat, lon, area) = parse_wttr_coords(&raw)?;
+    // The bar's spelling of the same place, when wttr.in will say it; the
+    // area name from the answer above otherwise.
+    let name = http_get("https://wttr.in/?format=%l")
+        .await
+        .ok()
+        .and_then(|line| wttr_place_name(&line))
+        .unwrap_or(area);
     let _ = crate::settings::write(pool, COORDS_KEY, &format!("{lat},{lon}|{name}")).await;
     let _ = crate::settings::write(pool, COORDS_AT_KEY, &now_ms.to_string()).await;
-    Some((lat, lon, (!name.is_empty()).then_some(name)))
+    Some((lat, lon, (!name.is_empty()).then_some(name), LocationSource::Detected))
 }
 
 /// Minimal percent-encoding for the one geocoding query parameter — a city
@@ -298,16 +431,21 @@ fn urlencoding_encode(s: &str) -> String {
 /// learned something; it tells the webview instead of waiting to be asked.
 async fn refresh(app: Option<&tauri::AppHandle>, pool: &SqlitePool) {
     let now_ms = jiff::Timestamp::now().as_millisecond();
-    let Some((lat, lon, place)) = resolve_location(pool, now_ms).await else {
+    let Some((lat, lon, place, source)) = resolve_location(pool, now_ms).await else {
         tracing::debug!("weather: no location; skipping");
         return;
     };
+    // One call: the days the headers draw, the extras the day card prints,
+    // and the `current` block today's card leads with.
     let url = format!(
         "https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}\
-         &daily=weather_code,temperature_2m_max,temperature_2m_min\
+         &daily=weather_code,temperature_2m_max,temperature_2m_min,\
+         precipitation_probability_max,wind_speed_10m_max,sunrise,sunset\
+         &current=weather_code,temperature_2m,apparent_temperature,\
+         relative_humidity_2m,wind_speed_10m\
          &forecast_days={FORECAST_DAYS}&timezone=auto"
     );
-    match http_get(&url).await.ok().and_then(|raw| parse_open_meteo(&raw, place)) {
+    match http_get(&url).await.ok().and_then(|raw| parse_open_meteo(&raw, place, source)) {
         Some(report) => {
             if let Ok(json) = serde_json::to_string(&report) {
                 let _ = crate::settings::write(pool, CACHE_KEY, &json).await;
@@ -371,11 +509,16 @@ pub(crate) async fn get_weather(
     if state.demo {
         return Ok(synthetic_report(jiff::Zoned::now().date()));
     }
-    let report = crate::settings::read(&state.pool, CACHE_KEY)
+    Ok(cached_report(&state.pool).await.unwrap_or_default())
+}
+
+/// The last forecast fetched, as cached — the one thing the CLI and the
+/// window both read, so `omacal weather` can never show a different sky
+/// from the header.
+pub(crate) async fn cached_report(pool: &SqlitePool) -> Option<WeatherReport> {
+    crate::settings::read(pool, CACHE_KEY)
         .await
         .and_then(|json| serde_json::from_str(&json).ok())
-        .unwrap_or_default();
-    Ok(report)
 }
 
 #[cfg(test)]
@@ -423,23 +566,81 @@ mod tests {
             "weather_code":[3,95],
             "temperature_2m_max":[31.6,29.4],
             "temperature_2m_min":[25.5,24.1]}}"#;
-        let r = parse_open_meteo(raw, Some("Gurugram".into())).unwrap();
+        let r = parse_open_meteo(raw, Some("Gurugram".into()), LocationSource::Detected).unwrap();
         assert_eq!(r.place.as_deref(), Some("Gurugram"));
+        assert_eq!(r.source, Some(LocationSource::Detected));
         assert_eq!(r.days.len(), 2);
         assert_eq!(r.days[0].date, "2026-08-24");
         assert_eq!(r.days[0].bucket, "overcast");
         assert_eq!(r.days[0].tmax, 31.6);
         assert_eq!(r.days[0].tmin, 25.5);
         assert_eq!(r.days[1].bucket, "thunder");
+        // The extras are each absent when the answer lacks them, never
+        // invented; and no `current` block is no current.
+        assert_eq!(r.days[0].rain_chance, None);
+        assert_eq!(r.days[0].sunrise, None);
+        assert_eq!(r.current, None);
+    }
+
+    /// The whole answer the card needs, in Open-Meteo's own shapes: the
+    /// daily extras and the `current` block, temperatures unrounded, the
+    /// sun times cut to the clock, the wind in the km/h it arrives in.
+    #[test]
+    fn the_cards_extras_and_the_current_block_parse_from_the_same_answer() {
+        let raw = r#"{"current":{"time":"2026-09-07T07:15","weather_code":0,
+            "temperature_2m":26.4,"apparent_temperature":29.1,
+            "relative_humidity_2m":73,"wind_speed_10m":4.3},
+          "daily":{"time":["2026-09-07","2026-09-08"],
+            "weather_code":[0,61],"temperature_2m_max":[33.2,31.0],
+            "temperature_2m_min":[25.1,24.6],
+            "precipitation_probability_max":[10,85],
+            "wind_speed_10m_max":[12.4,18.0],
+            "sunrise":["2026-09-07T06:05","2026-09-08T06:06"],
+            "sunset":["2026-09-07T18:30","2026-09-08T18:29"]}}"#;
+        let r = parse_open_meteo(raw, Some("Gurugram".into()), LocationSource::Configured).unwrap();
+        let now = r.current.expect("current");
+        assert_eq!(now.bucket, "clear");
+        assert_eq!((now.temp, now.feels, now.humidity, now.wind_kmh), (26.4, 29.1, 73, 4.3));
+        assert_eq!(now.at, "2026-09-07T07:15");
+        let d = &r.days[1];
+        assert_eq!(d.bucket, "drizzle");
+        assert_eq!(d.rain_chance, Some(85));
+        assert_eq!(d.wind_max_kmh, Some(18.0));
+        assert_eq!(d.sunrise.as_deref(), Some("06:06"));
+        assert_eq!(d.sunset.as_deref(), Some("18:29"));
+        assert_eq!(r.source, Some(LocationSource::Configured));
+    }
+
+    /// A cache written before the card existed still reads, as days with
+    /// no extras and no current — the header keeps drawing across the
+    /// update, and the card says what it can.
+    #[test]
+    fn a_cache_from_before_the_card_still_reads() {
+        let old = r#"{"days":[{"date":"2026-09-06","bucket":"clear","tmax":32.0,"tmin":25.0}],"place":"Gurgaon"}"#;
+        let r: WeatherReport = serde_json::from_str(old).unwrap();
+        assert_eq!(r.days[0].rain_chance, None);
+        assert_eq!(r.current, None);
+        assert_eq!(r.source, None);
+        assert_eq!(r.place.as_deref(), Some("Gurgaon"));
+    }
+
+    /// wttr.in's location line is what the bar prints; the first part is
+    /// the place, and a blank line is no name rather than an empty one.
+    #[test]
+    fn the_bars_place_name_is_the_first_part_of_wttrs_location_line() {
+        assert_eq!(wttr_place_name("Gurugram, Haryana, India\n").as_deref(), Some("Gurugram"));
+        assert_eq!(wttr_place_name("Sofia").as_deref(), Some("Sofia"));
+        assert_eq!(wttr_place_name("  \n"), None);
+        assert_eq!(wttr_place_name(""), None);
     }
 
     /// Garbage, an empty daily block, and a shape drift all answer `None` —
     /// decoration never invents data.
     #[test]
     fn a_bad_forecast_answer_is_none_not_a_guess() {
-        assert!(parse_open_meteo("not json", None).is_none());
-        assert!(parse_open_meteo(r#"{"daily":{"time":[]}}"#, None).is_none());
-        assert!(parse_open_meteo(r#"{"hourly":{}}"#, None).is_none());
+        assert!(parse_open_meteo("not json", None, LocationSource::Detected).is_none());
+        assert!(parse_open_meteo(r#"{"daily":{"time":[]}}"#, None, LocationSource::Detected).is_none());
+        assert!(parse_open_meteo(r#"{"hourly":{}}"#, None, LocationSource::Detected).is_none());
     }
 
     /// The widget's location file, in its three real shapes: coordinates,

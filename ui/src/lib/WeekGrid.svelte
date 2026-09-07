@@ -26,7 +26,7 @@
   import { cursorNamesEvent, type KeyboardCursor } from './keyboardnav';
   import { dateOf } from './eventform';
 
-  let { week, weather = null, formPreview = null, createColor = null, revealNowRequest = 0, keyboardCursor = null, onpan = null, hourPx = $bindable(HOUR_PX_DEFAULT), visibleStartMs = null, visibleDays = null, onerror = null, oncreate, oncreateallday, onedit, ondelete, oncopy, onmove, ondraftmove = null, onresponded }: {
+  let { week, weather = null, onweather = null, formPreview = null, createColor = null, revealNowRequest = 0, keyboardCursor = null, onpan = null, hourPx = $bindable(HOUR_PX_DEFAULT), visibleStartMs = null, visibleDays = null, onerror = null, oncreate, oncreateallday, onedit, ondelete, oncopy, onmove, ondraftmove = null, onresponded }: {
     /** Padded since 2026-09-03: `visibleDays` from `visibleStartMs` are what
      *  is on screen, and the days either side are the track's to slide into
      *  under a finger (`weekwindow.ts`). Both null — a standalone mount, a
@@ -48,6 +48,10 @@
      *  yet fetched, or failed all look the same here: a header with no sky,
      *  which is what this header looked like for its whole life until now. */
     weather?: Map<string, DayWeather> | null;
+    /** The sky in a day header was clicked: that day's start and the
+     *  glyph's own rect, for App to open the weather card over. Optional —
+     *  a grid without it keeps the glyph as the label it always was. */
+    onweather?: ((dayStartMs: number, anchor: import('./position').Rect) => void) | null;
     /** The span the open event form currently describes, drawn as a dashed
      *  ghost so the user watches the event land while typing its times —
      *  create and edit alike. Null draws nothing. */
@@ -1337,9 +1341,17 @@
         <!-- Absent for any day the forecast does not cover — the past, the
              far future — so the header never guesses; the empty third track
              holds the number in place regardless. -->
-        <span class="wx">
+        <!-- A button since the card (2026-09-07): the same label it was,
+             now the way into the forecast for that day and, first of all,
+             for which place. -->
+        <button type="button" class="wx"
+                aria-label="Weather for {dayName(d.start_ms)} {new Date(d.start_ms).getDate()}: {wx.bucket}, {formatTemp(wx.tmax, temperatureUnit())}°"
+                onclick={(e) => {
+                  e.stopPropagation();
+                  onweather?.(d.start_ms, (e.currentTarget as HTMLElement).getBoundingClientRect());
+                }}>
           <WeatherGlyph bucket={wx.bucket} size={15} />{formatTemp(wx.tmax, temperatureUnit())}°
-        </span>
+        </button>
       {/if}
     </div>
   {/each}
@@ -1586,7 +1598,11 @@
      forecast is worth less than the date it would crowd. */
   .wx { justify-self: start; display: inline-flex; align-items: center; gap: 3px;
         font-size: 15px; font-weight: 500; letter-spacing: -.02em;
-        color: var(--muted); font-variant-numeric: tabular-nums; }
+        color: var(--muted); font-variant-numeric: tabular-nums;
+        /* A button that looks exactly like the label it replaced. */
+        appearance: none; -webkit-appearance: none; background: none; border: 0;
+        padding: 0; margin: 0; font-family: inherit; cursor: pointer; }
+  .wx:hover, .wx:focus-visible { color: var(--text); }
   @container (max-width: 104px) { .wx { display: none; } }
   .head b { font-size: 15px; color: var(--text);
             font-weight: 500; letter-spacing: -.02em; }
