@@ -4945,3 +4945,27 @@ test.describe('the tasks panel', () => {
     await expect(panel.getByText('No tasks yet.')).toHaveCount(0);
   });
 });
+
+/**
+ * The drop itself (#67): Tauri hands the webview paths rather than HTML5
+ * drag events, so the app listens for the runtime's own event. One `.ics`
+ * opens the panel; anything else is ignored rather than refused, because a
+ * dialog nobody asked for is worse than nothing happening.
+ */
+test.describe('dropping a file on the calendar', () => {
+  const drop = (page: import('@playwright/test').Page, paths: string[]) =>
+    page.evaluate((p) => (window as any).__harness.emit('tauri://drag-drop', { paths: p }), paths);
+
+  test('one .ics opens the import panel', async ({ page }) => {
+    await page.goto(app());
+    await drop(page, ['/home/u/Downloads/work.ics']);
+    await expect(page.getByRole('dialog', { name: 'Import work.ics' })).toBeVisible();
+  });
+
+  test('anything else is ignored', async ({ page }) => {
+    await page.goto(app());
+    await drop(page, ['/home/u/Pictures/shot.png']);
+    await drop(page, ['/home/u/a.ics', '/home/u/b.ics']);
+    await expect(page.getByRole('dialog', { name: /^Import / })).toHaveCount(0);
+  });
+});

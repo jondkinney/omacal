@@ -11,6 +11,7 @@ import Header from '../../src/lib/Header.svelte';
 import CalendarPopover from '../../src/lib/CalendarPopover.svelte';
 import EventPopover from '../../src/lib/EventPopover.svelte';
 import WeatherPopover from '../../src/lib/WeatherPopover.svelte';
+import ImportPanel from '../../src/lib/ImportPanel.svelte';
 import EventForm from '../../src/lib/EventForm.svelte';
 import DeleteConfirm from '../../src/lib/DeleteConfirm.svelte';
 import * as eventform from '../../src/lib/eventform';
@@ -83,7 +84,7 @@ if (name === 'App') {
 
 const COMPONENTS: Record<string, any> = {
   WeekGrid, MonthGrid, YearGrid, BigYearRibbon, Filmstrip, EventBlock, AllDayBand, Header,
-  CalendarPopover, EventPopover, EventForm, DeleteConfirm, WeatherPopover,
+  CalendarPopover, EventPopover, EventForm, DeleteConfirm, WeatherPopover, ImportPanel,
 };
 const target = document.getElementById('app')!;
 
@@ -171,6 +172,9 @@ if (name === 'App') {
     // since it is opening the modal and not the fixture that decides whether
     // anything reaches `invoke`.
     if (name === 'Header') installTauriStub(fixture);
+    // `ImportPanel` reads its whole plan over the IPC — the file is the
+    // backend's to parse — so it needs the stub as much as `Header` does.
+    if (name === 'ImportPanel') installTauriStub(fixture);
     if (name === 'WeekGrid') {
       // Clicking one of its blocks opens a real `EventPopover` that calls
       // `event_detail`/`refresh_event`/`respond_to_event` itself — installed

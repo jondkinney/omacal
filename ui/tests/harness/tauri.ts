@@ -21,7 +21,7 @@ import type { TemperatureUnit } from '../../src/lib/temperature';
 import { sliceWeek } from '../../src/lib/weekwindow';
 import {
   labelledWeek, weekLabel, APP_FIVE_MIN_AGO, APP_NOW, APP_SERIES_ID, APP_SERIES_OCCURRENCE,
-  TASK_LISTS, TASKS,
+  TASK_LISTS, TASKS, IMPORT_PLANS,
   APP_ONE_OFF_ID, APP_ONE_OFF_START, APP_GUESTS_ID, APP_SOLO_SERIES_ID,
   POPOVER_DETAILS, busyDayMonth,
   appWritableWeek, APP_WRITE_CALENDARS, APP_WEATHER, CREATED_DETAIL, crossZoneWeek,
@@ -1106,6 +1106,15 @@ export function installTauriStub(scenario: string): Harness {
       // The tasks panel reads and writes its own rows; the stub keeps them
       // in memory for the life of the page, so a create is visible to the
       // next `list_tasks` exactly as the backend's would be.
+      // The import panel's two calls. The plan is fixed per path, so a
+      // spec picks a shape by the name it drops.
+      case 'plan_ics_import': {
+        const path = args.path as string;
+        if (path.includes('bad')) throw new Error('that file is not an iCalendar file');
+        return IMPORT_PLANS[path.includes('nothing') ? 'nothing' : 'mixed'];
+      }
+      case 'run_ics_import':
+        return { imported: 2, skipped: IMPORT_PLANS.mixed.filter((p) => p.kind === 'skip'), failed: [] };
       case 'list_tasks':
         return taskRows;
       case 'task_lists':

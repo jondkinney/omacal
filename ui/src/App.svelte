@@ -11,6 +11,8 @@
   import { getStatus, installUpdate, openLatestRelease, restartApp, signIn, syncNow, takeOpenDate, type AppStatus } from './lib/status';
   import { dateKey, freshness, getWeather, weatherByDate, type DayWeather, type WeatherReport } from './lib/weather';
   import WeatherPopover from './lib/WeatherPopover.svelte';
+  import ImportPanel from './lib/ImportPanel.svelte';
+  import { isIcs } from './lib/importics';
   import { changedMeetings, declinedGuests, pendingInvites } from './lib/invites';
   import { calendarColor, getCalendars, offerableCalendarId, setCalendarSelected, type Calendar } from './lib/calendars';
   import {
@@ -271,6 +273,23 @@
    *  Recomputed with the report and on each hourly poll, which is often
    *  enough for a six-hour threshold. */
   let weatherStale = $state(false);
+
+  /** The `.ics` a user dropped on the window, or null for no import in
+   *  progress (#67). Tauri delivers the drop as paths rather than as HTML5
+   *  drag events, which is why this listens for the runtime's own event and
+   *  not for `ondrop`. */
+  let importPath = $state<string | null>(null);
+  $effect(() => {
+    const un = listen<{ paths?: string[] }>('tauri://drag-drop', (e) => {
+      // One file, and one this can read. A folder or a screenshot dropped on
+      // a calendar is not an import attempt, so it is ignored rather than
+      // refused: a dialog nobody asked for is worse than nothing happening.
+      const paths = e.payload?.paths ?? [];
+      const ics = paths.filter(isIcs);
+      if (paths.length === 1 && ics.length === 1) importPath = ics[0];
+    });
+    return () => { un.then((f) => f()); };
+  });
   const openWeather = (dayStartMs: number, anchor: import('./lib/position').Rect) => {
     weatherCard = { dayStartMs, anchor };
   };
@@ -1971,6 +1990,15 @@
     today={dateKey(weatherCard.dayStartMs) === dateKey(Date.now())}
     anchor={weatherCard.anchor}
     onclose={() => (weatherCard = null)}
+  />
+{/if}
+
+{#if importPath}
+  <ImportPanel
+    path={importPath}
+    {calendars}
+    onclose={() => (importPath = null)}
+    onimported={() => { void refreshAfterWrite(); }}
   />
 {/if}
 
