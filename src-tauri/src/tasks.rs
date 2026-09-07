@@ -227,6 +227,60 @@ pub(crate) fn due_for(
     Ok(Some(omacal_caldav::TodoDue::Date(ts.to_zoned(tz).date())))
 }
 
+/// The list a task lands on when nobody said: the first one a task can be
+/// created on, which is what `task_lists` already means.
+pub(crate) async fn first_writable_list(pool: &sqlx::SqlitePool) -> Option<i64> {
+    writable_task_lists(pool).await.ok()?.first().map(|l| l.calendar_id)
+}
+
+/// The socket's three task verbs, sharing the window's own write path —
+/// one code path, the same guards, as the events side does.
+pub(crate) async fn create_body(
+    state: &AppState,
+    calendar_id: i64,
+    summary: &str,
+    due_ms: Option<i64>,
+    due_all_day: bool,
+) -> Result<Vec<TaskVm>, String> {
+    crate::demo_sync_guard(state.demo)?;
+    create_impl(state, calendar_id, summary, due_ms, due_all_day)
+        .await
+        .map_err(|e| crate::errors::user_facing(&e))?;
+    Ok(list_body(state).await)
+}
+
+pub(crate) async fn complete_body(state: &AppState, id: i64, done: bool) -> Result<Vec<TaskVm>, String> {
+    crate::demo_sync_guard(state.demo)?;
+    set_completed_impl(state, id, done)
+        .await
+        .map_err(|e| crate::errors::user_facing(&e))?;
+    Ok(list_body(state).await)
+}
+
+pub(crate) async fn update_body(
+    state: &AppState,
+    id: i64,
+    summary: &str,
+    due_ms: Option<i64>,
+    due_all_day: bool,
+    notes: Option<&str>,
+) -> Result<Vec<TaskVm>, String> {
+    crate::demo_sync_guard(state.demo)?;
+    update_impl(state, id, summary, due_ms, due_all_day, notes)
+        .await
+        .map_err(|e| crate::errors::user_facing(&e))?;
+    Ok(list_body(state).await)
+}
+
+/// `list_tasks` without the Tauri wrapper, for the socket.
+pub(crate) async fn list_body(state: &AppState) -> Vec<TaskVm> {
+    let since = crate::now_ms() - DONE_WINDOW_MS;
+    omacal_store::tasks_for_ui(&state.pool, since)
+        .await
+        .map(|rows| rows.iter().map(|r| to_vm(r, state.demo)).collect())
+        .unwrap_or_default()
+}
+
 pub(crate) const TASK_NEEDS_A_TITLE: &str = "a task needs a title";
 pub(crate) const TASK_GONE: &str = "that task is no longer here";
 
@@ -238,7 +292,7 @@ pub async fn create_task(
     due_ms: Option<i64>,
 ) -> Result<Vec<TaskVm>, String> {
     crate::demo_sync_guard(state.demo)?;
-    create_impl(&state, calendar_id, &summary, due_ms).await.map_err(|e| e.to_string())?;
+    create_impl(&state, calendar_id, &summary, due_ms, true).await.map_err(|e| e.to_string())?;
     list_tasks(state).await
 }
 
@@ -247,6 +301,7 @@ async fn create_impl(
     calendar_id: i64,
     summary: &str,
     due_ms: Option<i64>,
+    all_day: bool,
 ) -> anyhow::Result<()> {
     let summary = summary.trim();
     if summary.is_empty() {
@@ -260,13 +315,16 @@ async fn create_impl(
 
     let uid = uuid::Uuid::new_v4().to_string();
     let now = jiff::Timestamp::from_millisecond(crate::now_ms())?;
-    // Quick-add dues are dates, not instants: "by Friday", not "by 16:23:07".
-    let due_time = due_ms
-        .and_then(|ms| jiff::Timestamp::from_millisecond(ms).ok())
-        .and_then(|ts| {
-            let tz = jiff::tz::TimeZone::get(&cal_tz).ok()?;
-            Some(omacal_caldav::IcsTime::Date(ts.to_zoned(tz).date()))
-        });
+    // The window's quick-add says dates, not instants: "by Friday", not
+    // "by 16:23:07". The CLI can say an hour, and then it means one.
+    let due_time = due_ms.and_then(|ms| jiff::Timestamp::from_millisecond(ms).ok()).map(|ts| {
+        if all_day {
+            let tz = jiff::tz::TimeZone::get(&cal_tz).unwrap_or(jiff::tz::TimeZone::UTC);
+            omacal_caldav::IcsTime::Date(ts.to_zoned(tz).date())
+        } else {
+            omacal_caldav::IcsTime::Utc(ts)
+        }
+    });
     let ics = omacal_caldav::new_todo_ics(&uid, summary, due_time.as_ref().map(|t| (t, cal_tz.as_str())), now);
 
     let href = format!("{}/{uid}.ics", collection_url.trim_end_matches('/'));
@@ -330,8 +388,13 @@ pub struct TaskListVm {
     pub color: Option<String>,
 }
 
-#[tauri::command]
-pub async fn task_lists(state: tauri::State<'_, AppState>) -> Result<Vec<TaskListVm>, String> {
+/// The task-capable, writable lists, in the order the picker offers them.
+/// One query, two callers: the window's command and the socket's "no list
+/// was named" default, so the CLI can never land a task somewhere the
+/// window would not offer.
+pub(crate) async fn writable_task_lists(
+    pool: &sqlx::SqlitePool,
+) -> anyhow::Result<Vec<TaskListVm>> {
     let rows: Vec<(i64, String, Option<String>)> = sqlx::query_as(
         "SELECT c.id, c.summary, COALESCE(c.color_override, c.color_hex)
          FROM calendars c JOIN accounts a ON a.id = c.account_id
@@ -339,13 +402,19 @@ pub async fn task_lists(state: tauri::State<'_, AppState>) -> Result<Vec<TaskLis
            AND c.selected = 1 AND c.access_role != 'reader'
          ORDER BY c.summary COLLATE NOCASE",
     )
-    .fetch_all(&state.pool)
-    .await
-    .map_err(|e| crate::errors::user_facing(&anyhow::Error::from(e)))?;
+    .fetch_all(pool)
+    .await?;
     Ok(rows
         .into_iter()
         .map(|(calendar_id, name, color)| TaskListVm { calendar_id, name, color })
         .collect())
+}
+
+#[tauri::command]
+pub async fn task_lists(state: tauri::State<'_, AppState>) -> Result<Vec<TaskListVm>, String> {
+    writable_task_lists(&state.pool)
+        .await
+        .map_err(|e| crate::errors::user_facing(&e))
 }
 
 #[cfg(test)]

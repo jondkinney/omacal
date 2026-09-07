@@ -46,6 +46,10 @@ USAGE
                                            organizer, description
   omacal search <query> [--json]           titles, nearest to today first
   omacal calendars [--json]                every calendar, with ids
+  omacal tasks [--all] [--json]            what still needs doing, with ids
+  omacal tasks add \"title\" [--list ID] [--due YYYY-MM-DD] [--at HH:MM]
+  omacal tasks done ID | omacal tasks reopen ID
+  omacal tasks edit ID [--title T] [--due D|none] [--at HH:MM|none] [--notes N|none]
   omacal weather [--json]                  the app's forecast, and the place it is for
   omacal doctor [--json]                   diagnose this install
   omacal skill                             print the agent skill this binary carries
@@ -95,6 +99,10 @@ pub(crate) enum Command {
     Show { id: i64 },
     Search { query: String },
     Calendars,
+    /// What still needs doing, off the same rows the window draws. `all`
+    /// adds the recently completed, which the window keeps in its own
+    /// section rather than in the list.
+    Tasks { all: bool },
     /// The forecast the window shows, off the same cache — and where it is
     /// for, since that place may not be where the user is.
     Weather,
@@ -165,6 +173,18 @@ pub(crate) fn command_catalog() -> Vec<CommandInfo> {
         CommandInfo { name: "calendars", usage: "calendars", writes: false,
             description: "every calendar with ids and accounts",
             flags: &["--json"] },
+        CommandInfo { name: "tasks", usage: "tasks [--all]", writes: false,
+            description: "what still needs doing, with due dates and ids",
+            flags: &["--all", "--json"] },
+        CommandInfo { name: "tasks add", usage: "tasks add \"title\" [--list ID] [--due D] [--at HH:MM]", writes: true,
+            description: "add a task to a list",
+            flags: &["--list", "--due", "--at", "--json"] },
+        CommandInfo { name: "tasks done", usage: "tasks done|reopen ID", writes: true,
+            description: "tick a task off, or put it back",
+            flags: &["--json"] },
+        CommandInfo { name: "tasks edit", usage: "tasks edit ID [--title T] [--due D|none] [--at HH:MM|none] [--notes N|none]", writes: true,
+            description: "change a task's title, due date or note",
+            flags: &["--title", "--due", "--at", "--notes", "--json"] },
         CommandInfo { name: "weather", usage: "weather", writes: false,
             description: "the app's forecast: the place it is for and how that was decided, now, and eight days",
             flags: &["--json"] },
@@ -226,6 +246,16 @@ pub(crate) fn parse(argv: &[String]) -> Option<Result<Invocation, String>> {
             ))),
         },
         "calendars" => build(Command::Calendars),
+        "tasks" => {
+            // A verb means a change, and changes go over the socket.
+            if let Some(parsed) = crate::cli_tasks::parse(&rest) {
+                return Some(parsed.map(|cmd| Invocation {
+                    command: Command::Write(Box::new(crate::cli_write::WriteCmd::Task(cmd))),
+                    json,
+                }));
+            }
+            build(Command::Tasks { all: rest.iter().any(|a| a.as_str() == "--all") })
+        }
         "weather" => build(Command::Weather),
         "doctor" => build(Command::Doctor),
         "agenda" => {
@@ -639,6 +669,63 @@ fn print_rows_human(rows: &[Row]) {
     }
 }
 
+/// One task, as an agent consumes it. `due` is RFC 3339 in the display
+/// zone when the task has a time, and a bare date when it does not — the
+/// distinction the app stores, kept rather than flattened.
+fn task_json(row: &omacal_store::TaskRow) -> serde_json::Value {
+    let t = &row.task;
+    serde_json::json!({
+        "id": t.id,
+        "summary": t.summary.clone().unwrap_or_default(),
+        "notes": t.description,
+        "due": t.due_utc.map(|ms| due_wire(ms, t.due_all_day)),
+        "dueMs": t.due_utc,
+        "dueAllDay": t.due_all_day,
+        "overdue": t.due_utc.is_some_and(|ms| ms < crate::now_ms()) && t.status != "completed",
+        "completed": t.status == "completed",
+        "list": row.calendar_summary,
+        "listId": t.calendar_id,
+        "canWrite": row.access_role != "reader",
+    })
+}
+
+/// A due date on the wire: a bare date when the task has no hour, and an
+/// instant when it has one.
+fn due_wire(ms: i64, all_day: bool) -> String {
+    let z = jiff::Timestamp::from_millisecond(ms)
+        .unwrap_or(jiff::Timestamp::UNIX_EPOCH)
+        .to_zoned(jiff::tz::TimeZone::system());
+    if all_day { z.date().to_string() } else { z.timestamp().to_string() }
+}
+
+/// The tasks as a person reads them: what is late first, then what is due,
+/// then what has no date — the order somebody actually works in.
+pub(crate) fn task_lines(rows: &[&omacal_store::TaskRow], now_ms: i64) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut sorted: Vec<&&omacal_store::TaskRow> = rows.iter().collect();
+    sorted.sort_by_key(|r| (r.task.due_utc.is_none(), r.task.due_utc.unwrap_or(i64::MAX)));
+    for r in sorted {
+        let t = &r.task;
+        let when = match t.due_utc {
+            None => "        ".to_string(),
+            Some(ms) => {
+                let overdue = ms < now_ms && t.status != "completed";
+                let d = due_wire(ms, t.due_all_day);
+                let d = d.split('T').next().unwrap_or(&d).to_string();
+                if overdue { format!("{d} !") } else { format!("{d}  ") }
+            }
+        };
+        let mark = if t.status == "completed" { "x" } else { " " };
+        out.push(format!(
+            "{:>5}  [{mark}] {when}  {}  ({})",
+            t.id,
+            t.summary.clone().unwrap_or_else(|| "(untitled)".into()),
+            r.calendar_summary,
+        ));
+    }
+    out
+}
+
 /// The forecast as a person reads it: the place first, with how it was
 /// decided, because that place may not be where they are; then now; then
 /// the days. Units follow the app's setting, rounded here once, the way
@@ -837,6 +924,24 @@ pub(crate) fn run(inv: Invocation) -> i32 {
                     unreachable!("handled above, before the database")
                 }
                 Command::Write(_) => unreachable!("taken by value above"),
+                Command::Tasks { all } => {
+                    let since = if *all { crate::now_ms() - 7 * 24 * 3_600_000 } else { crate::now_ms() };
+                    let rows = omacal_store::tasks_for_ui(&pool, since).await?;
+                    let open: Vec<_> = rows
+                        .iter()
+                        .filter(|r| *all || r.task.status != "completed")
+                        .collect();
+                    if inv.json {
+                        print_json(&open.iter().map(|r| task_json(r)).collect::<Vec<_>>());
+                    } else if open.is_empty() {
+                        println!("Nothing to do.");
+                    } else {
+                        for line in task_lines(&open, crate::now_ms()) {
+                            println!("{line}");
+                        }
+                    }
+                    Ok(EXIT_OK)
+                }
                 Command::Weather => {
                     // The window's own cache, gated the way the window is:
                     // off in Settings answers empty, and so does a fresh
@@ -1242,8 +1347,8 @@ mod tests {
         let names: Vec<&str> = catalog.iter().map(|c| c.name).collect();
         for required in [
             "agenda", "events list", "events show", "events create", "events update",
-            "events delete", "events respond", "search", "calendars", "weather", "doctor",
-            "skill", "commands", "cli-help",
+            "events delete", "events respond", "search", "calendars", "tasks", "tasks add",
+            "tasks done", "tasks edit", "weather", "doctor", "skill", "commands", "cli-help",
         ] {
             assert_eq!(
                 names.iter().filter(|n| **n == required).count(),
@@ -1251,13 +1356,14 @@ mod tests {
                 "{required} appears exactly once"
             );
         }
-        assert_eq!(names.len(), 14, "nothing in the catalog the parser does not answer");
+        assert_eq!(names.len(), 18, "nothing in the catalog the parser does not answer");
         let writers: Vec<&str> =
             catalog.iter().filter(|c| c.writes).map(|c| c.name).collect();
         assert_eq!(
             writers,
-            ["events create", "events update", "events delete", "events respond"],
-            "exactly the four socket verbs write"
+            ["events create", "events update", "events delete", "events respond",
+             "tasks add", "tasks done", "tasks edit"],
+            "exactly the socket verbs write"
         );
         assert!(serde_json::to_string(&catalog).is_ok());
 
@@ -1265,6 +1371,23 @@ mod tests {
             parse(&argv("commands --json")),
             Some(Ok(Invocation { command: Command::Commands, json: true }))
         );
+
+        // The read and the three write verbs, as the catalog promises them.
+        assert_eq!(
+            parse(&argv("tasks")),
+            Some(Ok(Invocation { command: Command::Tasks { all: false }, json: false }))
+        );
+        assert_eq!(
+            parse(&argv("tasks --all --json")),
+            Some(Ok(Invocation { command: Command::Tasks { all: true }, json: true }))
+        );
+        for verb in ["add Thing", "done 4", "reopen 4", "edit 4 --title T"] {
+            let parsed = parse(&argv(&format!("tasks {verb}")));
+            assert!(
+                matches!(parsed, Some(Ok(Invocation { command: Command::Write(_), .. }))),
+                "tasks {verb} is a write",
+            );
+        }
     }
 
     /// The forecast a person reads leads with the place and how it was

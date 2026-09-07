@@ -5,6 +5,7 @@ mod browser;
 mod caldav_account;
 mod cli;
 mod cli_skill;
+mod cli_tasks;
 mod cli_write;
 mod caldav_write;
 mod calendars;

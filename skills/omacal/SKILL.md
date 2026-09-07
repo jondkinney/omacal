@@ -24,6 +24,9 @@ omacal search quarterly review --json
 omacal calendars --json              # every calendar with ids
 omacal weather --json                # the app's forecast (v2.2+): place +
                                      # how it was decided, now, eight days
+omacal tasks --json                  # what still needs doing (v2.3+), with
+                                     # due dates, ids and which list
+omacal tasks --all --json            # including recently completed
 omacal commands --json               # machine-readable catalog of every
                                      # command and flag (v0.8.1+) — check
                                      # here before assuming a flag exists
@@ -53,6 +56,16 @@ user that a reschedule will move the meeting for the other people** — on
 `own-copy` it will not; tell them to ask the organizer instead.
 
 ## Writing (requires the app to be running; omacal v0.7+)
+
+```bash
+omacal tasks add "Renew the domain" --due 2026-09-11 --json
+omacal tasks add "Call the bank" --due 2026-09-11 --at 10:00 --list 3 --json
+omacal tasks done 41 --json          # and `reopen 41` to put it back
+omacal tasks edit 41 --due 2026-09-14 --json
+omacal tasks edit 41 --due none --json     # clears the date; `--at none` keeps
+                                           # the day and drops the hour
+```
+
 
 ```bash
 omacal events create --title "Standup" --date 2026-09-01 \
@@ -131,6 +144,13 @@ When showing the calendar to the user (not piping into a script):
   calendars --json` shows what is hidden.
 - Times are in the user's display zone; trust `start`/`end` for prose and
   `startMs`/`endMs` for arithmetic.
+- Tasks are VTODOs on an iCloud or CalDAV list; a Google-only account has
+  none, and `omacal tasks` printing nothing means that rather than a clear
+  plate. `due` is a bare date when the task has no hour and an instant when
+  it has one — do not invent an hour for one that has none. `overdue` is
+  already computed; say a task is late rather than working it out from the
+  date. Adding needs a list: omit `--list` and it lands on the first one,
+  which `omacal tasks` names in each row.
 - Weather can be stale: `fetched_at` is when the app last reached the
   forecast, and it keeps the last good answer when offline. Check it before
   answering — past about six hours say so ("the forecast is from yesterday
