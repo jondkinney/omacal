@@ -94,7 +94,7 @@
   {#each DOW as d}<span>{d}</span>{/each}
 </div>
 
-<div class="grid">
+<div class="grid quiet-scroll">
   {#each month.rows as row}
     <div class="mrow">
       <div class="bars">

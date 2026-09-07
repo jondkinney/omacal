@@ -61,7 +61,7 @@
 {#if lanes.length || overflow.length}
   <div class="band" class:expanded style="--gutter:{gutterWidth()}">
     <div class="label">ALL-DAY</div>
-    <div class="track">
+    <div class="track quiet-scroll">
     <div class="rows" class:sliding style="--cols:{columns}; --visible:{visible}; --vis:{vis}; --pan:{pan}">
       <!-- Keyed by the event's index, so a re-pack moves a chip's node rather
            than tearing it down and building another where it lands. -->
