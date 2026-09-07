@@ -68,7 +68,7 @@ const AUTOSTART_KEY: &str = "autostart";
 const WEATHER_KEY: &str = "weather_enabled";
 const APPEARANCE_KEY: &str = "appearance";
 const WINDOW_FRAME_KEY: &str = "window_frame";
-const TEMPERATURE_UNIT_KEY: &str = "temperature_unit";
+pub(crate) const TEMPERATURE_UNIT_KEY: &str = "temperature_unit";
 const DISPLAY_TZ_KEY: &str = "display_timezone";
 const SECOND_TZ_KEY: &str = "second_timezone";
 

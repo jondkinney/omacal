@@ -9,7 +9,8 @@
     type WeekPayload, type MonthPayload, type YearPayload, type BigYearPayload, type UiEvent,
   } from './lib/api';
   import { getStatus, installUpdate, openLatestRelease, restartApp, signIn, syncNow, takeOpenDate, type AppStatus } from './lib/status';
-  import { getWeather, weatherByDate, type DayWeather } from './lib/weather';
+  import { dateKey, getWeather, weatherByDate, type DayWeather, type WeatherReport } from './lib/weather';
+  import WeatherPopover from './lib/WeatherPopover.svelte';
   import { changedMeetings, declinedGuests, pendingInvites } from './lib/invites';
   import { calendarColor, getCalendars, offerableCalendarId, setCalendarSelected, type Calendar } from './lib/calendars';
   import {
@@ -252,9 +253,22 @@
    *  headers treat all three the same, as no sky. A failed fetch keeps the
    *  last map for the tray's reason: weather is a convenience surface. */
   let weather = $state<Map<string, DayWeather> | null>(null);
+  /** The whole report behind the map — the place, how it was decided, and
+   *  now — which is what the card opens over. */
+  let weatherReport = $state<WeatherReport | null>(null);
   async function refreshWeather() {
-    try { weather = weatherByDate(await getWeather()); } catch { /* keep the last sky */ }
+    try {
+      const report = await getWeather();
+      weatherReport = report;
+      weather = weatherByDate(report);
+    } catch { /* keep the last sky */ }
   }
+  /** The day whose sky was clicked and the glyph to anchor the card to,
+   *  or null for no card. */
+  let weatherCard = $state<{ dayStartMs: number; anchor: import('./lib/position').Rect } | null>(null);
+  const openWeather = (dayStartMs: number, anchor: import('./lib/position').Rect) => {
+    weatherCard = { dayStartMs, anchor };
+  };
   // Hourly, between the backend's own three-hour fetches — this only reads
   // the cache, so the cost is a local IPC round trip. Refetched immediately
   // when settings change (the toggle lives there) and at startup below.
@@ -1825,7 +1839,7 @@
   {#if view === 'month'}
     {#if month}
       {#if listMode}
-        <Filmstrip days={daysFromMonth(month)} {weather} {revealNowRequest}
+        <Filmstrip days={daysFromMonth(month)} {weather} onweather={openWeather} {revealNowRequest}
                    keyboardCursor={visibleKeyboardCursor}
                    onopen={openGridEvent} />
       {:else}
@@ -1860,13 +1874,13 @@
     {/if}
   {:else if week && visibleWeek}
     {#if listMode}
-      <Filmstrip days={daysFromWeek(visibleWeek)} {weather} {revealNowRequest}
+      <Filmstrip days={daysFromWeek(visibleWeek)} {weather} onweather={openWeather} {revealNowRequest}
                  keyboardCursor={visibleKeyboardCursor}
                  onopen={openGridEvent} />
     {:else}
       <WeekGrid {week} {visibleStartMs} visibleDays={visibleCount}
                 onerror={(m) => (error = m)}
-                {weather} {formPreview} {createColor} {revealNowRequest} bind:hourPx
+                {weather} onweather={openWeather} {formPreview} {createColor} {revealNowRequest} bind:hourPx
                 keyboardCursor={visibleKeyboardCursor}
                 onpan={panView}
                 oncreate={newEventAt} oncreateallday={newAllDayEventOver}
@@ -1942,6 +1956,16 @@
     onedit={() => openEdit(occurrence, rect)}
     ondelete={() => askDelete(occurrence, rect)}
     oncopy={() => copyOccurrence(occurrence)}
+  />
+{/if}
+
+{#if weatherCard && weatherReport && weather?.get(dateKey(weatherCard.dayStartMs))}
+  <WeatherPopover
+    day={weather.get(dateKey(weatherCard.dayStartMs))!}
+    report={weatherReport}
+    today={dateKey(weatherCard.dayStartMs) === dateKey(Date.now())}
+    anchor={weatherCard.anchor}
+    onclose={() => (weatherCard = null)}
   />
 {/if}
 

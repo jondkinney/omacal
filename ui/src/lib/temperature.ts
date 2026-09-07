@@ -17,3 +17,10 @@ export function formatTemp(celsius: number, unit: TemperatureUnit): string {
   const value = unit === 'fahrenheit' ? celsius * (9 / 5) + 32 : celsius;
   return `${Math.round(value)}`;
 }
+
+/** A wind speed the way the card prints it beside the chosen temperature
+ *  unit: km/h with Celsius, mph with Fahrenheit, rounded once here from the
+ *  km/h the forecast carries. */
+export function formatWind(kmh: number, unit: TemperatureUnit): string {
+  return unit === 'fahrenheit' ? `${Math.round(kmh / 1.609344)} mph` : `${Math.round(kmh)} km/h`;
+}

@@ -4116,6 +4116,43 @@ test.describe('App: the temperature unit', () => {
     await page.keyboard.press('f');
     await expect(page.locator('.sdate .wx').first()).toHaveText('88°');
   });
+
+  /** The card (2026-09-07): the sky is a button now, and what it opens leads
+   *  with the place the forecast is for and how that was decided — a
+   *  detected place is a guess from the connection and can be a city off.
+   *  `APP_MON` is the app's frozen today, so this is the "now" card. */
+  test("clicking the day's sky opens the card, and the card names the place first", async ({ page }) => {
+    await page.goto(app('weather'));
+    await page.getByRole('button', { name: /^Weather for/ }).first().click();
+    const card = page.getByRole('dialog', { name: /^Weather for/ });
+    await expect(card).toBeVisible();
+    await expect(card).toContainText('Gurugram');
+    await expect(card).toContainText("from your connection's location, which may be a city off");
+    await expect(card).toContainText('Now, as of 07:15');
+    await expect(card).toContainText('26°C');
+    await page.keyboard.press('Escape');
+    await expect(card).toHaveCount(0);
+  });
+
+  test('the card follows the chosen unit, wind included', async ({ page }) => {
+    await page.goto(app('weather'));
+    await chooseUnit(page, '72°F');
+    await page.getByRole('button', { name: /^Weather for/ }).first().click();
+    const card = page.getByRole('dialog', { name: /^Weather for/ });
+    await expect(card).toContainText('80°F');
+    await expect(card).toContainText('3 mph');
+  });
+
+  /** The filmstrip's heading opens the same card. */
+  test('the filmstrip heading opens the card too', async ({ page }) => {
+    await page.goto(app('weather'));
+    // The week's sky first: it says the forecast has landed and the app has
+    // the keyboard, so `f` is heard.
+    await expect(page.getByRole('button', { name: /^Weather for/ }).first()).toBeVisible();
+    await page.keyboard.press('f');
+    await page.locator('.sdate .wx').first().click();
+    await expect(page.getByRole('dialog', { name: /^Weather for/ })).toContainText('Gurugram');
+  });
 });
 
 /**

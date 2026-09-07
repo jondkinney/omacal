@@ -46,6 +46,7 @@ USAGE
                                            organizer, description
   omacal search <query> [--json]           titles, nearest to today first
   omacal calendars [--json]                every calendar, with ids
+  omacal weather [--json]                  the app's forecast, and the place it is for
   omacal doctor [--json]                   diagnose this install
   omacal skill                             print the agent skill this binary carries
   omacal skill install                     install it for your agents (Claude Code linked
@@ -94,6 +95,9 @@ pub(crate) enum Command {
     Show { id: i64 },
     Search { query: String },
     Calendars,
+    /// The forecast the window shows, off the same cache — and where it is
+    /// for, since that place may not be where the user is.
+    Weather,
     Doctor,
     Help,
     /// The write verbs, whole — parsed, prechecked and executed by
@@ -161,6 +165,9 @@ pub(crate) fn command_catalog() -> Vec<CommandInfo> {
         CommandInfo { name: "calendars", usage: "calendars", writes: false,
             description: "every calendar with ids and accounts",
             flags: &["--json"] },
+        CommandInfo { name: "weather", usage: "weather", writes: false,
+            description: "the app's forecast: the place it is for and how that was decided, now, and eight days",
+            flags: &["--json"] },
         CommandInfo { name: "doctor", usage: "doctor", writes: false,
             description: "diagnose this install",
             flags: &["--json"] },
@@ -219,6 +226,7 @@ pub(crate) fn parse(argv: &[String]) -> Option<Result<Invocation, String>> {
             ))),
         },
         "calendars" => build(Command::Calendars),
+        "weather" => build(Command::Weather),
         "doctor" => build(Command::Doctor),
         "agenda" => {
             let days = match take("--days") {
@@ -631,6 +639,52 @@ fn print_rows_human(rows: &[Row]) {
     }
 }
 
+/// The forecast as a person reads it: the place first, with how it was
+/// decided, because that place may not be where they are; then now; then
+/// the days. Units follow the app's setting, rounded here once, the way
+/// `temperature.ts` does for the header.
+pub(crate) fn weather_lines(report: &crate::weather::WeatherReport, fahrenheit: bool) -> Vec<String> {
+    use crate::weather::LocationSource;
+    let temp = |c: f64| -> String {
+        let v = if fahrenheit { c * 9.0 / 5.0 + 32.0 } else { c };
+        format!("{}°", v.round() as i64)
+    };
+    let wind = |kmh: f64| -> String {
+        if fahrenheit { format!("{} mph", (kmh / 1.609_344).round() as i64) } else { format!("{} km/h", kmh.round() as i64) }
+    };
+    let mut out = Vec::new();
+    let place = report.place.clone().unwrap_or_else(|| "Unknown place".into());
+    let how = match report.source {
+        Some(LocationSource::Configured) => "set in the bar's weather panel",
+        Some(LocationSource::Demo) => "demo data",
+        // An older cache carries no source; it was detected, which is the
+        // honest thing to say about a place nobody chose.
+        Some(LocationSource::Detected) | None => "from your connection's location, which may be a city off",
+    };
+    out.push(format!("{place} ({how})"));
+    if let Some(now) = &report.current {
+        let at = now.at.split_once('T').map_or(now.at.as_str(), |(_, t)| t);
+        out.push(format!(
+            "Now {} {}, feels {}, wind {}, humidity {}% (as of {})",
+            temp(now.temp), now.bucket, temp(now.feels), wind(now.wind_kmh), now.humidity, at
+        ));
+    }
+    for d in &report.days {
+        let mut line = format!("{}  {:<8} {} / {}", d.date, d.bucket, temp(d.tmax), temp(d.tmin));
+        if let Some(r) = d.rain_chance {
+            line.push_str(&format!("  rain {r}%"));
+        }
+        if let Some(w) = d.wind_max_kmh {
+            line.push_str(&format!("  wind {}", wind(w)));
+        }
+        if let (Some(a), Some(b)) = (&d.sunrise, &d.sunset) {
+            line.push_str(&format!("  sun {a}–{b}"));
+        }
+        out.push(line);
+    }
+    out
+}
+
 fn print_json<T: Serialize>(data: &T) {
     println!(
         "{}",
@@ -775,6 +829,33 @@ pub(crate) fn run(inv: Invocation) -> i32 {
                     unreachable!("handled above, before the database")
                 }
                 Command::Write(_) => unreachable!("taken by value above"),
+                Command::Weather => {
+                    // The window's own cache, gated the way the window is:
+                    // off in Settings answers empty, and so does a fresh
+                    // install that has not fetched yet.
+                    let enabled = crate::settings::weather_enabled(&pool).await;
+                    let report = if enabled {
+                        crate::weather::cached_report(&pool).await.unwrap_or_default()
+                    } else {
+                        crate::weather::WeatherReport::default()
+                    };
+                    if inv.json {
+                        print_json(&report);
+                    } else if !enabled {
+                        println!("Weather is off in the app's Settings.");
+                    } else if report.days.is_empty() {
+                        println!("No forecast cached yet — the app fetches one within a minute of starting.");
+                    } else {
+                        let fahrenheit = crate::settings::read(&pool, crate::settings::TEMPERATURE_UNIT_KEY)
+                            .await
+                            .as_deref()
+                            == Some("fahrenheit");
+                        for line in weather_lines(&report, fahrenheit) {
+                            println!("{line}");
+                        }
+                    }
+                    Ok(EXIT_OK)
+                }
                 Command::Calendars => {
                     let cals = omacal_store::list_calendars(&pool).await?;
                     if inv.json {
@@ -1152,7 +1233,7 @@ mod tests {
         let names: Vec<&str> = catalog.iter().map(|c| c.name).collect();
         for required in [
             "agenda", "events list", "events show", "events create", "events update",
-            "events delete", "events respond", "search", "calendars", "doctor",
+            "events delete", "events respond", "search", "calendars", "weather", "doctor",
             "skill", "commands", "cli-help",
         ] {
             assert_eq!(
@@ -1161,7 +1242,7 @@ mod tests {
                 "{required} appears exactly once"
             );
         }
-        assert_eq!(names.len(), 13, "nothing in the catalog the parser does not answer");
+        assert_eq!(names.len(), 14, "nothing in the catalog the parser does not answer");
         let writers: Vec<&str> =
             catalog.iter().filter(|c| c.writes).map(|c| c.name).collect();
         assert_eq!(
@@ -1175,6 +1256,51 @@ mod tests {
             parse(&argv("commands --json")),
             Some(Ok(Invocation { command: Command::Commands, json: true }))
         );
+    }
+
+    /// The forecast a person reads leads with the place and how it was
+    /// decided — the one line this command exists for — then now, then the
+    /// days; Fahrenheit converts once from the stored Celsius and takes mph
+    /// with it; a cache from before the card still prints its days.
+    #[test]
+    fn the_weather_text_leads_with_the_place_and_follows_the_unit() {
+        use crate::weather::{CurrentWeather, DayWeather, LocationSource, WeatherReport};
+        let report = WeatherReport {
+            days: vec![DayWeather {
+                date: "2026-09-07".into(), bucket: "clear".into(), tmax: 33.2, tmin: 25.1,
+                rain_chance: Some(10), wind_max_kmh: Some(12.4),
+                sunrise: Some("06:05".into()), sunset: Some("18:30".into()),
+            }],
+            place: Some("Gurugram".into()),
+            current: Some(CurrentWeather {
+                bucket: "clear".into(), temp: 26.4, feels: 29.1, humidity: 73, wind_kmh: 4.3,
+                at: "2026-09-07T07:15".into(),
+            }),
+            source: Some(LocationSource::Detected),
+        };
+        let c = weather_lines(&report, false);
+        assert_eq!(c[0], "Gurugram (from your connection's location, which may be a city off)");
+        assert_eq!(c[1], "Now 26° clear, feels 29°, wind 4 km/h, humidity 73% (as of 07:15)");
+        assert_eq!(c[2], "2026-09-07  clear    33° / 25°  rain 10%  wind 12 km/h  sun 06:05–18:30");
+
+        let f = weather_lines(&report, true);
+        assert_eq!(f[1], "Now 80° clear, feels 84°, wind 3 mph, humidity 73% (as of 07:15)");
+        assert!(f[2].starts_with("2026-09-07  clear    92° / 77°"), "{}", f[2]);
+
+        let configured = WeatherReport { source: Some(LocationSource::Configured), ..report.clone() };
+        assert_eq!(weather_lines(&configured, false)[0], "Gurugram (set in the bar's weather panel)");
+
+        let old = WeatherReport {
+            days: vec![DayWeather {
+                date: "2026-09-06".into(), bucket: "rain".into(), tmax: 30.0, tmin: 24.0,
+                rain_chance: None, wind_max_kmh: None, sunrise: None, sunset: None,
+            }],
+            place: None, current: None, source: None,
+        };
+        let o = weather_lines(&old, false);
+        assert_eq!(o[0], "Unknown place (from your connection's location, which may be a city off)");
+        assert_eq!(o[1], "2026-09-06  rain     30° / 24°");
+        assert_eq!(o.len(), 2, "no current line without a current block");
     }
 
     /// The embedded logo is the generator's output: truecolor half-blocks,

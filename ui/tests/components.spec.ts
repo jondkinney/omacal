@@ -5575,3 +5575,80 @@ test.describe('EventBlock: nobody is coming', () => {
       .toContain('line-through');
   });
 });
+
+/**
+ * The weather card behind a day header's sky (2026-09-07). Its first rule
+ * is the place: the forecast is for `report.place`, decided the way
+ * `report.source` says, and that may not be where the user is — a detected
+ * place is a guess from the connection's IP and can be a city off — so the
+ * card leads with both, on every variant, before any number.
+ */
+test.describe('Weather card', () => {
+  const card = (page: import('@playwright/test').Page, name: string) =>
+    page.getByRole('dialog', { name: `Weather for ${name}` });
+
+  test('today leads with now, and names the place and where it came from', async ({ page }) => {
+    await page.goto(show('WeatherPopover', 'today'));
+    const c = card(page, 'Monday, September 7');
+    await expect(c).toBeVisible();
+    await expect(c).toContainText('Gurugram');
+    await expect(c).toContainText("from your connection's location, which may be a city off");
+    await expect(c).toContainText('Now, as of 07:15');
+    await expect(c).toContainText('26°C');
+    for (const [label, value] of [['Feels', '29°'], ['Wind', '4 km/h'], ['Humid', '73%']]) {
+      await expect(c).toContainText(label);
+      await expect(c).toContainText(value);
+    }
+    await expect(c).toContainText('High 33° · Low 25°');
+    await expect(c).toContainText('Sunrise 06:05 · Sunset 18:30');
+    await expect(c).toHaveScreenshot('weather-card-today.png');
+  });
+
+  test('a later day is its forecast: low, rain, wind and the sun', async ({ page }) => {
+    await page.goto(show('WeatherPopover', 'later'));
+    const c = card(page, 'Thursday, September 10');
+    await expect(c).toContainText('Thursday, September 10');
+    await expect(c).toContainText('31°C');
+    for (const [label, value] of [['Low', '25°'], ['Rain', '85%'], ['Wind', '18 km/h']]) {
+      await expect(c).toContainText(label);
+      await expect(c).toContainText(value);
+    }
+    await expect(c).not.toContainText('Feels');
+    await expect(c).toContainText('Sunrise 06:06 · Sunset 18:29');
+    await expect(c).toContainText('Gurugram');
+  });
+
+  test('a place the user chose says so', async ({ page }) => {
+    await page.goto(show('WeatherPopover', 'configured'));
+    const c = card(page, 'Thursday, September 10');
+    await expect(c).toContainText('Sofia');
+    await expect(c).toContainText("set in the bar's weather panel");
+    await expect(c).not.toContainText('connection');
+  });
+
+  /** A cache from before the card: no current, no extras, no place. The
+   *  card still opens, says what it can, and calls the unknown place a
+   *  detected one — the honest reading of a place nobody chose. */
+  test('a cache from before the card still makes a card', async ({ page }) => {
+    await page.goto(show('WeatherPopover', 'bare'));
+    const c = card(page, 'Monday, September 7');
+    await expect(c).toContainText('Unknown place');
+    await expect(c).toContainText("from your connection's location");
+    await expect(c).toContainText('Today');
+    await expect(c).toContainText('30°C');
+    await expect(c).toContainText('Low');
+    await expect(c).toContainText('24°');
+    await expect(c).not.toContainText('Rain');
+    await expect(c).not.toContainText('Sunrise');
+  });
+
+  test('Fahrenheit takes mph with it', async ({ page }) => {
+    await page.goto(show('WeatherPopover', 'today'));
+    await page.evaluate(() => (window as any).__setTemperatureUnit('fahrenheit'));
+    const c = card(page, 'Monday, September 7');
+    await expect(c).toContainText('80°F');
+    await expect(c).toContainText('84°');
+    await expect(c).toContainText('3 mph');
+    await expect(c).toContainText('High 92° · Low 77°');
+  });
+});

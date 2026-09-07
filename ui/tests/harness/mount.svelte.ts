@@ -10,6 +10,7 @@ import AllDayBand from '../../src/lib/AllDayBand.svelte';
 import Header from '../../src/lib/Header.svelte';
 import CalendarPopover from '../../src/lib/CalendarPopover.svelte';
 import EventPopover from '../../src/lib/EventPopover.svelte';
+import WeatherPopover from '../../src/lib/WeatherPopover.svelte';
 import EventForm from '../../src/lib/EventForm.svelte';
 import DeleteConfirm from '../../src/lib/DeleteConfirm.svelte';
 import * as eventform from '../../src/lib/eventform';
@@ -82,7 +83,7 @@ if (name === 'App') {
 
 const COMPONENTS: Record<string, any> = {
   WeekGrid, MonthGrid, YearGrid, BigYearRibbon, Filmstrip, EventBlock, AllDayBand, Header,
-  CalendarPopover, EventPopover, EventForm, DeleteConfirm,
+  CalendarPopover, EventPopover, EventForm, DeleteConfirm, WeatherPopover,
 };
 const target = document.getElementById('app')!;
 

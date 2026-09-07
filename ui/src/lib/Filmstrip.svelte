@@ -12,13 +12,16 @@
   import type { ListDay } from './filmstrip';
   import { cursorNamesEvent, type KeyboardCursor } from './keyboardnav';
 
-  let { days, weather = null, revealNowRequest = 0, keyboardCursor = null, onopen }: {
+  let { days, weather = null, onweather = null, revealNowRequest = 0, keyboardCursor = null, onopen }: {
     /** Already grouped, ordered and emptied of blank days by `filmstrip.ts`.
      *  This component draws a list; it does not decide what is in one. */
     days: ListDay[];
     /** The forecast by ISO date, or null for none — same contract as
      *  `WeekGrid`'s: a heading with no sky is just a heading. */
     weather?: Map<string, DayWeather> | null;
+    /** Same contract as `WeekGrid`'s: the heading's sky was clicked, here
+     *  is the day and the glyph's rect for the card. */
+    onweather?: ((dayStartMs: number, anchor: import('./position').Rect) => void) | null;
     /** The explicit Today request counter shared with the clock grid. */
     revealNowRequest?: number;
     keyboardCursor?: KeyboardCursor | null;
@@ -137,9 +140,14 @@
           {dateLabel(d.startMs)}
           {#if weather?.get(dateKey(d.startMs))}
             {@const wx = weather.get(dateKey(d.startMs))!}
-            <span class="wx">
+            <button type="button" class="wx"
+                    aria-label="Weather for {dateLabel(d.startMs)}: {wx.bucket}, {formatTemp(wx.tmax, temperatureUnit())}°"
+                    onclick={(e) => {
+                      e.stopPropagation();
+                      onweather?.(d.startMs, (e.currentTarget as HTMLElement).getBoundingClientRect());
+                    }}>
               <WeatherGlyph bucket={wx.bucket} size={12} />{formatTemp(wx.tmax, temperatureUnit())}°
-            </span>
+            </button>
           {/if}
         </h2>
         <ul>
@@ -260,7 +268,10 @@
   /* The sky beside the day it belongs to, in the heading's own voice. */
   .sdate .wx { display: inline-flex; align-items: center; gap: 3px;
                font-weight: 500; letter-spacing: 0;
-               font-variant-numeric: tabular-nums; }
+               font-variant-numeric: tabular-nums;
+               appearance: none; -webkit-appearance: none; background: none; border: 0;
+               padding: 0; margin: 0; font: inherit; color: inherit; cursor: pointer; }
+  .sdate .wx:hover, .sdate .wx:focus-visible { color: var(--text); }
 
   ul { list-style: none; margin: 0; padding: 0; }
 
