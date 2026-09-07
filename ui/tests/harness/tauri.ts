@@ -1131,7 +1131,7 @@ export function installTauriStub(scenario: string): Harness {
       }
       case 'set_task_completed':
         taskRows = taskRows.map((t) =>
-          t.id === args.id ? { ...t, completed: args.completed as boolean } : t);
+          t.id === args.id ? { ...t, completed: args.on as boolean } : t);
         return taskRows;
       case 'update_task':
         taskRows = taskRows.map((t) => t.id === args.id ? {
