@@ -4,6 +4,7 @@ import type {
 } from '../src/lib/api';
 import type { AppStatus } from '../src/lib/status';
 import type { DayWeather, WeatherReport } from '../src/lib/weather';
+import type { Task } from '../src/lib/tasks';
 import type { Calendar } from '../src/lib/calendars';
 import type { Attendee, EventDetail } from '../src/lib/eventdetail';
 import type { Rect } from '../src/lib/position';
@@ -1992,7 +1993,7 @@ export const TASK_LISTS = [
   { calendarId: 1, name: 'Personal', color: '#5b8def' },
   { calendarId: 2, name: 'Work', color: '#2dd4bf' },
 ];
-export const TASKS = [
+export const TASKS: Task[] = [
   // Dated against `APP_NOW` (Mon 29 Jan 2024), so "By when" has an overdue
   // row, a today row and an undated one — the three groups that differ.
   { id: 11, calendarId: 1, summary: 'Buy milk', notes: null, dueMs: null, dueAllDay: true,
