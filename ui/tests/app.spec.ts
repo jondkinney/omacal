@@ -5010,3 +5010,95 @@ test.describe('dropping a file on the calendar', () => {
     await expect(page.getByRole('dialog', { name: /^Import / })).toHaveCount(0);
   });
 });
+
+/**
+ * Tasks on the week, and dragging one to another day.
+ *
+ * The row exists only when the visible week has something due: a strip of
+ * chrome for a week with nothing in it is the cost this shape was warned
+ * about, and it is avoidable.
+ */
+test.describe('tasks on the grid', () => {
+  const openWeek = async (page: import('@playwright/test').Page) => {
+    await page.clock.setFixedTime(APP_NOW);
+    await page.goto(app());
+    await expect(page.locator('.ev').first()).toBeVisible();
+  };
+
+  test('due tasks appear in a row of their own, and overdue ones on today', async ({ page }) => {
+    await openWeek(page);
+    const row = page.locator('.trow');
+    await expect(row).toBeVisible();
+    await expect(row.getByText('Ship the release')).toBeVisible();
+    // The overdue one is drawn on today rather than off the week, and marked.
+    await expect(row.locator('.tchip.over')).toHaveCount(1);
+    await expect(row.locator('.tchip.over')).toContainText('Answer the issue');
+    // A completed task is not on the grid at all.
+    await expect(row.getByText('Old standup note')).toHaveCount(0);
+  });
+
+  test('dragging a task to another day moves its due date', async ({ page }) => {
+    await openWeek(page);
+    // The title is the grab handle; the checkbox beside it is not.
+    const title = page.locator('.trow .tchip .tt', { hasText: 'Ship the release' });
+    const from = (await title.boundingBox())!;
+    const cell = (await page.locator('.trow .tcell').first().boundingBox())!;
+    const y = from.y + from.height / 2;
+
+    await page.mouse.move(from.x + 4, y);
+    await page.mouse.down();
+    await page.mouse.move(from.x + 4 + cell.width * 2, y, { steps: 8 });
+    await page.mouse.up();
+
+    // Two columns on: the day moves, the all-day flag is kept.
+    await expect.poll(() => page.evaluate(() =>
+      (window as any).__harness.calls.filter((c: any) => c.cmd === 'update_task').pop()?.args,
+    )).toMatchObject({ summary: 'Ship the release', dueAllDay: true });
+    // `Date.UTC`, not `new Date(...)`: the suite fixes the browser to UTC
+    // (playwright.config.ts) while this expression runs in the runner's own
+    // zone, and the two disagree by the machine's offset.
+    const moved = await page.evaluate(() =>
+      (window as any).__harness.calls.filter((c: any) => c.cmd === 'update_task').pop()?.args.dueMs);
+    expect(moved).toBe(Date.UTC(2024, 0, 31));
+  });
+
+  /** Escape puts it back, the same escape an event drag honours. */
+  test('escape during a drag writes nothing', async ({ page }) => {
+    await openWeek(page);
+    const title = page.locator('.trow .tchip .tt', { hasText: 'Ship the release' });
+    const from = (await title.boundingBox())!;
+    const cell = (await page.locator('.trow .tcell').first().boundingBox())!;
+    const y = from.y + from.height / 2;
+
+    await page.mouse.move(from.x + 4, y);
+    await page.mouse.down();
+    await page.mouse.move(from.x + 4 + cell.width * 2, y, { steps: 8 });
+    await page.keyboard.press('Escape');
+    await page.mouse.up();
+
+    expect(await page.evaluate(() =>
+      (window as any).__harness.calls.filter((c: any) => c.cmd === 'update_task').length)).toBe(0);
+  });
+
+  test('the checkbox on a chip completes the task', async ({ page }) => {
+    await openWeek(page);
+    await page.locator('.trow').getByRole('checkbox', { name: 'Complete Ship the release' }).click();
+    await expect.poll(() => page.evaluate(() =>
+      (window as any).__harness.calls.filter((c: any) => c.cmd === 'set_task_completed').pop()?.args,
+    )).toMatchObject({ on: true });
+    // Once done it leaves the grid: the row is what still needs doing.
+    await expect(page.locator('.trow').getByText('Ship the release')).toHaveCount(0);
+  });
+
+  /** No chrome for a week with nothing due. */
+  test('a week with no due tasks has no row', async ({ page }) => {
+    await page.clock.setFixedTime(APP_NOW);
+    await page.goto(app());
+    await expect(page.locator('.ev').first()).toBeVisible();
+    await expect(page.locator('.trow')).toBeVisible();
+
+    // Forward a year: nothing is due there.
+    for (let i = 0; i < 5; i += 1) await page.keyboard.press('l');
+    await expect(page.locator('.trow')).toHaveCount(0);
+  });
+});

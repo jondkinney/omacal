@@ -13,6 +13,8 @@
   import WeatherPopover from './lib/WeatherPopover.svelte';
   import ImportPanel from './lib/ImportPanel.svelte';
   import TasksSidebar from './lib/TasksSidebar.svelte';
+  import { taskChips } from './lib/taskchips';
+  import { listTasks, setTaskCompleted, taskLists, updateTask, type Task, type TaskList } from './lib/tasks';
   import { isIcs } from './lib/importics';
   import { changedMeetings, declinedGuests, pendingInvites } from './lib/invites';
   import { calendarColor, getCalendars, offerableCalendarId, setCalendarSelected, type Calendar } from './lib/calendars';
@@ -279,6 +281,52 @@
    *  menu, closed from its own corner; the calendar keeps working either
    *  way, which is why this is a layout row and not a modal. */
   let tasksOpen = $state(false);
+
+  /** The tasks the grid draws, whether or not the sidebar is open: a task
+   *  due Thursday belongs on Thursday either way, and a row that appeared
+   *  only while a panel was open would be a panel's decoration rather than
+   *  part of the week. */
+  let taskRows = $state<Task[]>([]);
+  let taskListRows = $state<TaskList[]>([]);
+  const weekTasks = $derived(taskChips(taskRows, Date.now(), taskListRows));
+  async function refreshTasks() {
+    try {
+      const [t, l] = await Promise.all([listTasks(), taskLists()]);
+      taskRows = t;
+      taskListRows = l;
+    } catch { /* tasks are a side panel; a failure leaves the last set */ }
+  }
+  $effect(() => { void refreshTasks(); });
+
+  /** A chip dragged to another column. The grid says which day; what a due
+   *  date *becomes* is decided here, because only this side knows whether
+   *  the task had an hour worth keeping. */
+  async function moveTask(id: number, dayStartMs: number) {
+    const task = taskRows.find((t) => t.id === id);
+    if (!task) return;
+    const at = new Date(dayStartMs);
+    let dueMs = at.getTime();
+    if (!task.dueAllDay && task.dueMs !== null) {
+      // A task due at 18:00 stays due at 18:00 on its new day: the drag
+      // moved the day, and nothing about it said anything about the hour.
+      const was = new Date(task.dueMs);
+      at.setHours(was.getHours(), was.getMinutes(), 0, 0);
+      dueMs = at.getTime();
+    }
+    try {
+      taskRows = await updateTask(id, task.summary, dueMs, task.dueAllDay, task.notes);
+    } catch (e) {
+      error = String(e);
+    }
+  }
+
+  async function completeTask(id: number, done: boolean) {
+    try {
+      taskRows = await setTaskCompleted(id, done);
+    } catch (e) {
+      error = String(e);
+    }
+  }
 
   /** The `.ics` a user dropped on the window, or null for no import in
    *  progress (#67). Tauri delivers the drop as paths rather than as HTML5
@@ -1872,7 +1920,8 @@
        week, and a panel over the grid hides the thing the dates refer to. -->
   <div class="workspace">
     {#if tasksOpen}
-      <TasksSidebar onclose={() => (tasksOpen = false)} onchange={() => { void refreshAfterWrite(); }} />
+      <TasksSidebar onclose={() => (tasksOpen = false)}
+                    onchange={() => { void refreshTasks(); }} />
     {/if}
     <div class="view">
     {#if view === 'month'}
@@ -1919,7 +1968,9 @@
       {:else}
         <WeekGrid {week} {visibleStartMs} visibleDays={visibleCount}
                   onerror={(m) => (error = m)}
-                  {weather} {weatherStale} onweather={openWeather} {formPreview} {createColor} {revealNowRequest} bind:hourPx
+                  {weather} {weatherStale} onweather={openWeather}
+                  tasks={weekTasks} ontaskmove={moveTask} ontasktoggle={completeTask}
+                  {formPreview} {createColor} {revealNowRequest} bind:hourPx
                   keyboardCursor={visibleKeyboardCursor}
                   onpan={panView}
                   oncreate={newEventAt} oncreateallday={newAllDayEventOver}

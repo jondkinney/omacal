@@ -6,6 +6,7 @@
   import { formatTemp } from './temperature';
   import WeatherGlyph from './WeatherGlyph.svelte';
   import { dateKey, type DayWeather } from './weather';
+  import type { TaskChip } from './taskchips';
   import { gutterLabel, zoneAbbrev, zoneGutterLabel } from './timefmt';
   import { tick, untrack } from 'svelte';
   import { HOUR_PX_DEFAULT, hourPxAfterPinch, hourPxAfterWheel, scrollTopKeeping } from './zoom';
@@ -26,7 +27,7 @@
   import { cursorNamesEvent, type KeyboardCursor } from './keyboardnav';
   import { dateOf } from './eventform';
 
-  let { week, weather = null, weatherStale = false, onweather = null, formPreview = null, createColor = null, revealNowRequest = 0, keyboardCursor = null, onpan = null, hourPx = $bindable(HOUR_PX_DEFAULT), visibleStartMs = null, visibleDays = null, onerror = null, oncreate, oncreateallday, onedit, ondelete, oncopy, onmove, ondraftmove = null, onresponded }: {
+  let { week, weather = null, weatherStale = false, onweather = null, tasks = null, ontaskmove = null, ontasktoggle = null, formPreview = null, createColor = null, revealNowRequest = 0, keyboardCursor = null, onpan = null, hourPx = $bindable(HOUR_PX_DEFAULT), visibleStartMs = null, visibleDays = null, onerror = null, oncreate, oncreateallday, onedit, ondelete, oncopy, onmove, ondraftmove = null, onresponded }: {
     /** Padded since 2026-09-03: `visibleDays` from `visibleStartMs` are what
      *  is on screen, and the days either side are the track's to slide into
      *  under a finger (`weekwindow.ts`). Both null — a standalone mount, a
@@ -52,6 +53,16 @@
      *  (`weather.ts`'s `freshness`). The glyph fades and says so, so a
      *  stale sky is noticed without opening a card. */
     weatherStale?: boolean;
+    /** Tasks due in this week, by the ISO date they fall on (`weather.ts`'s
+     *  `dateKey`). Null or empty draws no row at all: a strip of chrome for
+     *  a week with nothing due is the cost Option B was warned about, and
+     *  it is avoidable. */
+    tasks?: Map<string, TaskChip[]> | null;
+    /** A task chip was dragged to another day: its id and that day's start.
+     *  The grid decides which column, never what a due date becomes — the
+     *  hour and the all-day flag are the caller's to keep. */
+    ontaskmove?: ((id: number, dayStartMs: number) => void) | null;
+    ontasktoggle?: ((id: number, done: boolean) => void) | null;
     /** The sky in a day header was clicked: that day's start and the
      *  glyph's own rect, for App to open the weather card over. Optional —
      *  a grid without it keeps the glyph as the label it always was. */
@@ -612,6 +623,76 @@
     drag && drag.moving && drag.id === event.id && drag.startMs === event.start_ms
       ? drag.landed
       : null;
+
+  /** Whether any visible day has a task due. The row exists only then. */
+  const anyTasks = $derived(
+    renderedDays.some((d) => (tasks?.get(dateKey(d.start_ms))?.length ?? 0) > 0),
+  );
+
+  /** A task chip being dragged across the row: which one, from where, and
+   *  how many columns the pointer has travelled. */
+  let taskDrag = $state<
+    { id: number; fromMs: number; originX: number; colWidth: number; cols: number; moving: boolean } | null
+  >(null);
+
+  /** The day a drag currently points at, or null when nothing is moving.
+   *  One derived answer rather than a function called per cell, so the
+   *  landing chip and the lit column cannot disagree about where it is. */
+  const taskDropMs = $derived.by(() => {
+    if (!taskDrag || !taskDrag.moving) return null;
+    const days = renderedDays.map((d) => d.start_ms);
+    const i = days.indexOf(taskDrag.fromMs);
+    if (i < 0) return null;
+    return days[Math.min(days.length - 1, Math.max(0, i + taskDrag.cols))];
+  });
+  /** Whether a chip is the one in flight, and so drawn under the pointer
+   *  rather than in the column it came from. */
+  const inFlight = (chip: TaskChip) => taskDrag?.moving === true && taskDrag.id === chip.id;
+
+  function startTaskDrag(chip: TaskChip, dayMs: number, e: PointerEvent) {
+    if (e.button !== 0 || !chip.canWrite || !ontaskmove) return;
+    const col = (e.currentTarget as HTMLElement).closest('.tcell');
+    if (!col) return;
+    taskDrag = {
+      id: chip.id,
+      fromMs: dayMs,
+      originX: e.clientX,
+      colWidth: col.getBoundingClientRect().width,
+      cols: 0,
+      moving: false,
+    };
+    window.addEventListener('pointermove', onTaskDragMove);
+    window.addEventListener('pointerup', onTaskDragEnd);
+    window.addEventListener('keydown', onTaskDragKey);
+  }
+
+  function onTaskDragMove(e: PointerEvent) {
+    if (!taskDrag) return;
+    const dx = e.clientX - taskDrag.originX;
+    if (!taskDrag.moving && !beganDrag(dx, 0)) return;
+    taskDrag.moving = true;
+    taskDrag.cols = colsMoved(dx, taskDrag.colWidth);
+  }
+
+  function endTaskDrag(commit: boolean) {
+    const d = taskDrag;
+    taskDrag = null;
+    window.removeEventListener('pointermove', onTaskDragMove);
+    window.removeEventListener('pointerup', onTaskDragEnd);
+    window.removeEventListener('keydown', onTaskDragKey);
+    if (!d || !d.moving || !commit || d.cols === 0) return;
+    const days = renderedDays.map((x) => x.start_ms);
+    const i = days.indexOf(d.fromMs);
+    if (i < 0) return;
+    const j = Math.min(days.length - 1, Math.max(0, i + d.cols));
+    if (days[j] !== d.fromMs) ontaskmove?.(d.id, days[j]);
+  }
+
+  const onTaskDragEnd = () => endTaskDrag(true);
+  /** Escape puts it back, the same escape the event drag honours. */
+  const onTaskDragKey = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') endTaskDrag(false);
+  };
 
   function startDrag(event: UiEvent, day: { start_ms: number; end_ms: number }, e: PointerEvent) {
     // Primary button only: a right-click opens a context menu and must not
@@ -1367,6 +1448,52 @@
      occurrence's `start_ms` is its own day (`commands::assemble_week` calls
      `to_ui` per expanded occurrence), which is exactly what
      `occurrenceStartMs` has to carry. -->
+<!-- Tasks get a row of their own rather than a place in the all-day band:
+     an event is a commitment at a time and a task is something to finish,
+     and a band holding both makes the busiest strip on the screen busier.
+     Drawn only when the visible week has something due, so a week with no
+     tasks carries no chrome for them. -->
+{#if anyTasks}
+  <div class="trow" class:dragging={taskDrag?.moving}>
+    <div class="tgutter">TASKS</div>
+    <div class="tcols" style="--cols:{renderedDays.length}">
+      {#each renderedDays as d (d.start_ms)}
+        <div class="tcell" class:drop={taskDropMs === d.start_ms && taskDropMs !== taskDrag?.fromMs}>
+          {#each tasks?.get(dateKey(d.start_ms)) ?? [] as chip (chip.id)}
+            {#if !inFlight(chip)}
+              <div class="tchip" class:over={chip.overdue} style:--cal={chip.color ?? 'var(--muted)'}>
+                <input
+                  type="checkbox"
+                  checked={false}
+                  disabled={!chip.canWrite}
+                  aria-label="Complete {chip.summary}"
+                  onchange={() => ontasktoggle?.(chip.id, true)}
+                />
+                <!-- The title is the grab handle: a button rather than the
+                     whole chip, so the checkbox beside it stays its own
+                     control instead of nesting inside one. -->
+                <button class="tt" disabled={!chip.canWrite}
+                        onpointerdown={(e) => startTaskDrag(chip, d.start_ms, e)}>{chip.summary}</button>
+              </div>
+            {/if}
+          {/each}
+          <!-- The chip in flight, drawn in the column it would land in. -->
+          {#if taskDropMs === d.start_ms && taskDrag}
+            {#each tasks?.get(dateKey(taskDrag.fromMs)) ?? [] as chip (chip.id)}
+              {#if inFlight(chip)}
+                <div class="tchip landing" class:over={chip.overdue}
+                     style:--cal={chip.color ?? 'var(--muted)'}>
+                  <span class="tt">{chip.summary}</span>
+                </div>
+              {/if}
+            {/each}
+          {/if}
+        </div>
+      {/each}
+    </div>
+  </div>
+{/if}
+
 <AllDayBand
   lanes={renderedLanes}
   events={week.all_day_events}
@@ -1610,6 +1737,38 @@
   /* Faded, not hidden: the number is still the best one there is, and the
      fade is what makes somebody click and find out it is two days old. */
   .wx.stale { opacity: .45; }
+
+  /* The tasks row. Quieter than the all-day band above it: a task is
+     something to finish rather than a commitment at a time, and the row
+     says so by being flatter — no fill of the calendar's colour, a tick
+     instead of a spine, and a checkbox as the first thing in it. */
+  .trow { display: flex; border-top: 1px solid var(--hairline);
+          border-bottom: 1px solid var(--hairline);
+          background: color-mix(in srgb, var(--text) 3%, transparent); }
+  .trow.dragging { cursor: grabbing; }
+  .tgutter { width: var(--gutter); flex: 0 0 var(--gutter); font-size: 9.5px;
+             color: var(--muted); letter-spacing: .06em; text-align: right;
+             padding: 7px 8px 0 0; }
+  .tcols { flex-grow: 1; display: grid; grid-template-columns: repeat(var(--cols), minmax(0, 1fr));
+           padding: 4px 0; min-width: 0; }
+  .tcell { min-width: 0; display: flex; flex-direction: column; gap: 2px; padding-right: 3px; }
+  .tcell.drop { background: color-mix(in srgb, var(--accent) 7%, transparent);
+                box-shadow: inset 1px 0 0 0 color-mix(in srgb, var(--accent) 40%, transparent),
+                            inset -1px 0 0 0 color-mix(in srgb, var(--accent) 40%, transparent); }
+  /* Not `.chip`: the all-day band already owns that name, and a spec
+     asking for one would find both. */
+  .tchip { display: flex; align-items: center; gap: 6px; min-width: 0;
+          font-size: 11.5px; font-weight: 500; padding: 2px 7px;
+          border-radius: var(--event-chip-radius, 4px);
+          background: color-mix(in srgb, var(--cal) 10%, var(--bg));
+          color: var(--text); }
+  .tchip.over { background: color-mix(in srgb, var(--error) 12%, var(--bg)); }
+  .tchip.landing { outline: 1px solid var(--accent); cursor: grabbing; }
+  .tchip input { width: 11px; height: 11px; flex: 0 0 11px; margin: 0; }
+  .tt { appearance: none; -webkit-appearance: none; font: inherit; border: 0; background: none;
+        color: inherit; padding: 0; text-align: left; min-width: 0; cursor: grab;
+        touch-action: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tt:disabled { cursor: default; }
   @container (max-width: 104px) { .wx { display: none; } }
   .head b { font-size: 15px; color: var(--text);
             font-weight: 500; letter-spacing: -.02em; }
