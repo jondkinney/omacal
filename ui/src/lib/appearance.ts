@@ -3,9 +3,40 @@ export type EventCornerStyle = 'rounded' | 'square';
 
 export type AppearancePreferences = {
   backgroundTransparency: number;
+  inactiveBackgroundTransparency?: number;
   eventTransparency: number;
   eventCornerStyle: EventCornerStyle;
 };
+
+const current = new WeakMap<HTMLElement, AppearancePreferences>();
+const focused = new WeakMap<HTMLElement, boolean>();
+
+/** Track window focus, not focus moving between controls inside the app. */
+export function observeAppearanceFocus(root = document.documentElement): () => void {
+  const window = root.ownerDocument.defaultView!;
+  const update = (active: boolean) => {
+    focused.set(root, active);
+    const preferences = current.get(root);
+    if (preferences) applyBackground(preferences, root);
+  };
+  const activate = () => update(true);
+  const deactivate = () => update(false);
+  update(root.ownerDocument.hasFocus());
+  window.addEventListener('focus', activate);
+  window.addEventListener('blur', deactivate);
+  return () => {
+    window.removeEventListener('focus', activate);
+    window.removeEventListener('blur', deactivate);
+    focused.delete(root);
+  };
+}
+
+function applyBackground(preferences: AppearancePreferences, root: HTMLElement) {
+  const active = focused.get(root) ?? root.ownerDocument.hasFocus();
+  const value = active ? preferences.backgroundTransparency
+    : preferences.inactiveBackgroundTransparency ?? preferences.backgroundTransparency;
+  setTransparency(root, 'backgroundTransparency', '--background-fill-opacity', percent(value, 50));
+}
 
 /**
  * Applies absolute transparency: 0 is opaque and 100 is clear.
@@ -19,10 +50,10 @@ export function applyAppearance(
   preferences: AppearancePreferences,
   root: HTMLElement = document.documentElement,
 ): void {
-  const background = percent(preferences.backgroundTransparency);
-  const events = percent(preferences.eventTransparency);
+  current.set(root, { ...preferences });
+  const events = percent(preferences.eventTransparency, 25);
 
-  setTransparency(root, 'backgroundTransparency', '--background-fill-opacity', background);
+  applyBackground(preferences, root);
   setTransparency(root, 'eventTransparency', '--event-fill-opacity', events);
 
   if (preferences.eventCornerStyle === 'square') {
@@ -38,9 +69,9 @@ export function applyAppearance(
   }
 }
 
-function percent(value: number): number {
+function percent(value: number, cap: number): number {
   if (!Number.isFinite(value)) return 0;
-  return Math.max(0, Math.min(100, Math.round(value)));
+  return Math.round(Math.max(0, Math.min(cap, value)) * 10) / 10;
 }
 
 function setTransparency(

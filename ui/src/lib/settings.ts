@@ -92,9 +92,10 @@ export type AppSettings = {
   defaultCalendarId: number | null;
   /** Minutes used when a new timed event has a start but no explicit end. */
   defaultEventDurationMinutes: number;
-  /** Absolute calendar-canvas transparency, 0 (opaque) through 100 (clear). */
+  /** Absolute calendar-canvas transparency, 0 (opaque) through 50, in 0.1% steps. */
   backgroundTransparency: number;
-  /** Absolute event-fill transparency, without fading event text or outlines. */
+  inactiveBackgroundTransparency: number;
+  /** Event-fill transparency, 0–25 in 0.1% steps, without fading text or outlines. */
   eventTransparency: number;
   /** The shared corner treatment for every event representation. */
   eventCornerStyle: EventCornerStyle;
@@ -302,8 +303,10 @@ export const setAppearancePreferences = (
   backgroundTransparency: number,
   eventTransparency: number,
   eventCornerStyle: EventCornerStyle,
+  inactiveBackgroundTransparency: number = backgroundTransparency,
 ) => invoke<AppSettings>('set_appearance_preferences', {
   backgroundTransparency,
+  inactiveBackgroundTransparency,
   eventTransparency,
   eventCornerStyle,
 });

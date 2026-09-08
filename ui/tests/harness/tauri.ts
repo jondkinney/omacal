@@ -571,6 +571,7 @@ type StubSettings = {
   defaultCalendarId: number | null;
   defaultEventDurationMinutes: number;
   backgroundTransparency: number;
+  inactiveBackgroundTransparency: number;
   eventTransparency: number;
   eventCornerStyle: EventCornerStyle;
   transparentWindow: boolean;
@@ -612,6 +613,7 @@ const DEFAULT_SETTINGS: StubSettings = {
   // window that can be seen through. A spec telling the Omarchy story seeds
   // 4; one wanting the macOS answer seeds `transparentWindow: false`.
   backgroundTransparency: 0,
+  inactiveBackgroundTransparency: 0,
   eventTransparency: 0,
   eventCornerStyle: 'rounded',
   transparentWindow: true,
@@ -956,13 +958,16 @@ export function installTauriStub(scenario: string): Harness {
       case 'set_appearance_preferences': {
         const backgroundTransparency = args.backgroundTransparency as number;
         const eventTransparency = args.eventTransparency as number;
-        if (backgroundTransparency < 0 || backgroundTransparency > 100
-            || eventTransparency < 0 || eventTransparency > 100) {
-          throw new Error('transparency must be between 0 and 100 percent');
+        const inactive = args.inactiveBackgroundTransparency as number ?? backgroundTransparency;
+        if (!Number.isFinite(backgroundTransparency) || backgroundTransparency < 0 || backgroundTransparency > 50
+            || !Number.isFinite(inactive) || inactive < 0 || inactive > 50
+            || eventTransparency < 0 || eventTransparency > 25) {
+          throw new Error('background transparency must be between 0 and 50 percent; event transparency between 0 and 25 percent');
         }
         settings = saveSettings({
           ...settings,
           backgroundTransparency,
+          inactiveBackgroundTransparency: inactive,
           eventTransparency,
           eventCornerStyle: args.eventCornerStyle as EventCornerStyle,
         });

@@ -56,6 +56,46 @@ test.describe('App', () => {
     await expect(page.locator('.err')).toHaveCount(0);
   });
 
+  test('active and inactive background transparency switch on window focus and persist', async ({ page }) => {
+    await page.goto(app());
+    await page.getByRole('button', {name: 'Menu'}).click();
+    await page.getByRole('button', {name: 'Settings…'}).click();
+    let modal = page.getByRole('dialog', {name: 'Settings'});
+    await modal.getByRole('tab', {name: 'Appearance'}).click();
+    for (const name of ['Active background transparency', 'Inactive background transparency']) {
+      await expect(modal.getByRole('slider', {name, exact: true})).toHaveAttribute('max', '50');
+      await expect(modal.getByRole('slider', {name, exact: true})).toHaveAttribute('step', '0.1');
+    }
+    await expect(modal.getByRole('slider', {name: 'Event transparency', exact: true})).toHaveAttribute('max', '25');
+    await expect(modal.getByRole('slider', {name: 'Event transparency', exact: true})).toHaveAttribute('step', '0.1');
+    for (const [name, value] of [['Active background transparency', '1.5'], ['Inactive background transparency', '4.1'], ['Event transparency', '20.5']]) {
+      await modal.getByRole('slider', {name, exact: true}).evaluate((el, value) => {
+        (el as HTMLInputElement).value = value;
+        el.dispatchEvent(new Event('input', {bubbles: true}));
+        el.dispatchEvent(new Event('change', {bubbles: true}));
+      }, value);
+    }
+    await expect.poll(() => page.evaluate(() => (window as any).__harness.calls.filter((c: any) => c.cmd === 'set_appearance_preferences').length)).toBe(3);
+    const alpha = () => page.evaluate(() => ({background: document.documentElement.style.getPropertyValue('--background-fill-opacity'), events: document.documentElement.style.getPropertyValue('--event-fill-opacity')}));
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await expect.poll(alpha).toEqual({background: '98.5%', events: '79.5%'});
+    await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+    await expect.poll(alpha).toEqual({background: '95.9%', events: '79.5%'});
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await expect.poll(alpha).toEqual({background: '98.5%', events: '79.5%'});
+    await modal.getByRole('slider', {name: 'Event transparency', exact: true}).focus();
+    await expect.poll(alpha).toEqual({background: '98.5%', events: '79.5%'});
+    await page.reload();
+    await page.getByRole('button', {name: 'Menu'}).click();
+    await page.getByRole('button', {name: 'Settings…'}).click();
+    modal = page.getByRole('dialog', {name: 'Settings'});
+    await modal.getByRole('tab', {name: 'Appearance'}).click();
+    await expect(modal.getByRole('slider', {name: 'Active background transparency', exact: true})).toHaveValue('1.5');
+    await expect(modal.getByRole('slider', {name: 'Inactive background transparency', exact: true})).toHaveValue('4.1');
+    await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+    await expect.poll(alpha).toEqual({background: '95.9%', events: '79.5%'});
+  });
+
   test('stored appearance separately fades the canvas and event fill after reload', async ({ page }) => {
     await page.goto(app());
     await page.getByRole('button', { name: 'Menu' }).click();
@@ -64,16 +104,16 @@ test.describe('App', () => {
     await modal.getByRole('tab', { name: 'Appearance' }).click();
 
     const commit = (name: string, value: string) =>
-      modal.getByRole('slider', { name }).evaluate((el, next) => {
+      modal.getByRole('slider', { name, exact: true }).evaluate((el, next) => {
         (el as HTMLInputElement).value = next;
         el.dispatchEvent(new Event('input', { bubbles: true }));
         el.dispatchEvent(new Event('change', { bubbles: true }));
       }, value);
-    await commit('Background transparency', '50');
+    await commit('Active background transparency', '50');
     await expect.poll(() => page.evaluate(() =>
       (window as any).__harness.calls.filter((c: any) => c.cmd === 'set_appearance_preferences').length,
     )).toBe(1);
-    await commit('Event transparency', '70');
+    await commit('Event transparency', '25');
     await expect.poll(() => page.evaluate(() =>
       (window as any).__harness.calls.filter((c: any) => c.cmd === 'set_appearance_preferences').length,
     )).toBe(2);
@@ -90,7 +130,7 @@ test.describe('App', () => {
       background: document.documentElement.dataset.backgroundTransparency,
       events: document.documentElement.dataset.eventTransparency,
       corners: document.documentElement.dataset.eventCorners,
-    }))).toEqual({ background: '50', events: '70', corners: 'square' });
+    }))).toEqual({ background: '50', events: '25', corners: 'square' });
 
     const bodyColour = await page.locator('body').evaluate(
       (el) => getComputedStyle(el).backgroundColor,
@@ -106,7 +146,7 @@ test.describe('App', () => {
     const eventColour = await event.evaluate((el) => getComputedStyle(el).backgroundColor);
     expect(colourAlpha(bodyColour), JSON.stringify({ bodyColour, appearanceCss }))
       .toBeCloseTo(0.5, 2);
-    expect(colourAlpha(eventColour)).toBeCloseTo(0.3, 2);
+    expect(colourAlpha(eventColour)).toBeCloseTo(0.75, 2);
     await expect(event).toHaveCSS('border-radius', '0px');
     await expect(event).toHaveCSS('opacity', '1');
     await expect(event.locator('b')).toHaveCSS('opacity', '1');
@@ -133,8 +173,8 @@ test.describe('App', () => {
     await page.getByRole('button', { name: 'Settings…' }).click();
     const modal = page.getByRole('dialog', { name: 'Settings' });
     await modal.getByRole('tab', { name: 'Appearance' }).click();
-    for (const name of ['Background transparency', 'Event transparency']) {
-      await modal.getByRole('slider', { name }).evaluate((el) => {
+    for (const name of ['Active background transparency', 'Event transparency']) {
+      await modal.getByRole('slider', { name, exact: true }).evaluate((el) => {
         (el as HTMLInputElement).value = '0';
         el.dispatchEvent(new Event('input', { bubbles: true }));
       });
