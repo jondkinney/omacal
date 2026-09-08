@@ -5546,3 +5546,33 @@ for (const cold of [true, false]) {
   });
 }
 
+test('menu-bar date override and meeting template save and survive reopening', async ({ page }) => {
+  await page.goto(app('writable'));
+  await page.getByRole('button', { name: 'Menu', exact: true }).click();
+  await page.getByRole('button', { name: 'Settings…' }).click();
+  const modal = page.getByRole('dialog', { name: 'Settings' });
+  await modal.getByRole('tab', { name: 'Menu bar', exact: true }).click();
+  await modal.getByLabel("Show today's date", { exact: true }).check();
+  await expect(modal.getByLabel('Menu-bar date format')).toHaveValue('general');
+  await modal.getByLabel('Menu-bar date format').selectOption('custom');
+  await expect(modal.getByLabel('Custom date format')).toHaveValue('%-d');
+  await modal.getByLabel('Custom date format').fill('%b %-d');
+  await modal.locator('#menubar-date-custom').locator('..').getByRole('button', { name: 'Save', exact: true }).click();
+  await modal.getByRole('link', { name: 'Formatting guide' }).click();
+  await modal.getByRole('tab', { name: 'Menu bar', exact: true }).click();
+  await modal.getByLabel('Meeting label format').fill('{countdown} · {title}');
+  await expect(modal.getByLabel('Meeting label preview')).toHaveText('Preview: in 5m · Design sync');
+  await modal.getByRole('button', { name: 'Save format', exact: true }).click();
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: 'Menu', exact: true }).click();
+  await page.getByRole('button', { name: 'Settings…' }).click();
+  await modal.getByRole('tab', { name: 'Menu bar', exact: true }).click();
+  await expect(modal.getByLabel('Custom date format')).toHaveValue('%b %-d');
+  await modal.getByRole('tab', { name: 'Menu bar', exact: true }).click();
+  await expect(modal.getByLabel('Meeting label format')).toHaveValue('{countdown} · {title}');
+  await modal.getByRole('button', { name: 'Reset format', exact: true }).click();
+  await expect(modal.getByLabel('Meeting label format')).toHaveValue('{title} @ {time}  {countdown}');
+  await modal.getByRole('tab', { name: 'Menu bar', exact: true }).click();
+  await modal.getByLabel('Menu-bar date format').selectOption('general');
+  await expect(modal.getByLabel('Custom date format')).toHaveCount(0);
+});

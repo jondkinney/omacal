@@ -587,6 +587,9 @@ pub struct AppSettings {
     /// opens on a real memory rather than a blank one. Week until anything
     /// has been recorded.
     pub last_view: DefaultView,
+    pub menubar_date_format: String,
+    pub menubar_date_custom: String,
+    pub menubar_label_format: String,
     /// The day a week begins on, honoured by the Week grid's own anchor, the
     /// month grid's leading blanks, the Year view's twelve small grids, and
     /// Big Year's 392-day ribbon. When `week_starts_today` is on, this still
@@ -788,6 +791,9 @@ pub(crate) async fn read_settings_with(pool: &SqlitePool, baseline: u8) -> AppSe
         // takes and for the same reason: absent, garbage, and a value written
         // by some future version all land on the format the app has always
         // drawn, rather than on the one nobody asked for.
+        menubar_date_format: match read(pool, "menubar_date_format").await { Some(v) => v, None => if read(pool, SHOW_DATE_KEY).await.is_some() { "custom".into() } else { "general".into() } },
+        menubar_label_format: read(pool, "menubar_label_format").await.unwrap_or_else(|| DEFAULT_MENU_LABEL.into()),
+        menubar_date_custom: read(pool, "menubar_date_custom").await.unwrap_or_else(|| "%-d".into()),
         date_format: read(pool, "date_format").await.and_then(|v| serde_json::from_value(serde_json::Value::String(v)).ok()).unwrap_or(DateFormat::Locale),
         desktop: if cfg!(target_os = "macos") { "macos" } else if crate::theme::omarchy_theme_dir().is_some() { "omarchy" } else { "linux" }.into(),
         time_format: read(pool, TIME_FORMAT_KEY)
@@ -1394,6 +1400,10 @@ pub async fn set_show_date(
     state: tauri::State<'_, AppState>,
     on: bool,
 ) -> Result<AppSettings, String> {
+    if read(&state.pool, "menubar_date_format").await.is_none() {
+        let selected = read_settings(&state.pool).await.menubar_date_format;
+        write(&state.pool, "menubar_date_format", &selected).await.map_err(|e| e.to_string())?;
+    }
     write(&state.pool, SHOW_DATE_KEY, if on { "1" } else { "0" })
         .await
         .map_err(|e| crate::errors::user_facing(&e))?;
@@ -1401,6 +1411,92 @@ pub async fn set_show_date(
     Ok(read_settings(&state.pool).await)
 }
 
+pub(crate) const DEFAULT_MENU_LABEL: &str = "{title} @ {time}  {countdown}";
+pub(crate) fn format_menu_label(template: &str, values: &[(&str, &str)]) -> Result<String, String> {
+    if template.trim().is_empty() || template.len() > 256 || template.chars().any(char::is_control) {
+        return Err("Use a meeting format between 1 and 256 characters on one line.".into());
+    }
+    let mut out = String::new();
+    let mut rest = template;
+    while let Some(start) = rest.find('{') {
+        out.push_str(&rest[..start]);
+        let tail = &rest[start + 1..];
+        let end = tail.find('}').ok_or("Close each placeholder with }." )?;
+        let key = &tail[..end];
+        let value = values.iter().find(|(name, _)| *name == key).ok_or("Use {title}, {time}, {end_time}, {countdown}, or {calendar}.")?;
+        out.extend(value.1.chars().take(256));
+        rest = &tail[end + 1..];
+    }
+    out.push_str(rest);
+    Ok(out.chars().take(256).collect())
+}
+
+#[tauri::command]
+pub async fn set_menubar_label_format(app: tauri::AppHandle, state: tauri::State<'_, AppState>, template: String) -> Result<AppSettings, String> {
+    format_menu_label(&template, &[("title", ""), ("time", ""), ("end_time", ""), ("countdown", ""), ("calendar", "")])?;
+    write(&state.pool, "menubar_label_format", &template).await.map_err(|e| e.to_string())?;
+    refresh_menu_surfaces(&app, &state).await;
+    Ok(read_settings(&state.pool).await)
+}
+
+/// Custom text is formatted by Jiff, with a bounded writer so padding cannot
+/// allocate an oversized bar label. Only civil-date fields are available.
+pub(crate) fn custom_menu_date(pattern: &str, date: jiff::civil::Date) -> Result<String, String> {
+    if pattern.is_empty() || pattern.len() > 128 || pattern.chars().any(char::is_control) {
+        return Err("Use a date format between 1 and 128 characters.".into());
+    }
+    struct Label(String);
+    impl std::fmt::Write for Label {
+        fn write_str(&mut self, text: &str) -> std::fmt::Result {
+            if self.0.len() + text.len() > 128 { return Err(std::fmt::Error); }
+            self.0.push_str(text); Ok(())
+        }
+    }
+    let mut label = Label(String::new());
+    jiff::fmt::strtime::BrokenDownTime::from(date).format(pattern, jiff::fmt::StdFmtWrite(&mut label))
+        .map_err(|_| "Invalid date format. Check the formatting guide; time fields are not supported.".to_string())?;
+    if label.0.trim().is_empty() || label.0.chars().any(|c| c.is_control() || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')) {
+        return Err("The date must be visible text on one line.".into());
+    }
+    Ok(label.0)
+}
+
+pub(crate) fn menu_date(settings: &AppSettings, date: jiff::civil::Date) -> String {
+    match settings.menubar_date_format.as_str() {
+        "general" => settings.date_format.display(date),
+        "custom" => custom_menu_date(&settings.menubar_date_custom, date).unwrap_or_else(|_| date.day().to_string()),
+        value => serde_json::from_value::<DateFormat>(serde_json::Value::String(value.into()))
+            .unwrap_or(settings.date_format).display(date),
+    }
+}
+
+async fn store_menu_date(pool: &SqlitePool, format: &str, custom: &str) -> Result<(), String> {
+    if !matches!(format, "general" | "custom") && serde_json::from_value::<DateFormat>(serde_json::Value::String(format.into())).is_err() {
+        return Err("Choose a menu-bar date format.".into());
+    }
+    custom_menu_date(custom, jiff::civil::date(2026, 9, 7))?;
+    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+    for (key, value) in [("menubar_date_format", format), ("menubar_date_custom", custom)] {
+        sqlx::query("INSERT INTO settings(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value")
+            .bind(key).bind(value).execute(&mut *tx).await.map_err(|e| e.to_string())?;
+    }
+    tx.commit().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn set_menubar_date_format(app: tauri::AppHandle, state: tauri::State<'_, AppState>, format: String, custom: String) -> Result<AppSettings, String> {
+    store_menu_date(&state.pool, &format, &custom).await?;
+    refresh_menu_surfaces(&app, &state).await;
+    Ok(read_settings(&state.pool).await)
+}
+
+#[tauri::command]
+pub fn open_date_format_guide() -> Result<(), String> {
+    crate::browser::open_external("https://docs.rs/jiff/latest/jiff/fmt/strtime/index.html#conversion-specifications")
+        .map_err(|e| crate::errors::user_facing(&e.into()))
+}
+
+/// Persist the snapshot before notifying either popup; neither waits for a poll.
 pub(crate) async fn refresh_menu_surfaces(app: &tauri::AppHandle, state: &AppState) {
     use tauri::Emitter;
     crate::upcoming::refresh(&state.pool, state.demo).await;
@@ -2174,6 +2270,39 @@ mod tests {
 
         write(&p, TIME_FORMAT_KEY, TimeFormat::H24.as_str()).await.unwrap();
         assert_eq!(read_settings(&p).await.time_format, TimeFormat::H24);
+    }
+
+    #[tokio::test]
+    async fn menu_date_formats_preserve_legacy_and_follow_general_or_custom() {
+        let p = omacal_store::connect_memory().await.unwrap();
+        let date = jiff::civil::date(2026, 9, 7);
+        assert_eq!(read_settings(&p).await.menubar_date_format, "general");
+        write(&p, SHOW_DATE_KEY, "1").await.unwrap();
+        let legacy = read_settings(&p).await;
+        assert_eq!(legacy.menubar_date_format, "custom");
+        assert_eq!(menu_date(&legacy, date), "7");
+        store_menu_date(&p, "general", "%-d").await.unwrap();
+        write(&p, "date_format", "dmy").await.unwrap();
+        assert_eq!(menu_date(&read_settings(&p).await, date), "07/09/2026");
+        store_menu_date(&p, "iso", "%-d").await.unwrap();
+        assert_eq!(menu_date(&read_settings(&p).await, date), "2026-09-07");
+        store_menu_date(&p, "custom", "%a %b %-d").await.unwrap();
+        assert_eq!(menu_date(&read_settings(&p).await, date), "Mon Sep 7");
+        assert_eq!(custom_menu_date("%d", date).unwrap(), "07");
+        for invalid in ["", "%", "%Q", "%H", "%n", "%1000000000d"] {
+            assert!(store_menu_date(&p, "custom", invalid).await.is_err(), "{invalid}");
+        }
+        assert_eq!(menu_date(&read_settings(&p).await, date), "Mon Sep 7");
+        assert_eq!(crate::upcoming::current(&p, 1_788_804_000_000).await.unwrap().today.unwrap().label,
+            menu_date(&read_settings(&p).await, jiff::Timestamp::from_millisecond(1_788_804_000_000).unwrap().to_zoned(jiff::tz::TimeZone::system()).date()));
+    }
+
+    #[test]
+    fn meeting_templates_reorder_omit_and_do_not_expand_event_text() {
+        let values = [("title", "Design {time}"), ("time", "13:30"), ("end_time", "14:00"), ("countdown", "in 5m"), ("calendar", "Work")];
+        assert_eq!(format_menu_label("{countdown} · {title} ({calendar})", &values).unwrap(), "in 5m · Design {time} (Work)");
+        assert_eq!(format_menu_label("{time}–{end_time}", &values).unwrap(), "13:30–14:00");
+        for invalid in ["", "{bad}", "{title", "a\nb"] { assert!(format_menu_label(invalid, &values).is_err()); }
     }
 
     #[tokio::test]

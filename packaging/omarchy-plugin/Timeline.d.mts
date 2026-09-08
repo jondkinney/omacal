@@ -9,3 +9,6 @@ export function uniqueAllDay<T extends Event>(events: T[]): T[];
 export function currentClock(ms: number, format: '12h' | '24h', offsetSeconds: number): string;
 
 export function countdownDuration(minutes: number): string;
+
+export const DEFAULT_MEETING_FORMAT: string;
+export function meetingLabel(template: string, values: Record<string, string>): string;

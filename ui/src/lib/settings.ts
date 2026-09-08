@@ -145,6 +145,9 @@ export type AppSettings = {
    *  `defaultViewFollowsLast` so turning that mode on opens on a real
    *  memory. `'week'` until anything has been recorded. */
   lastView: View;
+  menubarDateFormat: DateFormat | 'general' | 'custom';
+  menubarDateCustom: string;
+  menubarLabelFormat: string;
   /** The day a week begins on. Read by the grids through the
    *  `weekstartstore.svelte.ts` rune, for the same reason `timeFormat` is. */
   weekStart: WeekStartDay;
@@ -378,3 +381,8 @@ export const setDateFormatPreference = (format: DateFormat) => invoke<AppSetting
 export const setVisibleHours = (start: number, end: number) => invoke<AppSettings>("set_visible_hours", { start, end });
 export const setMenubarPreferences = (label: boolean, joinMinutes: number) =>
   invoke<AppSettings>('set_menubar_preferences', { label, joinMinutes });
+
+
+export const setMenubarDateFormat = (format: AppSettings['menubarDateFormat'], custom: string) => invoke<AppSettings>('set_menubar_date_format', { format, custom });
+
+export const setMenubarLabelFormat = (template: string) => invoke<AppSettings>('set_menubar_label_format', { template });

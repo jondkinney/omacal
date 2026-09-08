@@ -1,5 +1,6 @@
 <!-- ui/src/lib/SettingsModal.svelte -->
 <script lang="ts">
+  import { DEFAULT_MEETING_FORMAT, meetingLabel } from '../../../packaging/omarchy-plugin/Timeline.mjs';
   import { DATE_FORMATS, type DateFormat } from './datefmt';
   import { setDateFormatPreference } from './settings';
   import { onMount } from 'svelte';
@@ -23,7 +24,7 @@
     setDisplayTimezone, setFallbackReminders, setNotificationsEnabled,
     setAppearance, APPEARANCE_OPTIONS,
     setQuitOnClose, setSecondTimezone, setSyncInterval, setTemperatureUnit, setTimeFormat,
-    setMenubarPreferences, setShowDate, setTrayIcon, setWeatherEnabled, setWeekStart,
+    setMenubarLabelFormat, setMenubarDateFormat, setMenubarPreferences, setShowDate, setTrayIcon, setWeatherEnabled, setWeekStart,
     setWeekStartsToday, setWeekViewDays, setVisibleHours,
     type AppSettings, type Appearance, type StartOnLogin, type WeekViewDays,
     type WindowFrame, WINDOW_FRAME_OPTIONS, setWindowFrame,
@@ -83,6 +84,10 @@
    *  number, so a half-typed "1" is not read as one minute mid-keystroke. */
   let intervalText = $state('');
   let durationText = $state('');
+  let menuDateCustom = $state('%-d');
+  let menuDateNote = $state('');
+  let meetingFormat = $state(DEFAULT_MEETING_FORMAT);
+  let meetingFormatNote = $state('');
   let note = $state<{ text: string; kind: 'info' | 'error' } | null>(null);
   /** The interval row's own feedback, rendered beside the field it is about.
    *  Not the shared `note` below: that one sits at the bottom of a modal
@@ -96,6 +101,8 @@
     getSettings()
       .then((s) => {
         settings = s;
+        menuDateCustom = s.menubarDateCustom ?? '%-d';
+        meetingFormat = s.menubarLabelFormat ?? DEFAULT_MEETING_FORMAT;
         intervalText = String(minutesOf(s.syncIntervalMs));
         durationText = String(s.defaultEventDurationMinutes);
         applyAppearance(s);
@@ -103,6 +110,24 @@
       })
       .catch((e) => (note = { text: String(e), kind: 'error' }));
   });
+
+  async function saveMeetingFormat(template = meetingFormat) {
+    try {
+      settings = await setMenubarLabelFormat(template);
+      meetingFormat = settings.menubarLabelFormat;
+      meetingFormatNote = '';
+      onsettingschange?.(settings);
+    } catch (e) { meetingFormatNote = String(e); }
+  }
+
+  async function saveMenuDate(format: AppSettings['menubarDateFormat'], custom = settings?.menubarDateCustom ?? '%-d') {
+    try {
+      settings = await setMenubarDateFormat(format, custom);
+      menuDateCustom = settings.menubarDateCustom;
+      menuDateNote = '';
+      onsettingschange?.(settings);
+    } catch (e) { menuDateNote = String(e); }
+  }
 
   async function saveMenubar(label = settings?.menubarLabel ?? true, joinMinutes = settings?.menubarJoinMinutes ?? 5) {
     try {
@@ -1244,19 +1269,50 @@
         />
         Show today's date
       </label>
-      <p class="hint">
-        The tray icon becomes the date, the way a calendar's icon does — a
-        tray draws icons and nothing else, so this replaces the mark rather
-        than sitting beside it.
-        {#if settings?.desktop === 'omarchy'}The Omarchy bar widget also shows the date beside its mark.{/if}
-        The number follows the clock without a restart.
-      </p>
+      <p class="hint">Show the date beside the menu-bar icon. Existing day-only displays use Custom (%-d).</p>
+      {#if settings?.showDate}
+      <div class="row">
+        <label class="lab" for="menubar-date-format">Menu-bar date format</label>
+        <select id="menubar-date-format" disabled={!settings} value={settings?.menubarDateFormat ?? 'general'}
+          onchange={e => saveMenuDate(e.currentTarget.value as AppSettings['menubarDateFormat'])}>
+          <option value="general">Follow General date format</option>
+          {#each DATE_FORMATS as f}<option value={f.value}>{f.label}</option>{/each}
+          <option value="custom">Custom</option>
+        </select>
+      </div>
+      {#if settings?.menubarDateFormat === 'custom'}
+        <div class="row">
+          <label class="lab" for="menubar-date-custom">Custom date format</label>
+          <div class="inline">
+            <input id="menubar-date-custom" type="text" maxlength="128" bind:value={menuDateCustom} />
+            <button type="button" onclick={() => saveMenuDate('custom', menuDateCustom)}>Save</button>
+          </div>
+        </div>
+        <p class="hint">%-d → 7 · %d → 07 · %b %-d → Sep 7.
+          <a href="https://docs.rs/jiff/latest/jiff/fmt/strtime/index.html#conversion-specifications"
+            onclick={e => { e.preventDefault(); void invoke('open_date_format_guide').catch(e => { menuDateNote = String(e); }); }}>Formatting guide</a>
+        </p>
+      {/if}
+      {#if menuDateNote}<p class="note err" role="alert">{menuDateNote}</p>{/if}
+      {/if}
       <section class="appearance-section" aria-labelledby="menubar-heading">
         <h2 id="menubar-heading">Menu bar calendar</h2>
         <label class="check"><input type="checkbox" disabled={!settings}
           checked={settings?.menubarLabel ?? true}
           onchange={(e) => saveMenubar(e.currentTarget.checked)} />
           Show meeting title and countdown</label>
+        <label class="lab" for="meeting-format">Meeting label format</label>
+        <input id="meeting-format" class="format-template" type="text" maxlength="256" bind:value={meetingFormat} />
+        <div class="inline">
+          <button type="button" disabled={!settings} onclick={() => saveMeetingFormat()}>Save format</button>
+          <button type="button" disabled={!settings} onclick={() => saveMeetingFormat(DEFAULT_MEETING_FORMAT)}>Reset format</button>
+        </div>
+        <p class="hint">Reorder or omit placeholders: {'{title}'}, {'{time}'}, {'{end_time}'}, {'{countdown}'}, {'{calendar}'}. Add your own separators.</p>
+        <p class="hint" aria-label="Meeting label preview">Preview: {meetingLabel(meetingFormat, {
+          title: 'Design sync', time: formatClock(SAMPLE_MS, settings?.timeFormat ?? '24h'),
+          end_time: formatClock(SAMPLE_MS + 30 * 60000, settings?.timeFormat ?? '24h'), countdown: 'in 5m', calendar: 'Work'
+        })}</p>
+        {#if meetingFormatNote}<p class="note err" role="alert">{meetingFormatNote}</p>{/if}
         <label class="lab" for="menubar-join">Show Join before a meeting</label>
         <select id="menubar-join" disabled={!settings} value={settings?.menubarJoinMinutes ?? 5}
           onchange={(e) => saveMenubar(undefined, Number(e.currentTarget.value))}>
@@ -1496,6 +1552,8 @@
 <style>
   .visible-hours-controls { display: flex; flex-wrap: wrap; gap: 12px; }
   .visible-hours-controls label { display: flex; flex-direction: column; gap: 8px; }
+  .format-template { box-sizing: border-box; width: 100%; min-width: 0; }
+  .hint a { color: var(--accent); }
   .appearance-section { align-self: stretch; display: flex; flex-direction: column;
                         gap: 14px; padding: 8px 0 16px; margin-top: 16px; }
   .appearance-section + .appearance-section {
