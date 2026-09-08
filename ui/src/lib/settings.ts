@@ -108,6 +108,7 @@ export type AppSettings = {
    *  the `clock.svelte.ts` rune rather than as a prop — six components print a
    *  time and none of them owns the preference. */
   timeFormat: TimeFormat;
+  desktop: 'macos' | 'omarchy' | 'linux';
   /** The day a week begins on. Read by the grids through the
    *  `weekstartstore.svelte.ts` rune, for the same reason `timeFormat` is. */
   weekStart: WeekStartDay;

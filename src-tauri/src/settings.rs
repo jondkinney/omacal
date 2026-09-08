@@ -494,6 +494,7 @@ pub struct AppSettings {
     /// 24-hour ruler has to convert in their head at exactly the moment the
     /// ruler exists to save them from it.
     pub time_format: TimeFormat,
+    pub desktop: String,
     /// The day a week begins on, honoured by the Week grid's own anchor, the
     /// month grid's leading blanks, the Year view's twelve small grids, and
     /// Big Year's 392-day ribbon. When `week_starts_today` is on, this still
@@ -670,6 +671,7 @@ pub(crate) async fn read_settings_with(pool: &SqlitePool, baseline: u8) -> AppSe
         // takes and for the same reason: absent, garbage, and a value written
         // by some future version all land on the format the app has always
         // drawn, rather than on the one nobody asked for.
+        desktop: if cfg!(target_os = "macos") { "macos" } else if crate::theme::omarchy_theme_dir().is_some() { "omarchy" } else { "linux" }.into(),
         time_format: read(pool, TIME_FORMAT_KEY)
             .await
             .map(|v| if v == "12h" { TimeFormat::H12 } else { TimeFormat::H24 })

@@ -400,11 +400,11 @@
             <!-- Demo mode's seeded account never went through OAuth, so a sync
                  would only fail; offering the button at all would be a control
                  that exists solely to produce an error. Same reasoning covers
-                 Add account: sign_in refuses server-side in demo mode
+                 Add Google account: sign_in refuses server-side in demo mode
                  (demo_sync_guard) regardless of whether an account is already
                  connected. -->
             <button onclick={() => fromMenu(onSync)} disabled={busy}>Sync now</button>
-            <button onclick={() => fromMenu(onSignIn)} disabled={busy}>Add account</button>
+            <button onclick={() => fromMenu(onSignIn)} disabled={busy}>Add Google account</button>
           {/if}
           <button onclick={openTasks}>Tasks…</button>
           <button onclick={openSettings}>Settings…</button>

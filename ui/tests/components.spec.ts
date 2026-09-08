@@ -1191,7 +1191,7 @@ test.describe('Header', () => {
     await page.goto(show('Header', 'connected'));
 
     await expect(page.getByRole('button', { name: 'Sync now' })).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Add account' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Add Google account' })).toHaveCount(0);
     await expect(page.getByRole('button', { name: /^Calendars/ })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Menu' })).toBeVisible();
   });
@@ -1202,7 +1202,7 @@ test.describe('Header', () => {
     await openMenu(page);
 
     await expect(page.getByRole('button', { name: 'Sync now' })).toBeEnabled();
-    await expect(page.getByRole('button', { name: 'Add account' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Add Google account' })).toBeVisible();
     await expect(page.getByRole('button', { name: /^Calendars/ })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Settings…' })).toBeVisible();
   });
@@ -1265,13 +1265,13 @@ test.describe('Header', () => {
     await page.clock.setFixedTime(FIXED_NOW);
     await page.goto(show('Header', 'busy-connected'));
     await openMenu(page);
-    await expect(page.getByRole('button', { name: 'Add account' })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Add Google account' })).toBeDisabled();
   });
 
   test('a connected account can add another', async ({ page }) => {
     await page.goto(show('Header', 'connected'));
     await openMenu(page);
-    await expect(page.getByRole('button', { name: 'Add account' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Add Google account' })).toBeVisible();
   });
 
   test('a disconnected user is asked to connect, not to add', async ({ page }) => {
@@ -1281,7 +1281,7 @@ test.describe('Header', () => {
     // user has to find.
     await expect(page.getByRole('button', { name: /Connect Google Calendar/ })).toBeVisible();
     await openMenu(page);
-    await expect(page.getByRole('button', { name: 'Add account' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Add Google account' })).toHaveCount(0);
   });
 
   test('a signed-out light is muted, and says so rather than reading as broken', async ({ page }) => {
@@ -1304,7 +1304,7 @@ test.describe('Header', () => {
   test('demo mode offers neither', async ({ page }) => {
     await page.goto(show('Header', 'demo'));
     await openMenu(page);
-    await expect(page.getByRole('button', { name: 'Add account' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Add Google account' })).toHaveCount(0);
     await expect(page.getByRole('button', { name: /Connect/ })).toHaveCount(0);
   });
 
@@ -1315,7 +1315,7 @@ test.describe('Header', () => {
 
     const modal = page.getByRole('dialog', { name: 'Settings' });
     await expect(modal).toBeVisible();
-    await expect(modal.getByRole('tab')).toHaveCount(5);
+    await expect(modal.getByRole('tab')).toHaveCount(6);
 
     await page.keyboard.press('Escape');
     await expect(modal).toHaveCount(0);
@@ -1428,9 +1428,9 @@ test.describe('Header', () => {
    */
   /** The weather knob (General): checked by default — the backend ships it
    *  on — and unchecking is a write through the command, not a redraw. */
-  test('General carries the weather toggle, on by default and saved off', async ({ page }) => {
+  test('Appearance carries the weather toggle, on by default and saved off', async ({ page }) => {
     await page.goto(show('Header', 'connected'));
-    const modal = await openSettings(page);
+    const modal = await openSettings(page, 'Appearance');
 
     const toggle = modal.getByRole('checkbox', { name: 'Weather in the day headers' });
     await expect(toggle).toBeChecked();
@@ -1718,7 +1718,7 @@ test.describe('Header', () => {
     const modal = await openSettings(page, 'Calendars');
 
     await expect(modal.locator('.acct')).toHaveText(['me@x.com']);
-    await expect(modal.locator('.row')).toHaveCount(3);
+    await expect(modal.getByRole('tabpanel').locator('.row')).toHaveCount(3);
     await expect(modal.locator('.name')).toHaveText(['Personal', 'Team', 'Holidays in Bulgaria']);
   });
 
@@ -1758,7 +1758,7 @@ test.describe('Header', () => {
   test('the tab keeps show and sync as two separate controls', async ({ page }) => {
     await page.goto(show('Header', 'connected'));
     const modal = await openSettings(page, 'Calendars');
-    const row = modal.locator('.row').first();
+    const row = modal.getByRole('tabpanel').locator('.row').first();
 
     await expect(row.locator('input[type=checkbox]')).toBeVisible();
     await expect(row.getByRole('button', { name: 'Remove' })).toBeVisible();
@@ -1768,7 +1768,7 @@ test.describe('Header', () => {
   test('a calendar can be hidden from the tab, and the app is told', async ({ page }) => {
     await page.goto(show('Header', 'connected'));
     const modal = await openSettings(page, 'Calendars');
-    await modal.locator('input[type=checkbox]').first().uncheck();
+    await modal.getByRole('tabpanel').locator('input[type=checkbox]').first().uncheck();
 
     // Through to the command, not just the checkbox: the tab is a second host
     // for these rows and a host that rendered them without wiring them would
@@ -1786,7 +1786,7 @@ test.describe('Header', () => {
     // but only the host can ask `App` to reload the grid afterwards.
     await page.goto(show('Header', 'connected'));
     const modal = await openSettings(page, 'Calendars');
-    await modal.locator('input[type=checkbox]').first().uncheck();
+    await modal.getByRole('tabpanel').locator('input[type=checkbox]').first().uncheck();
 
     await expect
       .poll(() => page.evaluate(() => (window as any).__calendarChanges))
@@ -1820,7 +1820,7 @@ test.describe('Header', () => {
     await page.goto(show('Header', 'connected'));
     const modal = await openSettings(page, 'Accounts');
     await expect(modal.getByRole('listitem')).toContainText(['me@x.com']);
-    await expect(modal.getByRole('button', { name: 'Add account' })).toBeVisible();
+    await expect(modal.getByRole('button', { name: 'Add Google account' })).toBeVisible();
   });
 
   test('signing an account out asks first, then empties the list', async ({ page }) => {

@@ -575,6 +575,7 @@ type StubSettings = {
   eventCornerStyle: EventCornerStyle;
   transparentWindow: boolean;
   timeFormat: TimeFormat;
+  desktop: 'macos' | 'omarchy' | 'linux';
   weekStart: WeekStartDay;
   weekStartsToday: boolean;
   weekViewDays: WeekViewDays;
@@ -623,6 +624,7 @@ const DEFAULT_SETTINGS: StubSettings = {
   // The clock the app has always drawn, so every existing spec and every
   // committed screenshot golden goes on describing the same pixels.
   timeFormat: '24h',
+  desktop: 'linux',
   // The week omacal has always drawn, so every golden holds.
   weekStart: 'monday',
   weekStartsToday: false,

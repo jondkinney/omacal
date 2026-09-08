@@ -612,27 +612,29 @@
     }
   }
 
-  /**
-   * The four tabs of spec §3 in the order it lists them, with Appearance
-   * added second (issue #36): General had grown a theme, a window frame and
-   * a week-view control — all about how the calendar looks rather than what
-   * it does — and a reader hunting for "light theme" was reading past sync
-   * intervals to find it. General keeps the behaviour: syncing, defaults,
-   * clocks, the tray, login. Appearance keeps the look.
-   *
-   * The transparency sliders and the corner shape sit there for the same
-   * reason, and beside each other on purpose: both sliders are live previews
-   * and belong next to the event shape they change.
-   *
-   * The shell predates its contents; a tab that is present and blank says
-   * "not yet" more honestly than a tab that is missing, which says "never".
-   */
-  const TABS = ['General', 'Appearance', 'Calendars', 'Accounts', 'Notifications'] as const;
+  // Group controls by what they affect. Menu-bar controls live together;
+  // calendar appearance stays separate from provider/account management.
+  const TABS = ['General', 'Appearance', 'Menu bar', 'Calendars', 'Accounts', 'Notifications'] as const;
   type Tab = (typeof TABS)[number];
 
   let tab = $state<Tab>('General');
 
   let panelEl: HTMLDivElement | undefined = $state();
+  let preferredHeight = $state<number | null>(null);
+  $effect(() => {
+    const panel = panelEl;
+    if (!panel) return;
+    // Every pane has the final dialog width, even while hidden/inert. Measure
+    // natural contents so switching tabs cannot change the dialog's height.
+    const measure = () => {
+      const heights = Array.from(panel.querySelectorAll<HTMLElement>('.pane-content'), el => el.getBoundingClientRect().height);
+      preferredHeight = Math.ceil(Math.max(0, ...heights) + (panel.querySelector('.tabs')?.getBoundingClientRect().height ?? 0) + (panel.querySelector('.version')?.getBoundingClientRect().height ?? 0) + 2);
+    };
+    const observer = new ResizeObserver(measure);
+    panel.querySelectorAll('.pane-content, .tabs, .version').forEach(el => observer.observe(el));
+    measure();
+    return () => observer.disconnect();
+  });
 
   onMount(() => {
     // The first tab, not the panel and not a close button. `role="dialog"` plus
@@ -682,6 +684,7 @@
 
 <div
   class="modal"
+  style:height={preferredHeight === null ? '80vh' : `${preferredHeight}px`}
   bind:this={panelEl}
   role="dialog"
   aria-modal="true"
@@ -700,8 +703,11 @@
     {/each}
   </div>
 
-  <div class="body" role="tabpanel" aria-label={tab}>
-    {#if tab === 'General'}
+  <div class="panes">
+  {#each TABS as pane}
+  <div class="body" class:inactive={pane !== tab} role="tabpanel" aria-label={pane} aria-hidden={pane !== tab} inert={pane !== tab}>
+  <div class="pane-content">
+    {#if pane === 'General'}
       <div class="row">
         <label class="lab" for="sync-interval">Sync every</label>
         <div class="inline">
@@ -742,7 +748,7 @@
         finite, and a desktop app has no business polling faster.
       </p>
 
-      <div class="row">
+      <div class="row section-start">
         <label class="lab" for="default-cal">New events land on</label>
         <div class="inline">
           <span class="caldot" aria-hidden="true" style="background:{defaultCalColor}"></span>
@@ -834,7 +840,7 @@
         the side of Day and Week.
       </p>
 
-      <div class="row">
+      <div class="row section-start">
         <label class="lab" for="display-tz">Time zone</label>
         <div class="inline">
           <input
@@ -903,21 +909,6 @@
       <label class="check">
         <input
           type="checkbox"
-          checked={settings?.trayIcon ?? true}
-          disabled={!settings}
-          onchange={(e) => toggleTrayIcon(e.currentTarget.checked)}
-        />
-        Show the tray icon
-      </label>
-      <p class="hint">
-        The tray is where Quit lives — only turn this off when something else
-        covers it, like the Omarchy bar widget, which can quit and sync the
-        app itself.
-      </p>
-
-      <label class="check">
-        <input
-          type="checkbox"
           checked={settings?.quitOnClose ?? false}
           disabled={!settings}
           onchange={(e) => toggleQuitOnClose(e.currentTarget.checked)}
@@ -953,51 +944,7 @@
         notifications arrive only once you have opened it yourself.
       </p>
 
-      <label class="check">
-        <input
-          type="checkbox"
-          checked={settings?.weatherEnabled ?? true}
-          disabled={!settings}
-          onchange={(e) => toggleWeather(e.currentTarget.checked)}
-        />
-        Weather in the day headers
-      </label>
-      <p class="hint">
-        A small forecast icon and the day's high, from Open-Meteo — the same
-        keyless service the Omarchy bar widget reads. The location comes from
-        that widget's setting when there is one, otherwise from your IP
-        address; turning this off ends the only network traffic OmaCal makes
-        beyond your calendar providers.
-      </p>
-
-      {#if settings?.weatherEnabled}
-        <div class="row">
-          <label class="lab" for="temperature-unit">Show temperature as</label>
-          <div class="inline">
-            <select
-              id="temperature-unit"
-              disabled={!settings}
-              value={settings?.temperatureUnit ?? 'celsius'}
-              onchange={(e) =>
-                saveTemperatureUnit(
-                  (e.currentTarget as HTMLSelectElement).value as TemperatureUnit,
-                )}
-            >
-              <!-- Each option prints a temperature rather than naming the
-                   scale, `time-format`'s reason: "Celsius" is a word you have
-                   to translate and `22°C` is the thing itself. -->
-              <option value="celsius">22°C</option>
-              <option value="fahrenheit">72°F</option>
-            </select>
-          </div>
-        </div>
-        <p class="hint">
-          The day headers stay a bare number, same as always — this only
-          decides which scale it's read in.
-        </p>
-      {/if}
-
-    {:else if tab === 'Appearance'}
+    {:else if pane === 'Appearance'}
       <div class="row">
         <label class="lab" for="appearance">Theme</label>
         <div class="inline">
@@ -1015,10 +962,9 @@
         </div>
       </div>
       <p class="hint">
-        OmaCal wears your Omarchy theme, and follows it as you switch. On any
-        other desktop there is no theme to follow, which is what Light and Dark
-        are for — they replace the whole palette, your theme's accent included,
-        and take effect without a restart.
+        {#if settings?.desktop === 'omarchy'}Automatic follows your Omarchy theme as you switch.
+        {:else}Choose Light or Dark for your preferred appearance.{/if}
+        Light and Dark replace the whole palette, including the accent, without a restart.
       </p>
 
       <!-- Only where there is a choice: on macOS the backend reports none,
@@ -1104,9 +1050,8 @@
           </output>
         </div>
         <p class="hint">
-          0% is opaque; 100% makes the calendar canvas clear. Omarchy blends
-          every window a little on its own, so there the app starts at 4% to
-          match, and the compositor's share stays on top.
+          0% is opaque; 100% makes the calendar canvas clear.
+          {#if settings?.desktop === 'omarchy'}Omarchy also blends windows through the compositor; OmaCal starts at 4% to match.{/if}
         </p>
       </section>
       {/if}
@@ -1165,11 +1110,64 @@
         </fieldset>
       </section>
 
-      <!-- What the app's face says, here rather than beside "Show the tray
-           icon" in General: that switch is about whether the app has a tray
-           at all, which is where Quit lives and therefore behaviour; this is
-           about what it looks like once it does. One switch for two
-           surfaces, because they are one idea (2026-09-04). -->
+      <label class="check section-start">
+        <input
+          type="checkbox"
+          checked={settings?.weatherEnabled ?? true}
+          disabled={!settings}
+          onchange={(e) => toggleWeather(e.currentTarget.checked)}
+        />
+        Weather in the day headers
+      </label>
+      <p class="hint">
+        A small forecast icon and the day's high, from Open-Meteo.
+        {#if settings?.desktop === 'omarchy'}The location uses your Omarchy weather widget setting when available, otherwise your IP address.
+        {:else}The location comes from your IP address.{/if}
+        Turning this off stops forecast requests.
+      </p>
+
+      {#if settings?.weatherEnabled}
+        <div class="row">
+          <label class="lab" for="temperature-unit">Show temperature as</label>
+          <div class="inline">
+            <select
+              id="temperature-unit"
+              disabled={!settings}
+              value={settings?.temperatureUnit ?? 'celsius'}
+              onchange={(e) =>
+                saveTemperatureUnit(
+                  (e.currentTarget as HTMLSelectElement).value as TemperatureUnit,
+                )}
+            >
+              <!-- Each option prints a temperature rather than naming the
+                   scale, `time-format`'s reason: "Celsius" is a word you have
+                   to translate and `22°C` is the thing itself. -->
+              <option value="celsius">22°C</option>
+              <option value="fahrenheit">72°F</option>
+            </select>
+          </div>
+        </div>
+        <p class="hint">
+          The day headers stay a bare number, same as always — this only
+          decides which scale it's read in.
+        </p>
+      {/if}
+
+    {:else if pane === 'Menu bar'}
+      <label class="check section-start">
+        <input
+          type="checkbox"
+          checked={settings?.trayIcon ?? true}
+          disabled={!settings}
+          onchange={(e) => toggleTrayIcon(e.currentTarget.checked)}
+        />
+        Show the tray icon
+      </label>
+      <p class="hint">
+        The tray provides Quit and Sync. Keep another way to access these
+        actions available when hiding it.
+      </p>
+
       <label class="check">
         <input
           type="checkbox"
@@ -1182,11 +1180,11 @@
       <p class="hint">
         The tray icon becomes the date, the way a calendar's icon does — a
         tray draws icons and nothing else, so this replaces the mark rather
-        than sitting beside it. The Omarchy bar widget shows the date too,
-        beside its own mark, where there is room for both. The number wears
-        the mark's colour and follows the clock without a restart.
+        than sitting beside it.
+        {#if settings?.desktop === 'omarchy'}The Omarchy bar widget also shows the date beside its mark.{/if}
+        The number follows the clock without a restart.
       </p>
-    {:else if tab === 'Calendars'}
+    {:else if pane === 'Calendars'}
       <!-- **The same rows the header's popover shows, from the same
            component.** Extracted rather than reimplemented, which is what
            makes "rehomed, not rewritten" checkable: `CalendarPopover`'s own
@@ -1197,12 +1195,12 @@
            row is a component with its own file rather than markup written out
            twice in two hosts. -->
       {#if calendars.length > 0}
-        <div class="cals"><CalendarList {calendars} onchange={oncalendarchange} /></div>
+        <div class="cals"><CalendarList {calendars} spacious onchange={oncalendarchange} /></div>
       {:else}
         <p class="soon">No calendars yet. Connect an account first.</p>
       {/if}
 
-    {:else if tab === 'Accounts'}
+    {:else if pane === 'Accounts'}
       <ul class="accounts">
         {#each accountRows ?? accounts.map((email, i) => ({ id: -1 - i, email, provider: 'google' })) as row (row.id)}
           <li class="account-row">
@@ -1229,7 +1227,11 @@
       {#if (accountRows ?? accounts).length === 0}
         <p class="soon">No account is connected.</p>
       {/if}
-      <button type="button" onclick={onSignIn} disabled={busy}>Add account</button>
+      <div class="provider-row">
+        <button type="button" onclick={onSignIn} disabled={busy}>Add Google account</button>
+        <button type="button" onclick={() => openCaldavForm('icloud')} disabled={busy || caldavBusy}>Add iCloud account</button>
+        <button type="button" onclick={() => openCaldavForm('caldav')} disabled={busy || caldavBusy}>Add CalDAV account</button>
+      </div>
       <p class="hint">
         Signing out removes the account's local data (its calendars, events
         and tasks re-sync if you connect again). For Google, the app's access
@@ -1239,17 +1241,8 @@
 
       <!-- CalDAV: the auth story with no OAuth in it. One form serves both —
            "iCloud" only fixes the server address and words the fields. -->
-      <div class="caldav" role="group" aria-label="Connect a CalDAV account">
-        {#if caldavForm === null}
-          <div class="provider-row">
-            <button type="button" onclick={() => openCaldavForm('icloud')} disabled={busy}>
-              Add iCloud account
-            </button>
-            <button type="button" onclick={() => openCaldavForm('caldav')} disabled={busy}>
-              Add CalDAV account
-            </button>
-          </div>
-        {:else}
+      <div class="caldav" class:empty={caldavForm === null} role="group" aria-label="Connect a CalDAV account">
+        {#if caldavForm !== null}
           <form
             class="caldav-form"
             onsubmit={(e) => {
@@ -1385,7 +1378,7 @@
               aria-label="Remove fallback reminder"
               disabled={!settings}
               onclick={() => settings && saveFallback(settings.fallbackReminderMinutes.filter((_, j) => j !== i))}
-            >⊗</button>
+            >×</button>
           </div>
         {/each}
         {#if (settings?.fallbackReminderMinutes.length ?? 5) < 5}
@@ -1403,21 +1396,22 @@
       </div>
     {/if}
 
-    {#if note}
+    {#if note && pane === tab}
       <p class="note" class:err={note.kind === 'error'} data-testid="settings-note">{note.text}</p>
     {/if}
 
-    {#if version}
-      <p class="version" data-testid="app-version">OmaCal {version}</p>
-    {/if}
   </div>
+  </div>
+  {/each}
+  </div>
+  {#if version}<p class="version" data-testid="app-version">OmaCal {version}</p>{/if}
 </div>
 
 <style>
   .appearance-section { align-self: stretch; display: flex; flex-direction: column;
-                        gap: 10px; padding: 2px 0 10px; }
+                        gap: 14px; padding: 8px 0 16px; margin-top: 16px; }
   .appearance-section + .appearance-section {
-    border-top: 1px solid var(--hairline); padding-top: 14px;
+    border-top: 1px solid var(--hairline); padding-top: 24px;
   }
   .appearance-section h2 { margin: 0; font-size: 13px; font-weight: 600;
                            color: var(--text); }
@@ -1450,9 +1444,9 @@
 
   /* A colophon, not a control: the quietest text in the modal, at the very
      bottom, on every tab — where "what version am I on?" goes looking. */
-  .version { margin: 14px 0 0; font-size: 11.5px; color: var(--muted);
-             text-align: right; }
-  .fallback { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; }
+  .version { flex: none; margin: 0; padding: 16px 24px 20px; font-size: 11.5px; color: var(--muted);
+             text-align: left; }
+  .fallback { display: flex; flex-direction: column; gap: 20px; margin-top: 0; align-items: flex-start; }
   .frow { display: flex; align-items: center; gap: 5px; font-size: 13px; }
   .frow input[type='number'] { width: 56px; }
   .unremind { font: inherit; font-size: 14px; color: var(--muted); cursor: pointer;
@@ -1468,17 +1462,17 @@
   /* Centred rather than anchored — see the comment above the markup. `fixed`
      plus a translate keeps it centred without knowing its own size, which is
      what lets the body grow as the tabs are filled in. */
-  .modal { position: fixed; z-index: 61; top: 50%; left: 50%;
+  .modal { box-sizing: border-box; position: fixed; z-index: 61; top: 50%; left: 50%;
            transform: translate(-50%, -50%);
-           width: 480px; max-width: calc(100vw - 32px);
-           height: 420px; max-height: calc(100vh - 64px);
+           width: 650px; max-width: calc(100vw - 32px);
+           max-height: min(80vh, calc(100vh - 64px));
            display: flex; flex-direction: column;
            background: var(--surface); border: 1px solid var(--hairline);
            border-radius: 10px; box-shadow: 0 12px 40px rgba(0, 0, 0, .5);
            font-size: 13px; color: var(--text); overflow: hidden; }
   .modal:focus { outline: none; }
 
-  .tabs { display: flex; gap: 2px; padding: 8px 8px 0;
+  .tabs { display: flex; flex-wrap: wrap; gap: 2px; padding: 8px 8px 0;
           border-bottom: 1px solid var(--hairline); flex: none; }
   .tabs button { font: inherit; font-size: 12.5px; color: var(--muted); cursor: pointer;
                  background: none; border: 0; border-radius: 6px 6px 0 0;
@@ -1487,18 +1481,23 @@
                     background: color-mix(in srgb, var(--text) 7%, transparent); }
   .tabs button:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
 
-  .body { flex: 1; overflow-y: auto; padding: 14px;
-          display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+  .panes { flex: 1; min-height: 0; position: relative; }
+  .body { position: absolute; inset: 0; overflow-y: auto; }
+  .body.inactive { visibility: hidden; pointer-events: none; }
+  .pane-content { padding: 24px; display: flex; flex-direction: column; gap: 12px; align-items: flex-start; }
+  .pane-content > * { flex-shrink: 0; }
   .soon { font-size: 12px; color: var(--muted); margin: 0; }
 
-  .row { display: flex; flex-direction: column; gap: 4px; }
+  .row { display: flex; flex-direction: column; gap: 8px; }
+  .pane-content > .hint + .row, .pane-content > .hint + .check { margin-top: 8px; }
+  .pane-content > .section-start, .pane-content > .hint + .section-start { margin-top: 24px; }
+  .pane-content > .row, .pane-content > .check, .pane-content > .hint, .appearance-section { flex-shrink: 0; }
   .lab { font-size: 10.5px; color: var(--muted); letter-spacing: .05em; }
   .inline { display: flex; align-items: center; gap: 6px; }
   .unit { font-size: 12px; color: var(--muted); }
   /* No max-width: the 40ch cap that used to sit here wrapped every hint at
      about half the modal and left the right side conspicuously empty
-     (reported 2026-08-17). The modal's own 480px is the measure; hints are
-     a line or two and read fine at it. */
+     (reported 2026-08-17). Hints follow the responsive modal width. */
   .hint { font-size: 11px; color: var(--muted); opacity: .85; line-height: 1.45; margin: 0;
           align-self: stretch; }
 
@@ -1536,14 +1535,15 @@
 
   .check { display: flex; align-items: center; gap: 7px; font-size: 12.5px; cursor: pointer; }
 
-  .account-row { display: flex; align-items: center; gap: 8px; }
+  .account-row { display: flex; align-items: center; gap: 12px; padding: 12px 0; }
   .acct-email { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .acct-prov { color: var(--muted); font-size: 11px; letter-spacing: 0.04em;
     text-transform: uppercase; }
   .account-row .danger { color: var(--danger, #e66); border-color: var(--danger, #e66); }
 
-  .caldav { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
-  .provider-row { display: flex; gap: 8px; }
+  .caldav { align-self: stretch; min-width: 0; display: flex; flex-direction: column; gap: 16px; margin-top: 24px; }
+  .caldav.empty { display: none; }
+  .provider-row { display: flex; flex-wrap: wrap; gap: 8px; }
   .caldav-form { display: flex; flex-direction: column; gap: 6px; }
   .caldav-form input { font: inherit; font-size: 12.5px; color: var(--text);
     background: var(--bg); border: 1px solid var(--hairline); border-radius: 5px;
