@@ -111,6 +111,7 @@ export type AppSettings = {
    *  time and none of them owns the preference. */
   timeFormat: TimeFormat;
   dateFormat: DateFormat;
+  desktop: 'macos' | 'omarchy' | 'linux';
   /** The day a week begins on. Read by the grids through the
    *  `weekstartstore.svelte.ts` rune, for the same reason `timeFormat` is. */
   weekStart: WeekStartDay;

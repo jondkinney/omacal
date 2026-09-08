@@ -577,6 +577,7 @@ type StubSettings = {
   transparentWindow: boolean;
   timeFormat: TimeFormat;
   dateFormat: import('../../src/lib/datefmt').DateFormat;
+  desktop: 'macos' | 'omarchy' | 'linux';
   weekStart: WeekStartDay;
   weekStartsToday: boolean;
   weekViewDays: WeekViewDays;
@@ -627,6 +628,7 @@ const DEFAULT_SETTINGS: StubSettings = {
   // committed screenshot golden goes on describing the same pixels.
   timeFormat: '24h',
   dateFormat: 'locale',
+  desktop: 'linux',
   // The week omacal has always drawn, so every golden holds.
   weekStart: 'monday',
   weekStartsToday: false,

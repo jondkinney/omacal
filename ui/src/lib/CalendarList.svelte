@@ -8,9 +8,11 @@
 
   let {
     calendars,
+    spacious = false,
     onchange,
   }: {
     calendars: Calendar[];
+    spacious?: boolean;
     onchange: () => void;
   } = $props();
 
@@ -159,7 +161,7 @@
   two belong. A mutation is what told the difference; see
   `two calendars with the same name in one account both render`.
 -->
-<div class="list">
+<div class="list" class:spacious>
   {#each groups as [email, cals]}
     <div class="acct">{email}</div>
     {#each cals as c (c.id)}
@@ -257,6 +259,8 @@
      it: the popover puts it in a floating panel, the settings tab in a column
      that is already inside one. A component that carried its own surface would
      draw a panel inside a panel in the second. */
+  .spacious .acct { padding: 24px 6px 10px; }
+  .spacious .acct:first-child { padding-top: 0; }
   .list { display: flex; flex-direction: column; min-width: 0; }
 
   .acct { font-size: 10.5px; color: var(--muted); letter-spacing: .05em;
