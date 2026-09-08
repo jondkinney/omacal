@@ -13,6 +13,7 @@
   let {
     status, anchorMs, weekStartMs, weekStartsToday = false, weekDays = 7,
     yearShown = new Date(anchorMs).getFullYear(),
+    signingIn = false, onCancelSignIn = () => {},
     busy, error, calendars, view, onpick,
     onsettingschange, onappearancechange,
     listMode, onToggleList,
@@ -41,6 +42,8 @@
      *  named the wrong year the moment either had stepped away from it. */
     yearShown?: number;
     busy: boolean;
+    signingIn?: boolean;
+    onCancelSignIn?: () => void;
     error: string | null;
     calendars: Calendar[];
     /** The view the switcher shows as current — `App`'s own `view` state,
@@ -420,6 +423,8 @@
     accounts={status?.accounts ?? []}
     version={status?.version ?? ''}
     {busy}
+    {signingIn}
+    {onCancelSignIn}
     onclose={() => (settingsOpen = false)}
     {calendars}
     {oncalendarchange}
@@ -437,6 +442,12 @@
      "Create it with client_id and client_secret" — is the part that used to
      fall off the end of a 320px ellipsised line and live only in a title
      attribute nobody hovers. -->
+{#if signingIn}
+  <p class="sign-in-status" role="status">
+    Waiting for Google sign-in. Closed the browser tab?
+    <button type="button" onclick={onCancelSignIn}>Cancel sign-in</button>
+  </p>
+{/if}
 {#if error}
   <p class="err">{error}</p>
 {/if}
@@ -603,6 +614,10 @@
 
   .tz { font-size: 11px; color: var(--muted); letter-spacing: .03em;
         white-space: nowrap; }
+  .sign-in-status { display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    color: var(--text); font-size: 12.5px; margin: 0 0 12px; }
+  .sign-in-status button { font: inherit; color: var(--text); background: var(--surface);
+    border: 1px solid var(--hairline); border-radius: 6px; padding: 5px 12px; cursor: pointer; }
   .err { color: var(--error); font-size: 12.5px; line-height: 1.45; margin: 0 0 12px;
          padding: 7px 10px; border-radius: 6px;
          background: color-mix(in srgb, var(--error) 9%, transparent);

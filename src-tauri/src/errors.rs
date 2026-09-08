@@ -69,6 +69,7 @@ const SAFE_EXACT: &[&str] = &[
     // here. Withheld, this failure is indistinguishable from an OAuth
     // problem — which is issue #1's diagnosis story in one line.
     crate::BROWSER_FAILED,
+    omacal_google::auth::CANCELLED,
     // crates/omacal-google/src/auth.rs:171 (the `TIMED_OUT` constant), raised
     // at auth.rs:206 with no interpolation and propagated to `sign_in_impl`
     // via a bare `?` with no `.context(..)` added along the way.
@@ -392,6 +393,7 @@ mod tests {
             // `tracing`, never into this string, and no `.context(..)` wraps
             // it on the way to `sign_in_impl`'s `map_err`.
             crate::BROWSER_FAILED,
+            omacal_google::auth::CANCELLED,
             // Checked against the doc-comment rule: a fixed literal raised by
             // `bail!(NOT_PRIVATE_HTTP)` in the caldav crate's transport guard,
             // interpolating nothing (the address it refused is deliberately

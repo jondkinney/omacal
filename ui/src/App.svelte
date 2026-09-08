@@ -8,7 +8,7 @@
     getWeek, getDay, getRange, getMonth, getYear, getBigYear, weekStart,
     type WeekPayload, type MonthPayload, type YearPayload, type BigYearPayload, type UiEvent,
   } from './lib/api';
-  import { getStatus, installUpdate, openLatestRelease, restartApp, signIn, syncNow, takeOpenDate, type AppStatus } from './lib/status';
+  import { cancelSignIn, getStatus, installUpdate, openLatestRelease, restartApp, signIn, syncNow, takeOpenDate, type AppStatus } from './lib/status';
   import { dateKey, freshness, getWeather, weatherByDate, type DayWeather, type WeatherReport } from './lib/weather';
   import WeatherPopover from './lib/WeatherPopover.svelte';
   import ImportPanel from './lib/ImportPanel.svelte';
@@ -172,6 +172,7 @@
   let status = $state<AppStatus | null>(null);
   let calendars = $state<Calendar[]>([]);
   let busy = $state(false);
+  let signingIn = $state(false);
   let error = $state<string | null>(null);
   // Opened right after every sign-in (Task 7) — see `handleSignIn` — so a
   // freshly imported set of calendars, all switched on by default, is never
@@ -969,9 +970,12 @@
   });
 
   async function handleSignIn() {
+    if (busy || signingIn) return;
+    signingIn = true;
     busy = true; error = null;
     try {
       await signIn();
+      signingIn = false;
       await refreshStatus();
       // A second account's calendars exist in the store the moment sign_in
       // returns, but nothing else here fetches them: handleSync refreshes
@@ -986,8 +990,13 @@
       pickerOpen = true;
       await handleSync();
     }
+    catch (e) { if (String(e) !== 'Sign-in cancelled.') error = String(e); }
+    finally { signingIn = false; busy = false; }
+  }
+
+  async function handleCancelSignIn() {
+    try { await cancelSignIn(); }
     catch (e) { error = String(e); }
-    finally { busy = false; }
   }
 
   async function handleSync() {
@@ -1894,6 +1903,8 @@
       // the switch change the headers now rather than within the hour.
       void refreshWeather();
     }}
+    {signingIn}
+    onCancelSignIn={handleCancelSignIn}
     onSignIn={handleSignIn}
     onWhatsNew={() => { void openLatestRelease(); }}
     onRestart={() => { void restartApp(); }}

@@ -239,11 +239,14 @@ pub async fn refresh(
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 pub struct Redirect {
     pub code: String,
     pub state: String,
 }
+
+pub const CANCELLED: &str = "Sign-in cancelled.";
 
 /// How long the loopback listener waits for the browser before giving up.
 ///
@@ -251,7 +254,7 @@ pub struct Redirect {
 /// a password; short enough that abandoning the flow is not permanent. An
 /// explicit *deny* comes back as `?error=` and returns immediately — this
 /// deadline is for the user who simply closes the tab, in which case nothing
-/// ever reaches us and only the clock can end the wait.
+/// ever reaches us. Explicit cancellation can end the wait sooner.
 pub const SIGN_IN_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// A connection that opens but never sends a request line would hang the read
@@ -282,10 +285,11 @@ pub fn bind_loopback() -> anyhow::Result<(TcpListener, String)> {
 /// free the UI but abandon the thread inside `accept()`, which would then sit
 /// blocked for the life of the process; polling a non-blocking listener means
 /// the thread actually ends.
-fn accept_before(listener: &TcpListener, deadline: Duration) -> anyhow::Result<TcpStream> {
+fn accept_before(listener: &TcpListener, deadline: Duration, cancelled: &AtomicBool) -> anyhow::Result<TcpStream> {
     listener.set_nonblocking(true)?;
     let start = Instant::now();
     loop {
+        if cancelled.load(Ordering::Relaxed) { bail!(CANCELLED); }
         match listener.accept() {
             Ok((stream, _)) => {
                 // Back to blocking for the request line and the reply, with a
@@ -316,7 +320,12 @@ fn accept_before(listener: &TcpListener, deadline: Duration) -> anyhow::Result<T
 /// HTTP server for a single one-shot request would be more machinery than the
 /// problem deserves.
 pub fn wait_for_redirect(listener: TcpListener, deadline: Duration) -> anyhow::Result<Redirect> {
-    let mut stream = accept_before(&listener, deadline)?;
+    wait_for_redirect_cancellable(listener, deadline, &AtomicBool::new(false))
+}
+
+/// Ends the listener as well as the caller when consent is abandoned.
+pub fn wait_for_redirect_cancellable(listener: TcpListener, deadline: Duration, cancelled: &AtomicBool) -> anyhow::Result<Redirect> {
+    let mut stream = accept_before(&listener, deadline, cancelled)?;
     let mut line = String::new();
     BufReader::new(stream.try_clone()?).read_line(&mut line)?;
 
@@ -626,6 +635,32 @@ mod tests {
         let _ = reqwest::get(format!("http://127.0.0.1:{port}/?code=c&state=s")).await;
         assert!(handle.await.unwrap().is_ok());
         assert!(started.elapsed() < Duration::from_secs(5), "returned only after the deadline");
+    }
+
+    #[test]
+    fn cancelling_abandoned_consent_closes_listener_and_allows_a_fresh_attempt() {
+        let (listener, _) = bind_loopback().unwrap();
+        let address = listener.local_addr().unwrap();
+        let cancelled = std::sync::Arc::new(AtomicBool::new(false));
+        let worker_cancelled = cancelled.clone();
+        let worker = std::thread::spawn(move || {
+            match wait_for_redirect_cancellable(listener, Duration::from_millis(500), &worker_cancelled) {
+                Ok(_) => panic!("cancelled listener returned a code"),
+                Err(e) => e.to_string(),
+            }
+        });
+        std::thread::sleep(Duration::from_millis(60));
+        cancelled.store(true, Ordering::Relaxed);
+        assert_eq!(worker.join().unwrap(), CANCELLED);
+        assert!(TcpStream::connect(address).is_err(), "cancel must close the old listener");
+        let (fresh, _) = bind_loopback().unwrap();
+        let address = fresh.local_addr().unwrap();
+        let worker = std::thread::spawn(move || {
+            wait_for_redirect_cancellable(fresh, Duration::from_secs(2), &AtomicBool::new(false)).is_ok()
+        });
+        let mut browser = TcpStream::connect(address).unwrap();
+        browser.write_all(b"GET /?code=fresh&state=fresh HTTP/1.1\r\n\r\n").unwrap();
+        assert!(worker.join().unwrap(), "a new attempt must accept its own redirect");
     }
 
     #[test]

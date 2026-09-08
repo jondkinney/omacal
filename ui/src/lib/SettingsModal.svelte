@@ -32,6 +32,7 @@
     accounts,
     version = '',
     busy,
+    signingIn = false, onCancelSignIn = () => {},
     calendars,
     onclose,
     onSignIn,
@@ -48,6 +49,8 @@
      *  rather than claim "OmaCal " and nothing. */
     version?: string;
     busy: boolean;
+    signingIn?: boolean;
+    onCancelSignIn?: () => void;
     /** Every calendar the app knows about, handed straight to `CalendarList` —
      *  the same rows the header's popover shows, from the same component. */
     calendars: Calendar[];
@@ -1229,7 +1232,13 @@
       {#if (accountRows ?? accounts).length === 0}
         <p class="soon">No account is connected.</p>
       {/if}
-      <button type="button" onclick={onSignIn} disabled={busy}>Add account</button>
+      <div class="inline">
+        <button type="button" onclick={onSignIn} disabled={busy}>Add account</button>
+        {#if signingIn}
+          <button type="button" onclick={onCancelSignIn}>Cancel sign-in</button>
+        {/if}
+      </div>
+      {#if signingIn}<p class="hint" role="status">Waiting for Google sign-in in your browser.</p>{/if}
       <p class="hint">
         Signing out removes the account's local data (its calendars, events
         and tasks re-sync if you connect again). For Google, the app's access
