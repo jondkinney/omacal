@@ -83,6 +83,15 @@ impl CalendarClient {
         Ok(resp.items)
     }
 
+    pub async fn calendar_title(&self, id: &str) -> anyhow::Result<String> {
+        #[derive(Deserialize)]
+        struct Title { summary: String }
+        let title = self.http.get(format!("{}/calendars/{}", self.base_url, urlencoding_path(id)))
+            .bearer_auth(&self.access_token).timeout(std::time::Duration::from_secs(10))
+            .send().await?.error_for_status()?.json::<Title>().await?;
+        Ok(title.summary)
+    }
+
     /// One page of events.
     ///
     /// `singleEvents=false` is deliberate (spec §5): we store recurring masters
