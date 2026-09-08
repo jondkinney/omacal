@@ -840,7 +840,6 @@
             <span class="rownote" data-testid="tz-note">Restarting…</span>
           {/if}
         </div>
-
       </div>
       <p class="hint">
         Every time OmaCal shows reads in this zone — the grid, reminders, the
@@ -859,7 +858,6 @@
             onclick={applySecondZone}
           >Apply</button>
         </div>
-
       </div>
       <p class="hint">
         A second clock beside the first — on the Week and Day hour ruler, and
@@ -1092,8 +1090,10 @@
           </output>
         </div>
         <p class="hint">
-          0% is opaque; 50% is half transparent. Adjust in 0.1% steps. Inactive applies when another window has focus.
-          Your compositor may apply additional transparency.
+          0% is opaque; 50% is as clear as the canvas goes, in 0.1% steps.
+          Inactive applies when another window has focus. Omarchy blends
+          every window a little on its own, so there the app starts at 4% to
+          match, and the compositor's share stays on top.
         </p>
       </section>
       {/if}
@@ -1509,15 +1509,9 @@
      any component that restyles a select's padding owes the right side 22px. */
   select { padding-right: 22px; }
   input[type='number'] { width: 72px; }
-  /* Wide enough for "Australia/Lord_Howe"; scoped to the inline rows so the
-     CalDAV form below keeps its own column width. */
   input:focus, select:focus { outline: 1px solid var(--accent); outline-offset: -1px; }
 
   .caldot { width: 10px; height: 10px; border-radius: 3px; flex: none; }
-
-  /* The zone search results: plain rows under the box, in the flow rather
-     than floating — the modal scrolls, and a floating list inside a
-     scrolling body clips. Eight rows at most (the derivation caps it). */
 
   .check { display: flex; align-items: center; gap: 7px; font-size: 12.5px; cursor: pointer; }
 
