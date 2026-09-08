@@ -8,7 +8,7 @@ import {
   CHORDS, EDIT_CHORDS, EVENT_SHORTCUT_LIST, SHORTCUT_LIST, SHORTCUT_TEXT,
 } from '../src/lib/shortcuts';
 import {
-  APP_MON, APP_NOW, weekLabel,
+  APP_MON, APP_NOW, KEYBOARD_FIRST_ID, weekLabel,
   APP_SOLO_SERIES_ID,
   APP_PRIMARY_CALENDAR_ID, APP_READER_CALENDAR_ID,
   APP_SERIES_DTSTART, APP_SERIES_OCCURRENCE,
@@ -210,19 +210,59 @@ test.describe('App', () => {
     await expect(page.locator('h1')).toHaveText('March 2024');
   });
 
-  /** The `open-event` entrance — a clicked reminder: land on the day *and*
-   *  open the popover on the occurrence, the same arrival a chosen search
-   *  hit gets. The occurrence sits 45 days out for the reason the Dentist
-   *  search fixture does: in the app's own January, a version that never
-   *  moved the anchor would pass. */
-  test('a clicked reminder lands on the occurrence and opens it', async ({ page }) => {
-    await page.goto(app());
-    await expect(page.locator('h1')).toHaveText('January 2024');
-    await page.evaluate(([id, start]) => window.__harness.emit('open-event', {
-      id, startMs: start, endMs: (start as number) + 3_600_000,
-    }), [APP_SOLO_SERIES_ID, APP_NOW + 45 * 24 * 3_600_000]);
-    await expect(page.locator('h1')).toHaveText('March 2024');
-    await expect(page.getByRole('dialog', { name: 'Gym' })).toBeVisible();
+  /** The `open-event` entrance — a clicked reminder: land on the occurrence
+   *  and **select** it, opening nothing.
+   *
+   *  It used to open the popover, which is a panel carrying Yes/Maybe/No,
+   *  Edit and Delete: showing somebody where a meeting is and putting its
+   *  destructive controls under their cursor are different favours (Plamen,
+   *  2026-09-08).
+   *
+   *  Three weeks out on purpose. The week is not loaded when the event
+   *  arrives, so a version that set the cursor synchronously would look for
+   *  the day among the *old* payload, find nothing and select nothing — the
+   *  parking is the half that carries this. `keyboard-navigation` because
+   *  its fixture draws each event in the day it actually starts in; the
+   *  `writable` week deliberately renders four events in Monday's column
+   *  whatever their `start_ms`, and no cursor could land on them.
+   */
+  test('a clicked reminder lands on the occurrence and selects it, opening nothing', async ({ page }) => {
+    await page.clock.setFixedTime(APP_MON + 8 * 3_600_000);
+    await page.goto(app('keyboard-navigation'));
+    await expect(page.locator('.vswitch button.active')).toBeVisible();
+    await expect(page.locator('[data-kbd-selected-event]')).toHaveCount(0);
+
+    const start = APP_MON + 21 * 24 * 3_600_000 + 9 * 3_600_000;
+    await page.evaluate(([id, s]) => window.__harness.emit('open-event', {
+      id, startMs: s, endMs: (s as number) + 3_600_000,
+    }), [KEYBOARD_FIRST_ID, start]);
+
+    // The anchor moved to the occurrence's own week...
+    await expect(page.locator('h1')).toHaveText('February 2024');
+    // ...and the occurrence itself is selected, not merely its day.
+    await expect(page.locator('[data-kbd-selected-event]')).toHaveCount(1);
+    await expect(page.locator('[data-kbd-selected-event]')).toContainText('Plan the launch');
+    // Nothing opened: not the popover it used to open, not anything else.
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+  });
+
+  /** Year draws no cursor, so anchoring it alone would leave the click showing
+   *  a grid of months with nothing marked — strictly less than the popover
+   *  this replaces. The click lands on a view that can answer "where is it". */
+  test('a reminder clicked from Year lands on a view that can show the selection', async ({ page }) => {
+    await page.clock.setFixedTime(APP_MON + 8 * 3_600_000);
+    await page.goto(app('keyboard-navigation'));
+    await page.getByRole('button', { name: 'Year', exact: true }).click();
+    await expect(page.locator('[data-kbd-selected-event]')).toHaveCount(0);
+
+    const start = APP_MON + 21 * 24 * 3_600_000 + 9 * 3_600_000;
+    await page.evaluate(([id, s]) => window.__harness.emit('open-event', {
+      id, startMs: s, endMs: (s as number) + 3_600_000,
+    }), [KEYBOARD_FIRST_ID, start]);
+
+    await expect(page.locator('[data-kbd-selected-event]')).toHaveCount(1);
+    await expect(page.locator('[data-kbd-selected-event]')).toContainText('Plan the launch');
+    await expect(page.getByRole('dialog')).toHaveCount(0);
   });
 
   /** The fresh-launch half of the same entrance: the date was parked on the

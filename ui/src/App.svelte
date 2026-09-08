@@ -171,6 +171,9 @@
    * another press advances again instead of silently paging without bound. */
   let pendingEventMove = $state<-1 | 1 | null>(null);
   let pendingKeyboardDay = $state<number | null>(null);
+  /** An exact occurrence waiting for its day to load, rather than a direction
+   *  to move in — what a clicked reminder parks. Cleared with the other two. */
+  let pendingKeyboardEvent = $state<{ id: number; startMs: number } | null>(null);
 
   let status = $state<AppStatus | null>(null);
   let calendars = $state<Calendar[]>([]);
@@ -237,10 +240,39 @@
     const un = listen<string>('open-date', (e) => { anchorMs = ymdMs(e.payload); });
     return () => { un.then((f) => f()); };
   });
+  /** A clicked reminder lands on its meeting and **selects** it, opening
+   *  nothing.
+   *
+   *  `notify::Action::OpenEvent` already says the click "means 'show me',
+   *  never anything with side effects" — but it used to open the popover,
+   *  which is a panel with Yes/Maybe/No, Edit and Delete in it. Showing
+   *  somebody where a meeting is and putting its destructive controls under
+   *  their cursor are different favours (Plamen, 2026-09-08).
+   *
+   *  Selection rather than a highlight of its own: the keyboard cursor
+   *  already means "this is the event in question", already scrolls itself
+   *  into view, and is already the thing every other surface here defers to.
+   *  A second visual language for the same idea would be one to keep in
+   *  step forever.
+   *
+   *  Year and Big Year cannot draw a cursor, and anchoring them alone would
+   *  leave the click showing a grid of months with nothing marked — strictly
+   *  less than the popover it replaces. Those two land on the week instead,
+   *  which is the view that can answer "where is it". */
   $effect(() => {
     const un = listen<{ id: number; startMs: number; endMs: number }>('open-event', (e) => {
-      anchorMs = dayStart(e.payload.startMs);
-      void openOccurrence(e.payload.id, e.payload.startMs, e.payload.endMs, keyboardAnchor());
+      const dayStartMs = dayStart(e.payload.startMs);
+      anchorMs = dayStartMs;
+      if (!listable(view)) view = 'week';
+      keyboardActive = true;
+      // The day may not be loaded yet — the anchor above may have just moved
+      // the period. Park the occurrence the same way `loadKeyboardDay` parks
+      // a direction, and let the payload effect place the cursor once the
+      // day it belongs to actually arrives.
+      pendingKeyboardDay = dayStartMs;
+      pendingEventMove = null;
+      pendingKeyboardEvent = { id: e.payload.id, startMs: e.payload.startMs };
+      selectKeyboard(dayCursor(dayStartMs));
     });
     return () => { un.then((f) => f()); };
   });
@@ -556,6 +588,7 @@
     }
     pendingKeyboardDay = null;
     pendingEventMove = null;
+    pendingKeyboardEvent = null;
     selectKeyboard(moved.cursor);
   }
 
@@ -636,10 +669,20 @@
 
     if (pendingKeyboardDay !== null) {
       if (!days.some((day) => day.startMs === pendingKeyboardDay)) return;
+      const pendingDay = pendingKeyboardDay;
       const eventDir = pendingEventMove;
+      const exact = pendingKeyboardEvent;
       pendingKeyboardDay = null;
       pendingEventMove = null;
-      if (eventDir !== null) {
+      pendingKeyboardEvent = null;
+      // A parked occurrence names its own destination, so it neither moves
+      // nor searches: place the cursor on it and let `selectKeyboard` reveal
+      // it. Taken before the direction arm because the two never coexist.
+      if (exact !== null) {
+        selectKeyboard({
+          dayStartMs: pendingDay, eventId: exact.id, eventStartMs: exact.startMs,
+        });
+      } else if (eventDir !== null) {
         const now = Date.now();
         const moved = moveEvent(
           days, keyboardCursor, eventDir, { nowMs: now },
