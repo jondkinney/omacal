@@ -1,5 +1,7 @@
 <!-- ui/src/lib/WeatherPopover.svelte -->
 <script lang="ts">
+  import { formatDate } from './datefmt';
+  import { dateFormat } from './date.svelte';
   import { onMount } from 'svelte';
   import { escapeCloses } from './dismiss.svelte';
   import { placePopover, type Rect } from './position';
@@ -26,7 +28,7 @@
   const unit = $derived(temperatureUnit());
   const now = $derived(today ? (report.current ?? null) : null);
   const dayLabel = $derived(
-    new Date(`${day.date}T12:00:00`).toLocaleDateString(undefined, {
+    formatDate(new Date(`${day.date}T12:00:00`).getTime(), dateFormat(), {
       weekday: 'long', day: 'numeric', month: 'long',
     }),
   );

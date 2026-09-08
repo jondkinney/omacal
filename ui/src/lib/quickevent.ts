@@ -1,3 +1,5 @@
+import { formatDate, type DateFormat } from './datefmt';
+import { formatClock, type TimeFormat } from './timefmt';
 import type { Calendar } from './calendars';
 import {
   WEEKDAY_OPTIONS, blankValue, blankValueAt, dateOf, normalizedWeeklyDays,
@@ -832,16 +834,18 @@ export function parseQuickEvent(source: string, context: QuickEventContext): Qui
 export function quickPreviewRows(
   result: QuickEventResult,
   calendars: Calendar[],
+  dateFormat: DateFormat = 'locale',
+  timeFormat?: TimeFormat,
 ): Array<{ label: string; value: string }> {
   const v = result.value;
   const start = new Date(`${v.date}T${v.start}:00`);
   const end = new Date(`${v.endDate}T${v.end}:00`);
-  const date = start.toLocaleDateString(undefined, {
+  const date = formatDate(start.getTime(), dateFormat, {
     weekday: 'short', month: 'short', day: 'numeric', year: 'numeric',
   });
   const time = v.isAllDay
     ? 'All day'
-    : `${start.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}–${end.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`;
+    : timeFormat ? `${formatClock(start.getTime(), timeFormat)}–${formatClock(end.getTime(), timeFormat)}` : `${start.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}–${end.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}`;
   const rows = [
     { label: 'Title', value: v.title || '(no title)' },
     { label: 'When', value: `${date} · ${time}` },
@@ -856,7 +860,7 @@ export function quickPreviewRows(
     rows.push({ label: 'Repeats', value: repeat });
     if (v.repeatEnd.kind === 'on') {
       const [year, month, day] = v.repeatEnd.date.split('-').map(Number);
-      const shown = new Date(Date.UTC(year, month - 1, day)).toLocaleDateString(undefined, {
+      const shown = formatDate(Date.UTC(year, month - 1, day), dateFormat, {
         month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC',
       });
       rows.push({ label: 'Ends', value: `On ${shown}` });

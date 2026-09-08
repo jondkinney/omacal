@@ -1,5 +1,6 @@
 <!-- ui/src/lib/EventForm.svelte -->
 <script lang="ts">
+  import { dateFormat } from './date.svelte';
   import { onMount } from 'svelte';
   import { clockFormat } from './clock.svelte';
   import { secondZone } from './secondzone.svelte';
@@ -295,7 +296,7 @@
    *  on offer (greyed) so they can see what they are replacing, and picking it
    *  back is impossible — which is the point. */
   const isCustom = $derived(initial.repeat === CUSTOM_REPEAT);
-  const customWords = $derived(ruleInWords(initial.recurrence));
+  const customWords = $derived(ruleInWords(initial.recurrence, dateFormat()));
   /** How many people Save could mail — see `mailableGuests`. Derived from the
    *  working copy as well as `initial`, unlike everything else in this block:
    *  the answer changes as the user edits the list, which is the whole point.

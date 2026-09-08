@@ -1,5 +1,7 @@
 <!-- ui/src/lib/InviteTray.svelte -->
 <script lang="ts">
+  import { formatDate } from './datefmt';
+  import { dateFormat } from './date.svelte';
   import { respondToEvent } from './eventdetail';
   import { clockFormat } from './clock.svelte';
   import { formatClock } from './timefmt';
@@ -41,14 +43,14 @@
   const hhmm = (ms: number) => formatClock(ms, clockFormat());
 
   const day = (ms: number) =>
-    new Date(ms).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+    formatDate(new Date(ms).getTime(), dateFormat(), { weekday: 'short', month: 'short', day: 'numeric' });
 
   /** `yyyy-mm-dd` (a calendar-zone day) rendered as "Mon, Aug 17". Built
    *  from parts, never from `Date.parse` — a bare ISO date parses as UTC
    *  midnight and shifts a day for any browser east of Greenwich. */
   function dateWords(d: string): string {
     const [y, m, dd] = d.split('-').map(Number);
-    return new Date(y, m - 1, dd).toLocaleDateString(undefined, {
+    return formatDate(new Date(y, m - 1, dd).getTime(), dateFormat(), {
       weekday: 'short', month: 'short', day: 'numeric',
     });
   }

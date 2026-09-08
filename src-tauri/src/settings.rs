@@ -123,6 +123,25 @@ impl TimeFormat {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DateFormat { Locale, Mdy, Dmy, Iso, LongMdy, LongDmy }
+impl DateFormat {
+    fn as_str(self) -> &'static str { match self {
+        Self::Locale => "locale", Self::Mdy => "mdy", Self::Dmy => "dmy",
+        Self::Iso => "iso", Self::LongMdy => "long-mdy", Self::LongDmy => "long-dmy",
+    } }
+    pub fn display(self, date: jiff::civil::Date) -> String {
+        match self {
+            Self::Mdy => date.strftime("%m/%d/%Y").to_string(),
+            Self::Dmy => date.strftime("%d/%m/%Y").to_string(),
+            Self::Iso => date.to_string(),
+            Self::LongDmy => format!("{} {} {}", date.day(), date.strftime("%b"), date.year()),
+            _ => format!("{} {}, {}", date.strftime("%b"), date.day(), date.year()),
+        }
+    }
+}
+
 /// Whether a temperature is drawn as `22°` or `72°` — Celsius or Fahrenheit.
 ///
 /// [`TimeFormat`]'s reason, twice over: the set is closed, so [`set_temperature_unit`]
@@ -497,6 +516,7 @@ pub struct AppSettings {
     /// 24-hour ruler has to convert in their head at exactly the moment the
     /// ruler exists to save them from it.
     pub time_format: TimeFormat,
+    pub date_format: DateFormat,
     /// The day a week begins on, honoured by the Week grid's own anchor, the
     /// month grid's leading blanks, the Year view's twelve small grids, and
     /// Big Year's 392-day ribbon. When `week_starts_today` is on, this still
@@ -685,6 +705,7 @@ pub(crate) async fn read_settings_with(pool: &SqlitePool, baseline: u8) -> AppSe
         // takes and for the same reason: absent, garbage, and a value written
         // by some future version all land on the format the app has always
         // drawn, rather than on the one nobody asked for.
+        date_format: read(pool, "date_format").await.and_then(|v| serde_json::from_value(serde_json::Value::String(v)).ok()).unwrap_or(DateFormat::Locale),
         time_format: read(pool, TIME_FORMAT_KEY)
             .await
             .map(|v| if v == "12h" { TimeFormat::H12 } else { TimeFormat::H24 })
@@ -1315,6 +1336,14 @@ pub async fn set_hour_height(
     Ok(read_settings(&state.pool).await)
 }
 
+#[tauri::command]
+pub async fn set_date_format(app: tauri::AppHandle, state: tauri::State<'_, AppState>, format: DateFormat) -> Result<AppSettings, String> {
+    write(&state.pool, "date_format", format.as_str()).await.map_err(|e| crate::errors::user_facing(&e))?;
+    crate::upcoming::refresh(&state.pool, state.demo).await;
+    crate::tray::refresh(&app);
+    Ok(read_settings(&state.pool).await)
+}
+
 /// Stores the clock format. Like [`set_list_mode`] nothing is refused, and
 /// here the *type* is the reason rather than the triviality of a boolean:
 /// [`TimeFormat`] has no third variant for a caller to send.
@@ -1902,6 +1931,20 @@ mod tests {
 
         write(&p, TIME_FORMAT_KEY, TimeFormat::H24.as_str()).await.unwrap();
         assert_eq!(read_settings(&p).await.time_format, TimeFormat::H24);
+    }
+
+    #[tokio::test]
+    async fn date_formats_round_trip_and_render_unambiguous_dates() {
+        let p = pool().await;
+        let date: jiff::civil::Date = "2026-09-07".parse().unwrap();
+        for (format, expected) in [(DateFormat::Mdy, "09/07/2026"), (DateFormat::Dmy, "07/09/2026"),
+            (DateFormat::Iso, "2026-09-07"), (DateFormat::LongMdy, "Sep 7, 2026"), (DateFormat::LongDmy, "7 Sep 2026")] {
+            write(&p, "date_format", format.as_str()).await.unwrap();
+            assert_eq!(read_settings(&p).await.date_format, format);
+            assert_eq!(format.display(date), expected);
+        }
+        write(&p, "date_format", "garbage").await.unwrap();
+        assert_eq!(read_settings(&p).await.date_format, DateFormat::Locale);
     }
 
     /// All three round-trip, and an unrecognised row reads as Monday — the

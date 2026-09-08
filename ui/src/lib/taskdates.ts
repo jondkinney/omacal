@@ -1,3 +1,4 @@
+import { formatDate, type DateFormat } from './datefmt';
 // When a task is due, in the words the sidebar uses — and which group it
 // falls in. Pure, and separate from the panel, for `eventform.ts`'s reason:
 // this is a table of inputs to outputs and wants testing as one. A spec that
@@ -60,7 +61,7 @@ export function whenOf(task: Task, nowMs: number): When {
  *  the reason every other time in the window does: the setting is the
  *  user's answer and a task reading 6:00 PM beside a grid reading 18:00
  *  would be the app disagreeing with itself. */
-export function dueLabel(task: Task, nowMs: number, format: TimeFormat = '24h'): string {
+export function dueLabel(task: Task, nowMs: number, format: TimeFormat = '24h', dateFormat: DateFormat = 'locale'): string {
   if (task.dueMs === null) return '';
   const away = daysAway(task.dueMs, nowMs);
   const time = task.dueAllDay ? '' : formatClock(task.dueMs, format);
@@ -71,7 +72,7 @@ export function dueLabel(task: Task, nowMs: number, format: TimeFormat = '24h'):
   // and a column of dates wants one order. The weekday name is still the
   // locale's.
   const due = new Date(task.dueMs);
-  const day = `${due.toLocaleDateString(undefined, { weekday: 'short' })} ${due.getDate()}`;
+  const day = dateFormat !== 'locale' ? formatDate(task.dueMs, dateFormat) : `${due.toLocaleDateString(undefined, { weekday: 'short' })} ${due.getDate()}`;
   return time ? `${day} ${time}` : day;
 }
 

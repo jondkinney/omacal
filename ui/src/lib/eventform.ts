@@ -1,3 +1,4 @@
+import { formatDate, type DateFormat } from './datefmt';
 // The event form's own value type, and the pure functions either side of it:
 // what a form value is made of, how one is built from an `EventDetail`, and
 // how one becomes the `EventInput` the Rust write commands take.
@@ -1510,7 +1511,7 @@ function dayInWords(token: string): string | null {
 
 /** `20261231` or `20261231T235959Z` → `Dec 31, 2026`. `null` when it is
  *  neither — an UNTIL this cannot read must not become a wrong date. */
-function untilInWords(value: string): string | null {
+function untilInWords(value: string, dateFormat: DateFormat): string | null {
   const m = /^(\d{4})(\d{2})(\d{2})(T\d{6}Z?)?$/.exec(value.trim());
   if (!m) return null;
   const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
@@ -1523,7 +1524,7 @@ function untilInWords(value: string): string | null {
   if (at.getUTCFullYear() !== y || at.getUTCMonth() !== mo - 1 || at.getUTCDate() !== d) {
     return null;
   }
-  return at.toLocaleDateString(undefined, {
+  return formatDate(at.getTime(), dateFormat, {
     year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC',
   });
 }
@@ -1536,7 +1537,7 @@ const listInWords = (items: string[]): string =>
 /** The body of one RRULE (no `RRULE:` prefix) in English, or `null` the
  *  moment it meets a part it does not model, an unreadable value, or no
  *  `FREQ` at all — never a partial description. */
-function rruleBodyInWords(body: string): string | null {
+function rruleBodyInWords(body: string, dateFormat: DateFormat): string | null {
   const parts = new Map<string, string>();
   for (const part of body.split(';')) {
     if (part.trim() === '') continue;
@@ -1571,7 +1572,7 @@ function rruleBodyInWords(body: string): string | null {
 
   const until = parts.get('UNTIL');
   if (until !== undefined) {
-    const when = untilInWords(until);
+    const when = untilInWords(until, dateFormat);
     if (!when) return null;
     words += `, until ${when}`;
   }
@@ -1614,7 +1615,7 @@ function datesListed(line: string): { kind: 'EXDATE' | 'RDATE'; count: number } 
  * Exactly one `RRULE` line, every other line a countable `EXDATE`/`RDATE`,
  * or the whole blob shows verbatim.
  */
-export function ruleInWords(rule: string | null): string {
+export function ruleInWords(rule: string | null, dateFormat: DateFormat = 'locale'): string {
   if (!rule) return '';
   const raw = rule.trim();
   if (raw === '') return '';
@@ -1634,7 +1635,7 @@ export function ruleInWords(rule: string | null): string {
     const line = lines[0];
     if (line.length > MAX_RULE_LENGTH) return verbatim;
     const body = /^rrule:/i.test(line) ? line.slice('RRULE:'.length) : line;
-    return rruleBodyInWords(body) ?? verbatim;
+    return rruleBodyInWords(body, dateFormat) ?? verbatim;
   }
 
   // A multi-line blob: the rule, plus the deletions/additions that made it
@@ -1660,7 +1661,7 @@ export function ruleInWords(rule: string | null): string {
   // Dates with no rule to hang them on: nothing to describe them against.
   if (ruleBody === null) return verbatim;
 
-  let words = rruleBodyInWords(ruleBody);
+  let words = rruleBodyInWords(ruleBody, dateFormat);
   if (words === null) return verbatim;
   if (added > 0) words += `, plus ${added} added date${added === 1 ? '' : 's'}`;
   if (except > 0) words += `, except ${except} date${except === 1 ? '' : 's'}`;

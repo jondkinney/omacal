@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { dateFormat } from './date.svelte';
+  import { clockFormat } from './clock.svelte';
   import { onMount } from 'svelte';
   import type { Calendar } from './calendars';
   import { escapeCloses } from './dismiss.svelte';
@@ -33,7 +35,7 @@
   const parsed = $derived(parseQuickEvent(line, {
     nowMs, anchorDayMs, calendarId, defaultDurationMinutes, calendars,
   }));
-  const rows = $derived(quickPreviewRows(parsed, calendars));
+  const rows = $derived(quickPreviewRows(parsed, calendars, dateFormat(), clockFormat()));
   const guests = $derived(parsed.value.guests.length);
 
   onMount(() => fieldEl?.focus());

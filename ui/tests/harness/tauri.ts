@@ -576,6 +576,7 @@ type StubSettings = {
   eventCornerStyle: EventCornerStyle;
   transparentWindow: boolean;
   timeFormat: TimeFormat;
+  dateFormat: import('../../src/lib/datefmt').DateFormat;
   weekStart: WeekStartDay;
   weekStartsToday: boolean;
   weekViewDays: WeekViewDays;
@@ -625,6 +626,7 @@ const DEFAULT_SETTINGS: StubSettings = {
   // The clock the app has always drawn, so every existing spec and every
   // committed screenshot golden goes on describing the same pixels.
   timeFormat: '24h',
+  dateFormat: 'locale',
   // The week omacal has always drawn, so every golden holds.
   weekStart: 'monday',
   weekStartsToday: false,
@@ -946,6 +948,9 @@ export function installTauriStub(scenario: string): Harness {
       case 'set_week_view_days':
         settings = saveSettings({ ...settings, weekViewDays: args.days as WeekViewDays });
         return { ...settings };
+      case 'set_date_format':
+        settings = saveSettings({ ...settings, dateFormat: args.format as import('../../src/lib/datefmt').DateFormat });
+        return settings;
       case 'set_time_format':
         settings = saveSettings({ ...settings, timeFormat: args.format as TimeFormat });
         return { ...settings };

@@ -1909,7 +1909,7 @@ test.describe('App', () => {
     await expect(quick.getByText('Weekly · Mon, Wed, Fri', { exact: true })).toBeVisible();
     // The app fixture freezes time on Monday 29 Jan; Monday belongs to MWF,
     // so the first occurrence is today rather than needlessly skipping ahead.
-    await expect(quick.getByText(/Mon, Jan 29, 2024.*9:00 AM/)).toBeVisible();
+    await expect(quick.getByText(/Mon, Jan 29, 2024.*09:00/)).toBeVisible();
 
     await quick.getByRole('button', { name: 'Continue editing' }).click();
     const form = newForm(page);
@@ -5167,4 +5167,19 @@ test('abandoned Google sign-in can be cancelled and Add account retried', async 
   await page.getByRole('dialog', { name: 'Settings' }).getByRole('tab', { name: 'Accounts', exact: true }).click();
   await page.getByRole('dialog', { name: 'Settings' }).getByRole('button', { name: 'Cancel sign-in', exact: true }).click();
   await expect(page.getByRole('dialog', { name: 'Settings' }).getByRole('button', { name: 'Add account', exact: true })).toBeEnabled();
+});
+
+test('date preference repaints event dates and survives a reload', async ({ page }) => {
+  await page.clock.setFixedTime(APP_NOW);
+  await page.goto(app());
+  await page.getByRole('button', { name: 'Menu' }).click();
+  await page.getByRole('button', { name: 'Settings…' }).click();
+  const modal = page.getByRole('dialog', { name: 'Settings' });
+  await modal.locator('#date-format').selectOption('dmy');
+  await page.keyboard.press('Escape');
+  await page.locator('.col .ev').first().click();
+  await expect(page.locator('.pop .when')).toContainText(/\d{2}\/\d{2}\/2024/);
+  await page.reload();
+  await page.locator('.col .ev').first().click();
+  await expect(page.locator('.pop .when')).toContainText(/\d{2}\/\d{2}\/2024/);
 });
