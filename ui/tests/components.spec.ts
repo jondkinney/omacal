@@ -1628,17 +1628,15 @@ test.describe('Header', () => {
     // Defaults to the system zone; Apply is dead until something changes —
     // a restart button that is live with nothing to apply invites misclicks.
     const box = modal.getByLabel('Time zone', { exact: true });
-    await expect(box).toHaveValue('');
+    await expect(box).toHaveValue('System default');
     const apply = modal.getByRole('button', { name: 'Apply & restart' });
     await expect(apply).toBeDisabled();
 
-    // Searching by the CAPITAL, lower-case, finds the zone — the native
-    // select this replaced only jumped on leading letters, so "sofia"
-    // found nothing (reported live, minutes after it shipped). A half-typed
-    // name is not applyable; picking the match is.
-    await box.fill('sofia');
+    // Search within the dropdown choices by city; searching itself does not
+    // change the selection or enable Apply.
+    await box.fill('sofa');
     await expect(apply).toBeDisabled();
-    await modal.getByRole('option', { name: 'Europe/Sofia' }).click();
+    await page.getByRole('option', { name: 'Europe/Sofia', exact: true }).click();
     await expect(box).toHaveValue('Europe/Sofia');
     await expect(apply).toBeEnabled();
     await apply.click();
@@ -1655,7 +1653,8 @@ test.describe('Header', () => {
     await page.keyboard.press('Escape');
     const again = await openSettings(page);
     await expect(again.getByLabel('Time zone', { exact: true })).toHaveValue('Europe/Sofia');
-    await again.getByLabel('Time zone', { exact: true }).fill('');
+    await again.getByLabel('Time zone', { exact: true }).fill('System');
+    await page.getByRole('listbox', { name: 'Time zone options', exact: true }).getByRole('option', { name: 'System default', exact: true }).click();
     await again.getByRole('button', { name: 'Apply & restart' }).click();
     const second = await page.evaluate(() =>
       (window as any).__harness.calls.filter((c: { cmd: string }) => c.cmd === 'set_display_timezone').pop()?.args);
@@ -1669,14 +1668,14 @@ test.describe('Header', () => {
     // Same combo pattern as the display zone above it, same substring
     // search — and the same dead-until-valid Apply, though this one costs
     // no restart and says so by not being labelled with one.
-    const box = modal.getByLabel('Second time zone');
-    await expect(box).toHaveValue('');
+    const box = modal.getByLabel('Second time zone', { exact: true });
+    await expect(box).toHaveValue('Off');
     const apply = modal.getByRole('button', { name: 'Apply', exact: true });
     await expect(apply).toBeDisabled();
 
-    await box.fill('kolkata');
+    await box.fill('kolkta');
     await expect(apply).toBeDisabled();
-    await modal.getByRole('option', { name: 'Asia/Kolkata' }).click();
+    await box.press('Enter');
     await expect(apply).toBeEnabled();
     await apply.click();
 
@@ -1691,12 +1690,39 @@ test.describe('Header', () => {
     // backend's vocabulary for off, exactly as the display zone clears.
     await page.keyboard.press('Escape');
     const again = await openSettings(page);
-    await expect(again.getByLabel('Second time zone')).toHaveValue('Asia/Kolkata');
-    await again.getByLabel('Second time zone').fill('');
+    await expect(again.getByLabel('Second time zone', { exact: true })).toHaveValue('Asia/Kolkata');
+    await again.getByLabel('Second time zone', { exact: true }).fill('Off');
+    await page.getByRole('option', { name: 'Off', exact: true }).click();
     await again.getByRole('button', { name: 'Apply', exact: true }).click();
     const second = await page.evaluate(() =>
       (window as any).__harness.calls.filter((c: { cmd: string }) => c.cmd === 'set_second_timezone').pop()?.args);
     expect(second).toEqual({ tz: null });
+  });
+
+  test('time-zone combobox cancels invalid text and supports keyboard navigation', async ({ page }) => {
+    await page.goto(show('Header', 'connected'));
+    const modal = await openSettings(page);
+    const box = modal.getByRole('combobox', { name: 'Second time zone', exact: true });
+    await box.fill('zzzzzzzz');
+    await expect(page.getByRole('status')).toContainText('No matching time zones');
+    await box.press('Enter');
+    await expect(modal.getByRole('button', { name: 'Apply', exact: true })).toBeDisabled();
+    await box.press('Escape');
+    await expect(modal).toBeVisible();
+    await expect(box).toHaveValue('Off');
+    await box.fill('kolktta');
+    await expect(page.getByRole('option', { name: 'Asia/Kolkata', exact: true })).toBeVisible();
+    await box.press('Enter');
+    await expect(box).toHaveValue('Asia/Kolkata');
+    await box.press('ArrowDown');
+    await expect(box).toHaveAttribute('aria-expanded', 'true');
+    await box.press('ArrowUp');
+    await box.press('Enter');
+    await expect(box).not.toHaveValue('Asia/Kolkata');
+    await box.fill('invalid');
+    await box.press('Tab');
+    await expect(box).not.toHaveValue('invalid');
+    await expect(box).toHaveAttribute('aria-expanded', 'false');
   });
 
   test('the floor is stated before anybody trips over it', async ({ page }) => {
