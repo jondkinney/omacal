@@ -680,6 +680,11 @@ pub fn patch_todo_status(raw: &str, uid: &str, completed: bool, now: Timestamp) 
             let this_uid = parse(&format!("BEGIN:VCALENDAR\n{joined}\nEND:VCALENDAR"))
                 .and_then(|r| r.components("VTODO").next().and_then(|t| t.prop_value("UID").map(|u| u.trim().to_string())));
             if this_uid.as_deref() == Some(uid) {
+                let sequence = block.iter()
+                    .find(|l| l.to_ascii_uppercase().starts_with("SEQUENCE:"))
+                    .and_then(|l| l.split_once(':'))
+                    .and_then(|(_, v)| v.trim().parse::<i64>().ok())
+                    .unwrap_or(0);
                 let mut patched: Vec<String> = block
                     .iter()
                     .filter(|l| {
@@ -687,11 +692,22 @@ pub fn patch_todo_status(raw: &str, uid: &str, completed: bool, now: Timestamp) 
                         !(u.starts_with("STATUS")
                             || u.starts_with("COMPLETED:")
                             || u.starts_with("COMPLETED;")
-                            || u.starts_with("PERCENT-COMPLETE"))
+                            || u.starts_with("PERCENT-COMPLETE")
+                            || u.starts_with("SEQUENCE:")
+                            || u.starts_with("DTSTAMP:")
+                            || u.starts_with("LAST-MODIFIED:"))
                     })
                     .cloned()
                     .collect();
+                // iCloudBridge compares modification times, so a status-only
+                // change needs the same revision stamps as a title/date edit.
                 let insert_at = patched.len() - 1; // before END:VTODO
+                patched.splice(insert_at..insert_at, [
+                    format!("SEQUENCE:{}", sequence + 1),
+                    format!("DTSTAMP:{}", fmt_utc(now)),
+                    format!("LAST-MODIFIED:{}", fmt_utc(now)),
+                ]);
+                let insert_at = patched.len() - 1;
                 if completed {
                     patched.splice(
                         insert_at..insert_at,
@@ -1487,6 +1503,28 @@ mod tests {
         assert!(!back.contains("STATUS:COMPLETED"));
         assert!(!back.contains("PERCENT-COMPLETE"));
         assert!(back.contains("X-APPLE-SPECIAL:kept"));
+    }
+
+    /// Timestamp-based CalDAV clients (including iCloudBridge) must see
+    /// both completion and reopening as a new revision of the task.
+    #[test]
+    fn changing_task_completion_advances_its_revision() {
+        for (metadata, sequence) in [("", 0), ("SEQUENCE:7\r\nDTSTAMP:20260101T000000Z\r\nLAST-MODIFIED:20260101T000000Z\r\n", 7)] {
+            let raw = format!("BEGIN:VCALENDAR\r\nBEGIN:VTODO\r\nUID:task\r\n{metadata}STATUS:NEEDS-ACTION\r\nEND:VTODO\r\nEND:VCALENDAR\r\n");
+            let now: Timestamp = "2026-09-07T18:00:00Z".parse().unwrap();
+            let done = patch_todo_status(&raw, "task", true, now).unwrap();
+            assert!(done.contains("LAST-MODIFIED:20260907T180000Z"), "completion must be discoverable");
+            assert!(done.contains("DTSTAMP:20260907T180000Z"));
+            assert!(done.contains(&format!("SEQUENCE:{}\r\n", sequence + 1)));
+            let later: Timestamp = "2026-09-07T18:01:00Z".parse().unwrap();
+            let reopened = patch_todo_status(&done, "task", false, later).unwrap();
+            assert!(reopened.contains("LAST-MODIFIED:20260907T180100Z"), "reopening must be discoverable");
+            assert!(reopened.contains("DTSTAMP:20260907T180100Z"));
+            assert!(reopened.contains(&format!("SEQUENCE:{}\r\n", sequence + 2)));
+            assert_eq!(reopened.matches("LAST-MODIFIED:").count(), 1);
+            assert_eq!(reopened.matches("DTSTAMP:").count(), 1);
+            assert_eq!(reopened.matches("SEQUENCE:").count(), 1);
+        }
     }
 
     #[test]
