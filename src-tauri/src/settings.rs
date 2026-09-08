@@ -29,6 +29,7 @@ pub const HOUR_HEIGHT_MAX: i64 = 160;
 const FALLBACK_KEY: &str = "fallback_reminder_minutes";
 const DEFAULT_CALENDAR_KEY: &str = "default_calendar_id";
 const DEFAULT_EVENT_DURATION_KEY: &str = "default_event_duration_minutes";
+const INACTIVE_BACKGROUND_TRANSPARENCY_KEY: &str = "inactive_background_transparency";
 const BACKGROUND_TRANSPARENCY_KEY: &str = "background_transparency";
 const EVENT_TRANSPARENCY_KEY: &str = "event_transparency";
 const EVENT_CORNER_STYLE_KEY: &str = "event_corner_style";
@@ -405,13 +406,15 @@ pub struct AppSettings {
     /// Minutes a new timed event lasts when the user names only its start.
     /// Sixty preserves the existing behavior for installs without this row.
     pub default_event_duration_minutes: u32,
-    /// Absolute transparency of the calendar canvas. Zero is fully opaque;
+    /// Calendar-canvas transparency in tenths of a percent, capped at 50. Zero is opaque;
     /// the default is [`appearance_baseline`]: Omarchy's former whole-window
     /// blend there, opaque anywhere else.
-    pub background_transparency: u8,
-    /// Absolute transparency of event fills only. Zero is fully opaque; text,
+    pub background_transparency: f64,
+    /// Falls back to the active value for existing installations.
+    pub inactive_background_transparency: f64,
+    /// Event-fill transparency in tenths of a percent, capped at 25. Text,
     /// colour spines, outlines and controls stay fully painted throughout.
-    pub event_transparency: u8,
+    pub event_transparency: f64,
     /// Rounded preserves the shapes omacal shipped with; square removes the
     /// corner radius from every event representation, not from other UI.
     pub event_corner_style: EventCornerStyle,
@@ -570,6 +573,18 @@ fn appearance_transparency(stored: Option<String>, absolute: bool, baseline: u8)
     }
 }
 
+fn surface_percentage(value: f64, cap: f64) -> f64 {
+    (value.min(cap) * 10.0).round() / 10.0
+}
+
+fn read_surface(stored: Option<String>, absolute: bool, baseline: u8, cap: f64) -> f64 {
+    if !absolute { return surface_percentage(appearance_transparency(stored, false, baseline) as f64, cap); }
+    let value = stored.and_then(|v| v.parse::<f64>().ok())
+        .filter(|v| v.is_finite() && (0.0..=100.0).contains(v))
+        .unwrap_or(baseline as f64);
+    surface_percentage(value, cap)
+}
+
 /// The settings as stored, with defaults for anything absent.
 ///
 /// Absent is the ordinary case on a fresh install and is not an error:
@@ -586,6 +601,9 @@ pub(crate) async fn read_settings_with(pool: &SqlitePool, baseline: u8) -> AppSe
         .await
         .as_deref()
         == Some(ABSOLUTE_TRANSPARENCY_SEMANTICS);
+    let background_transparency = read_surface(
+        read(pool, BACKGROUND_TRANSPARENCY_KEY).await, absolute_transparency, baseline, 50.0,
+    );
     AppSettings {
         sync_interval_ms: read(pool, SYNC_INTERVAL_KEY)
             .await
@@ -651,15 +669,12 @@ pub(crate) async fn read_settings_with(pool: &SqlitePool, baseline: u8) -> AppSe
         // values meant "extra alpha after Omarchy's 4% baseline"; lazily
         // translate those rows so an old 0 opens at 4 instead of changing the
         // user's appearance. The next write stores the marker atomically.
-        background_transparency: appearance_transparency(
-            read(pool, BACKGROUND_TRANSPARENCY_KEY).await,
-            absolute_transparency,
-            baseline,
-        ),
-        event_transparency: appearance_transparency(
-            read(pool, EVENT_TRANSPARENCY_KEY).await,
-            absolute_transparency,
-            baseline,
+        background_transparency,
+        inactive_background_transparency: read(pool, INACTIVE_BACKGROUND_TRANSPARENCY_KEY).await
+            .and_then(|v| v.parse::<f64>().ok()).filter(|v| v.is_finite() && (0.0..=100.0).contains(v))
+            .map(|v| surface_percentage(v, 50.0)).unwrap_or(background_transparency),
+        event_transparency: read_surface(
+            read(pool, EVENT_TRANSPARENCY_KEY).await, absolute_transparency, baseline, 25.0,
         ),
         transparent_window: cfg!(target_os = "linux"),
         event_corner_style: match read(pool, EVENT_CORNER_STYLE_KEY).await.as_deref() {
@@ -744,7 +759,7 @@ pub const EVENT_DURATION_TOO_SHORT: &str =
     "the default meeting duration must be at least one minute";
 
 pub const TRANSPARENCY_OUT_OF_RANGE: &str =
-    "transparency must be between 0 and 100 percent";
+    "background transparency must be between 0 and 50 percent; event transparency between 0 and 25 percent";
 
 #[tauri::command]
 pub async fn get_settings(state: tauri::State<'_, AppState>) -> Result<AppSettings, String> {
@@ -1173,21 +1188,23 @@ async fn set_default_event_duration_impl(
     Ok(read_settings(pool).await)
 }
 
-/// Stores the three appearance choices as one decision. The two sliders and
+/// Stores appearance choices as one decision. The sliders and
 /// the corner picker share one preview, so a crash or database failure must
 /// not leave half of that preview persisted for the next launch.
 #[tauri::command]
 pub async fn set_appearance_preferences(
     state: tauri::State<'_, AppState>,
-    background_transparency: u8,
-    event_transparency: u8,
+    background_transparency: f64,
+    event_transparency: f64,
     event_corner_style: EventCornerStyle,
+    inactive_background_transparency: Option<f64>,
 ) -> Result<AppSettings, String> {
     set_appearance_preferences_impl(
         &state.pool,
         background_transparency,
         event_transparency,
         event_corner_style,
+        inactive_background_transparency,
     )
     .await
     .map_err(|e| crate::errors::user_facing(&e))
@@ -1195,17 +1212,21 @@ pub async fn set_appearance_preferences(
 
 async fn set_appearance_preferences_impl(
     pool: &SqlitePool,
-    background_transparency: u8,
-    event_transparency: u8,
+    background_transparency: f64,
+    event_transparency: f64,
     event_corner_style: EventCornerStyle,
+    inactive_background_transparency: Option<f64>,
 ) -> anyhow::Result<AppSettings> {
-    if background_transparency > 100 || event_transparency > 100 {
+    let inactive = inactive_background_transparency.unwrap_or(background_transparency);
+    if !background_transparency.is_finite() || !(0.0..=50.0).contains(&background_transparency)
+        || !inactive.is_finite() || !(0.0..=50.0).contains(&inactive) || !event_transparency.is_finite() || !(0.0..=25.0).contains(&event_transparency) {
         anyhow::bail!(TRANSPARENCY_OUT_OF_RANGE);
     }
 
     let values = [
-        (BACKGROUND_TRANSPARENCY_KEY, background_transparency.to_string()),
-        (EVENT_TRANSPARENCY_KEY, event_transparency.to_string()),
+        (BACKGROUND_TRANSPARENCY_KEY, surface_percentage(background_transparency, 50.0).to_string()),
+        (INACTIVE_BACKGROUND_TRANSPARENCY_KEY, surface_percentage(inactive, 50.0).to_string()),
+        (EVENT_TRANSPARENCY_KEY, surface_percentage(event_transparency, 25.0).to_string()),
         (EVENT_CORNER_STYLE_KEY, event_corner_style.as_str().to_string()),
         (
             APPEARANCE_TRANSPARENCY_SEMANTICS_KEY,
@@ -1400,12 +1421,12 @@ mod tests {
         let baseline = appearance_baseline(crate::theme::omarchy_theme_dir().is_some());
         assert_eq!(
             s.background_transparency,
-            baseline,
+            baseline as f64,
             "a fresh install starts at this desktop's baseline: 4 where Omarchy blended the window, 0 elsewhere",
         );
         assert_eq!(
             s.event_transparency,
-            baseline,
+            baseline as f64,
             "event alpha starts at the same baseline",
         );
         assert_eq!(
@@ -1560,24 +1581,45 @@ mod tests {
     async fn appearance_round_trips_as_one_choice_and_rejects_bad_percentages() {
         let p = pool().await;
 
-        let s = set_appearance_preferences_impl(&p, 35, 70, EventCornerStyle::Square)
+        let s = set_appearance_preferences_impl(&p, 35.0, 20.0, EventCornerStyle::Square, None)
             .await
             .unwrap();
-        assert_eq!(s.background_transparency, 35);
-        assert_eq!(s.event_transparency, 70);
+        assert_eq!(s.background_transparency, 35.0);
+        assert_eq!(s.event_transparency, 20.0);
         assert_eq!(s.event_corner_style, EventCornerStyle::Square);
 
-        for (background, events) in [(101, 70), (35, 101)] {
-            let err = set_appearance_preferences_impl(&p, background, events, EventCornerStyle::Rounded)
+        for (background, events) in [(50.1, 20.0), (35.0, 25.1)] {
+            let err = set_appearance_preferences_impl(&p, background, events, EventCornerStyle::Rounded, None)
                 .await
                 .unwrap_err();
             assert_eq!(err.to_string(), TRANSPARENCY_OUT_OF_RANGE);
             assert_eq!(crate::errors::user_facing(&err), TRANSPARENCY_OUT_OF_RANGE);
             let unchanged = read_settings(&p).await;
-            assert_eq!(unchanged.background_transparency, 35);
-            assert_eq!(unchanged.event_transparency, 70);
+            assert_eq!(unchanged.background_transparency, 35.0);
+            assert_eq!(unchanged.event_transparency, 20.0);
             assert_eq!(unchanged.event_corner_style, EventCornerStyle::Square);
         }
+    }
+
+    #[tokio::test]
+    async fn inactive_transparency_falls_back_then_persists_independently() {
+        let p = omacal_store::connect_memory().await.unwrap();
+        write(&p, BACKGROUND_TRANSPARENCY_KEY, "35").await.unwrap();
+        let legacy = read_settings(&p).await;
+        assert_eq!(legacy.inactive_background_transparency, legacy.background_transparency);
+        write(&p, APPEARANCE_TRANSPARENCY_SEMANTICS_KEY, ABSOLUTE_TRANSPARENCY_SEMANTICS).await.unwrap();
+        write(&p, BACKGROUND_TRANSPARENCY_KEY, "80").await.unwrap();
+        write(&p, INACTIVE_BACKGROUND_TRANSPARENCY_KEY, "90").await.unwrap();
+        let capped = read_settings(&p).await;
+        assert_eq!((capped.background_transparency, capped.inactive_background_transparency), (50.0, 50.0));
+        write(&p, EVENT_TRANSPARENCY_KEY, "90").await.unwrap();
+        assert_eq!(read_settings(&p).await.event_transparency, 25.0);
+        let saved = set_appearance_preferences_impl(&p, 1.5, 20.5, EventCornerStyle::Rounded, Some(4.1)).await.unwrap();
+        assert_eq!((saved.background_transparency, saved.inactive_background_transparency), (1.5, 4.1));
+        assert_eq!(read_settings(&p).await.inactive_background_transparency, 4.1);
+        assert!(set_appearance_preferences_impl(&p, 10.0, 20.0, EventCornerStyle::Square, Some(50.1)).await.is_err());
+        let unchanged = read_settings(&p).await;
+        assert_eq!((unchanged.background_transparency, unchanged.inactive_background_transparency, unchanged.event_transparency), (1.5, 4.1, 20.5));
     }
 
     #[tokio::test]
@@ -1586,24 +1628,24 @@ mod tests {
 
         // No semantics row is the additive version. On Omarchy its 0 was
         // really the compositor's 4%; 50 was 50% alpha multiplied by 96%, or
-        // 52% total.
+        // 52% total, now capped at 25%.
         write(&p, BACKGROUND_TRANSPARENCY_KEY, "0").await.unwrap();
         write(&p, EVENT_TRANSPARENCY_KEY, "50").await.unwrap();
         let legacy = read_settings_with(&p, DEFAULT_APPEARANCE_TRANSPARENCY).await;
-        assert_eq!(legacy.background_transparency, 4);
-        assert_eq!(legacy.event_transparency, 52);
+        assert_eq!(legacy.background_transparency, 4.0);
+        assert_eq!(legacy.event_transparency, 25.0);
         // Off Omarchy nothing multiplied the window, so a legacy value was
-        // already the whole alpha and reads back as itself.
+        // already the whole alpha, still subject to the 25% event cap.
         let plain = read_settings_with(&p, 0).await;
-        assert_eq!(plain.background_transparency, 0);
-        assert_eq!(plain.event_transparency, 50);
+        assert_eq!(plain.background_transparency, 0.0);
+        assert_eq!(plain.event_transparency, 25.0);
 
         // Any new write marks the whole tuple absolute, including a real 0.
-        let absolute = set_appearance_preferences_impl(&p, 0, 50, EventCornerStyle::Rounded)
+        let absolute = set_appearance_preferences_impl(&p, 0.0, 25.0, EventCornerStyle::Rounded, None)
             .await
             .unwrap();
-        assert_eq!(absolute.background_transparency, 0);
-        assert_eq!(absolute.event_transparency, 50);
+        assert_eq!(absolute.background_transparency, 0.0);
+        assert_eq!(absolute.event_transparency, 25.0);
         assert_eq!(
             read(&p, APPEARANCE_TRANSPARENCY_SEMANTICS_KEY).await.as_deref(),
             Some(ABSOLUTE_TRANSPARENCY_SEMANTICS),
@@ -1621,12 +1663,12 @@ mod tests {
                 let s = read_settings_with(&p, baseline).await;
                 assert_eq!(
                     s.background_transparency,
-                    baseline,
+                    baseline as f64,
                     "{stored:?} changed the canvas at baseline {baseline}",
                 );
                 assert_eq!(
                     s.event_transparency,
-                    baseline,
+                    baseline as f64,
                     "{stored:?} changed event fills at baseline {baseline}",
                 );
             }
@@ -1648,15 +1690,15 @@ mod tests {
     async fn a_fresh_install_starts_opaque_unless_omarchy_blended_the_window_already() {
         let p = pool().await;
         let plain = read_settings_with(&p, appearance_baseline(false)).await;
-        assert_eq!((plain.background_transparency, plain.event_transparency), (0, 0));
+        assert_eq!((plain.background_transparency, plain.event_transparency), (0.0, 0.0));
         let omarchy = read_settings_with(&p, appearance_baseline(true)).await;
         assert_eq!(
             (omarchy.background_transparency, omarchy.event_transparency),
-            (DEFAULT_APPEARANCE_TRANSPARENCY, DEFAULT_APPEARANCE_TRANSPARENCY),
+            (DEFAULT_APPEARANCE_TRANSPARENCY as f64, DEFAULT_APPEARANCE_TRANSPARENCY as f64),
         );
         // The real read passes the host's own answer, whichever it is.
         let detected = appearance_baseline(crate::theme::omarchy_theme_dir().is_some());
-        assert_eq!(read_settings(&p).await.background_transparency, detected);
+        assert_eq!(read_settings(&p).await.background_transparency, detected as f64);
     }
 
     #[test]

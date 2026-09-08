@@ -296,6 +296,7 @@
     if (!settings) return;
     const requested = {
       backgroundTransparency: settings.backgroundTransparency,
+      inactiveBackgroundTransparency: settings.inactiveBackgroundTransparency,
       eventTransparency: settings.eventTransparency,
       eventCornerStyle: settings.eventCornerStyle,
     };
@@ -307,6 +308,7 @@
           requested.backgroundTransparency,
           requested.eventTransparency,
           requested.eventCornerStyle,
+          requested.inactiveBackgroundTransparency,
         );
         if (write !== appearanceWrite) return;
         settings = stored;
@@ -1084,14 +1086,14 @@
       <section class="appearance-section" aria-labelledby="background-style-heading">
         <h2 id="background-style-heading">Calendar background</h2>
         <div class="range-row">
-          <label for="background-transparency">Transparency</label>
+          <label for="background-transparency">Active window</label>
           <input
             id="background-transparency"
-            aria-label="Background transparency"
+            aria-label="Active background transparency"
             type="range"
             min="0"
-            max="100"
-            step="1"
+            max="50"
+            step="0.1"
             value={settings?.backgroundTransparency ?? 0}
             disabled={!settings}
             oninput={(e) => previewAppearance({
@@ -1103,10 +1105,29 @@
             {settings?.backgroundTransparency ?? 0}%
           </output>
         </div>
+        <div class="range-row">
+          <label for="inactive-background-transparency">Inactive window</label>
+          <input
+            id="inactive-background-transparency"
+            aria-label="Inactive background transparency"
+            type="range"
+            min="0"
+            max="50"
+            step="0.1"
+            value={settings?.inactiveBackgroundTransparency ?? 0}
+            disabled={!settings}
+            oninput={(e) => previewAppearance({
+              inactiveBackgroundTransparency: e.currentTarget.valueAsNumber,
+            })}
+            onchange={() => { void saveAppearancePreferences(); }}
+          />
+          <output for="inactive-background-transparency">
+            {settings?.inactiveBackgroundTransparency ?? 0}%
+          </output>
+        </div>
         <p class="hint">
-          0% is opaque; 100% makes the calendar canvas clear. Omarchy blends
-          every window a little on its own, so there the app starts at 4% to
-          match, and the compositor's share stays on top.
+          0% is opaque; 50% is half transparent. Adjust in 0.1% steps. Inactive applies when another window has focus.
+          Your compositor may apply additional transparency.
         </p>
       </section>
       {/if}
@@ -1120,8 +1141,8 @@
             aria-label="Event transparency"
             type="range"
             min="0"
-            max="100"
-            step="1"
+            max="25"
+            step="0.1"
             value={settings?.eventTransparency ?? 0}
             disabled={!settings}
             oninput={(e) => previewAppearance({

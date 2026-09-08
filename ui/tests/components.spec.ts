@@ -1346,13 +1346,13 @@ test.describe('Header', () => {
     // The rest of the tab is still there — only the canvas slider is missing.
     await expect(modal.getByRole('slider', { name: 'Event transparency' })).toHaveCount(1);
     await expect(modal.getByRole('radio', { name: 'Rounded' })).toHaveCount(1);
-    await expect(modal.getByRole('slider', { name: 'Background transparency' })).toHaveCount(0);
+    await expect(modal.getByRole('slider', { name: 'Active background transparency', exact: true })).toHaveCount(0);
   });
 
   test('Appearance starts opaque off Omarchy and persists absolute values', async ({ page }) => {
     await page.goto(show('Header', 'connected'));
     let modal = await openSettings(page, 'Appearance');
-    const background = modal.getByRole('slider', { name: 'Background transparency' });
+    const background = modal.getByRole('slider', { name: 'Active background transparency', exact: true });
     const events = modal.getByRole('slider', { name: 'Event transparency' });
 
     await expect(background).toHaveValue('0');
@@ -1385,7 +1385,7 @@ test.describe('Header', () => {
     )).toBe(1);
 
     await events.evaluate((el) => {
-      (el as HTMLInputElement).value = '65';
+      (el as HTMLInputElement).value = '25';
       el.dispatchEvent(new Event('input', { bubbles: true }));
       el.dispatchEvent(new Event('change', { bubbles: true }));
     });
@@ -1401,7 +1401,8 @@ test.describe('Header', () => {
       (window as any).__harness.calls.filter((c: any) => c.cmd === 'set_appearance_preferences').pop()?.args);
     expect(last).toEqual({
       backgroundTransparency: 40,
-      eventTransparency: 65,
+      inactiveBackgroundTransparency: 0,
+      eventTransparency: 25,
       eventCornerStyle: 'square',
     });
     expect(await page.evaluate(() => ({
@@ -1409,14 +1410,14 @@ test.describe('Header', () => {
       fill: document.documentElement.style.getPropertyValue('--event-fill-opacity'),
       corners: document.documentElement.dataset.eventCorners,
       radius: document.documentElement.style.getPropertyValue('--event-card-radius'),
-    }))).toEqual({ data: '65', fill: '35%', corners: 'square', radius: '0px' });
+    }))).toEqual({ data: '25', fill: '75%', corners: 'square', radius: '0px' });
 
     // A reopen fetches the stub's stored object; it cannot pass merely because
     // the range element kept the value typed into it.
     await page.keyboard.press('Escape');
     modal = await openSettings(page, 'Appearance');
-    await expect(modal.getByRole('slider', { name: 'Background transparency' })).toHaveValue('40');
-    await expect(modal.getByRole('slider', { name: 'Event transparency' })).toHaveValue('65');
+    await expect(modal.getByRole('slider', { name: 'Active background transparency', exact: true })).toHaveValue('40');
+    await expect(modal.getByRole('slider', { name: 'Event transparency' })).toHaveValue('25');
     await expect(modal.getByRole('radio', { name: 'Square' })).toBeChecked();
   });
 

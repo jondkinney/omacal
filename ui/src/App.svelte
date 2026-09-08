@@ -3,7 +3,7 @@
   import { listen } from '@tauri-apps/api/event';
   import { tick, untrack } from 'svelte';
   import { applyPalette, setPalette, type Palette } from './lib/theme';
-  import { applyAppearance } from './lib/appearance';
+  import { applyAppearance, observeAppearanceFocus } from './lib/appearance';
   import {
     getWeek, getDay, getRange, getMonth, getYear, getBigYear, weekStart,
     type WeekPayload, type MonthPayload, type YearPayload, type BigYearPayload, type UiEvent,
@@ -179,6 +179,7 @@
   let pickerOpen = $state(false);
 
   $effect(() => { applyPalette(); });
+  $effect(() => observeAppearanceFocus());
 
   // Keep a rolling view literally anchored on today across midnight and a
   // laptop wake. A range the user has navigated away from today is left where
