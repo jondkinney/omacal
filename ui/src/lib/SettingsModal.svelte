@@ -813,7 +813,7 @@
         Dragging a range still uses the range you chose.
       </p>
 
-      <div class="row">
+      <div class="row section-start">
         <label class="lab" for="date-format">Show dates as</label>
         <div class="inline"><select id="date-format" disabled={!settings} value={settings?.dateFormat ?? 'locale'} onchange={(e) => saveDateFormat(e.currentTarget.value as DateFormat)}>
           {#each DATE_FORMATS as f}<option value={f.value}>{f.label}</option>{/each}
@@ -1527,7 +1527,7 @@
 
   .check { display: flex; align-items: center; gap: 7px; font-size: 12.5px; cursor: pointer; }
 
-  .account-row { display: flex; align-items: center; gap: 12px; padding: 12px 0; }
+  .account-row { display: flex; align-items: center; gap: 12px; padding: 6px 0; }
   .acct-email { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .acct-prov { color: var(--muted); font-size: 11px; letter-spacing: 0.04em;
     text-transform: uppercase; }
@@ -1537,7 +1537,7 @@
   .caldav.empty { display: none; }
   .provider-row { display: flex; flex-wrap: wrap; gap: 8px; }
   .caldav-form { display: flex; flex-direction: column; gap: 6px; }
-  .caldav-form input { font: inherit; font-size: 12.5px; color: var(--text);
+  .caldav-form input { box-sizing: border-box; width: 100%; min-width: 0; font: inherit; font-size: 12.5px; color: var(--text);
     background: var(--bg); border: 1px solid var(--hairline); border-radius: 5px;
     padding: 5px 8px; }
   .caldav-form input:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
