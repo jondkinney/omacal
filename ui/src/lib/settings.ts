@@ -111,6 +111,9 @@ export type AppSettings = {
    *  time and none of them owns the preference. */
   timeFormat: TimeFormat;
   dateFormat: DateFormat;
+  /** Which desktop this build runs on, so the copy can name it. A fact about
+   *  the host, not a stored preference — there is no setter. */
+  desktop: 'macos' | 'omarchy' | 'linux';
   /** The day a week begins on. Read by the grids through the
    *  `weekstartstore.svelte.ts` rune, for the same reason `timeFormat` is. */
   weekStart: WeekStartDay;

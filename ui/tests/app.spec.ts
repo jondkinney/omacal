@@ -423,7 +423,7 @@ test.describe('App', () => {
 
     // Behind the hamburger now (spec §1), so getting to it is part of the act.
     await page.getByRole('button', { name: 'Menu' }).click();
-    await page.getByRole('button', { name: 'Add account' }).click();
+    await page.getByRole('button', { name: 'Add Google account' }).click();
     await expect.poll(calendarCalls).toBeGreaterThan(before);
   });
 
@@ -454,7 +454,7 @@ test.describe('App', () => {
     // opened inside is still standing, which is what lets the next click reach
     // Add account — and is the behaviour three `window` keydown listeners
     // would otherwise collapse into one keystroke.
-    await page.getByRole('button', { name: 'Add account' }).click();
+    await page.getByRole('button', { name: 'Add Google account' }).click();
     await expect(page.locator('.panel')).toBeVisible();
   });
 
@@ -470,7 +470,7 @@ test.describe('App', () => {
     await page.getByRole('button', { name: 'Close', exact: true }).click();
     await expect(page.locator('.panel')).toHaveCount(0);
 
-    await page.getByRole('button', { name: 'Add account' }).click();
+    await page.getByRole('button', { name: 'Add Google account' }).click();
     await expect(page.locator('.panel')).toBeVisible();
   });
 
@@ -2365,17 +2365,17 @@ test.describe('App', () => {
     await page.getByRole('button', { name: 'Settings…' }).click();
     const modal = page.getByRole('dialog', { name: 'Settings' });
     await expect(modal.getByRole('tab')).toHaveText([
-      'General', 'Appearance', 'Calendars', 'Accounts', 'Notifications',
+      'General', 'Appearance', 'Menu bar', 'Calendars', 'Accounts', 'Notifications',
     ]);
     const look = ['#appearance', '#window-frame', '#week-view'];
     const behaviour = ['#sync-interval', '#time-format', '#display-tz', '#start-on-login'];
 
-    for (const id of look) await expect(modal.locator(id)).toHaveCount(0);
+    for (const id of look) await expect(modal.locator(id)).not.toBeVisible();
     for (const id of behaviour) await expect(modal.locator(id)).toHaveCount(1);
 
     await modal.getByRole('tab', { name: 'Appearance' }).click();
     for (const id of look) await expect(modal.locator(id)).toHaveCount(1);
-    for (const id of behaviour) await expect(modal.locator(id)).toHaveCount(0);
+    for (const id of behaviour) await expect(modal.locator(id)).not.toBeVisible();
   });
 
   /**
@@ -4135,6 +4135,7 @@ test.describe('App: the temperature unit', () => {
     await page.getByRole('button', { name: 'Menu' }).click();
     await page.getByRole('button', { name: 'Settings…' }).click();
     const modal = page.getByRole('dialog', { name: 'Settings' });
+    await modal.getByRole('tab', { name: 'Appearance', exact: true }).click();
     await modal.locator('#temperature-unit').selectOption({ label });
     await page.keyboard.press('Escape');
     await expect(modal).toHaveCount(0);
@@ -4928,7 +4929,7 @@ test.describe("App: showing today's date", () => {
     await page.getByRole('button', { name: 'Menu' }).click();
     await page.getByRole('button', { name: 'Settings…' }).click();
     const modal = page.getByRole('dialog', { name: 'Settings' });
-    await modal.getByRole('tab', { name: 'Appearance' }).click();
+    await modal.getByRole('tab', { name: 'Menu bar' }).click();
     const box = modal.getByLabel("Show today's date");
     await expect(box).not.toBeChecked();
 
@@ -4943,7 +4944,7 @@ test.describe("App: showing today's date", () => {
     await expect(modal).toHaveCount(0);
     await page.getByRole('button', { name: 'Menu' }).click();
     await page.getByRole('button', { name: 'Settings…' }).click();
-    await modal.getByRole('tab', { name: 'Appearance' }).click();
+    await modal.getByRole('tab', { name: 'Menu bar' }).click();
     await expect(modal.getByLabel("Show today's date")).toBeChecked();
   });
 });
@@ -5189,7 +5190,7 @@ test('abandoned Google sign-in can be cancelled and Add account retried', async 
   await page.getByRole('button', { name: 'Settings…', exact: true }).click();
   let modal = page.getByRole('dialog', { name: 'Settings' });
   await modal.getByRole('tab', { name: 'Accounts', exact: true }).click();
-  await modal.getByRole('button', { name: 'Add account', exact: true }).click();
+  await modal.getByRole('button', { name: 'Add Google account', exact: true }).click();
   await expect(page.getByRole('status').filter({ hasText: 'Waiting for Google' })).toBeVisible();
   await page.getByRole('button', { name: 'Cancel sign-in', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Cancel sign-in', exact: true })).toHaveCount(0);
@@ -5198,15 +5199,15 @@ test('abandoned Google sign-in can be cancelled and Add account retried', async 
   await page.getByRole('button', { name: 'Settings…', exact: true }).click();
   modal = page.getByRole('dialog', { name: 'Settings' });
   await modal.getByRole('tab', { name: 'Accounts', exact: true }).click();
-  await expect(modal.getByRole('button', { name: 'Add account', exact: true })).toBeEnabled();
-  await modal.getByRole('button', { name: 'Add account', exact: true }).click();
+  await expect(modal.getByRole('button', { name: 'Add Google account', exact: true })).toBeEnabled();
+  await modal.getByRole('button', { name: 'Add Google account', exact: true }).click();
   await expect.poll(() => page.evaluate(() => window.__harness.calls.filter(c => c.cmd === 'sign_in').length)).toBe(2);
   // Cancellation is also available after reopening Settings during consent.
   await page.getByRole('button', { name: 'Menu', exact: true }).click();
   await page.getByRole('button', { name: 'Settings…', exact: true }).click();
   await page.getByRole('dialog', { name: 'Settings' }).getByRole('tab', { name: 'Accounts', exact: true }).click();
   await page.getByRole('dialog', { name: 'Settings' }).getByRole('button', { name: 'Cancel sign-in', exact: true }).click();
-  await expect(page.getByRole('dialog', { name: 'Settings' }).getByRole('button', { name: 'Add account', exact: true })).toBeEnabled();
+  await expect(page.getByRole('dialog', { name: 'Settings' }).getByRole('button', { name: 'Add Google account', exact: true })).toBeEnabled();
 });
 
 test('date preference repaints event dates and survives a reload', async ({ page }) => {
@@ -5223,3 +5224,30 @@ test('date preference repaints event dates and survives a reload', async ({ page
   await page.locator('.col .ev').first().click();
   await expect(page.locator('.pop .when')).toContainText(/\d{2}\/\d{2}\/2024/);
 });
+
+test('settings measures every pane at 650px and keeps its height across tabs', async ({ page }) => {
+  await page.setViewportSize({ width: 1400, height: 3000 });
+  await page.goto(app());
+  await page.getByRole('button', { name: 'Menu' }).click();
+  await page.getByRole('button', { name: 'Settings…' }).click();
+  const modal = page.getByRole('dialog', { name: 'Settings' });
+  await expect(modal.locator('#sync-interval')).toBeEnabled();
+  await expect.poll(() => modal.evaluate(el => {
+    const tallest = Math.max(...Array.from(el.querySelectorAll('.pane-content'), pane => pane.getBoundingClientRect().height));
+    return Math.abs(el.getBoundingClientRect().height - tallest - el.querySelector('.tabs')!.getBoundingClientRect().height - (el.querySelector('.version')?.getBoundingClientRect().height ?? 0) - 2);
+  })).toBeLessThanOrEqual(2);
+  const first = (await modal.boundingBox())!;
+  expect(first.width).toBe(650);
+  expect(first.height).toBeLessThan(2400);
+  for (const name of ['Appearance', 'Menu bar', 'Calendars', 'Accounts', 'Notifications']) {
+    await modal.getByRole('tab', { name, exact: true }).click();
+    await expect(modal.getByRole('tabpanel')).toHaveCount(1);
+    await expect(modal.getByRole('tabpanel')).toHaveAttribute('aria-label', name);
+    expect(Math.abs((await modal.boundingBox())!.height - first.height)).toBeLessThanOrEqual(2);
+  }
+  await page.setViewportSize({ width: 420, height: 700 });
+  await expect.poll(async () => (await modal.boundingBox())!.width).toBeLessThanOrEqual(388);
+  await expect.poll(async () => (await modal.boundingBox())!.height).toBeLessThanOrEqual(560);
+});
+
+
