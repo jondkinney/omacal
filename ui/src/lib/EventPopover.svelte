@@ -228,8 +228,22 @@
     detail.conference_uri ?? meetingUrl(detail.location) ?? meetingUrl(detail.description),
   );
 
+  /** A response needs a scope only when both scopes are genuinely open.
+   *
+   *  A one-off has one occurrence. A **detached occurrence** has one too, as
+   *  far as answering goes: its organizer moved that instance and no other,
+   *  so "all of them" answers a question nobody asked and costs a second
+   *  click on every rescheduled meeting. The invite tray already decides
+   *  this rather than asking (`respond_all`: a moved master answers the
+   *  series, a moved exception answers one occurrence) and the two paths
+   *  disagreed — the same reschedule asked from the grid and did not from
+   *  the tray.
+   *
+   *  A series **master** still asks, because from a master both readings are
+   *  live: "I can make this week" and "I can make all of these" are
+   *  different answers and the app cannot pick between them. */
   async function ask(response: 'accepted' | 'tentative' | 'declined', e: MouseEvent) {
-    if (!detail.is_recurring) {
+    if (!detail.is_recurring || detail.is_series_exception) {
       respond(response, 'this', e);
       return;
     }

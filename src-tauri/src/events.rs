@@ -36,6 +36,18 @@ pub struct EventDetail {
     pub end_date: Option<String>,
     pub is_all_day: bool,
     pub is_recurring: bool,
+    /// Whether this row is a **materialised exception** — one occurrence the
+    /// organizer detached from its series — rather than the series master.
+    ///
+    /// [`Self::is_recurring`] is true for both, which is what the edit and
+    /// delete scope questions want: "all of them" is a real intent from any
+    /// occurrence. **Answering an invitation is not the same question.** A
+    /// detached occurrence is the only thing in doubt when its organizer
+    /// moves it, so the popover answers it directly instead of asking, which
+    /// is the rule the invite tray's Rescheduled row already follows
+    /// (`omacal_store::changes`' `respond_all`: a moved master answers the
+    /// series, a moved exception answers one occurrence).
+    pub is_series_exception: bool,
     /// The raw `RRULE`, carried through unchanged so the UI can show a rule it
     /// cannot represent back to the user in words.
     pub recurrence: Option<String>,
@@ -221,6 +233,7 @@ pub(crate) async fn event_detail_impl(state: &AppState, id: i64) -> anyhow::Resu
 
     let can_respond = can_respond(state.demo, &access_role, &event.attendees);
     let is_recurring = is_recurring(&event.recurrence, &event.recurring_event_id);
+    let is_series_exception = event.recurring_event_id.is_some();
     let (start_date, end_date) = match all_day_dates(&event, &cal_tz) {
         Some((start, end)) => (Some(start), Some(end)),
         None => (None, None),
@@ -244,6 +257,7 @@ pub(crate) async fn event_detail_impl(state: &AppState, id: i64) -> anyhow::Resu
         end_date,
         is_all_day: event.is_all_day,
         is_recurring,
+        is_series_exception,
         repeat: recurrence_controls.repeat,
         weekly_days: recurrence_controls.weekly_days,
         repeat_end: recurrence_controls.repeat_end,
@@ -2911,6 +2925,28 @@ mod tests {
         assert!(!is_recurring(&None, &None));
     }
 
+    /// The two flags answer different questions and must not be collapsed:
+    /// `is_recurring` says the scope choice is *available* (editing or
+    /// deleting "all of them" is a real intent from any occurrence), while
+    /// `is_series_exception` says the RSVP scope is already *decided*. A
+    /// master is recurring and not an exception; a detached occurrence is
+    /// both; a one-off is neither.
+    #[test]
+    fn only_a_detached_occurrence_is_a_series_exception() {
+        let master = (Some("RRULE:FREQ=WEEKLY".to_string()), None::<String>);
+        let exception = (None::<String>, Some("master-google-id".to_string()));
+        let one_off = (None::<String>, None::<String>);
+        for (recurrence, parent) in [&master, &exception, &one_off] {
+            let recurring = is_recurring(recurrence, parent);
+            let detached = parent.is_some();
+            assert_eq!(recurring, recurrence.is_some() || detached);
+            assert!(!(detached && !recurring), "an exception is always recurring too");
+        }
+        assert!(master.1.is_none(), "a master is not an exception");
+        assert!(exception.1.is_some(), "a detached occurrence is");
+        assert!(one_off.1.is_none(), "a one-off is not");
+    }
+
     fn three() -> Vec<Attendee> {
         vec![
             Attendee { email: "ana@x.com".into(), display_name: Some("Ana".into()),
@@ -3976,7 +4012,7 @@ mod tests {
         let mut expected = [
             "id", "calendar_id", "title", "description", "location",
             "conference_uri", "start_ms", "end_ms", "start_date", "end_date",
-            "is_all_day", "is_recurring", "recurrence", "repeat", "weekly_days",
+            "is_all_day", "is_recurring", "is_series_exception", "recurrence", "repeat", "weekly_days",
             "repeat_end", "color",
             "organizer_email", "self_response", "can_respond", "can_edit", "is_organizer", "guests_can_modify",
             "attendees", "reminders", "calendar_default_reminders",

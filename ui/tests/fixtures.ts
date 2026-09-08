@@ -483,6 +483,9 @@ const detail = (o: Partial<EventDetail> & { id: number }): EventDetail => ({
   end_date: null,
   is_all_day: false,
   is_recurring: false,
+  // A master, not a detached occurrence. The RSVP path branches on this, so a
+  // recurring fixture that means "one moved occurrence" must set it.
+  is_series_exception: false,
   recurrence: null,
   // What `write::repeat_from_rrule` answers for `recurrence: null`, so the two
   // defaults agree. A fixture that sets one must set the other.
@@ -2870,6 +2873,31 @@ export const FIXTURES: Record<string, Record<string, any>> = {
     // third mutation on that line visible too: a `yyyy-mm-dd` rebuilt through
     // `Date.UTC` and then formatted *without* `timeZone: 'UTC'` lands a day
     // early for every reader west of UTC, and cannot be seen from a UTC one.
+    // **A series master.** Both readings of an RSVP are live here — "I can
+    // make this week" and "I can make all of these" are different answers and
+    // the app cannot pick between them — so the scope question is asked.
+    'series-master-asks-the-scope': {
+      detail: detail({ id: 11, title: 'Weekly management', is_recurring: true }),
+      anchor: ANCHOR,
+      occurrenceStartMs: MON + 9 * H,
+      occurrenceEndMs: MON + 9 * H + 30 * 60_000,
+      onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
+    },
+    // **One occurrence its organizer moved**, which is what a rescheduled
+    // meeting looks like once it syncs: no `recurrence` of its own, a parent
+    // it overrides, and therefore `is_recurring` *and* `is_series_exception`.
+    // Only this occurrence is in doubt, so answering must not ask a scope —
+    // the rule `omacal_store::changes`' `respond_all` already applies on the
+    // invite tray's Rescheduled row.
+    'moved-occurrence-answers-itself': {
+      detail: detail({
+        id: 12, title: 'Weekly management', is_recurring: true, is_series_exception: true,
+      }),
+      anchor: ANCHOR,
+      occurrenceStartMs: MON + 9 * H,
+      occurrenceEndMs: MON + 9 * H + 30 * 60_000,
+      onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
+    },
     'all-day-series-east-of-the-browser': {
       detail: detail({
         id: 10, title: 'Berlin trip', is_all_day: true, is_recurring: true,
