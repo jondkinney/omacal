@@ -39,7 +39,9 @@ function applyBackground(preferences: AppearancePreferences, root: HTMLElement) 
 }
 
 /**
- * Applies absolute transparency: 0 is opaque and 100 is clear.
+ * Applies absolute transparency: 0 is opaque, and the cap for each surface
+ * is as clear as it goes — 50 for the canvas, 25 for event fills. Both are
+ * expressed in tenths of a percent, so Omarchy's own blend is reachable.
  *
  * Omacal opts out of Omarchy's whole-window opacity when these controls are
  * installed, then reproduces that former baseline in the stored defaults.
