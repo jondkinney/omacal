@@ -44,6 +44,7 @@ export type AppStatus = {
 
 export const getStatus = () => invoke<AppStatus>('get_status');
 export const signIn = () => invoke<string>('sign_in');
+export const cancelSignIn = () => invoke<void>('cancel_sign_in');
 export const syncNow = () => invoke<number>('sync_now');
 /** Opens the latest release's page in the system browser. No argument on
  *  purpose: the backend opens the URL *it* fetched, so the webview never

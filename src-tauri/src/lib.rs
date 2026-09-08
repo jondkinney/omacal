@@ -473,11 +473,29 @@ fn load_refresh_token(email: &str) -> anyhow::Result<String> {
     Ok(keyring::Entry::new(KEYRING_SERVICE, email)?.get_password()?)
 }
 
-/// Runs the full interactive sign-in: loopback listener, browser, code
-/// exchange, keyring write, then account and calendar bootstrap.
+/// One pending consent attempt across windows; cancellation stops its listener.
+#[derive(Default)]
+struct SignInAttempt(std::sync::Mutex<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>);
+
 #[tauri::command]
-async fn sign_in(state: tauri::State<'_, AppState>) -> Result<String, String> {
-    let email = sign_in_impl(&state.pool, state.demo).await?;
+fn cancel_sign_in(attempt: tauri::State<'_, SignInAttempt>) {
+    if let Some(cancelled) = attempt.0.lock().expect("sign-in lock poisoned").as_ref() {
+        cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Runs interactive consent, code exchange, keyring write and account bootstrap.
+#[tauri::command]
+async fn sign_in(attempt: tauri::State<'_, SignInAttempt>, state: tauri::State<'_, AppState>) -> Result<String, String> {
+    let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        let mut active = attempt.0.lock().expect("sign-in lock poisoned");
+        if active.is_some() { return Err("Sign-in is already in progress.".into()); }
+        *active = Some(cancelled.clone());
+    }
+    let result = sign_in_impl(&state.pool, state.demo, cancelled).await;
+    *attempt.0.lock().expect("sign-in lock poisoned") = None;
+    let email = result?;
     forget_stale_credentials(
         &mut *state.tokens.lock().await,
         &mut state.reauth.lock().expect("reauth mark poisoned"),
@@ -514,10 +532,10 @@ pub(crate) const BROWSER_FAILED: &str =
 /// from a test. The demo gate is the first statement for the same reason it is
 /// in `sync_now`: everything below it reads the config file, the keyring and
 /// Google, and demo mode has no business touching any of the three.
-async fn sign_in_impl(pool: &SqlitePool, demo: bool) -> Result<String, String> {
+async fn sign_in_impl(pool: &SqlitePool, demo: bool, cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Result<String, String> {
     demo_sync_guard(demo)?;
 
-    async fn inner(pool: &SqlitePool) -> anyhow::Result<String> {
+    async fn inner(pool: &SqlitePool, cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>) -> anyhow::Result<String> {
         let cfg = load_config()?;
         let pkce = omacal_google::auth::generate_pkce();
         let (listener, redirect_uri) = omacal_google::auth::bind_loopback()?;
@@ -539,14 +557,19 @@ async fn sign_in_impl(pool: &SqlitePool, demo: bool) -> Result<String, String> {
         // Deadline on the listener, not on this future: a `tokio::time::timeout`
         // here would return while the blocking thread stayed parked in
         // `accept()` for the life of the process.
+        let listener_cancelled = cancelled.clone();
         let redirect = tokio::task::spawn_blocking(move || {
-            omacal_google::auth::wait_for_redirect(
+            omacal_google::auth::wait_for_redirect_cancellable(
                 listener,
                 omacal_google::auth::SIGN_IN_TIMEOUT,
+                &listener_cancelled,
             )
         })
         .await??;
 
+        if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+            anyhow::bail!(omacal_google::auth::CANCELLED);
+        }
         if redirect.state != csrf {
             anyhow::bail!("state mismatch — possible CSRF, sign-in aborted");
         }
@@ -596,7 +619,7 @@ async fn sign_in_impl(pool: &SqlitePool, demo: bool) -> Result<String, String> {
         Ok(email)
     }
 
-    inner(pool).await.map_err(|e| errors::user_facing(&e))
+    inner(pool, cancelled).await.map_err(|e| errors::user_facing(&e))
 }
 
 /// Records one calendar Google listed for an account.
@@ -1260,6 +1283,7 @@ pub fn run() {
 
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default()
+        .manage(SignInAttempt::default())
         // First, before every other plugin, per its own docs — a second
         // process must be turned away before anything else initialises.
         // Closing the window only hides omacal (see `tray`), so "start it
@@ -1589,6 +1613,7 @@ pub fn run() {
             get_status,
             take_open_date,
             sign_in,
+            cancel_sign_in,
             sync_now,
             update::open_latest_release,
             update::install_update,
@@ -1829,7 +1854,7 @@ mod tests {
     async fn sign_in_refuses_in_demo_mode_without_touching_config_keyring_or_google() {
         let pool = omacal_store::connect_memory().await.unwrap();
 
-        assert_eq!(sign_in_impl(&pool, true).await, Err(DEMO_SYNC_MESSAGE.to_string()));
+        assert_eq!(sign_in_impl(&pool, true, Default::default()).await, Err(DEMO_SYNC_MESSAGE.to_string()));
 
         // Had it run past the guard it would have inserted an account row (or
         // failed with a config/keyring error instead of the demo message).

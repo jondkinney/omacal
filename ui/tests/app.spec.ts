@@ -5102,3 +5102,29 @@ test.describe('tasks on the grid', () => {
     await expect(page.locator('.trow')).toHaveCount(0);
   });
 });
+
+test('abandoned Google sign-in can be cancelled and Add account retried', async ({ page }) => {
+  await page.goto(app('abandoned-sign-in'));
+  await page.getByRole('button', { name: 'Menu', exact: true }).click();
+  await page.getByRole('button', { name: 'Settings…', exact: true }).click();
+  let modal = page.getByRole('dialog', { name: 'Settings' });
+  await modal.getByRole('tab', { name: 'Accounts', exact: true }).click();
+  await modal.getByRole('button', { name: 'Add account', exact: true }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Waiting for Google' })).toBeVisible();
+  await page.getByRole('button', { name: 'Cancel sign-in', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Cancel sign-in', exact: true })).toHaveCount(0);
+  await expect(page.locator('.err').filter({ hasText: 'Sign-in cancelled.' })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Menu', exact: true }).click();
+  await page.getByRole('button', { name: 'Settings…', exact: true }).click();
+  modal = page.getByRole('dialog', { name: 'Settings' });
+  await modal.getByRole('tab', { name: 'Accounts', exact: true }).click();
+  await expect(modal.getByRole('button', { name: 'Add account', exact: true })).toBeEnabled();
+  await modal.getByRole('button', { name: 'Add account', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.__harness.calls.filter(c => c.cmd === 'sign_in').length)).toBe(2);
+  // Cancellation is also available after reopening Settings during consent.
+  await page.getByRole('button', { name: 'Menu', exact: true }).click();
+  await page.getByRole('button', { name: 'Settings…', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Settings' }).getByRole('tab', { name: 'Accounts', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Settings' }).getByRole('button', { name: 'Cancel sign-in', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: 'Settings' }).getByRole('button', { name: 'Add account', exact: true })).toBeEnabled();
+});

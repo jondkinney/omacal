@@ -710,6 +710,7 @@ export function installTauriStub(scenario: string): Harness {
   // must reflect it too, not just `get_calendars`.
   let status = statusFor(scenario);
   let signedIn = false;
+  let cancelPendingSignIn: ((reason: string) => void) | undefined;
   /** Whether `take_open_date` has answered — the real command clears on
    *  read, and a stub that kept answering would hide a remount replaying
    *  the date, which is exactly the defect `take` semantics exist to stop. */
@@ -1083,7 +1084,14 @@ export function installTauriStub(scenario: string): Harness {
         // popover was showing is gone, and reading it back would fail on the
         // runs that succeeded.
         return null;
+      case 'cancel_sign_in':
+        cancelPendingSignIn?.('Sign-in cancelled.');
+        cancelPendingSignIn = undefined;
+        return null;
       case 'sign_in':
+        if (scenario === 'abandoned-sign-in') {
+          return new Promise((_resolve, reject) => { cancelPendingSignIn = reject; });
+        }
         // Tauri rejects a `Result<_, String>` with the bare string, so the
         // app sees exactly the sentence Rust produced.
         if (scenario === 'no-config') return Promise.reject(NO_CONFIG_ERROR);
