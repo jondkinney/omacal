@@ -1,5 +1,8 @@
 <!-- ui/src/App.svelte -->
 <script lang="ts">
+  import { formatDate } from './lib/datefmt';
+  import { dateFormat } from './lib/date.svelte';
+  import { setDateFormat } from './lib/date.svelte';
   import { listen } from '@tauri-apps/api/event';
   import { tick, untrack } from 'svelte';
   import { applyPalette, setPalette, type Palette } from './lib/theme';
@@ -454,7 +457,7 @@
 
   const keyboardStatus = $derived.by(() => {
     if (!keyboardActive || !listable(view) || keyboardDays.length === 0) return '';
-    const day = new Date(keyboardCursor.dayStartMs).toLocaleDateString(undefined, {
+    const day = formatDate(new Date(keyboardCursor.dayStartMs).getTime(), dateFormat(), {
       weekday: 'long', month: 'long', day: 'numeric',
     });
     const event = eventAtCursor(keyboardDays, keyboardCursor);
@@ -707,6 +710,7 @@
         defaultCalendarId = s.defaultCalendarId;
         defaultEventDurationMinutes = s.defaultEventDurationMinutes;
         setClockFormat(s.timeFormat);
+      setDateFormat(s.dateFormat);
         setSecondZone(s.secondTimezone);
         setTemperatureUnit(s.temperatureUnit);
         if (appearanceChoices === appearanceBefore) applyAppearance(s);
@@ -1885,6 +1889,7 @@
       defaultCalendarId = s.defaultCalendarId;
       defaultEventDurationMinutes = s.defaultEventDurationMinutes;
       setClockFormat(s.timeFormat);
+      setDateFormat(s.dateFormat);
       setSecondZone(s.secondTimezone);
       setTemperatureUnit(s.temperatureUnit);
       weekViewChoices += 1;

@@ -1,5 +1,7 @@
 <!-- ui/src/lib/SearchOverlay.svelte -->
 <script lang="ts">
+  import { formatDate } from './datefmt';
+  import { dateFormat } from './date.svelte';
   import { onMount } from 'svelte';
   import { escapeCloses } from './dismiss.svelte';
   import { searchEvents, type Hit } from './search';
@@ -69,7 +71,7 @@
 
   /** The day a result sits on, for the line under its title. */
   const when = (ms: number) =>
-    new Date(ms).toLocaleDateString(undefined, {
+    formatDate(new Date(ms).getTime(), dateFormat(), {
       weekday: 'short', day: 'numeric', month: 'short', year: 'numeric',
     });
 </script>

@@ -1,3 +1,4 @@
+import type { DateFormat } from './datefmt';
 import { invoke } from '@tauri-apps/api/core';
 
 import type { TemperatureUnit } from './temperature';
@@ -108,6 +109,7 @@ export type AppSettings = {
    *  the `clock.svelte.ts` rune rather than as a prop — six components print a
    *  time and none of them owns the preference. */
   timeFormat: TimeFormat;
+  dateFormat: DateFormat;
   /** The day a week begins on. Read by the grids through the
    *  `weekstartstore.svelte.ts` rune, for the same reason `timeFormat` is. */
   weekStart: WeekStartDay;
@@ -312,3 +314,5 @@ export const setAppearancePreferences = (
  *  that is what `sync_loop` compares against a clock. */
 export const minutesOf = (ms: number): number => Math.round(ms / 60_000);
 export const msOfMinutes = (min: number): number => Math.round(min * 60_000);
+
+export const setDateFormatPreference = (format: DateFormat) => invoke<AppSettings>('set_date_format', { format });

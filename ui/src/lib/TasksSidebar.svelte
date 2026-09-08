@@ -1,5 +1,6 @@
 <!-- ui/src/lib/TasksSidebar.svelte -->
 <script lang="ts">
+  import { dateFormat } from './date.svelte';
   import { clockFormat } from './clock.svelte';
   import {
     createTask, deleteTask, listTasks, setTaskCompleted, taskLists, updateTask,
@@ -272,7 +273,7 @@
               <button class="title" onclick={() => edit(t)} disabled={!t.canWrite}>{t.summary}</button>
               {#if t.dueMs !== null}
                 <span class="due" class:overdue={isOverdue(t, nowMs)}>
-                  {dueLabel(t, nowMs, clockFormat())}
+                  {dueLabel(t, nowMs, clockFormat(), dateFormat())}
                 </span>
               {/if}
               {#if t.canWrite}

@@ -1,5 +1,7 @@
 <!-- ui/src/lib/SettingsModal.svelte -->
 <script lang="ts">
+  import { DATE_FORMATS, type DateFormat } from './datefmt';
+  import { setDateFormatPreference } from './settings';
   import { onMount } from 'svelte';
   import { invoke } from '@tauri-apps/api/core';
 
@@ -265,6 +267,11 @@
     } catch (e) {
       note = { text: String(e), kind: 'error' };
     }
+  }
+
+  async function saveDateFormat(format: DateFormat) {
+    try { settings = await setDateFormatPreference(format); onsettingschange?.(settings); }
+    catch (e) { note = { text: String(e), kind: 'error' }; }
   }
 
   async function saveTimeFormat(format: TimeFormat) {
@@ -807,6 +814,14 @@
         Used when a new event has a start time but no end time selected yet.
         Dragging a range still uses the range you chose.
       </p>
+
+      <div class="row">
+        <label class="lab" for="date-format">Show dates as</label>
+        <div class="inline"><select id="date-format" disabled={!settings} value={settings?.dateFormat ?? 'locale'} onchange={(e) => saveDateFormat(e.currentTarget.value as DateFormat)}>
+          {#each DATE_FORMATS as f}<option value={f.value}>{f.label}</option>{/each}
+        </select></div>
+      </div>
+      <p class="hint">Used for displayed dates throughout OmaCal. Native date pickers follow your system’s format.</p>
 
       <div class="row">
         <label class="lab" for="time-format">Show times as</label>

@@ -1,5 +1,7 @@
 <!-- ui/src/lib/Filmstrip.svelte -->
 <script lang="ts">
+  import { formatDate } from './datefmt';
+  import { dateFormat } from './date.svelte';
   import { clockFormat } from './clock.svelte';
   import { formatClock } from './timefmt';
   import { openConference, type UiEvent } from './api';
@@ -45,7 +47,7 @@
    *  the day the same way. No year: a list is one period long, and a year
    *  repeated down forty rows is noise. */
   const dateLabel = (ms: number) =>
-    new Date(ms).toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+    formatDate(new Date(ms).getTime(), dateFormat(), { weekday: 'short', month: 'short', day: 'numeric' });
 
   /** `getBoundingClientRect()` for the reason `EventBlock` and `AllDayBand` both
    *  use it: the popover places itself against the viewport, and a row's own

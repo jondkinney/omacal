@@ -35,9 +35,10 @@ const MONTHS: [&str; 12] =
 /// and says only the hour, but an invitation may be for weeks away, so the
 /// day is the headline. Unknown zones fall back to UTC, the same policy as
 /// `notify::time_in_zone_with_format`.
-fn date_in_words(ms: i64, tz: &str) -> String {
+fn date_in_words(ms: i64, tz: &str, format: crate::settings::DateFormat) -> String {
     let ts = jiff::Timestamp::from_millisecond(ms).unwrap_or(jiff::Timestamp::UNIX_EPOCH);
     let z = ts.in_tz(tz).unwrap_or_else(|_| ts.in_tz("UTC").expect("UTC always resolves"));
+    if format != crate::settings::DateFormat::Locale { return format.display(z.date()); }
     let weekday = WEEKDAYS[z.weekday().to_monday_zero_offset() as usize];
     let month = MONTHS[z.month() as usize - 1];
     format!("{weekday}, {month} {}", z.day())
@@ -65,13 +66,14 @@ pub(crate) fn invite_notification_with_format(
     c: &InviteCandidate,
     display_tz: &str,
     time_format: crate::settings::TimeFormat,
+    date_format: crate::settings::DateFormat,
 ) -> Notification {
     let when = if c.is_all_day {
-        format!("{} · All day", date_in_words(c.start_utc, &c.calendar_timezone))
+        format!("{} · All day", date_in_words(c.start_utc, &c.calendar_timezone, date_format))
     } else {
         format!(
             "{} · {}",
-            date_in_words(c.start_utc, display_tz),
+            date_in_words(c.start_utc, display_tz, date_format),
             crate::notify::time_in_zone_with_format(c.start_utc, display_tz, time_format)
         )
     };
@@ -119,7 +121,7 @@ pub(crate) fn invite_notification_with_format(
 /// the stored preference.
 #[cfg(test)]
 pub(crate) fn invite_notification(c: &InviteCandidate, display_tz: &str) -> Notification {
-    invite_notification_with_format(c, display_tz, crate::settings::TimeFormat::H24)
+    invite_notification_with_format(c, display_tz, crate::settings::TimeFormat::H24, crate::settings::DateFormat::Locale)
 }
 
 /// One pass over the ledger: seed what predates the watch, announce what is
@@ -170,6 +172,7 @@ pub(crate) async fn run_pass(
             &c,
             display_tz,
             settings.time_format,
+            settings.date_format,
         )) {
             tracing::warn!(%e, event_id = c.event_id, "could not announce an invitation");
         }
@@ -781,6 +784,7 @@ mod tests {
             &candidate(),
             SOFIA,
             crate::settings::TimeFormat::H12,
+            crate::settings::DateFormat::Locale,
         );
         assert!(n.body.starts_with("Mon, Aug 10 · 1:00 PM · from ana@x.com"), "{}", n.body);
     }

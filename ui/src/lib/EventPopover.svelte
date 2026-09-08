@@ -1,5 +1,7 @@
 <!-- ui/src/lib/EventPopover.svelte -->
 <script lang="ts">
+  import { formatDate } from './datefmt';
+  import { dateFormat } from './date.svelte';
   import { meetingUrl } from './location';
   import { openConference } from './api';
   import { clockFormat } from './clock.svelte';
@@ -89,7 +91,7 @@
   /** The day an **instant** falls on, read in the browser's zone — right for a
    *  timed event, whose start genuinely is an instant and whose reader is
    *  whoever is looking at the screen. */
-  const dayOfInstant = (ms: number) => new Date(ms).toLocaleDateString([], DAY_FORMAT);
+  const dayOfInstant = (ms: number) => formatDate(new Date(ms).getTime(), dateFormat(), DAY_FORMAT);
 
   /** The day a `yyyy-mm-dd` names, read in **no** zone.
    *
@@ -105,7 +107,7 @@
    *  for a trip the form beside it opened on `2026-08-10`. */
   const dayOfDate = (date: string) => {
     const [y, m, d] = date.split('-').map(Number);
-    return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString([], { ...DAY_FORMAT, timeZone: 'UTC' });
+    return formatDate(new Date(Date.UTC(y, m - 1, d)).getTime(), dateFormat(), { ...DAY_FORMAT, timeZone: 'UTC' });
   };
 
   /**
