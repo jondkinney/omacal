@@ -9,6 +9,7 @@
   } from './appearance';
   import { REMINDER_UNITS, reminderAmountOf, reminderMax, reminderUnitOf } from './reminders';
   import CalendarList from './CalendarList.svelte';
+  import TimezoneSelect from './TimezoneSelect.svelte';
   import { calendarColor, offerableCalendarId, writableCalendars, type Calendar } from './calendars';
   import { connectCaldav } from './tasks';
   import { listAccounts, signOut, type Account } from './accounts';
@@ -173,7 +174,7 @@
       listTimezones().then((z) => (timezones = z)).catch(() => {});
     }
   });
-  /** The zone box's text — '' is "System default". Seeded from the stored
+  /** The zone dropdown's selection — '' is "System default". Seeded from the stored
    *  setting once it arrives; a change to a *valid* value enables Apply. */
   let tzChoice = $state('');
   let tzSeeded = false;
@@ -189,15 +190,6 @@
   const tzValid = $derived(tzChoice === '' || timezones.includes(tzChoice));
   const tzChanged = $derived(
     settings !== null && tzValid && tzChoice !== (settings.displayTimezone ?? ''));
-  /** Substring search over the whole zone id, because typing a capital —
-   *  "sofia" — must find "Europe/Sofia"; a native 600-option select only
-   *  jumps on leading letters (reported live, minutes after it shipped).
-   *  Empty once the text IS a zone, so a picked value has no list under it. */
-  const tzMatches = $derived.by(() => {
-    const q = tzChoice.trim().toLowerCase();
-    if (q === '' || timezones.includes(tzChoice)) return [];
-    return timezones.filter((z) => z.toLowerCase().includes(q)).slice(0, 8);
-  });
   /** Applying restarts omacal — this is the one settings write with a
    *  deliberate confirmation step (the button), and the note is the last
    *  thing painted before the window goes. */
@@ -212,7 +204,7 @@
     }
   }
 
-  /** The second-zone box — the display zone's combo pattern over the same
+  /** The second-zone dropdown — the display zone's selection pattern over the same
    *  fetched list; '' is "Off". Its Apply carries no restart: nothing
    *  process-level captures this zone, so the settings that come back are
    *  already in force, and `onsettingschange` starts the second clock
@@ -228,11 +220,6 @@
   const z2Valid = $derived(z2Choice === '' || timezones.includes(z2Choice));
   const z2Changed = $derived(
     settings !== null && z2Valid && z2Choice !== (settings.secondTimezone ?? ''));
-  const z2Matches = $derived.by(() => {
-    const q = z2Choice.trim().toLowerCase();
-    if (q === '' || timezones.includes(z2Choice)) return [];
-    return timezones.filter((z) => z.toLowerCase().includes(q)).slice(0, 8);
-  });
   async function applySecondZone() {
     try {
       settings = await setSecondTimezone(z2Choice === '' ? null : z2Choice);
@@ -840,13 +827,8 @@
       <div class="row">
         <label class="lab" for="display-tz">Time zone</label>
         <div class="inline">
-          <input
-            id="display-tz"
-            type="text"
-            placeholder="System default"
-            disabled={!settings || tzRestarting}
-            bind:value={tzChoice}
-          />
+          <TimezoneSelect id="display-tz" label="Time zone" zones={timezones} bind:value={tzChoice}
+            disabled={!settings || tzRestarting} emptyLabel="System default" />
           <button
             type="button"
             disabled={!tzChanged || tzRestarting}
@@ -856,14 +838,7 @@
             <span class="rownote" data-testid="tz-note">Restarting…</span>
           {/if}
         </div>
-        {#if tzMatches.length > 0}
-          <div class="tzlist" role="listbox" aria-label="Matching time zones">
-            {#each tzMatches as z (z)}
-              <button type="button" role="option" aria-selected="false"
-                      onclick={() => (tzChoice = z)}>{z}</button>
-            {/each}
-          </div>
-        {/if}
+
       </div>
       <p class="hint">
         Every time OmaCal shows reads in this zone — the grid, reminders, the
@@ -874,32 +849,20 @@
       <div class="row">
         <label class="lab" for="second-tz">Second time zone</label>
         <div class="inline">
-          <input
-            id="second-tz"
-            type="text"
-            placeholder="Off"
-            disabled={!settings}
-            bind:value={z2Choice}
-          />
+          <TimezoneSelect id="second-tz" label="Second time zone" zones={timezones} bind:value={z2Choice}
+            disabled={!settings} emptyLabel="Off" />
           <button
             type="button"
             disabled={!z2Changed}
             onclick={applySecondZone}
           >Apply</button>
         </div>
-        {#if z2Matches.length > 0}
-          <div class="tzlist" role="listbox" aria-label="Matching second time zones">
-            {#each z2Matches as z (z)}
-              <button type="button" role="option" aria-selected="false"
-                      onclick={() => (z2Choice = z)}>{z}</button>
-            {/each}
-          </div>
-        {/if}
+
       </div>
       <p class="hint">
         A second clock beside the first — on the Week and Day hour ruler, and
         under the event form's times. Convenience only: events are still
-        created and edited in the time zone above. Clear the box to turn it
+        created and edited in the time zone above. Choose Off to turn it
         off; no restart either way.
       </p>
 
@@ -1527,7 +1490,6 @@
   input[type='number'] { width: 72px; }
   /* Wide enough for "Australia/Lord_Howe"; scoped to the inline rows so the
      CalDAV form below keeps its own column width. */
-  .inline input[type='text'] { width: 220px; }
   input:focus, select:focus { outline: 1px solid var(--accent); outline-offset: -1px; }
 
   .caldot { width: 10px; height: 10px; border-radius: 3px; flex: none; }
@@ -1535,13 +1497,6 @@
   /* The zone search results: plain rows under the box, in the flow rather
      than floating — the modal scrolls, and a floating list inside a
      scrolling body clips. Eight rows at most (the derivation caps it). */
-  .tzlist { display: flex; flex-direction: column; gap: 1px; margin-top: 2px;
-            border: 1px solid var(--hairline); border-radius: 6px; padding: 3px;
-            max-width: 320px; }
-  .tzlist button { font: inherit; font-size: 12px; color: var(--text); cursor: pointer;
-                   background: none; border: 0; border-radius: 4px;
-                   padding: 4px 8px; text-align: left; }
-  .tzlist button:hover { background: color-mix(in srgb, var(--text) 7%, transparent); }
 
   .check { display: flex; align-items: center; gap: 7px; font-size: 12.5px; cursor: pointer; }
 
