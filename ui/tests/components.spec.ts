@@ -2041,6 +2041,17 @@ test.describe('CalendarPopover', () => {
     await expect(page.getByRole('button', { name: 'Amber' })).toBeVisible();
   });
 
+  test('a calendar label saves locally', async ({ page }) => {
+    await page.goto(show('colours'));
+    await page.getByRole('button', { name: /Calendars/ }).click();
+    await page.getByRole('button', { name: 'Label for Work', exact: true }).click();
+    await page.getByLabel('Calendar label', { exact: true }).fill('Jon Kinney');
+    await page.getByRole('button', { name: 'Save label', exact: true }).click();
+    await expect(page.getByLabel('Calendar label', { exact: true })).toHaveCount(0);
+    const calls = await page.evaluate(() => window.__harness.calls.filter(c => c.cmd === 'set_calendar_label'));
+    expect(calls.map(c => c.args)).toEqual([{ id: 1, label: 'Jon Kinney' }]);
+  });
+
   test('choosing a colour asks for it, locally', async ({ page }) => {
     await page.goto(show('colours'));
     await openColours(page, 'Work');

@@ -978,6 +978,8 @@ export function installTauriStub(scenario: string): Harness {
         settings = saveSettings({ ...settings, fallbackReminderMinutes: minutes });
         return { ...settings };
       }
+      case 'set_calendar_label':
+        return calendarResult(cmd, undefined);
       case 'set_calendar_color':
         return calendarResult(cmd, undefined);
       case 'set_calendar_selected':

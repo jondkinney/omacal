@@ -501,7 +501,7 @@ pub(crate) async fn detail_by_id(pool: &SqlitePool, id: i64) -> anyhow::Result<O
         return Ok(None);
     };
     let (cal_name, account_email, cal_gid): (String, String, String) = sqlx::query_as(
-        "SELECT c.summary, a.email, c.google_id FROM calendars c
+        "SELECT COALESCE(c.label_override, c.summary), a.email, c.google_id FROM calendars c
          JOIN accounts a ON a.id = c.account_id WHERE c.id = ?1",
     )
     .bind(ev.calendar_id)

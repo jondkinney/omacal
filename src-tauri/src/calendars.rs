@@ -51,3 +51,16 @@ pub async fn set_calendar_sync(
         .await
         .map_err(|e| crate::errors::user_facing(&e))
 }
+
+#[tauri::command]
+pub async fn set_calendar_label(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    id: i64,
+    label: Option<String>,
+) -> Result<(), String> {
+    omacal_store::set_label_override(&state.pool, id, label.as_deref())
+        .await.map_err(|e| crate::errors::user_facing(&e))?;
+    crate::settings::refresh_menu_surfaces(&app, &state).await;
+    Ok(())
+}
