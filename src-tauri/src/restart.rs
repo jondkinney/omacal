@@ -220,8 +220,7 @@ pub(crate) fn stop_webkit_helpers() {
     // below is for).
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1500);
     loop {
-        reap(&first);
-        if first.iter().all(|&pid| !alive(pid)) || std::time::Instant::now() >= deadline {
+        if reap(&first) || std::time::Instant::now() >= deadline {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -234,10 +233,15 @@ pub(crate) fn stop_webkit_helpers() {
             libc::kill(pid as libc::pid_t, libc::SIGKILL);
         }
     }
+    // The live-process sweep excludes zombies. Keep the original children
+    // in the reap set too: one may have exited as the first deadline elapsed.
+    let mut pending = first.clone();
+    pending.extend(left.iter().copied());
+    pending.sort_unstable();
+    pending.dedup();
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
     loop {
-        reap(&left);
-        if left.iter().all(|&pid| !alive(pid)) || std::time::Instant::now() >= deadline {
+        if reap(&pending) || std::time::Instant::now() >= deadline {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -245,23 +249,21 @@ pub(crate) fn stop_webkit_helpers() {
     tracing::info!(stopped = first.len(), killed = left.len(), "webkit helpers stopped before the restart");
 }
 
-/// Whether `pid` is still a running process: present in `/proc` and not a
-/// zombie. A reaped process has no entry at all.
-fn alive(pid: u32) -> bool {
-    std::fs::read_to_string(format!("/proc/{pid}/stat"))
-        .ok()
-        .and_then(|stat| parse_stat(&stat))
-        .is_some_and(|(_, _, state, _)| state != 'Z' && state != 'X')
-}
-
-/// Collects whichever of `pids` have exited, without blocking on the rest.
-fn reap(pids: &[u32]) {
+/// Collects exited children and reports whether every child has been reaped.
+/// A child can exit just after WNOHANG returns zero. Checking its liveness
+/// separately would then see a zombie and stop waiting before collecting it.
+fn reap(pids: &[u32]) -> bool {
+    let mut done = true;
     for &pid in pids {
         let mut status = 0;
-        unsafe {
-            libc::waitpid(pid as libc::pid_t, &mut status, libc::WNOHANG);
-        }
+        let result = unsafe {
+            libc::waitpid(pid as libc::pid_t, &mut status, libc::WNOHANG)
+        };
+        // Another owner (e.g. WebKit) may already have collected this child.
+        done &= result == pid as libc::pid_t
+            || (result == -1 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ECHILD));
     }
+    done
 }
 
 #[cfg(test)]
