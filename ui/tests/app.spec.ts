@@ -432,7 +432,7 @@ test.describe('App', () => {
   // never left syncing behind the user's back without them having seen it.
   test('signing in opens the picker with the new calendars in it', async ({ page }) => {
     await page.goto(app('sign-in-adds-account'));
-    await page.getByRole('button', { name: /Connect|Add account/ }).click();
+    await page.getByRole('button', { name: /Connect|Add Google account/ }).click();
     await expect(page.locator('.panel')).toBeVisible();
     await expect(page.locator('.acct')).toHaveCount(1);
   });
@@ -446,7 +446,7 @@ test.describe('App', () => {
   // true and unable to reopen the (by-then-closed) child.
   test('closing the picker then signing in again reopens it', async ({ page }) => {
     await page.goto(app('sign-in-adds-account'));
-    await page.getByRole('button', { name: /Connect|Add account/ }).click();
+    await page.getByRole('button', { name: /Connect|Add Google account/ }).click();
     await expect(page.locator('.panel')).toBeVisible();
     await page.keyboard.press('Escape');
     await expect(page.locator('.panel')).toHaveCount(0);
@@ -463,7 +463,7 @@ test.describe('App', () => {
   // reviewer who found this confirmed both propagate up correctly.
   test('clicking away then signing in again reopens it', async ({ page }) => {
     await page.goto(app('sign-in-adds-account'));
-    await page.getByRole('button', { name: /Connect|Add account/ }).click();
+    await page.getByRole('button', { name: /Connect|Add Google account/ }).click();
     await expect(page.locator('.panel')).toBeVisible();
     // **The picker's own scrim**, named exactly: the menu it now sits inside
     // has one too, and clicking the wrong one would close the wrong layer.
@@ -2365,17 +2365,17 @@ test.describe('App', () => {
     await page.getByRole('button', { name: 'Settings…' }).click();
     const modal = page.getByRole('dialog', { name: 'Settings' });
     await expect(modal.getByRole('tab')).toHaveText([
-      'General', 'Appearance', 'Calendars', 'Accounts', 'Notifications',
+      'General', 'Appearance', 'Menu bar', 'Calendars', 'Accounts', 'Notifications',
     ]);
     const look = ['#appearance', '#window-frame', '#week-view'];
     const behaviour = ['#sync-interval', '#time-format', '#display-tz', '#start-on-login'];
 
-    for (const id of look) await expect(modal.locator(id)).toHaveCount(0);
+    for (const id of look) await expect(modal.locator(id)).not.toBeVisible();
     for (const id of behaviour) await expect(modal.locator(id)).toHaveCount(1);
 
     await modal.getByRole('tab', { name: 'Appearance' }).click();
     for (const id of look) await expect(modal.locator(id)).toHaveCount(1);
-    for (const id of behaviour) await expect(modal.locator(id)).toHaveCount(0);
+    for (const id of behaviour) await expect(modal.locator(id)).not.toBeVisible();
   });
 
   /**
@@ -4135,6 +4135,7 @@ test.describe('App: the temperature unit', () => {
     await page.getByRole('button', { name: 'Menu' }).click();
     await page.getByRole('button', { name: 'Settings…' }).click();
     const modal = page.getByRole('dialog', { name: 'Settings' });
+    await modal.getByRole('tab', { name: 'Appearance', exact: true }).click();
     await modal.locator('#temperature-unit').selectOption({ label });
     await page.keyboard.press('Escape');
     await expect(modal).toHaveCount(0);
@@ -4928,7 +4929,7 @@ test.describe("App: showing today's date", () => {
     await page.getByRole('button', { name: 'Menu' }).click();
     await page.getByRole('button', { name: 'Settings…' }).click();
     const modal = page.getByRole('dialog', { name: 'Settings' });
-    await modal.getByRole('tab', { name: 'Appearance' }).click();
+    await modal.getByRole('tab', { name: 'Menu bar' }).click();
     const box = modal.getByLabel("Show today's date");
     await expect(box).not.toBeChecked();
 
@@ -4943,7 +4944,7 @@ test.describe("App: showing today's date", () => {
     await expect(modal).toHaveCount(0);
     await page.getByRole('button', { name: 'Menu' }).click();
     await page.getByRole('button', { name: 'Settings…' }).click();
-    await modal.getByRole('tab', { name: 'Appearance' }).click();
+    await modal.getByRole('tab', { name: 'Menu bar' }).click();
     await expect(modal.getByLabel("Show today's date")).toBeChecked();
   });
 });
