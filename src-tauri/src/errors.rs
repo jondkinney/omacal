@@ -232,12 +232,92 @@ pub fn user_facing(err: &anyhow::Error) -> String {
         return text;
     }
 
+    // Withheld from the user, but not from the log — [`OPAQUE`] tells them to
+    // look in it, so it has to have something to find. Until this line the
+    // error was dropped here: the one path that sends a user to the log was
+    // the one path guaranteeing the log said nothing (reported 2026-09-08, a
+    // failed calendar move that could not be diagnosed at all).
+    //
+    // `?err` rather than `%err`: anyhow's `Debug` carries the whole source
+    // chain, and the chain is the diagnosis — the `Display` this function
+    // already refused to show is only its first line.
+    //
+    // This is the same trade the caldav and Google paths already make when
+    // they log an `ApiError` they will not surface. The reason a message is
+    // withheld is that it may carry a URL, an address or a token, and a local
+    // log is a different audience from a banner in front of whoever is
+    // looking at the screen — but it is still worth saying out loud that
+    // anything pasted from this log should be read before it is shared.
+    tracing::warn!(error = ?err, "error withheld from the user; shown as the opaque failure");
     OPAQUE.to_string()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Captures what `tracing` emitted while `body` ran.
+    ///
+    /// A plain `String` behind a lock rather than a crate: this is the only
+    /// place the suite needs to read a log line, and the alternative is a
+    /// dev-dependency for one assertion.
+    fn logged(body: impl FnOnce()) -> String {
+        use std::sync::{Arc, Mutex};
+        #[derive(Clone)]
+        struct Sink(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for Sink {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().expect("log sink poisoned").extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        }
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let sink = Sink(buf.clone());
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(move || sink.clone())
+            .with_max_level(tracing::Level::WARN)
+            .finish();
+        tracing::subscriber::with_default(subscriber, body);
+        let out = buf.lock().expect("log sink poisoned").clone();
+        String::from_utf8(out).expect("log output is utf-8")
+    }
+
+    /// **[`OPAQUE`] sends the user to the log, so the log must have the
+    /// error.** It did not until 2026-09-08: `user_facing` dropped the error
+    /// on the line that returned `OPAQUE`, which made the single message
+    /// telling somebody to look in a log the single path guaranteeing the log
+    /// held nothing. A failed calendar move was undiagnosable because of it.
+    ///
+    /// Asserts the *cause chain*, not just the top line — the chain is what
+    /// makes the entry worth having, and `%err` would print only the first
+    /// line while passing a weaker version of this test.
+    #[test]
+    fn an_error_withheld_from_the_user_is_written_to_the_log() {
+        let err = anyhow::anyhow!("the underlying transport gave up")
+            .context("while moving the event to another calendar");
+
+        let mut shown = String::new();
+        let log = logged(|| shown = user_facing(&err));
+
+        assert_eq!(shown, OPAQUE, "the user still sees only the opaque failure");
+        assert!(log.contains("while moving the event to another calendar"), "log was: {log}");
+        assert!(log.contains("the underlying transport gave up"), "the cause chain, not just the top line: {log}");
+    }
+
+    /// The other arm: an allowlisted message is shown, so there is nothing
+    /// withheld and nothing to log. A version that logged unconditionally
+    /// would fill the log with messages the user already read.
+    #[test]
+    fn an_allowlisted_message_is_shown_and_not_logged_as_withheld() {
+        let err = anyhow::anyhow!("{}", crate::events::MOVE_ACROSS_ACCOUNTS);
+
+        let mut shown = String::new();
+        let log = logged(|| shown = user_facing(&err));
+
+        assert_eq!(shown, crate::events::MOVE_ACROSS_ACCOUNTS);
+        assert!(!log.contains("withheld"), "nothing was withheld, so nothing is logged: {log}");
+    }
 
     #[test]
     fn a_toml_parse_error_never_reaches_the_user_verbatim() {
