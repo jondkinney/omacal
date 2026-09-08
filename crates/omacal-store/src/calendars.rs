@@ -7,6 +7,8 @@ pub struct CalendarRow {
     pub account_id: i64,
     pub account_email: String,
     pub summary: String,
+    pub provider_summary: String,
+    pub label_override: Option<String>,
     /// **The colour to draw this calendar in** — its override if it has one,
     /// and Google's own otherwise, resolved by the same `COALESCE` the event
     /// read uses. Every consumer that only wants to *draw* something reads
@@ -45,13 +47,14 @@ pub struct CalendarRow {
 /// stable ordering so the popover does not reshuffle between renders.
 pub async fn list_calendars(pool: &SqlitePool) -> anyhow::Result<Vec<CalendarRow>> {
     let rows = sqlx::query(
-        "SELECT c.id, c.account_id, a.email AS account_email, c.summary,
+        "SELECT c.id, c.account_id, a.email AS account_email, COALESCE(c.label_override, c.summary) AS summary,
+                c.summary AS provider_summary, c.label_override,
                 COALESCE(c.color_override, c.color_hex) AS color_hex,
                 c.color_override,
                 c.selected, c.sync_enabled, c.is_primary, c.access_role, a.provider
          FROM calendars c
          JOIN accounts a ON a.id = c.account_id
-         ORDER BY a.email, c.is_primary DESC, c.summary COLLATE NOCASE",
+         ORDER BY a.email, c.is_primary DESC, COALESCE(c.label_override, c.summary) COLLATE NOCASE",
     )
     .fetch_all(pool)
     .await?;
@@ -63,6 +66,8 @@ pub async fn list_calendars(pool: &SqlitePool) -> anyhow::Result<Vec<CalendarRow
             account_id: r.get("account_id"),
             account_email: r.get("account_email"),
             summary: r.get("summary"),
+            provider_summary: r.get("provider_summary"),
+            label_override: r.get("label_override"),
             color_hex: r.get("color_hex"),
             color_override: r.get("color_override"),
             selected: r.get::<i64, _>("selected") != 0,
@@ -134,6 +139,17 @@ pub async fn set_color_override(
         .bind(hex)
         .execute(pool)
         .await?;
+    Ok(())
+}
+
+/// Local display label; blank restores the provider's current name.
+pub async fn set_label_override(pool: &SqlitePool, id: i64, label: Option<&str>) -> anyhow::Result<()> {
+    let label = label.map(str::trim).filter(|s| !s.is_empty());
+    anyhow::ensure!(label.is_none_or(|s| s.chars().count() <= 200 && !s.chars().any(char::is_control)),
+        "calendar label must be at most 200 characters without control characters");
+    let result = sqlx::query("UPDATE calendars SET label_override = ?2 WHERE id = ?1")
+        .bind(id).bind(label).execute(pool).await?;
+    anyhow::ensure!(result.rows_affected() == 1, "calendar not found");
     Ok(())
 }
 
@@ -217,6 +233,29 @@ mod tests {
         let pool = connect_memory().await.unwrap();
         seed(&pool).await;
         pool
+    }
+
+    #[tokio::test]
+    async fn local_label_survives_provider_rename_and_resets() {
+        let pool = seeded().await;
+        let before = list_calendars(&pool).await.unwrap();
+        let id = before[0].id;
+        set_label_override(&pool, id, Some("  Jon Kinney  ")).await.unwrap();
+        sqlx::query("UPDATE calendars SET summary = 'Provider renamed' WHERE id = ?")
+            .bind(id).execute(&pool).await.unwrap();
+        let rows = list_calendars(&pool).await.unwrap();
+        let cal = rows.iter().find(|c| c.id == id).unwrap();
+        assert_eq!(cal.summary, "Jon Kinney");
+        assert_eq!(cal.provider_summary, "Provider renamed");
+        assert_eq!(cal.label_override.as_deref(), Some("Jon Kinney"));
+        assert_eq!(rows.iter().find(|c| c.id == before[1].id).unwrap().summary, before[1].summary);
+        assert!(set_label_override(&pool, id, Some(&"x".repeat(201))).await.is_err());
+        assert!(set_label_override(&pool, id, Some("bad\nlabel")).await.is_err());
+        set_label_override(&pool, id, Some("  ")).await.unwrap();
+        let rows = list_calendars(&pool).await.unwrap();
+        let cal = rows.iter().find(|c| c.id == id).unwrap();
+        assert_eq!(cal.summary, "Provider renamed");
+        assert_eq!(cal.label_override, None);
     }
 
     fn ev(cal: i64, gid: &str) -> StoredEvent {

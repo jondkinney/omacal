@@ -2,7 +2,7 @@
 <script lang="ts">
   import { tick } from 'svelte';
   import {
-    byAccount, setCalendarColor, setCalendarSelected, setCalendarSync, type Calendar,
+    byAccount, setCalendarLabel, setCalendarColor, setCalendarSelected, setCalendarSync, type Calendar,
   } from './calendars';
   import { CALENDAR_COLOURS } from './theme';
 
@@ -28,6 +28,22 @@
    *  ambiguous about which one just settled; naming the calendar makes it
    *  unambiguous even when read mid-race. */
   let message = $state<{ text: string; kind: 'info' | 'error' } | null>(null);
+
+  let editingLabel = $state<number | null>(null);
+  let labelDraft = $state('');
+  async function saveLabel(c: Calendar, reset = false) {
+    markBusy(c.id, true);
+    message = null;
+    try {
+      await setCalendarLabel(c.id, reset ? null : labelDraft.trim() || null);
+      editingLabel = null;
+      onchange();
+    } catch (err) {
+      message = { text: `${c.summary} · ${String(err)}`, kind: 'error' };
+    } finally {
+      markBusy(c.id, false);
+    }
+  }
 
   const groups = $derived(byAccount(calendars));
 
@@ -158,6 +174,8 @@
           <span class="dot" aria-hidden="true" style="background:{c.color_hex ?? 'var(--accent)'}"></span>
           <span class="name" title={c.summary}>{c.summary}</span>
         </label>
+        <button class="label-button" type="button" disabled={busy.has(c.id)} aria-label="Label for {c.summary}"
+          onclick={() => { editingLabel = c.id; labelDraft = c.label_override ?? c.summary; }}>Label…</button>
         <!-- The colour control. On the row, so it appears in both hosts — the
              header's popover and the settings tab — from one place. -->
         <button
@@ -177,6 +195,18 @@
           onclick={(e) => toggleSync(c, e)}
         >{c.sync_enabled ? 'Remove' : 'Add'}</button>
       </div>
+      {#if editingLabel === c.id}
+        <form class="label-editor" onsubmit={(e) => { e.preventDefault(); saveLabel(c); }}>
+          <label for="calendar-label-{c.id}">Calendar label</label>
+          <input id="calendar-label-{c.id}" bind:value={labelDraft} maxlength="200" disabled={busy.has(c.id)} />
+          <div>
+            <button type="submit" disabled={busy.has(c.id)}>Save label</button>
+            <button type="button" disabled={busy.has(c.id) || !c.label_override} onclick={() => saveLabel(c, true)}>Use provider name</button>
+            <button type="button" onclick={() => (editingLabel = null)}>Cancel</button>
+          </div>
+          <p class="hint">Only in OmaCal. Provider name: {c.provider_summary ?? c.summary}</p>
+        </form>
+      {/if}
       {#if picking === c.id}
         <!-- A curated set, from `theme.ts` — no free picker. omacal draws on
              both a light and a dark Omarchy theme, and a colour chosen against
@@ -215,6 +245,14 @@
 </div>
 
 <style>
+  .label-editor { display: grid; gap: 8px; margin: 8px 0 16px; }
+  .label-button, .label-editor button { font: inherit; font-size: 11px; color: var(--muted); cursor: pointer;
+    background: color-mix(in srgb, var(--text) 6%, transparent); border: 0; border-radius: 5px; padding: 4px 8px; }
+  .label-button:disabled, .label-editor button:disabled { opacity: .5; cursor: default; }
+  .label-editor input { font: inherit; font-size: 13px; color: var(--text);
+    background-color: color-mix(in srgb, var(--text) 5%, transparent);
+    border: 1px solid var(--hairline); border-radius: 5px; padding: 4px 6px; width: 100%; box-sizing: border-box; }
+  .label-editor div { display: flex; gap: 8px; flex-wrap: wrap; }
   /* No box of its own — no background, no border, no padding. Each host frames
      it: the popover puts it in a floating panel, the settings tab in a column
      that is already inside one. A component that carried its own surface would

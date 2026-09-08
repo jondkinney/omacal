@@ -6,6 +6,8 @@ pub struct Calendar {
     pub id: String,
     #[serde(default)]
     pub summary: String,
+    /// The name this user chose in Google Calendar, when different from the owner’s.
+    pub summary_override: Option<String>,
     pub background_color: Option<String>,
     pub time_zone: Option<String>,
     #[serde(default)]
@@ -19,6 +21,13 @@ pub struct Calendar {
     /// set, which is a real answer rather than a missing one.
     #[serde(default)]
     pub default_reminders: Vec<Reminder>,
+}
+
+impl Calendar {
+    pub fn display_name(&self) -> &str {
+        self.summary_override.as_deref().filter(|s| !s.trim().is_empty())
+            .unwrap_or(&self.summary)
+    }
 }
 
 /// One reminder. `method` is Google's own vocabulary — `popup` or `email` —

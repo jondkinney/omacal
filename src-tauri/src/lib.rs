@@ -660,7 +660,7 @@ async fn upsert_calendar(
     )
     .bind(account_id)
     .bind(&c.id)
-    .bind(&c.summary)
+    .bind(c.display_name())
     .bind(&c.background_color)
     .bind(c.time_zone.as_deref().unwrap_or("UTC"))
     .bind(&c.access_role)
@@ -851,6 +851,12 @@ where
 
         let client = omacal_google::CalendarClient::new(api_base, &access_token);
 
+        // Names can change without reconnecting an account. Update only known
+        // calendars: this must not import or re-enable calendars during sync.
+        if let Err(e) = refresh_calendar_names(pool, *account_id, &client).await {
+            tracing::warn!(%e, "could not refresh calendar names; keeping cached names");
+        }
+
         let cals = match calendars_to_sync(pool, *account_id).await {
             Ok(c) => c,
             Err(e) => {
@@ -876,6 +882,30 @@ where
     }
 
     (total, failed, dead)
+}
+
+async fn refresh_calendar_names(
+    pool: &SqlitePool, account_id: i64, client: &omacal_google::CalendarClient,
+) -> anyhow::Result<()> {
+    let calendars = client.list_calendars().await?;
+    let mut names = Vec::new();
+    for c in calendars {
+        let mut name = c.display_name().to_string();
+        if name == c.id && c.primary && c.summary_override.as_deref().is_none_or(|s| s.trim().is_empty()) {
+            if let Ok(title) = client.calendar_title(&c.id).await {
+                if !title.trim().is_empty() { name = title; }
+            }
+        }
+        names.push((c.id, name));
+    }
+    let mut tx = pool.begin().await?;
+    for (id, name) in names {
+        sqlx::query("UPDATE calendars SET summary = ?3 WHERE account_id = ?1 AND google_id = ?2")
+            .bind(account_id).bind(id).bind(name)
+            .execute(&mut *tx).await?;
+    }
+    tx.commit().await?;
+    Ok(())
 }
 
 /// The accounts a sync should even attempt: everyone not marked as needing
@@ -1626,6 +1656,7 @@ pub fn run() {
             calendars::set_calendar_selected,
             calendars::set_calendar_sync,
             calendars::set_calendar_color,
+            calendars::set_calendar_label,
             search::search_events,
             events::known_guests,
             settings::get_settings,
@@ -2212,10 +2243,65 @@ mod tests {
         assert!(!shown.contains("someone@example.com"), "{shown}");
     }
 
+    #[tokio::test]
+    async fn calendar_display_labels_survive_sign_in_and_refresh_during_sync() {
+        let pool = omacal_store::connect_memory().await.unwrap();
+        let account = seed_account(&pool, "sub-label", "owner@x").await;
+        let other = seed_account(&pool, "sub-other", "other@x").await;
+        let mut cal: omacal_google::model::Calendar = serde_json::from_value(
+            serde_json::json!({"id":"owner@x", "summary":"owner@x", "summaryOverride":"Work"})
+        ).unwrap();
+        upsert_calendar(&pool, account, &cal).await.unwrap();
+        assert_eq!(omacal_store::list_calendars(&pool).await.unwrap()[0].summary, "Work");
+        cal.summary_override = None;
+        upsert_calendar(&pool, other, &cal).await.unwrap();
+        sqlx::query("UPDATE calendars SET selected = 0, sync_enabled = 0 WHERE account_id = ?1")
+            .bind(account).execute(&pool).await.unwrap();
+        let server = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/users/me/calendarList"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"items":[
+                {"id":"owner@x", "summary":"owner@x", "summaryOverride":"Studio"},
+                {"id":"unknown", "summary":"Do not import"}
+            ]}))).mount(&server).await;
+        sync_accounts(&pool, &[(account, "owner@x".into())], &server.uri(), 0, 1,
+            |_| async { Ok("test-token".into()) }).await;
+        let cals = omacal_store::list_calendars(&pool).await.unwrap();
+        assert_eq!(cals.len(), 2);
+        let updated = cals.iter().find(|c| c.account_id == account).unwrap();
+        assert_eq!(updated.summary, "Studio");
+        assert!(!updated.selected && !updated.sync_enabled);
+        assert_eq!(cals.iter().find(|c| c.account_id == other).unwrap().summary, "owner@x");
+        for blank in [None, Some("".into()), Some("  ".into())] {
+            cal.summary_override = blank;
+            upsert_calendar(&pool, account, &cal).await.unwrap();
+            assert_eq!(omacal_store::list_calendars(&pool).await.unwrap().iter()
+                .find(|c| c.account_id == account).unwrap().summary, "owner@x");
+        }
+    }
+
+    #[tokio::test]
+    async fn primary_calendar_email_uses_the_calendar_resource_title() {
+        let pool = omacal_store::connect_memory().await.unwrap();
+        let account = seed_account(&pool, "title-sub", "owner@x").await;
+        let cal = google_calendar("owner@x");
+        upsert_calendar(&pool, account, &cal).await.unwrap();
+        let server = MockServer::start().await;
+        Mock::given(method("GET")).and(path("/users/me/calendarList"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"items":[
+                {"id":"owner@x", "summary":"owner@x", "primary":true}
+            ]}))).mount(&server).await;
+        Mock::given(method("GET")).and(path("/calendars/owner%40x"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"summary":"Jon Kinney"})))
+            .expect(1).mount(&server).await;
+        refresh_calendar_names(&pool, account, &omacal_google::CalendarClient::new(server.uri(), "test")).await.unwrap();
+        assert_eq!(omacal_store::list_calendars(&pool).await.unwrap()[0].summary, "Jon Kinney");
+    }
+
     fn google_calendar(id: &str) -> omacal_google::model::Calendar {
         omacal_google::model::Calendar {
             id: id.to_string(),
             summary: "Work".into(),
+            summary_override: None,
             background_color: Some("#5b8def".into()),
             time_zone: Some("Europe/Sofia".into()),
             access_role: "owner".into(),

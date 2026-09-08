@@ -10,7 +10,7 @@ pub mod invites;
 pub mod reminders;
 pub mod tasks;
 pub use calendars::{
-    calendar_for_write, delete_account, list_calendars, set_color_override, set_selected,
+    calendar_for_write, delete_account, list_calendars, set_color_override, set_label_override, set_selected,
     set_sync_enabled, CalendarRow,
 };
 pub use changes::{

@@ -140,7 +140,7 @@ pub async fn delete_tasks_not_in(
 /// completion, newest first.
 pub async fn tasks_for_ui(pool: &SqlitePool, done_since_ms: i64) -> anyhow::Result<Vec<TaskRow>> {
     let sql = format!(
-        "SELECT {COLS}, c.summary AS cal_summary,
+        "SELECT {COLS}, COALESCE(c.label_override, c.summary) AS cal_summary,
                 COALESCE(c.color_override, c.color_hex) AS cal_color,
                 c.access_role AS cal_role
          FROM tasks t

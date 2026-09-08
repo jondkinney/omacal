@@ -5,6 +5,8 @@ export type Calendar = {
   account_id: number;
   account_email: string;
   summary: string;
+  provider_summary?: string;
+  label_override?: string | null;
   /** **The colour to draw this calendar in** — its override if it has one, and
    *  Google's own otherwise, resolved in SQL. Anything that only wants to draw
    *  reads this and needs to know nothing about overrides. */
@@ -98,3 +100,6 @@ export function byAccount(cals: Calendar[]): Array<[string, Calendar[]]> {
   }
   return [...groups.entries()];
 }
+
+export const setCalendarLabel = (id: number, label: string | null): Promise<void> =>
+  invoke<void>('set_calendar_label', { id, label });

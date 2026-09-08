@@ -396,11 +396,11 @@ pub(crate) async fn writable_task_lists(
     pool: &sqlx::SqlitePool,
 ) -> anyhow::Result<Vec<TaskListVm>> {
     let rows: Vec<(i64, String, Option<String>)> = sqlx::query_as(
-        "SELECT c.id, c.summary, COALESCE(c.color_override, c.color_hex)
+        "SELECT c.id, COALESCE(c.label_override, c.summary), COALESCE(c.color_override, c.color_hex)
          FROM calendars c JOIN accounts a ON a.id = c.account_id
          WHERE a.provider = 'caldav' AND c.supports_tasks = 1
            AND c.selected = 1 AND c.access_role != 'reader'
-         ORDER BY c.summary COLLATE NOCASE",
+         ORDER BY COALESCE(c.label_override, c.summary) COLLATE NOCASE",
     )
     .fetch_all(pool)
     .await?;

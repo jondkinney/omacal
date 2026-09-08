@@ -1279,6 +1279,27 @@ pub async fn set_show_date(
     Ok(read_settings(&state.pool).await)
 }
 
+pub(crate) async fn refresh_menu_surfaces(app: &tauri::AppHandle, state: &AppState) {
+    use tauri::Emitter;
+    crate::upcoming::refresh(&state.pool, state.demo).await;
+    crate::tray::refresh(app);
+    let _ = app.emit("menubar-changed", ());
+    #[cfg(target_os = "linux")]
+    if !state.demo && std::path::Path::new("/usr/share/omarchy/shell/shell.qml").is_file() {
+        // Fixed IPC arguments, no output retained, and no orphaned process
+        // if the shell is unavailable. The widget keeps its polling fallback.
+        if let Ok(mut child) = tokio::process::Command::new("/usr/bin/qs")
+            .args(["ipc", "-n", "-p", "/usr/share/omarchy/shell", "call", "--", "omacal.upcoming", "refresh"])
+            .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null()).kill_on_drop(true).spawn() {
+            if tokio::time::timeout(std::time::Duration::from_secs(2), child.wait()).await.is_err() {
+                let _ = child.kill().await;
+            }
+        }
+    }
+}
+
+
 /// Stores the hour height, clamped rather than refused: the value comes off
 /// a gesture, and the honest answer to "a little past the end" is the end,
 /// not an error surfacing under somebody's fingers mid-pinch.
