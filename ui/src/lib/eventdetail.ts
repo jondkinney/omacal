@@ -55,6 +55,16 @@ export type EventDetail = {
   end_date: string | null;
   is_all_day: boolean;
   is_recurring: boolean;
+  /** Whether this is a **materialised exception** — one occurrence its
+   *  organizer detached from the series — rather than the series master.
+   *
+   *  `is_recurring` is true for both, and that is what Edit and Delete want:
+   *  "all of them" is a real intent from any occurrence. **Answering an
+   *  invitation is not the same question.** When an organizer moves one
+   *  occurrence, that occurrence is the only thing in doubt, so the popover
+   *  answers it rather than asking — the rule the invite tray's Rescheduled
+   *  row already follows. */
+  is_series_exception: boolean;
   /** The raw `RRULE`, carried through unchanged so the UI can show a rule it
    *  cannot represent back to the user in words. Display only — never parse it
    *  to decide what the app can express; that is `repeat`'s job. */

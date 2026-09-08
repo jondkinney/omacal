@@ -2481,6 +2481,38 @@ test.describe('EventPopover', () => {
     await expect(page.locator('.pop')).toBeFocused();
   });
 
+  // Reported from Plamen's calendar (2026-09-08): an organizer moved one
+  // occurrence of a weekly meeting, and accepting it cost two clicks — Yes,
+  // then "This one" — for a question with only one possible answer. The
+  // invite tray's Rescheduled row had decided this for itself since August
+  // (`respond_all`), so the same reschedule asked from the grid and did not
+  // from the tray.
+  test('a moved occurrence answers in one click, and its scope is this one', async ({ page }) => {
+    await page.goto(show('moved-occurrence-answers-itself'));
+    await page.getByRole('button', { name: 'Yes', exact: true }).click();
+
+    // No scope question at all — not merely a preselected one.
+    await expect(page.getByRole('button', { name: 'This one' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'All of them' })).toHaveCount(0);
+    await expect.poll(() => page.evaluate(() => (window as any).__lastRespondCall?.scope))
+      .toBe('this');
+  });
+
+  // The other arm, and the reason the field is not just `!is_recurring`:
+  // from a master both answers are real, so the question stays.
+  test('a series master still asks which occurrences the answer covers', async ({ page }) => {
+    await page.goto(show('series-master-asks-the-scope'));
+    await page.getByRole('button', { name: 'Yes', exact: true }).click();
+
+    await expect(page.getByRole('button', { name: 'This one' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'All of them' })).toBeVisible();
+    expect(await page.evaluate(() => (window as any).__lastRespondCall ?? null)).toBeNull();
+
+    await page.getByRole('button', { name: 'All of them' }).click();
+    await expect.poll(() => page.evaluate(() => (window as any).__lastRespondCall?.scope))
+      .toBe('all');
+  });
+
   test('a recurring RSVP focuses its first scope and arrows before Enter accepts', async ({ page }) => {
     await page.goto(show('recurring'));
     await page.getByRole('button', { name: 'No', exact: true }).click();
