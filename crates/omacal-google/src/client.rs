@@ -361,6 +361,23 @@ impl CalendarClient {
             ))
             .bearer_auth(&self.access_token)
             .query(&[("destination", destination), ("sendUpdates", send_updates)])
+            // **A bodyless POST still needs a length.** Everything this call
+            // says is in the query string, so there is no body — and reqwest
+            // omits `Content-Length` entirely rather than sending zero, which
+            // Google's endpoint answers with `411 Length Required`. Every
+            // move failed on it, for everyone, from the day the feature
+            // shipped: the request never reached the calendar logic at all.
+            //
+            // It took this long to find because `user_facing` discarded the
+            // status before anyone could read it — the move looked like a
+            // permissions or organizer problem for an evening (2026-09-08).
+            //
+            // The header explicitly, and **not** `.body("")`: reqwest drops a
+            // zero-length body entirely and sends no length with it, which is
+            // the shape that fails. Verified against a mock that printed the
+            // headers it received — `{authorization, accept, host}`, nothing
+            // more — rather than assumed.
+            .header(reqwest::header::CONTENT_LENGTH, "0")
             .send()
             .await
             .map_err(|e| ApiError::Transport(e.to_string()))?;
@@ -807,3 +824,4 @@ mod tests {
         ));
     }
 }
+

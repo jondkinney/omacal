@@ -9496,6 +9496,12 @@ mod tests {
             .and(wiremock::matchers::path("/calendars/cal%40x.com/events/master1/move"))
             .and(wiremock::matchers::query_param("destination", "other@x.com"))
             .and(wiremock::matchers::query_param("sendUpdates", "all"))
+            // The move carries no body, and a bodyless POST still needs a
+            // length: without one Google answers `411 Length Required` and
+            // the move never happens. wiremock accepts a request with no
+            // `Content-Length` quite happily, which is exactly why this test
+            // passed for as long as the feature was broken (2026-09-08).
+            .and(wiremock::matchers::header_exists("content-length"))
             .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "id": "master1", "status": "confirmed",
                 "start": {"dateTime": "2026-08-03T09:00:00Z"},
