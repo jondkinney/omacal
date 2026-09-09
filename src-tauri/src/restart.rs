@@ -114,7 +114,24 @@ pub(crate) fn hard_restart() -> ! {
         cfg!(target_os = "macos"),
     ) {
         Some(Restart::Exec(target)) => {
-            if let Err(e) = std::process::Command::new(&target).spawn() {
+            let mut cmd = std::process::Command::new(&target);
+            // **Never hand the replacement a path into the mount we are
+            // leaving.** See `env_without_appdir` for what that costs.
+            if let Some(appdir) = std::env::var("APPDIR").ok().filter(|d| !d.is_empty()) {
+                for (key, value) in
+                    env_without_appdir(&appdir, std::env::vars().collect::<Vec<_>>())
+                {
+                    match value {
+                        Some(v) => cmd.env(key, v),
+                        None => cmd.env_remove(key),
+                    };
+                }
+                // The working directory is inside that mount too — AppRun
+                // moves there — and an inherited cwd pins it just as a
+                // mapping does.
+                cmd.current_dir("/");
+            }
+            if let Err(e) = cmd.spawn() {
                 tracing::error!(%e, ?target, "restart could not spawn the new instance");
             }
         }
@@ -140,6 +157,42 @@ pub(crate) fn hard_restart() -> ! {
     }
     #[cfg(not(unix))]
     std::process::exit(0)
+}
+
+/// The environment changes that stop a replacement pinning the mount its
+/// predecessor is leaving, as `(key, Some(new value) | None to drop)`.
+///
+/// **The leak this closes.** An AppImage runs from a squashfs mounted at
+/// `/tmp/.mount_omacalXXXX` and served by a FUSE process; `AppRun` points a
+/// dozen variables at that directory. `hard_restart` spawns the replacement
+/// with this process's environment, so the *new* instance loaded
+/// `GSETTINGS_SCHEMA_DIR`'s `gschemas.compiled` from the *old* mount and
+/// mmapped it — which pins that mount for the life of the new process. Its
+/// FUSE server can then never unmount, and sits in `fuse_dev_do_read`
+/// forever. One stranded process and one stale mount per restart, found on
+/// the real box with three mounts where there should have been one
+/// (2026-09-09).
+///
+/// #63 reaped the WebKit helpers, which is a different leak with the same
+/// symptom; this is the one that outlived it.
+///
+/// **Colon lists lose only the offending entries.** `XDG_DATA_DIRS` carries
+/// the system's own directories beside the bundle's, and dropping it whole
+/// would take `/usr/share` with it — the new `AppRun` prepends to what it
+/// inherits rather than rebuilding it.
+pub(crate) fn env_without_appdir(
+    appdir: &str,
+    vars: Vec<(String, String)>,
+) -> Vec<(String, Option<String>)> {
+    vars.into_iter()
+        .filter(|(_, v)| v.contains(appdir))
+        .map(|(k, v)| {
+            // A single value that *is* the path goes; a list keeps whatever
+            // does not point inside the mount.
+            let kept: Vec<&str> = v.split(':').filter(|part| !part.contains(appdir)).collect();
+            (k, (!kept.is_empty()).then(|| kept.join(":")))
+        })
+        .collect()
 }
 
 /// One line of `/proc/<pid>/stat`: the pid, the parent's pid, the state
@@ -372,6 +425,63 @@ mod tests {
     /// (a symlink to `sleep`, since the kernel names a process after the
     /// file it executed) is found, stopped and reaped, and a child that is
     /// not named like one is left alone.
+    /// The real environment from the box this was found on, trimmed to the
+    /// variables that mattered. `GSETTINGS_SCHEMA_DIR` is the one that
+    /// actually pinned the mount — the new instance mmapped
+    /// `gschemas.compiled` out of its predecessor's squashfs and held it
+    /// open for good.
+    #[test]
+    fn the_replacement_inherits_nothing_pointing_into_the_old_mount() {
+        let appdir = "/tmp/.mount_omacalbkIfJe";
+        let changes = env_without_appdir(appdir, vec![
+            ("APPDIR".into(), appdir.into()),
+            ("GSETTINGS_SCHEMA_DIR".into(), format!("{appdir}/usr/share/glib-2.0/schemas")),
+            ("LD_LIBRARY_PATH".into(), format!("{appdir}/usr/lib")),
+            ("HOME".into(), "/home/plamen".into()),
+            ("APPIMAGE".into(), "/home/plamen/.local/bin/omacal".into()),
+        ]);
+        let by_key = |k: &str| changes.iter().find(|(key, _)| key == k).map(|(_, v)| v.clone());
+
+        // Every path into the mount is dropped outright.
+        assert_eq!(by_key("APPDIR"), Some(None));
+        assert_eq!(by_key("GSETTINGS_SCHEMA_DIR"), Some(None), "the one that pinned it");
+        assert_eq!(by_key("LD_LIBRARY_PATH"), Some(None));
+        // Everything else is left alone — not merely re-set to itself, but
+        // absent from the changes, so the spawn does not touch it.
+        assert_eq!(by_key("HOME"), None, "an unrelated variable was disturbed");
+        assert_eq!(
+            by_key("APPIMAGE"), None,
+            "APPIMAGE names the file, not the mount — the replacement needs it",
+        );
+    }
+
+    /// A colon list keeps the entries that are not in the mount. Dropping
+    /// `XDG_DATA_DIRS` whole would take `/usr/share` with it, and the new
+    /// `AppRun` prepends to what it inherits rather than rebuilding it.
+    #[test]
+    fn a_path_list_loses_only_the_entries_inside_the_old_mount() {
+        let appdir = "/tmp/.mount_omacalbkIfJe";
+        let changes = env_without_appdir(appdir, vec![(
+            "XDG_DATA_DIRS".into(),
+            format!("{appdir}/usr/share:/usr/local/share:/usr/share"),
+        )]);
+        assert_eq!(
+            changes,
+            vec![("XDG_DATA_DIRS".to_string(), Some("/usr/local/share:/usr/share".to_string()))],
+        );
+    }
+
+    /// Off an AppImage there is no `APPDIR`, and nothing should be touched —
+    /// a dev build and a `.deb` install both restart through this path.
+    #[test]
+    fn a_build_that_is_not_an_appimage_has_its_environment_left_whole() {
+        let changes = env_without_appdir("/tmp/.mount_omacalXXXX", vec![
+            ("HOME".into(), "/home/plamen".into()),
+            ("XDG_DATA_DIRS".into(), "/usr/local/share:/usr/share".into()),
+        ]);
+        assert!(changes.is_empty(), "changed {changes:?}");
+    }
+
     #[test]
     fn a_child_named_like_a_webkit_helper_is_stopped_and_an_ordinary_one_is_not() {
         if !cfg!(target_os = "linux") {
