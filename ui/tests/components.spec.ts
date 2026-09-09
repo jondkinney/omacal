@@ -272,6 +272,38 @@ test.describe('WeekGrid', () => {
     await expect(page).toHaveScreenshot('weekgrid-populated.png');
   });
 
+  /** #77: the resize existed and its cursor was correct, but the band is 6px
+   *  of a ~68px block with nothing marking it — so it read as missing rather
+   *  than hidden, against a Google Calendar comparison where the handle is
+   *  drawn. Probed on the real grid before changing anything: the top 0-5px
+   *  and the bottom 5px already answered `ns-resize`, the middle `grab`.
+   *
+   *  So the fix is something to aim at, not a wider target — widening the
+   *  band to 8 would put the no-edges threshold at 24px, which is exactly a
+   *  half-hour block at the zoom floor, and short blocks would have lost
+   *  their edges to buy discoverability for long ones. */
+  test('an event grows a handle where it can be resized, only while hovered', async ({ page }) => {
+    await page.goto('/tests/harness/index.html?c=WeekGrid&f=populated');
+    const block = page.locator('.ev').first();
+    await expect(block).toBeVisible();
+    const grip = block.locator('.grip').first();
+
+    // At rest it is a cursor and nothing more — which is what keeps the
+    // committed screenshots honest, since they never hover.
+    const bare = await grip.evaluate((el) =>
+      getComputedStyle(el, '::after').getPropertyValue('content'));
+    expect(bare, 'a block at rest drew a handle').toBe('none');
+
+    await block.hover();
+    const shown = await grip.evaluate((el) => {
+      const s = getComputedStyle(el, '::after');
+      return { content: s.content, width: s.width, background: s.backgroundColor };
+    });
+    expect(shown.content, 'hovering drew no handle').not.toBe('none');
+    expect(parseFloat(shown.width)).toBeGreaterThan(8);
+    expect(shown.background).not.toBe('rgba(0, 0, 0, 0)');
+  });
+
   test('a one-day grid renders a single column', async ({ page }) => {
     await page.goto('/tests/harness/index.html?c=WeekGrid&f=single-day');
     await expect(page.locator('.col')).toHaveCount(1);

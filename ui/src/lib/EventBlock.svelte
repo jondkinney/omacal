@@ -191,14 +191,29 @@
   .ev.dragging { z-index: 50 !important; opacity: 0.85; cursor: grabbing; }
   .ev.keyboard { outline: 2px solid var(--accent); outline-offset: 1px;
                  z-index: 25 !important; }
-  /* The grab bands, as cursors only — the hit test itself is `drag.ts`'s
-     `edgeAt`, on the press's own offset. The `.grip` spans in the template
-     exist purely to carry `ns-resize` over those bands: sized by the same
-     constant and gated by the same short-block rule, so what the cursor
-     promises and what the press does cannot disagree — and transparent, so
-     the committed baselines hold them to invisibility. */
+  /* The grab bands, as cursors *and*, while the block is hovered, as
+     something to aim at — the hit test itself is `drag.ts`'s `edgeAt`, on
+     the press's own offset. The `.grip` spans carry `ns-resize` over those
+     bands: sized by the same constant and gated by the same short-block
+     rule, so what the cursor promises and what the press does cannot
+     disagree.
+     **A cursor alone was not enough** (#77, reported with a Google Calendar
+     comparison and confirmed against an ordinary-length block). The band is
+     6px of a ~68px block, and nothing marked it: you had to already know it
+     was there to put the pointer in it, so the resize read as missing rather
+     than as hidden. The bar appears only on hover, so a block at rest is
+     unchanged and the committed baselines — which never hover — still hold
+     these to invisibility. */
   .ev:hover { cursor: grab; }
   .grip { position: absolute; left: 0; right: 0; cursor: ns-resize; }
+  /* Centred in the band rather than filling it: the bar says "here", the
+     band is what actually answers, and a filled 6px block would read as a
+     border on an event that has none by design. */
+  .ev:hover .grip::after {
+    content: ''; position: absolute; left: 50%; transform: translateX(-50%);
+    top: 50%; margin-top: -1.5px; width: 26px; height: 3px; border-radius: 2px;
+    background: color-mix(in srgb, currentColor 45%, transparent);
+  }
 
   .ev {
     /* A <button> keeps native chrome in macOS WKWebView unless appearance is
