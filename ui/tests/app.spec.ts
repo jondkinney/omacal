@@ -2150,7 +2150,7 @@ test.describe('App', () => {
     const select = modal.locator('#default-view');
     await expect(select).toHaveValue('week');
     await expect(select.locator('option')).toHaveText([
-      'Day', 'Week', 'Month', 'Year', 'Big Year',
+      'Day', 'Week', 'Month', 'Year', 'Big Year', 'Last view',
     ]);
 
     await select.selectOption('month');
@@ -2192,6 +2192,120 @@ test.describe('App', () => {
 
     await page.reload();
     await expect(page.locator('.vswitch button.active')).toHaveText('Month');
+  });
+
+  /**
+   * `tray::open_plain`'s reason: closing the window only hides it, and
+   * hiding never remounts `App`, so nothing re-read `defaultView` on the way
+   * back — reported after the setting shipped, working on a full restart but
+   * never on the ordinary close-to-tray-then-reopen cycle.
+   */
+  test('reopening OmaCal (tray menu, bare CLI relaunch) applies the default view', async ({ page }) => {
+    await writable(page);
+    await page.keyboard.press('3'); // Month — away from the stored default
+    await expect(page.locator('.vswitch button.active')).toHaveText('Month');
+
+    await page.evaluate(() => window.__harness.emit('app-opened', null));
+    await expect(page.locator('.vswitch button.active')).toHaveText('Week');
+  });
+
+  /**
+   * The boundary `app-opened` deliberately does not cross: a dated launch or
+   * a clicked reminder already name a destination (`open-date`/`open-event`,
+   * spec comment in `App.svelte`), and the view on screen is not that
+   * destination's decision to make — only a *plain* reopen, with none of its
+   * own, defers to the stored default.
+   */
+  test('a dated reopen leaves the view alone, unlike a plain one', async ({ page }) => {
+    await writable(page);
+    await page.keyboard.press('3'); // Month
+    await expect(page.locator('.vswitch button.active')).toHaveText('Month');
+
+    await page.evaluate(() => window.__harness.emit('open-date', '2024-03-14'));
+    await expect(page.locator('.vswitch button.active')).toHaveText('Month');
+  });
+
+  /**
+   * The sixth row on the same one-question control `saveWeekView` already
+   * uses for Week view: "Last view" is `defaultViewFollowsLast` turned on,
+   * every other row is a fixed `defaultView` — and picking one of those
+   * turns the flag back off atomically, the same round trip
+   * `choosing Sunday rotates the Month header immediately`'s neighbours pin
+   * for `weekStartsToday`.
+   */
+  test('choosing Last view, then a fixed view again, moves the flag both ways', async ({ page }) => {
+    await writable(page);
+    await page.getByRole('button', { name: 'Menu' }).click();
+    await page.getByRole('button', { name: 'Settings…' }).click();
+    const modal = page.getByRole('dialog', { name: 'Settings' });
+    await modal.getByRole('tab', { name: 'Appearance' }).click();
+    const select = modal.locator('#default-view');
+
+    await select.selectOption('last');
+    let [args] = await callsTo(page, 'set_default_view_follows_last');
+    expect(args).toEqual({ on: true });
+
+    await select.selectOption('day');
+    [args] = await callsTo(page, 'set_default_view');
+    expect(args).toEqual({ view: 'day' });
+
+    // Reopened, the select reports the fixed choice, not "Last view" —
+    // the same atomic clear `set_default_view` makes on the backend.
+    await page.keyboard.press('Escape');
+    await expect(modal).toHaveCount(0);
+    await page.getByRole('button', { name: 'Menu' }).click();
+    await page.getByRole('button', { name: 'Settings…' }).click();
+    await modal.getByRole('tab', { name: 'Appearance' }).click();
+    await expect(modal.locator('#default-view')).toHaveValue('day');
+  });
+
+  /**
+   * The point of the setting, end to end: with "Last view" chosen, wherever
+   * the switcher was last left is where a reload — a fresh launch's own
+   * stand-in, `the chosen first day survives a reload`'s reason — opens.
+   * `pick` records the view on every switch (`set_last_view`), regardless of
+   * whether this mode is even on, precisely so turning it on has a real
+   * memory to open on rather than a blank one.
+   */
+  test('Last view reopens wherever the switcher was left, across a reload', async ({ page }) => {
+    await writable(page);
+    await page.getByRole('button', { name: 'Menu' }).click();
+    await page.getByRole('button', { name: 'Settings…' }).click();
+    const modal = page.getByRole('dialog', { name: 'Settings' });
+    await modal.getByRole('tab', { name: 'Appearance' }).click();
+    await modal.locator('#default-view').selectOption('last');
+    await page.keyboard.press('Escape');
+    await expect(modal).toHaveCount(0);
+
+    await page.keyboard.press('4'); // Year
+    await expect(page.locator('.vswitch button.active')).toHaveText('Year');
+
+    await page.reload();
+    await expect(page.locator('.vswitch button.active')).toHaveText('Year');
+  });
+
+  /**
+   * `reopening OmaCal (tray menu, bare CLI relaunch) applies the default
+   * view`'s own scenario, under "Last view" instead of a fixed default: the
+   * `app-opened` signal still applies whatever `App` currently holds as the
+   * effective default, which under this mode is `lastView`, not `defaultView`.
+   */
+  test('reopening under Last view lands back on the view last picked, not the fixed default', async ({ page }) => {
+    await writable(page);
+    await page.getByRole('button', { name: 'Menu' }).click();
+    await page.getByRole('button', { name: 'Settings…' }).click();
+    const modal = page.getByRole('dialog', { name: 'Settings' });
+    await modal.getByRole('tab', { name: 'Appearance' }).click();
+    await modal.locator('#default-view').selectOption('last');
+    await page.keyboard.press('Escape');
+    await expect(modal).toHaveCount(0);
+
+    await page.keyboard.press('3'); // Month
+    await page.keyboard.press('1'); // Day — the most recent pick
+    await expect(page.locator('.vswitch button.active')).toHaveText('Day');
+
+    await page.evaluate(() => window.__harness.emit('app-opened', null));
+    await expect(page.locator('.vswitch button.active')).toHaveText('Day');
   });
 
   /**

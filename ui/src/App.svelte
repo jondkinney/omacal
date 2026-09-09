@@ -39,7 +39,9 @@
   import {
     dayCursor, eventAtCursor, moveDay, moveEvent, type KeyboardCursor,
   } from './lib/keyboardnav';
-  import { getSettings, setHourHeight, setListMode, type AppSettings, type WeekViewDays } from './lib/settings';
+  import {
+    getSettings, setHourHeight, setLastView, setListMode, type AppSettings, type WeekViewDays,
+  } from './lib/settings';
   import { HOUR_PX_DEFAULT, hourPxStepped } from './lib/zoom';
   import { padFor, sliceWeek, visibleIndex, windowHeld } from './lib/weekwindow';
   import { setClockFormat } from './lib/clock.svelte';
@@ -227,6 +229,19 @@
   // this refetch is the half that actually draws it.
   $effect(() => {
     const un = listen('update-notice', () => { void refreshStatus(); });
+    return () => { un.then((f) => f()); };
+  });
+
+  // `tray::open_plain`'s own reason: closing the window only hides it, and
+  // hiding never remounts this component, so without this signal a default
+  // chosen in Settings would apply once at cold start and never again.
+  // Through `pick`, not a bare assignment, for its Year reseed and its
+  // `viewChoices` stamp. Deliberately not wired to `open-date` or a clicked
+  // reminder — both name an actual destination, unlike a plain reopen.
+  $effect(() => {
+    const un = listen('app-opened', () => {
+      void getSettings().then((s) => pick(effectiveDefaultView(s))).catch(() => {});
+    });
     return () => { un.then((f) => f()); };
   });
 
@@ -752,6 +767,13 @@
    *  setting: it is a thing you look at, not a thing you configure. */
   let helpOpen = $state(false);
 
+  /** The view a fresh seed of `view` should land on — `lastView` under
+   *  "Last view" mode, `defaultView` otherwise. One place for the question,
+   *  since the mount effect and the `app-opened` listener both ask it. */
+  function effectiveDefaultView(s: AppSettings): View {
+    return s.defaultViewFollowsLast ? s.lastView : s.defaultView;
+  }
+
   function applyWeekSettings(s: AppSettings, jumpOnEntry: boolean) {
     const enteringRolling = !weekStartsToday && s.weekStartsToday;
     setWeekStartDay(s.weekStart);
@@ -782,7 +804,7 @@
         // Plain assignment, not `pick`: this is the silent startup seed, and
         // `pick`'s job — bumping `viewChoices` itself — would make this read
         // permanently "since superseded" for every later rerun of this effect.
-        if (viewChoices === viewBefore) view = s.defaultView;
+        if (viewChoices === viewBefore) view = effectiveDefaultView(s);
         // Only if nobody has zoomed in the meantime: a pinch made while the
         // read was in flight is the newer fact, and it is about to be stored.
         if (hourPx === persistedHourPx) { hourPx = s.hourHeight; persistedHourPx = s.hourHeight; }
@@ -1113,6 +1135,9 @@
     // declaration, and `step` below.
     if (v === 'year') yearNum = new Date(anchorMs).getFullYear();
     view = v;
+    // Recorded on every switch, not only under "Last view" mode, so turning
+    // that mode on later opens on a real memory rather than a blank one.
+    void setLastView(v);
   }
 
   // `H`/`L` — and the header's own `‹`/`›`, which are the same motion by

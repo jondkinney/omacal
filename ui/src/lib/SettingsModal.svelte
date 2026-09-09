@@ -17,7 +17,8 @@
   import { listAccounts, signOut, type Account } from './accounts';
   import {
     getSettings, listTimezones, minutesOf, msOfMinutes, setAppearancePreferences,
-    setDefaultCalendar, setDefaultView, DEFAULT_VIEW_OPTIONS,
+    setDefaultCalendar, setDefaultView, setDefaultViewFollowsLast, DEFAULT_VIEW_OPTIONS,
+    type DefaultViewChoice,
     setDefaultEventDuration, setStartOnLogin, START_ON_LOGIN_OPTIONS,
     setDisplayTimezone, setFallbackReminders, setNotificationsEnabled,
     setAppearance, APPEARANCE_OPTIONS,
@@ -27,7 +28,6 @@
     type AppSettings, type Appearance, type StartOnLogin, type WeekViewDays,
     type WindowFrame, WINDOW_FRAME_OPTIONS, setWindowFrame,
   } from './settings';
-  import type { View } from './views';
   import { formatClock, type TimeFormat } from './timefmt';
   import type { TemperatureUnit } from './temperature';
   import type { WeekStartDay } from './weekstart';
@@ -262,14 +262,17 @@
 
   /** Stores which view OmaCal opens on next — `defaultCalendarId`'s shape,
    *  not `saveTimeFormat`'s: the view currently on screen is whatever the
-   *  user navigated to, and this setting has no opinion about that. Jumping
-   *  the calendar behind the modal to match would mean touching any
-   *  *unrelated* setting while browsing a different view yanks you back to
-   *  the default — the same trap a `defaultCalendarId` that repainted the
-   *  header would be. */
-  async function saveDefaultView(view: View) {
+   *  user navigated to, and this setting has no opinion about that.
+   *
+   *  One control, two backend writes — `saveWeekView`'s own shape: "Last
+   *  view" is `defaultViewFollowsLast` turned on, and every other row is a
+   *  fixed `defaultView` (which itself turns that flag back off, atomically,
+   *  on the backend). */
+  async function saveDefaultView(choice: DefaultViewChoice) {
     try {
-      settings = await setDefaultView(view);
+      settings = choice === 'last'
+        ? await setDefaultViewFollowsLast(true)
+        : await setDefaultView(choice);
       onsettingschange?.(settings);
     } catch (e) {
       note = { text: String(e), kind: 'error' };
@@ -1000,9 +1003,9 @@
           <select
             id="default-view"
             disabled={!settings}
-            value={settings?.defaultView ?? 'week'}
+            value={settings?.defaultViewFollowsLast ? 'last' : (settings?.defaultView ?? 'week')}
             onchange={(e) =>
-              saveDefaultView((e.currentTarget as HTMLSelectElement).value as View)}
+              saveDefaultView((e.currentTarget as HTMLSelectElement).value as DefaultViewChoice)}
           >
             {#each DEFAULT_VIEW_OPTIONS as [id, label] (id)}
               <option value={id}>{label}</option>
@@ -1011,8 +1014,8 @@
         </div>
       </div>
       <p class="hint">
-        Which of the five views OmaCal opens next time — the calendar behind
-        this modal keeps showing whatever you last navigated to.
+        Which of the five views OmaCal opens next time. Last view reopens
+        wherever you left off instead of a fixed one.
       </p>
 
       <div class="row">

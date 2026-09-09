@@ -580,6 +580,8 @@ type StubSettings = {
   dateFormat: import('../../src/lib/datefmt').DateFormat;
   desktop: 'macos' | 'omarchy' | 'linux';
   defaultView: View;
+  defaultViewFollowsLast: boolean;
+  lastView: View;
   weekStart: WeekStartDay;
   weekStartsToday: boolean;
   weekViewDays: WeekViewDays;
@@ -634,6 +636,10 @@ const DEFAULT_SETTINGS: StubSettings = {
   // The view every existing install already opens on, so every App spec
   // that predates this setting keeps describing the same screen.
   defaultView: 'week',
+  // Off until chosen — a fixed default, not "wherever I left off".
+  defaultViewFollowsLast: false,
+  // Nothing recorded yet reads as the same view the fixed default does.
+  lastView: 'week',
   // The week omacal has always drawn, so every golden holds.
   weekStart: 'monday',
   weekStartsToday: false,
@@ -945,7 +951,15 @@ export function installTauriStub(scenario: string): Harness {
         settings = saveSettings({ ...settings, hourHeight: args.px as number });
         return { ...settings };
       case 'set_default_view':
-        settings = saveSettings({ ...settings, defaultView: args.view as View });
+        settings = saveSettings({
+          ...settings, defaultView: args.view as View, defaultViewFollowsLast: false,
+        });
+        return { ...settings };
+      case 'set_default_view_follows_last':
+        settings = saveSettings({ ...settings, defaultViewFollowsLast: args.on as boolean });
+        return { ...settings };
+      case 'set_last_view':
+        settings = saveSettings({ ...settings, lastView: args.view as View });
         return { ...settings };
       case 'set_week_start':
         settings = saveSettings({

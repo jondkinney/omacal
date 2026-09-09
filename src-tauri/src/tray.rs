@@ -583,7 +583,7 @@ pub(crate) fn build(app: &AppHandle) -> tauri::Result<()> {
         .show_menu_on_left_click(true)
         .icon(tauri::include_image!("icons/tray.png"))
         .on_menu_event(|app, event| match action_for(event.id.as_ref()) {
-            Some(TrayAction::Open) => show_main_window(app),
+            Some(TrayAction::Open) => open_plain(app),
             // Unreachable from a menu — `action_for` never returns it, the
             // menu has no dated entry — but honoured rather than ignored,
             // because a match arm that discards an action is how a future
@@ -767,6 +767,22 @@ pub(crate) const OPEN_DATE_EVENT: &str = "open-date";
 /// What a double-clicked `.ics` emits: the path, which is what the import
 /// preview already takes from a dropped file.
 pub(crate) const OPEN_FILE_EVENT: &str = "open-file";
+
+/// What a *plain* open emits — [`TrayAction::Open`]'s two sites (the tray
+/// menu and a bare CLI relaunch), neither of which names a destination.
+/// Closing only ever hides the window, never tears the webview down, so
+/// without this the default-view setting would apply once at cold start and
+/// never again. [`open_at`] and [`open_file`] deliberately don't emit it —
+/// they already say where to land, which is not this setting's decision.
+pub(crate) const APP_OPENED_EVENT: &str = "app-opened";
+
+/// [`show_main_window`], then say so — unlike [`open_at`]/[`open_file`],
+/// which say *where*.
+pub(crate) fn open_plain(app: &AppHandle) {
+    use tauri::Emitter;
+    show_main_window(app);
+    let _ = app.emit(APP_OPENED_EVENT, ());
+}
 
 /// [`show_main_window`], then tell the webview where to land. Untested like
 /// its first half; everything it decides was decided by `parse_date`.
