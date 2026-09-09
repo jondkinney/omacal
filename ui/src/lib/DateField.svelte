@@ -97,8 +97,16 @@
     {disabled}
     {value}
     oninput={(e) => { value = e.currentTarget.value; onchange?.(value); }}
-    onclick={() => { if (!open) show(); }}
+    onpointerdown={() => { if (!open) show(); }}
+    
   />
+  <!-- **`pointerdown`, not `click`.** A press that lands on the calendar —
+       a day, or the scrim — closes it on mouseup, and the popover unmounts
+       while the click is still resolving. The browser then targets whatever
+       is underneath, which is this input, and a `click` handler here would
+       reopen the calendar the press had just dismissed. WebKit retargets
+       where Chromium does not, so it failed on CI alone (2026-09-09).
+       A press that began elsewhere is not a press on the field. -->
   <button
     type="button"
     class="open"
