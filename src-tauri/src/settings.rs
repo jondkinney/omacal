@@ -60,6 +60,7 @@ pub(crate) fn appearance_baseline(omarchy: bool) -> u8 {
     }
 }
 const TIME_FORMAT_KEY: &str = "time_format";
+const DEFAULT_VIEW_KEY: &str = "default_view";
 const WEEK_START_KEY: &str = "week_start";
 const WEEK_STARTS_TODAY_KEY: &str = "week_starts_today";
 const WEEK_VIEW_DAYS_KEY: &str = "week_view_days";
@@ -119,6 +120,39 @@ impl TimeFormat {
         match self {
             TimeFormat::H24 => "24h",
             TimeFormat::H12 => "12h",
+        }
+    }
+}
+
+/// Which of the five view-switcher slots OmaCal opens on.
+///
+/// An enum for [`TimeFormat`]'s reason: the set is closed and mirrors the
+/// switcher's own five buttons exactly, so [`set_default_view`] needs no
+/// refusal path — a sixth value cannot be sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DefaultView {
+    #[serde(rename = "day")]
+    Day,
+    #[serde(rename = "week")]
+    Week,
+    #[serde(rename = "month")]
+    Month,
+    #[serde(rename = "year")]
+    Year,
+    #[serde(rename = "bigyear")]
+    BigYear,
+}
+
+impl DefaultView {
+    /// The stored spelling, which is also the wire spelling — the switcher's
+    /// own `View` union in `views.ts`.
+    fn as_str(self) -> &'static str {
+        match self {
+            DefaultView::Day => "day",
+            DefaultView::Week => "week",
+            DefaultView::Month => "month",
+            DefaultView::Year => "year",
+            DefaultView::BigYear => "bigyear",
         }
     }
 }
@@ -520,6 +554,11 @@ pub struct AppSettings {
     /// Which desktop this build is running on, so the settings copy can name
     /// it. Read-only: a fact about the host, never a stored preference.
     pub desktop: String,
+    /// Which of the five view-switcher slots OmaCal opens on. **Week by
+    /// default** — the view every existing install already opens to; this
+    /// setting only makes the choice visible and changeable rather than
+    /// changing what a fresh install does.
+    pub default_view: DefaultView,
     /// The day a week begins on, honoured by the Week grid's own anchor, the
     /// month grid's leading blanks, the Year view's twelve small grids, and
     /// Big Year's 392-day ribbon. When `week_starts_today` is on, this still
@@ -721,6 +760,16 @@ pub(crate) async fn read_settings_with(pool: &SqlitePool, baseline: u8) -> AppSe
             .await
             .map(|v| if v == "12h" { TimeFormat::H12 } else { TimeFormat::H24 })
             .unwrap_or(TimeFormat::H24),
+        // Week is the view every existing install already opens on; absent,
+        // garbage, or a spelling only a future version writes all land there
+        // rather than on a switcher slot nobody chose.
+        default_view: match read(pool, DEFAULT_VIEW_KEY).await.as_deref() {
+            Some("day") => DefaultView::Day,
+            Some("month") => DefaultView::Month,
+            Some("year") => DefaultView::Year,
+            Some("bigyear") => DefaultView::BigYear,
+            _ => DefaultView::Week,
+        },
         // Same polarity rule as its two neighbours: only the two spellings
         // this version writes move the setting, and everything else — absent,
         // hand-edited, or written by a version that learned a fourth day —
@@ -1449,6 +1498,20 @@ async fn set_week_view_days_impl(pool: &SqlitePool, days: u8) -> anyhow::Result<
     Ok(read_settings(pool).await)
 }
 
+/// Stores which view OmaCal opens on. Like [`set_time_format`] nothing is
+/// refused: [`DefaultView`] has five variants and the switcher offers all
+/// five, so there is no sixth value for a caller to send.
+#[tauri::command]
+pub async fn set_default_view(
+    state: tauri::State<'_, AppState>,
+    view: DefaultView,
+) -> Result<AppSettings, String> {
+    write(&state.pool, DEFAULT_VIEW_KEY, view.as_str())
+        .await
+        .map_err(|e| crate::errors::user_facing(&e))?;
+    Ok(read_settings(&state.pool).await)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1499,6 +1562,11 @@ mod tests {
             s.time_format,
             TimeFormat::H24,
             "the clock the app has always drawn, so no installed copy changes under its user"
+        );
+        assert_eq!(
+            s.default_view,
+            DefaultView::Week,
+            "the view every existing install already opens on"
         );
         assert_eq!(
             s.week_start,
@@ -1956,6 +2024,30 @@ mod tests {
         }
         write(&p, "date_format", "garbage").await.unwrap();
         assert_eq!(read_settings(&p).await.date_format, DateFormat::Locale);
+    }
+
+    /// All five round-trip, and an unrecognised row reads as Week — the same
+    /// polarity rule [`the_week_start_round_trips_and_falls_back_to_monday`]
+    /// takes, and the same view every install already opened on before this
+    /// setting existed.
+    #[tokio::test]
+    async fn the_default_view_round_trips_and_falls_back_to_week() {
+        let p = pool().await;
+        for view in [
+            DefaultView::Day, DefaultView::Month, DefaultView::Year,
+            DefaultView::BigYear, DefaultView::Week,
+        ] {
+            write(&p, DEFAULT_VIEW_KEY, view.as_str()).await.unwrap();
+            assert_eq!(read_settings(&p).await.default_view, view);
+        }
+        for stored in ["", "Week", "WEEK", "quarter", "🗓"] {
+            write(&p, DEFAULT_VIEW_KEY, stored).await.unwrap();
+            assert_eq!(
+                read_settings(&p).await.default_view,
+                DefaultView::Week,
+                "{stored:?} is not a spelling this version writes",
+            );
+        }
     }
 
     /// All three round-trip, and an unrecognised row reads as Monday — the

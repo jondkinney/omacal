@@ -17,7 +17,7 @@
   import { listAccounts, signOut, type Account } from './accounts';
   import {
     getSettings, listTimezones, minutesOf, msOfMinutes, setAppearancePreferences,
-    setDefaultCalendar,
+    setDefaultCalendar, setDefaultView, DEFAULT_VIEW_OPTIONS,
     setDefaultEventDuration, setStartOnLogin, START_ON_LOGIN_OPTIONS,
     setDisplayTimezone, setFallbackReminders, setNotificationsEnabled,
     setAppearance, APPEARANCE_OPTIONS,
@@ -27,6 +27,7 @@
     type AppSettings, type Appearance, type StartOnLogin, type WeekViewDays,
     type WindowFrame, WINDOW_FRAME_OPTIONS, setWindowFrame,
   } from './settings';
+  import type { View } from './views';
   import { formatClock, type TimeFormat } from './timefmt';
   import type { TemperatureUnit } from './temperature';
   import type { WeekStartDay } from './weekstart';
@@ -253,6 +254,22 @@
       } else {
         settings = await setWeekStart(choice.id as WeekStartDay);
       }
+      onsettingschange?.(settings);
+    } catch (e) {
+      note = { text: String(e), kind: 'error' };
+    }
+  }
+
+  /** Stores which view OmaCal opens on next — `defaultCalendarId`'s shape,
+   *  not `saveTimeFormat`'s: the view currently on screen is whatever the
+   *  user navigated to, and this setting has no opinion about that. Jumping
+   *  the calendar behind the modal to match would mean touching any
+   *  *unrelated* setting while browsing a different view yanks you back to
+   *  the default — the same trap a `defaultCalendarId` that repainted the
+   *  header would be. */
+  async function saveDefaultView(view: View) {
+    try {
+      settings = await setDefaultView(view);
       onsettingschange?.(settings);
     } catch (e) {
       note = { text: String(e), kind: 'error' };
@@ -976,6 +993,27 @@
           effect at once.
         </p>
       {/if}
+
+      <div class="row">
+        <label class="lab" for="default-view">Open OmaCal on</label>
+        <div class="inline">
+          <select
+            id="default-view"
+            disabled={!settings}
+            value={settings?.defaultView ?? 'week'}
+            onchange={(e) =>
+              saveDefaultView((e.currentTarget as HTMLSelectElement).value as View)}
+          >
+            {#each DEFAULT_VIEW_OPTIONS as [id, label] (id)}
+              <option value={id}>{label}</option>
+            {/each}
+          </select>
+        </div>
+      </div>
+      <p class="hint">
+        Which of the five views OmaCal opens next time — the calendar behind
+        this modal keeps showing whatever you last navigated to.
+      </p>
 
       <div class="row">
         <label class="lab" for="week-view">Week view</label>

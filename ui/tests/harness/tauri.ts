@@ -16,6 +16,7 @@ import type { EventDetail } from '../../src/lib/eventdetail';
 import type { TimeFormat } from '../../src/lib/timefmt';
 import type { WeekStartDay } from '../../src/lib/weekstart';
 import type { Appearance, StartOnLogin, WeekViewDays, WindowFrame } from '../../src/lib/settings';
+import type { View } from '../../src/lib/views';
 import type { EventCornerStyle } from '../../src/lib/appearance';
 import type { TemperatureUnit } from '../../src/lib/temperature';
 import { sliceWeek } from '../../src/lib/weekwindow';
@@ -578,6 +579,7 @@ type StubSettings = {
   timeFormat: TimeFormat;
   dateFormat: import('../../src/lib/datefmt').DateFormat;
   desktop: 'macos' | 'omarchy' | 'linux';
+  defaultView: View;
   weekStart: WeekStartDay;
   weekStartsToday: boolean;
   weekViewDays: WeekViewDays;
@@ -629,6 +631,9 @@ const DEFAULT_SETTINGS: StubSettings = {
   timeFormat: '24h',
   dateFormat: 'locale',
   desktop: 'linux',
+  // The view every existing install already opens on, so every App spec
+  // that predates this setting keeps describing the same screen.
+  defaultView: 'week',
   // The week omacal has always drawn, so every golden holds.
   weekStart: 'monday',
   weekStartsToday: false,
@@ -938,6 +943,9 @@ export function installTauriStub(scenario: string): Harness {
         // The backend clamps; the stub stores what it was told, so a spec
         // reads back exactly the value the app asked to keep.
         settings = saveSettings({ ...settings, hourHeight: args.px as number });
+        return { ...settings };
+      case 'set_default_view':
+        settings = saveSettings({ ...settings, defaultView: args.view as View });
         return { ...settings };
       case 'set_week_start':
         settings = saveSettings({

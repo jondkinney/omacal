@@ -728,6 +728,11 @@
   /** Live range previews supersede the asynchronous startup settings read in
    *  the same way the filmstrip and rolling-week controls do. */
   let appearanceChoices = 0;
+  /** `listModeChoices`'s reason, for `view` itself: a switcher click or number
+   *  key made while the startup `get_settings` read is still in flight must
+   *  not be undone once that slow read lands — bumped by `pick`, the one
+   *  chokepoint every way of changing `view` already goes through. */
+  let viewChoices = 0;
 
   /** The stored default for new events, or `null` for the old rule. Seeded
    *  below and kept fresh by `SettingsModal`'s `onsettingschange` — without
@@ -759,6 +764,11 @@
     const before = listModeChoices;
     const weekBefore = weekViewChoices;
     const appearanceBefore = appearanceChoices;
+    // Untracked: `pick` runs on every view switch, including the number
+    // keys, and this effect must not refetch settings on each one — the
+    // guard only needs `viewChoices`' *value* at the moment of this snapshot,
+    // not a subscription to it.
+    const viewBefore = untrack(() => viewChoices);
     getSettings()
       .then((s) => {
         defaultCalendarId = s.defaultCalendarId;
@@ -769,6 +779,10 @@
         setTemperatureUnit(s.temperatureUnit);
         if (appearanceChoices === appearanceBefore) applyAppearance(s);
         if (weekViewChoices === weekBefore) applyWeekSettings(s, false);
+        // Plain assignment, not `pick`: this is the silent startup seed, and
+        // `pick`'s job — bumping `viewChoices` itself — would make this read
+        // permanently "since superseded" for every later rerun of this effect.
+        if (viewChoices === viewBefore) view = s.defaultView;
         // Only if nobody has zoomed in the meantime: a pinch made while the
         // read was in flight is the newer fact, and it is about to be stored.
         if (hourPx === persistedHourPx) { hourPx = s.hourHeight; persistedHourPx = s.hourHeight; }
@@ -1081,6 +1095,9 @@
   // through, so neither path can diverge from the other. All five slots are
   // live (spec §10) — nothing left to turn away here.
   function pick(v: View) {
+    // `listModeChoices`'s reason: a settings read still in flight when this
+    // runs must not later overwrite whatever the switcher just chose.
+    viewChoices += 1;
     // Spec §5 and the DoD: the anchor survives every switch, and Year is a
     // switch like any other. `yearNum` starts on the real current year, so
     // without this an anchor on 28 Dec 2022 opened Year on the current year
