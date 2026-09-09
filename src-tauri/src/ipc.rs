@@ -472,6 +472,7 @@ mod tests {
             serde_json::json!({ "kind": "timed", "startMs": 1_788_242_400_000i64, "endMs": 1_788_244_200_000i64 }),
             "none",
             "UTC",
+            None,
         );
 
         let mut stream = tokio::net::UnixStream::connect(&path).await.unwrap();
