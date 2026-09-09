@@ -11,11 +11,24 @@
 /** The grid's own 70 (see `WeekGrid.svelte`'s `.col`): what nobody has
  *  zoomed, and what `Ctrl+0` goes back to. */
 export const HOUR_PX_DEFAULT = 70;
-/** The reach. 30 puts a whole day in a laptop pane with the hour labels
- *  still a line apart; 160 is six hours to a tall pane. Mirrors
+/** The reach. 160 is six hours to a tall pane. Mirrors
  *  `settings::HOUR_HEIGHT_MIN`/`MAX`, which hold the stored row to the same
- *  pair regardless of what the page asks for. */
-export const HOUR_PX_MIN = 30;
+ *  pair regardless of what the page asks for.
+ *
+ *  **The floor is what an event needs, not what the ruler needs.** It was 30,
+ *  chosen so a whole day fit a laptop pane with the hour labels still a line
+ *  apart — which is true, and about the wrong thing. A block is `2px` of
+ *  padding either side of an 11.5px title at 1.3 line-height, so it wants
+ *  ~19px to show one line; a half-hour event is half the hour, so 38px was
+ *  already the edge, and its second line — the location, the Zoom — could
+ *  never fit. Reported at 39px (2026-09-09): "I can shrink it so much that
+ *  it becomes ugly".
+ *
+ *  48 gives a half-hour event 24px, a clean title line with room around it,
+ *  and an hour-long one 48px, enough for the title and the line under it.
+ *  Below that the grid stops being a calendar and becomes a diagram of one —
+ *  which is what Month is for. */
+export const HOUR_PX_MIN = 48;
 export const HOUR_PX_MAX = 160;
 
 /** Not rounded here: a trackpad's 1-2px wheel ticks move the height by a

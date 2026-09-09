@@ -24,7 +24,7 @@ pub const HOUR_HEIGHT_DEFAULT: i64 = 70;
 /// hour labels still a line apart; 160 is six hours to a tall pane. Mirrored
 /// in `ui/src/lib/zoom.ts`, which clamps the gesture before it ever asks —
 /// this pair is the floor and ceiling the row is held to regardless.
-pub const HOUR_HEIGHT_MIN: i64 = 30;
+pub const HOUR_HEIGHT_MIN: i64 = 48;
 pub const HOUR_HEIGHT_MAX: i64 = 160;
 const FALLBACK_KEY: &str = "fallback_reminder_minutes";
 const DEFAULT_CALENDAR_KEY: &str = "default_calendar_id";
@@ -654,10 +654,17 @@ pub(crate) async fn read_settings_with(pool: &SqlitePool, baseline: u8) -> AppSe
         // The mark unless the row says otherwise, for `list_mode`'s reason:
         // a hand-edited value must land on what the app has always drawn.
         show_date: read(pool, SHOW_DATE_KEY).await.map(|v| v == "1").unwrap_or(false),
+        // **Clamped, not discarded.** A number outside the range is still an
+        // answer to "how tall do you like your hours" — when the floor rose
+        // from 30 to 48, discarding sent everyone who had zoomed out past it
+        // back to the default 70, which is further from what they chose than
+        // the floor is. Only an unparseable or absent value takes the
+        // default. (A hand-edited value still lands on something the app
+        // draws, which is what the rule above this one is for.)
         hour_height: read(pool, HOUR_HEIGHT_KEY)
             .await
             .and_then(|v| v.parse::<i64>().ok())
-            .filter(|px| (HOUR_HEIGHT_MIN..=HOUR_HEIGHT_MAX).contains(px))
+            .map(|px| px.clamp(HOUR_HEIGHT_MIN, HOUR_HEIGHT_MAX))
             .unwrap_or(HOUR_HEIGHT_DEFAULT),
         // **Shipped as 60 and 10, not empty** (fallback spec §3): the gap
         // this fills is real meetings going silent on receive-only shared
@@ -2158,7 +2165,25 @@ mod tests {
         let p = pool().await;
         write(&p, HOUR_HEIGHT_KEY, "112").await.unwrap();
         assert_eq!(read_settings(&p).await.hour_height, 112);
-        for bad in ["2000", "12", "tall", ""] {
+
+        // **A number out of range is clamped, not thrown away.** It is still
+        // an answer to "how tall do you like your hours", and the nearest
+        // height the app will draw is closer to it than the default is.
+        for (stored, want) in [("2000", HOUR_HEIGHT_MAX), ("12", HOUR_HEIGHT_MIN)] {
+            write(&p, HOUR_HEIGHT_KEY, stored).await.unwrap();
+            assert_eq!(read_settings(&p).await.hour_height, want, "stored {stored:?}");
+        }
+
+        // The case this rule exists for: the floor rose from 30 to 48 when
+        // half-hour events turned out to be unreadable below it. Anyone who
+        // had zoomed out past the new floor lands **on** it rather than
+        // snapping back to a default they never chose.
+        write(&p, HOUR_HEIGHT_KEY, "30").await.unwrap();
+        assert_eq!(read_settings(&p).await.hour_height, HOUR_HEIGHT_MIN);
+        assert_ne!(read_settings(&p).await.hour_height, HOUR_HEIGHT_DEFAULT);
+
+        // Only something that is not a height at all takes the default.
+        for bad in ["tall", ""] {
             write(&p, HOUR_HEIGHT_KEY, bad).await.unwrap();
             assert_eq!(read_settings(&p).await.hour_height, HOUR_HEIGHT_DEFAULT, "stored {bad:?}");
         }
