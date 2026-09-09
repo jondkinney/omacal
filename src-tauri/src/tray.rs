@@ -30,6 +30,12 @@ pub(crate) enum TrayAction {
     /// argv. This is what makes the bar widget's rows, a keybinding, or a
     /// script able to land the calendar *somewhere*, not merely open it.
     OpenAt(String),
+    /// Open an `.ics` the desktop handed us — being GNOME's default calendar
+    /// means a double-clicked file arrives as `omacal /path/to/thing.ics`
+    /// (#76). Carries the path; the preview panel reads it, because an
+    /// import writes many events at once and must never happen silently off
+    /// a double-click.
+    OpenFile(String),
     SyncNow,
     Quit,
 }
@@ -51,9 +57,37 @@ pub(crate) fn instance_action(argv: &[String]) -> TrayAction {
         TrayAction::SyncNow
     } else if let Some(ymd) = argv.iter().skip(1).find_map(|a| parse_date(a)) {
         TrayAction::OpenAt(ymd)
+    } else if let Some(path) = argv.iter().skip(1).find_map(|a| calendar_file(a)) {
+        TrayAction::OpenFile(path)
     } else {
         TrayAction::Open
     }
+}
+
+/// A positional `.ics` argument, or `None` for anything else.
+///
+/// **After the date test, never before it.** A date is a fixed ten-character
+/// shape and an argument cannot be both, but the order states which reading
+/// wins if that ever stops being true.
+///
+/// The extension alone decides, and the file is not read here: this runs
+/// before the window exists, on the desktop's word about what was
+/// double-clicked. Whether the contents are really a calendar is the import
+/// preview's question, and it already answers it for a dropped file.
+///
+/// A `file://` URL is accepted because that is how some desktops spell a
+/// path they hand to `%f`'s neighbours; anything else with a scheme is
+/// refused, `webcal://` included — subscribing to a URL that keeps changing
+/// is not importing a file, and OmaCal does not do it (#76).
+fn calendar_file(arg: &str) -> Option<String> {
+    let path = arg.strip_prefix("file://").unwrap_or(arg);
+    if path.contains("://") {
+        return None;
+    }
+    let is_ics = std::path::Path::new(path)
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("ics"));
+    is_ics.then(|| path.to_string())
 }
 
 /// A positional date argument: `YYYY-MM-DD`, one spelling, deliberately.
@@ -555,6 +589,7 @@ pub(crate) fn build(app: &AppHandle) -> tauri::Result<()> {
             // because a match arm that discards an action is how a future
             // menu entry would click and do nothing.
             Some(TrayAction::OpenAt(ymd)) => open_at(app, &ymd),
+            Some(TrayAction::OpenFile(path)) => open_file(app, &path),
             Some(TrayAction::Join(url)) => {
                 if let Err(e) = crate::browser::open_external(&url) {
                     tracing::warn!(%e, "could not open the meeting link from the tray");
@@ -729,6 +764,10 @@ pub(crate) fn show_main_window(app: &AppHandle) {
 /// to pick a zone for.
 pub(crate) const OPEN_DATE_EVENT: &str = "open-date";
 
+/// What a double-clicked `.ics` emits: the path, which is what the import
+/// preview already takes from a dropped file.
+pub(crate) const OPEN_FILE_EVENT: &str = "open-file";
+
 /// [`show_main_window`], then tell the webview where to land. Untested like
 /// its first half; everything it decides was decided by `parse_date`.
 pub(crate) fn open_at(app: &AppHandle, ymd: &str) {
@@ -737,6 +776,21 @@ pub(crate) fn open_at(app: &AppHandle, ymd: &str) {
     let _ = app.emit(OPEN_DATE_EVENT, ymd.to_string());
 }
 
+/// Hand the webview an `.ics` the desktop opened with us, for the import
+/// preview to read — **the same arrival a dropped file gets**.
+///
+/// The path, not the contents: `ImportPanel` takes a path and the backend
+/// reads it, so emitting text would have been a second way in with its own
+/// bugs. A double-clicked file and a dropped one are the same thing to
+/// everything past this line, which is the point.
+///
+/// The preview always shows. An import writes many events at once, and a
+/// double-click is not consent to that — it is a request to look.
+pub(crate) fn open_file(app: &AppHandle, path: &str) {
+    use tauri::Emitter;
+    show_main_window(app);
+    let _ = app.emit(OPEN_FILE_EVENT, path.to_string());
+}
 
 #[cfg(test)]
 mod tests {
@@ -744,6 +798,49 @@ mod tests {
 
     use crate::settings::TimeFormat;
     use crate::upcoming::{Feed, FeedEvent, FeedTask};
+
+    /// #76: being the desktop's default calendar means a double-clicked
+    /// `.ics` arrives as an argument, so argv has to recognise one.
+    #[test]
+    fn a_calendar_file_argument_opens_it_and_anything_else_does_not() {
+        let action = |a: &str| instance_action(&["omacal".into(), a.into()]);
+
+        assert_eq!(action("/home/p/Downloads/invite.ics"),
+                   TrayAction::OpenFile("/home/p/Downloads/invite.ics".into()));
+        assert_eq!(action("/tmp/Team Offsite.ICS"),
+                   TrayAction::OpenFile("/tmp/Team Offsite.ICS".into()),
+                   "the extension is not case sensitive");
+        // Some desktops spell a local path as a URL when filling `%f`'s
+        // neighbours; the same file either way.
+        assert_eq!(action("file:///tmp/x.ics"), TrayAction::OpenFile("/tmp/x.ics".into()));
+
+        // **`webcal://` is not an import.** Subscribing follows a URL that
+        // keeps changing, which OmaCal does not do, and we told #76 we would
+        // not claim the scheme rather than claim it and do the wrong thing.
+        assert_eq!(action("webcal://example.com/f.ics"), TrayAction::Open);
+        assert_eq!(action("https://example.com/f.ics"), TrayAction::Open);
+
+        // Anything that is not a calendar file just opens the window, which
+        // is what an unknown argument has always meant.
+        for other in ["/tmp/notes.txt", "invite.ics.bak", "--wat", "ics", ""] {
+            assert_eq!(action(other), TrayAction::Open, "argument {other:?}");
+        }
+    }
+
+    /// A date and a file cannot be the same string, but the order is stated
+    /// rather than left to luck: a date wins, as it did before this existed.
+    #[test]
+    fn a_date_argument_still_outranks_a_file_one() {
+        assert_eq!(
+            instance_action(&["omacal".into(), "2026-09-01".into(), "/tmp/x.ics".into()]),
+            TrayAction::OpenAt("2026-09-01".into()),
+        );
+        // And the flags outrank both, as they always have.
+        assert_eq!(
+            instance_action(&["omacal".into(), "/tmp/x.ics".into(), "--quit".into()]),
+            TrayAction::Quit,
+        );
+    }
 
     /// 2026-08-29 09:00 UTC, and the times below are offsets from it.
     const T0: i64 = 1_787_994_000_000;

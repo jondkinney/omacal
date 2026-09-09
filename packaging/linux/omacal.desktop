@@ -14,12 +14,23 @@ GenericName=Calendar
 {{#if comment}}
 Comment={{comment}}
 {{/if}}
-Exec={{exec}}
+# `%f`, and the MimeType below, are the two halves of being GNOME's default
+# calendar (#76): the type is what puts OmaCal in the Calendar row of Default
+# Applications, and `%f` is what actually hands over the file that was
+# double-clicked. Claiming the type without `%f` would list us and then open
+# an empty window, which is worse than not being listed.
+Exec={{exec}} %f
 StartupWMClass={{exec}}
 Icon={{icon}}
 Categories={{categories}}
 Keywords=calendar;event;meeting;invitation;task;caldav;google;icloud;
 Terminal=false
-{{#if mime_type}}
-MimeType={{mime_type}}
-{{/if}}
+# `text/calendar` alone, deliberately. `x-scheme-handler/webcal` would also
+# be offered here, and subscribing to a feed that keeps changing is a
+# different thing from importing a file once — OmaCal does not do it, so it
+# does not claim it (#76).
+# Stated here rather than through the bundler's `{{mime_type}}` slot, which
+# nothing sets: two `MimeType=` keys in one entry is not a valid file, and
+# the slot would have produced the second one the moment anybody configured
+# a file association.
+MimeType=text/calendar;

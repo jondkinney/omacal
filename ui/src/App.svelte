@@ -370,6 +370,15 @@
    *  drag events, which is why this listens for the runtime's own event and
    *  not for `ondrop`. */
   let importPath = $state<string | null>(null);
+  // The desktop opened us with a calendar file — being its default calendar
+  // app (#76). The same panel a drop opens, from the same state: a
+  // double-click is a request to *look* at a file, and an import writes many
+  // events at once, so the preview shows every time and nothing is written
+  // until it is confirmed.
+  $effect(() => {
+    const un = listen<string>('open-file', (e) => { importPath = e.payload; });
+    return () => { un.then((f) => f()); };
+  });
   $effect(() => {
     const un = listen<{ paths?: string[] }>('tauri://drag-drop', (e) => {
       // One file, and one this can read. A folder or a screenshot dropped on

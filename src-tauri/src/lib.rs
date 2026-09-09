@@ -1276,6 +1276,7 @@ fn single_instance_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
                 tray::TrayAction::Quit => app.exit(0),
                 tray::TrayAction::SyncNow => sync_loop::request_now(app),
                 tray::TrayAction::OpenAt(ymd) => tray::open_at(app, &ymd),
+                tray::TrayAction::OpenFile(path) => tray::open_file(app, &path),
                 // Unreachable from argv — `instance_action` has no join
                 // flag to return it — but honoured rather than discarded,
                 // for the reason the tray's own match says: an arm that

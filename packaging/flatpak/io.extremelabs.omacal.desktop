@@ -3,10 +3,12 @@ Type=Application
 Name=OmaCal
 GenericName=Calendar
 Comment=A minimal desktop calendar for Google Calendar, iCloud and CalDAV
-Exec=omacal
+Exec=omacal %f
 Icon=io.extremelabs.omacal
 Terminal=false
 Categories=Office;Calendar;
 Keywords=calendar;event;meeting;invitation;task;caldav;google;icloud;
 StartupNotify=true
 StartupWMClass=omacal
+# See packaging/linux/omacal.desktop for why this is `text/calendar` alone.
+MimeType=text/calendar;
