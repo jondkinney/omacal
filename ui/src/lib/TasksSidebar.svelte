@@ -1,6 +1,7 @@
 <!-- ui/src/lib/TasksSidebar.svelte -->
 <script lang="ts">
   import { dateFormat } from './date.svelte';
+  import DateField from './DateField.svelte';
   import { clockFormat } from './clock.svelte';
   import {
     createTask, deleteTask, listTasks, setTaskCompleted, taskLists, updateTask,
@@ -246,7 +247,7 @@
                         disabled={saving}>Clear</button>
               </div>
               <div class="when">
-                <input type="date" aria-label="Due date" bind:value={draft.date} disabled={saving} />
+                <DateField label="Due date" bind:value={draft.date} disabled={saving} />
                 <input type="time" aria-label="Due time" bind:value={draft.time}
                        disabled={saving || draft.date === ''} />
               </div>
