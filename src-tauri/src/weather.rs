@@ -334,7 +334,7 @@ pub(crate) fn cache_is_fresh(now_ms: i64, at_ms: i64, ttl_ms: i64) -> bool {
 /// Demo's forecast: a fixed cycle through every bucket the UI can draw,
 /// dated from today. Deterministic — a demo screenshot taken twice shows the
 /// same sky — and offline, which is demo's whole promise.
-pub(crate) fn synthetic_report(today: jiff::civil::Date) -> WeatherReport {
+pub(crate) fn synthetic_report(today: jiff::civil::Date, fetched_at_ms: i64) -> WeatherReport {
     const CYCLE: &[(u16, f64, f64)] = &[
         (0, 31.6, 24.0), (2, 29.0, 23.0), (3, 27.0, 22.0), (61, 26.0, 22.0),
         (95, 25.0, 21.0), (71, 2.0, -3.0), (1, 28.0, 22.0), (0, 30.0, 23.0),
@@ -367,7 +367,14 @@ pub(crate) fn synthetic_report(today: jiff::civil::Date) -> WeatherReport {
         source: Some(LocationSource::Demo),
         // Demo fetches nothing, so its sky is as fresh as the moment it is
         // asked for — a demo screenshot must not carry a staleness warning.
-        fetched_at: Some(jiff::Timestamp::now().as_millisecond()),
+        //
+        // **The caller owns the clock**, as `patch_todo_status` and the task
+        // date helpers do. Reading `Timestamp::now()` here made a function
+        // whose whole point is determinism disagree with itself between two
+        // calls, and the test that asserted otherwise passed only while both
+        // landed in the same millisecond. It lost that coin toss on main
+        // (2026-09-09) having been unsound since it was written.
+        fetched_at: Some(fetched_at_ms),
     }
 }
 
@@ -559,7 +566,7 @@ pub(crate) async fn get_weather(
         return Ok(WeatherReport::default());
     }
     if state.demo {
-        return Ok(synthetic_report(jiff::Zoned::now().date()));
+        return Ok(synthetic_report(jiff::Zoned::now().date(), jiff::Timestamp::now().as_millisecond()));
     }
     Ok(cached_report(&state.pool).await.unwrap_or_default())
 }
@@ -790,11 +797,17 @@ mod tests {
     #[test]
     fn the_demo_forecast_is_deterministic_and_shows_every_kind_of_sky() {
         let today = jiff::civil::date(2026, 8, 24);
-        let r = synthetic_report(today);
+        // A fixed stamp, because the clock is the caller's now. With
+        // `Timestamp::now()` inside, this equality held only when both calls
+        // landed in the same millisecond — which is how it passed for weeks
+        // and then reddened main.
+        let stamp = 1_756_000_000_000;
+        let r = synthetic_report(today, stamp);
         assert_eq!(r.days.len(), 8);
         assert_eq!(r.days[0].date, "2026-08-24");
         assert_eq!(r.days[7].date, "2026-08-31");
-        assert_eq!(r, synthetic_report(today), "two runs disagreed");
+        assert_eq!(r, synthetic_report(today, stamp), "two runs disagreed");
+        assert_eq!(r.fetched_at, Some(stamp), "the stamp is the caller's, not the clock's");
         let buckets: std::collections::HashSet<_> =
             r.days.iter().map(|d| d.bucket.as_str()).collect();
         for b in ["clear", "partly", "overcast", "drizzle", "thunder", "snow"] {
