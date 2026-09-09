@@ -21,6 +21,7 @@ mod icu_tz;
 mod import;
 mod invites;
 mod ipc;
+mod logging;
 mod notify;
 #[cfg(target_os = "macos")]
 mod notify_mac;
@@ -1304,7 +1305,7 @@ pub fn run() {
     // else falls straight through to the app omacal has always been.
     cli::maybe_run_and_exit();
 
-    tracing_subscriber::fmt::init();
+    logging::init();
 
     // Before the builder is even assembled: GTK and WebKit read the
     // environment when they initialise, and this may need to change it.
