@@ -1,6 +1,6 @@
 ---
 name: omacal
-description: The user's real calendar (Google, iCloud, CalDAV) through the omacal CLI — today's agenda, events in a date range, title search, the calendar list, and (v0.7+) writes: create, reschedule, answer and delete events. Use whenever the user asks what is on their calendar, when they are free or busy, or asks to add, move, cancel or answer a meeting from the terminal.
+description: The user's real calendar (Google, iCloud, CalDAV) through the omacal CLI — today's agenda, events in a date range, title search, the calendar list, and (v0.7+) writes: create (one-off or repeating), reschedule, answer and delete events. Use whenever the user asks what is on their calendar, when they are free or busy, or asks to add, move, cancel or answer a meeting from the terminal.
 ---
 
 # omacal calendar
@@ -72,6 +72,10 @@ omacal events create --title "Standup" --date 2026-09-01 \
        --start 09:00 --end 09:30 --json
 omacal events create --title "Trip" --date 2026-09-01 --all-day \
        --last-day 2026-09-03 --json          # last day INCLUSIVE
+omacal events create --title "Gym" --date 2026-09-14 --start 20:00 --end 21:30 \
+       --repeat weekly --days MO,TU,TH,FR --json    # one series, four days a week
+omacal events create --title "Standup" --date 2026-09-14 --start 09:00 --end 09:15 \
+       --repeat weekdays --until 2026-12-19 --json
 omacal events update 41 --occurrence 1786352400000 --start 10:00 --end 10:30 --json
 omacal events delete 41 --occurrence 1786352400000 --json
 omacal events respond 41 yes --json          # yes | maybe | no
@@ -91,6 +95,18 @@ omacal events respond 41 yes --json          # yes | maybe | no
   they declined — and still takes `--notify all|none` for that notice.
 - `--guest a@b` repeats for multiple guests on create. Creating with
   guests also requires `--notify`.
+- **`--repeat daily|weekdays|weekly|monthly|yearly` makes one series instead
+  of many events.** Reach for it whenever the user describes a routine —
+  "every Tuesday", "each weekday" — because a series is edited and deleted
+  once, and fifty copies are not. `--days MO,WE,FR` refines `weekly` alone
+  (`weekdays` already means Monday to Friday); **start the event on one of
+  the days it names**, since the start date is itself an occurrence.
+  `--until YYYY-MM-DD` and `--count N` are the two endings — pass one, or
+  neither for an unbounded series. Without `--repeat` a create makes a
+  single event, as before.
+- **Changing an existing event's repeat is not in the CLI** — `events
+  update` moves and retitles occurrences, it does not turn a single event
+  into a series or edit a cadence. Send the user to the app's form.
 - Times read in the user's display zone, `HH:MM`, strict.
 - All-day events cannot be *edited* from the CLI yet (create/delete/respond
   work); send the user to the app for that.

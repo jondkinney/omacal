@@ -59,6 +59,13 @@ pub(crate) struct CreateArgs {
     pub description: Option<String>,
     pub guests: Vec<String>,
     pub notify: Option<String>,
+    /// The repeat, in the app form's own vocabulary rather than iCalendar.
+    /// Raw here and validated in one place — [`repeat_for`] — which is also
+    /// what refuses the three flags below when this one is absent.
+    pub repeat: Option<String>,
+    pub days: Option<String>,
+    pub until: Option<String>,
+    pub count: Option<String>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -156,6 +163,10 @@ pub(crate) fn parse_events(verb: &str, rest: &[&String]) -> Result<WriteCmd, Str
                 description: take("--description")?,
                 guests: take_all("--guest")?,
                 notify: take("--notify")?,
+                repeat: take("--repeat")?,
+                days: take("--days")?,
+                until: take("--until")?,
+                count: take("--count")?,
             };
             if all_day {
                 if args.start.is_some() || args.end.is_some() {
@@ -279,6 +290,97 @@ pub(crate) fn notify_for(has_guests: bool, asked: Option<&str>) -> Result<&'stat
     }
 }
 
+/// A validated repeat, carried in the app's vocabulary rather than
+/// iCalendar: [`crate::write::rrule_for`] on the other side of the socket
+/// owns the RRULE, exactly as it does for the form. Absent is the one-off
+/// create this command has always made.
+#[derive(Debug, PartialEq)]
+pub(crate) struct RepeatPlan {
+    pub repeat: String,
+    /// Canonical weekday codes; empty unless a weekly cadence named days.
+    pub weekly_days: Vec<String>,
+    pub end: crate::write::RepeatEnd,
+}
+
+/// The repeat a create carries. Neither vocabulary is re-listed here: a
+/// word is a repeat if [`crate::write::rrule_for`] can build a rule from it,
+/// and a weekday is a weekday if [`crate::write::WeekdayCode`] — the command
+/// boundary's own type — deserializes it. Spelling either out a second time
+/// is how the CLI and the app would drift.
+///
+/// Every combination that means nothing is refused rather than dropped: a
+/// day pattern without a weekly cadence, an ending without a repeat, both
+/// endings at once, a count of zero. `never` is refused too — leaving the
+/// flag off is how that is said, and accepting the word would give "does
+/// not repeat" two spellings that could disagree.
+pub(crate) fn repeat_for(
+    asked: Option<&str>,
+    days: Option<&str>,
+    until: Option<&str>,
+    count: Option<&str>,
+) -> Result<Option<RepeatPlan>, String> {
+    let Some(word) = asked else {
+        return match (days, until, count) {
+            (None, None, None) => Ok(None),
+            (Some(_), _, _) => {
+                Err("--days is for --repeat weekly; this event does not repeat".into())
+            }
+            _ => Err("a repeat ending needs a repeating schedule: pass --repeat".into()),
+        };
+    };
+    if word == "never" {
+        return Err("leave --repeat off for an event that does not repeat".into());
+    }
+    if crate::write::rrule_for(word).is_none() {
+        return Err(format!(
+            "--repeat takes daily|weekdays|weekly|monthly|yearly, not \"{word}\""
+        ));
+    }
+    let weekly_days = match days {
+        None => Vec::new(),
+        Some(_) if word != "weekly" => {
+            return Err(format!(
+                "--days is for --repeat weekly; \"{word}\" already says which days"
+            ));
+        }
+        Some(list) => weekday_codes(list)?,
+    };
+    let end = match (until, count) {
+        (None, None) => crate::write::RepeatEnd::Never,
+        (Some(_), Some(_)) => {
+            return Err("--until and --count are two ways to end a repeat; pass one".into());
+        }
+        (Some(date), None) => {
+            date.parse::<jiff::civil::Date>()
+                .map_err(|_| "--until takes YYYY-MM-DD".to_string())?;
+            crate::write::RepeatEnd::On { date: date.to_string() }
+        }
+        (None, Some(n)) => match n.parse::<u32>() {
+            Ok(0) => return Err("a repeating event must occur at least once".into()),
+            Ok(count) => crate::write::RepeatEnd::After { count },
+            Err(_) => return Err(format!("--count takes a number of occurrences, not \"{n}\"")),
+        },
+    };
+    Ok(Some(RepeatPlan { repeat: word.to_string(), weekly_days, end }))
+}
+
+/// `MO,we,FR` to the canonical codes. Case is forgiven — a terminal is not
+/// a form — but nothing else is: the codes are checked by deserializing
+/// them as [`crate::write::WeekdayCode`], so a typo is refused here with a
+/// readable message instead of reaching Google inside a broken RRULE.
+fn weekday_codes(list: &str) -> Result<Vec<String>, String> {
+    list.split(',')
+        .map(|code| {
+            let code = code.trim().to_ascii_uppercase();
+            serde_json::from_value::<crate::write::WeekdayCode>(serde_json::Value::String(
+                code.clone(),
+            ))
+            .map(|_| code.clone())
+            .map_err(|_| format!("--days takes SU,MO,TU,WE,TH,FR,SA — \"{code}\" is not one"))
+        })
+        .collect()
+}
+
 /// `yes|maybe|no` to the protocol's own words. The CLI speaks the human's
 /// vocabulary and the wire speaks Google's; this is the whole translation.
 pub(crate) fn answer_word(answer: &str) -> Result<&'static str, String> {
@@ -379,6 +481,7 @@ pub(crate) fn create_request(
     when: serde_json::Value,
     notify: &str,
     tz_name: &str,
+    repeat: Option<&RepeatPlan>,
 ) -> serde_json::Value {
     let mut fields = base_fields(
         Some(&args.title),
@@ -387,6 +490,19 @@ pub(crate) fn create_request(
         when,
         tz_name,
     );
+    // `repeat`, `weeklyDays` and `repeatEnd` are `EventInput`'s own fields:
+    // the form has always sent them, so the app needs no change to read them
+    // from here. Absent stays absent — an omitted `repeat` is what has always
+    // meant "one-off", and `never` would mean "clear the rule" instead.
+    if let Some(plan) = repeat {
+        fields["repeat"] = serde_json::json!(plan.repeat);
+        if !plan.weekly_days.is_empty() {
+            fields["weeklyDays"] = serde_json::json!(plan.weekly_days);
+        }
+        if plan.end != crate::write::RepeatEnd::Never {
+            fields["repeatEnd"] = serde_json::json!(plan.end);
+        }
+    }
     if !args.guests.is_empty() {
         fields["guests"] = serde_json::json!(args
             .guests
@@ -599,6 +715,15 @@ pub(crate) async fn execute(pool: &SqlitePool, cmd: &WriteCmd, json: bool) -> i3
                 Ok(n) => n,
                 Err(m) => return refuse(&m),
             };
+            let repeat = match repeat_for(
+                args.repeat.as_deref(),
+                args.days.as_deref(),
+                args.until.as_deref(),
+                args.count.as_deref(),
+            ) {
+                Ok(r) => r,
+                Err(m) => return refuse(&m),
+            };
             let when = if args.all_day {
                 let last = args.last_day.as_deref().unwrap_or(&args.date);
                 match all_day_when(&args.date, last) {
@@ -615,7 +740,7 @@ pub(crate) async fn execute(pool: &SqlitePool, cmd: &WriteCmd, json: bool) -> i3
                     Err(m) => return refuse(&m),
                 }
             };
-            (create_request(args, when, notify, &tz_name), "Created")
+            (create_request(args, when, notify, &tz_name, repeat.as_ref()), "Created")
         }
         WriteCmd::Update(args) => {
             let t = match target(pool, args.id).await {
@@ -772,6 +897,22 @@ mod tests {
             other => panic!("{other:?}"),
         }
 
+        let repeating = parse(
+            "create",
+            "--title Gym --date 2026-09-14 --start 20:00 --end 21:30 \
+             --repeat weekly --days MO,TU --until 2026-12-31",
+        )
+        .unwrap();
+        match repeating {
+            WriteCmd::Create(a) => {
+                assert_eq!(a.repeat.as_deref(), Some("weekly"));
+                assert_eq!(a.days.as_deref(), Some("MO,TU"));
+                assert_eq!(a.until.as_deref(), Some("2026-12-31"));
+                assert_eq!(a.count, None, "the parser only carries what was passed");
+            }
+            other => panic!("{other:?}"),
+        }
+
         assert!(parse("create", "--title Trip --date 2026-09-01 --all-day").is_ok());
         assert!(parse("create", "--title X --date 2026-09-01")
             .unwrap_err()
@@ -782,6 +923,56 @@ mod tests {
         assert!(parse("create", "--date 2026-09-01 --start 09:00 --end 10:00")
             .unwrap_err()
             .contains("--title is required"));
+    }
+
+    /// Every combination that means nothing is named rather than dropped,
+    /// and the two vocabularies come from the app's own types.
+    #[test]
+    fn the_repeat_rules_refuse_rather_than_guess() {
+        assert_eq!(repeat_for(None, None, None, None).unwrap(), None, "no flags, no repeat");
+
+        let weekly = repeat_for(Some("weekly"), Some("MO,we, FR"), None, None).unwrap().unwrap();
+        assert_eq!(weekly.weekly_days, ["MO", "WE", "FR"], "case is forgiven, order is kept");
+        assert_eq!(weekly.end, crate::write::RepeatEnd::Never);
+
+        assert_eq!(
+            repeat_for(Some("daily"), None, Some("2026-12-31"), None).unwrap().unwrap().end,
+            crate::write::RepeatEnd::On { date: "2026-12-31".into() }
+        );
+        assert_eq!(
+            repeat_for(Some("monthly"), None, None, Some("3")).unwrap().unwrap().end,
+            crate::write::RepeatEnd::After { count: 3 }
+        );
+
+        // The refusals, each naming the flag that is wrong.
+        assert!(repeat_for(Some("fortnightly"), None, None, None)
+            .unwrap_err()
+            .contains("daily|weekdays|weekly|monthly|yearly"));
+        assert!(repeat_for(Some("never"), None, None, None)
+            .unwrap_err()
+            .contains("leave --repeat off"));
+        assert!(repeat_for(Some("weekdays"), Some("MO"), None, None)
+            .unwrap_err()
+            .contains("--days is for --repeat weekly"));
+        assert!(repeat_for(None, Some("MO"), None, None).unwrap_err().contains("--days"));
+        assert!(repeat_for(None, None, Some("2026-12-31"), None)
+            .unwrap_err()
+            .contains("needs a repeating schedule"));
+        assert!(repeat_for(Some("weekly"), Some("MO,XX"), None, None)
+            .unwrap_err()
+            .contains("\"XX\" is not one"));
+        assert!(repeat_for(Some("weekly"), None, Some("2026-12-31"), Some("4"))
+            .unwrap_err()
+            .contains("pass one"));
+        assert!(repeat_for(Some("daily"), None, Some("31/12/2026"), None)
+            .unwrap_err()
+            .contains("YYYY-MM-DD"));
+        assert!(repeat_for(Some("daily"), None, None, Some("0"))
+            .unwrap_err()
+            .contains("at least once"));
+        assert!(repeat_for(Some("daily"), None, None, Some("many"))
+            .unwrap_err()
+            .contains("a number"));
     }
 
     #[test]
@@ -911,8 +1102,30 @@ mod tests {
         };
         let (s, e) = timed_when("2026-09-01", "09:00", "09:30", None, &tz).unwrap();
         let when = serde_json::json!({ "kind": "timed", "startMs": s, "endMs": e });
-        let create = create_request(&args, when.clone(), "all", "UTC");
+        let create = create_request(&args, when.clone(), "all", "UTC", None);
         assert!(crate::ipc::parse_request(&create.to_string()).is_ok(), "{create}");
+
+        // The repeating shape, whose whole point is that the app already
+        // reads these three fields: `parse_request` deserializes them into
+        // `write::EventInput` or this goes red.
+        let plan = repeat_for(Some("weekly"), Some("mo,WE"), None, Some("10")).unwrap().unwrap();
+        let repeating = create_request(&args, when.clone(), "all", "UTC", Some(&plan));
+        assert_eq!(repeating["fields"]["repeat"], "weekly");
+        assert_eq!(repeating["fields"]["weeklyDays"], serde_json::json!(["MO", "WE"]));
+        assert_eq!(
+            repeating["fields"]["repeatEnd"],
+            serde_json::json!({ "kind": "after", "count": 10 })
+        );
+        assert!(crate::ipc::parse_request(&repeating.to_string()).is_ok(), "{repeating}");
+
+        // An unbounded repeat sends no ending at all: absent and `never`
+        // mean the same thing there, and the smaller payload is the honest one.
+        let plain = repeat_for(Some("weekdays"), None, None, None).unwrap().unwrap();
+        let weekdays = create_request(&args, when.clone(), "all", "UTC", Some(&plain));
+        assert_eq!(weekdays["fields"]["repeat"], "weekdays");
+        assert!(weekdays["fields"].get("repeatEnd").is_none(), "{weekdays}");
+        assert!(weekdays["fields"].get("weeklyDays").is_none(), "{weekdays}");
+        assert!(crate::ipc::parse_request(&weekdays.to_string()).is_ok(), "{weekdays}");
 
         let update = update_request(
             &UpdateArgs {
