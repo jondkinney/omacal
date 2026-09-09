@@ -609,17 +609,22 @@ fn print_detail_human(d: &Detail) {
 /// `tauri.conf.json`'s and moves only if that does, which `lib.rs` already
 /// promises never to do (it would move every user's data).
 pub(crate) fn db_path() -> Option<std::path::PathBuf> {
+    Some(app_data_dir()?.join("omacal.db"))
+}
+
+/// The directory itself, shared with [`crate::logging`] so the log lands
+/// beside the database rather than reproducing this identifier a third time.
+pub(crate) fn app_data_dir() -> Option<std::path::PathBuf> {
     let home = std::env::var_os("HOME")?;
     let home = std::path::Path::new(&home);
-    let dir = if cfg!(target_os = "macos") {
+    Some(if cfg!(target_os = "macos") {
         home.join("Library/Application Support/com.omacal.app")
     } else {
         std::env::var_os("XDG_DATA_HOME")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| home.join(".local/share"))
             .join("com.omacal.app")
-    };
-    Some(dir.join("omacal.db"))
+    })
 }
 
 /// Local midnight of `date`, ms — the CLI's windows are civil days in the
