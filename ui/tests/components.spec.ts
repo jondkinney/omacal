@@ -4106,6 +4106,36 @@ test.describe('EventForm', () => {
     await expect(page.getByLabel('Date', { exact: true })).toHaveValue(before);
   });
 
+  /** Clicking the field opens the calendar, which is what the platform
+   *  control did and what a hand expects (reported 2026-09-09). Typing still
+   *  works with it open — the calendar sits below the field, not over it —
+   *  so the two ways of naming a date do not fight.
+   *
+   *  On **click**, deliberately not on focus: Tab through the form would
+   *  otherwise pop a calendar open at every date field on its way past. */
+  test('clicking the date field opens the calendar, and typing still works', async ({ page }) => {
+    await open(page, 'create');
+    const field = page.getByLabel('Date', { exact: true });
+    const chooser = page.getByRole('dialog', { name: 'Date chooser' });
+
+    await expect(chooser).toHaveCount(0);
+    await field.click();
+    await expect(chooser).toBeVisible();
+
+    await field.fill('2026-09-24');
+    await expect(field).toHaveValue('2026-09-24');
+    await expect(chooser, 'typing closed the calendar').toBeVisible();
+  });
+
+  /** Tab does not open anything. The form has three date fields and reaching
+   *  the third would otherwise leave two calendars behind it. */
+  test('tabbing onto a date field leaves its calendar shut', async ({ page }) => {
+    await open(page, 'create');
+    await page.getByLabel('Title', { exact: true }).focus();
+    await page.keyboard.press('Tab');
+    await expect(page.getByRole('dialog', { name: 'Date chooser' })).toHaveCount(0);
+  });
+
   /** Escape still works — it was the only way out before and must not become
    *  a casualty of gaining the others. `dismiss.svelte`'s window listener,
    *  so it is heard from wherever focus has wandered to. */

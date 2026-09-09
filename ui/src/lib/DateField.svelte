@@ -97,7 +97,16 @@
     {disabled}
     {value}
     oninput={(e) => { value = e.currentTarget.value; onchange?.(value); }}
+    onpointerdown={() => { if (!open) show(); }}
+    
   />
+  <!-- **`pointerdown`, not `click`.** A press that lands on the calendar —
+       a day, or the scrim — closes it on mouseup, and the popover unmounts
+       while the click is still resolving. The browser then targets whatever
+       is underneath, which is this input, and a `click` handler here would
+       reopen the calendar the press had just dismissed. WebKit retargets
+       where Chromium does not, so it failed on CI alone (2026-09-09).
+       A press that began elsewhere is not a press on the field. -->
   <button
     type="button"
     class="open"
@@ -106,7 +115,19 @@
     aria-haspopup="dialog"
     aria-expanded={open}
     onclick={() => (open ? (open = false) : show())}
-  >▦</button>
+  >
+    <!-- Drawn rather than a glyph: `▦` was a filled square at this size and
+         read as decoration, and the font that has a calendar character is
+         not one we ship. `currentColor` so it follows the theme like every
+         other icon here. -->
+    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true" focusable="false">
+      <rect x="1.5" y="3" width="13" height="11.5" rx="1.5" fill="none"
+            stroke="currentColor" stroke-width="1.4" />
+      <path d="M1.5 6.5h13" stroke="currentColor" stroke-width="1.4" />
+      <path d="M5 1.5v3M11 1.5v3" stroke="currentColor" stroke-width="1.4"
+            stroke-linecap="round" />
+    </svg>
+  </button>
 
   {#if open}
     <!-- A sibling of the panel, never a wrapper — `CalendarPicker`'s shape,
@@ -154,9 +175,15 @@
           border: 1px solid var(--hairline); border-radius: 5px; padding: 4px 6px; }
   input:focus { outline: 1px solid var(--accent); outline-offset: -1px; }
   input:disabled, .open:disabled { opacity: .5; cursor: default; }
-  .open { font: inherit; font-size: 12px; color: var(--muted); cursor: pointer;
-          background: none; border: 0; padding: 2px 4px; border-radius: 4px; }
-  .open:hover:not(:disabled) { color: var(--text); }
+  /* `--text` at rest, not `--muted`: at 14px this is the only sign the field
+     has a calendar behind it, and muted read as disabled against the field's
+     own border (reported 2026-09-09, "not very visible"). */
+  .open { display: inline-flex; align-items: center; color: var(--text);
+          cursor: pointer; background: none; border: 0; padding: 2px 3px;
+          border-radius: 4px; opacity: .8; }
+  .open:hover:not(:disabled) { opacity: 1;
+          background: color-mix(in srgb, var(--text) 10%, transparent); }
+  .open:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
 
   /* Covers the window beneath, so a press anywhere closes the calendar —
      the whole point of owning it. */

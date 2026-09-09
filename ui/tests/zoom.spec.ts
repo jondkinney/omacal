@@ -26,7 +26,11 @@ test.describe('hour zoom arithmetic', () => {
 
   test('a pinch scales the height it began at, never the one it is passing through', () => {
     expect(hourPxAfterPinch(70, 1.5)).toBe(105);
-    expect(hourPxAfterPinch(70, 0.5)).toBe(35);
+    // Scaling the height it began at, in range: half of 120 is 60.
+    expect(hourPxAfterPinch(120, 0.5)).toBe(60);
+    // And held at the ends. Half of 70 is 35, which the floor no longer
+    // allows — below 48 a half-hour event cannot show its title line.
+    expect(hourPxAfterPinch(70, 0.5)).toBe(HOUR_PX_MIN);
     expect(hourPxAfterPinch(70, 4)).toBe(HOUR_PX_MAX);
   });
 
