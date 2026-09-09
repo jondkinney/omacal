@@ -4080,6 +4080,59 @@ test.describe('EventForm', () => {
   const saves = (page: import('@playwright/test').Page) =>
     page.evaluate(() => (window as any).__saves as any[]);
 
+  /**
+   * **#78, and the reason this picker exists.** The platform's calendar could
+   * not be closed from the page at all: WebKitGTK's popup holds an input
+   * grab, so an outside click never reached us — measured on the real build,
+   * where clicking another field while it was open did nothing whatever.
+   * Escape was the only way out because Escape is the one key the popup
+   * itself handles.
+   *
+   * Owning the calendar is what buys this behaviour, so this is the spec that
+   * has to hold: a press anywhere else closes it, and the field keeps the
+   * value it already had.
+   */
+  test('the date calendar closes on a press outside, and keeps the value', async ({ page }) => {
+    await open(page, 'create');
+    const chooser = page.getByRole('dialog', { name: 'Date chooser' });
+
+    await page.getByRole('button', { name: 'Pick date', exact: true }).click();
+    await expect(chooser).toBeVisible();
+
+    const before = await page.getByLabel('Date', { exact: true }).inputValue();
+    await page.getByRole('button', { name: 'Close date chooser', exact: true }).click();
+
+    await expect(chooser).toHaveCount(0);
+    await expect(page.getByLabel('Date', { exact: true })).toHaveValue(before);
+  });
+
+  /** Escape still works — it was the only way out before and must not become
+   *  a casualty of gaining the others. `dismiss.svelte`'s window listener,
+   *  so it is heard from wherever focus has wandered to. */
+  test('the date calendar closes on Escape without closing the form under it', async ({ page }) => {
+    await open(page, 'create');
+    await page.getByRole('button', { name: 'Pick date', exact: true }).click();
+    await expect(page.getByRole('dialog', { name: 'Date chooser' })).toBeVisible();
+
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog', { name: 'Date chooser' })).toHaveCount(0);
+    // One keystroke closes the topmost layer only — the form stays.
+    await expect(page.locator('.pop')).toBeVisible();
+  });
+
+  /** Picking a day writes it back in the form's own `yyyy-mm-dd`, which is
+   *  what every caller reads. A picker that looked right and wrote a locale
+   *  string would break every save. */
+  test('choosing a day writes the date the form speaks', async ({ page }) => {
+    await open(page, 'create');
+    await page.getByLabel('Date', { exact: true }).fill('2026-09-06');
+    await page.getByRole('button', { name: 'Pick date', exact: true }).click();
+
+    await page.getByRole('gridcell', { name: '2026-09-24', exact: true }).click();
+    await expect(page.getByLabel('Date', { exact: true })).toHaveValue('2026-09-24');
+    await expect(page.getByRole('dialog', { name: 'Date chooser' })).toHaveCount(0);
+  });
+
   test('the typed times echo in the second zone when settings name one', async ({ page }) => {
     await open(page, 'create');
     // Absent while the setting is off — the form has never had this line,
@@ -4478,7 +4531,10 @@ test.describe('EventForm', () => {
     const ends = page.getByLabel('Repeat ends');
     await expect(ends).toHaveValue('never');
     await ends.selectOption('on');
-    await page.getByLabel('Repeat end date').fill('2026-09-30');
+    // `exact`, because the field's own picker button names the field it
+    // opens — as it must, for anyone listening rather than looking — and
+    // accessible-name matching is a substring match by default.
+    await page.getByLabel('Repeat end date', { exact: true }).fill('2026-09-30');
     await page.getByRole('button', { name: 'Create' }).click();
     let [saved] = await saves(page);
     expect(saved.fields.repeatEnd).toEqual({ kind: 'on', date: '2026-09-30' });

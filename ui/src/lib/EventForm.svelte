@@ -11,6 +11,7 @@
   import { REMINDER_UNITS, reminderAmountOf, reminderMax, reminderUnitOf } from './reminders';
   import { offerableCalendarId, writableCalendars, type Calendar } from './calendars';
   import CalendarPicker from './CalendarPicker.svelte';
+  import DateField from './DateField.svelte';
   import SaveConfirm from './SaveConfirm.svelte';
   import { editReach, type SendUpdates } from './eventdetail';
   import {
@@ -324,6 +325,11 @@
   /** Whether the calendar dot's list is open — bindable into the picker so
    *  the Escape guard below can subordinate the form to it. */
   let calOpen = $state(false);
+  // One per date field, so `escapeCloses` above can peel a chooser without
+  // taking the form with it. See `CalendarPicker`'s `open` for the pattern.
+  let startDateOpen = $state(false);
+  let endDateOpen = $state(false);
+  let repeatEndOpen = $state(false);
 
   let panelEl: HTMLDivElement | undefined = $state();
   let formEl: HTMLFormElement | undefined = $state();
@@ -579,6 +585,14 @@
       calOpen = false;
       return;
     }
+    // The date choosers are this form's layers too, for the reason above:
+    // owning their Escape here is what stops one press closing a chooser and
+    // the form behind it. Closing all three is right because at most one is
+    // ever open — opening a second would have closed the first.
+    if (startDateOpen || endDateOpen || repeatEndOpen) {
+      startDateOpen = endDateOpen = repeatEndOpen = false;
+      return;
+    }
     oncancel();
   });
 </script>
@@ -650,7 +664,7 @@
     <div class="when">
       <label class="field">
         <span class="lab">{value.isAllDay ? 'First day' : 'Date'}</span>
-        <input type="date" value={value.date} onchange={(e) => moveStartDate(e.currentTarget.value)} />
+        <DateField label={value.isAllDay ? 'First day' : 'Date'} bind:open={startDateOpen} value={value.date} onchange={(v) => moveStartDate(v)} />
       </label>
       {#if !value.isAllDay}
         <label class="field">
@@ -679,7 +693,7 @@
              For an all-day event this is the *inclusive* last day; see
              `EventFormValue.endDate`. -->
         <span class="lab">{value.isAllDay ? 'Last day' : 'End date'}</span>
-        <input type="date" bind:value={value.endDate} />
+        <DateField label={value.isAllDay ? 'Last day' : 'End date'} bind:open={endDateOpen} bind:value={value.endDate} />
       </label>
       {#if !value.isAllDay}
         <label class="field">
@@ -874,12 +888,7 @@
             <option value="after">After</option>
           </select>
           {#if value.repeatEnd.kind === 'on'}
-            <input
-              type="date"
-              aria-label="Repeat end date"
-              aria-invalid={invalidField === 'repeatEnd' ? 'true' : undefined}
-              bind:value={value.repeatEnd.date}
-            />
+            <DateField label="Repeat end date" bind:open={repeatEndOpen} bind:value={value.repeatEnd.date} />
           {:else if value.repeatEnd.kind === 'after'}
             <label class="aftercount">
               <input
