@@ -7,7 +7,7 @@
   import WeatherGlyph from './WeatherGlyph.svelte';
   import { dateKey, type DayWeather } from './weather';
   import type { TaskChip } from './taskchips';
-  import { gutterLabel, zoneAbbrev, zoneGutterLabel } from './timefmt';
+  import { formatClock, gutterLabel, zoneAbbrev, zoneGutterLabel } from './timefmt';
   import { tick, untrack } from 'svelte';
   import { HOUR_PX_DEFAULT, hourPxAfterPinch, hourPxAfterWheel, scrollTopKeeping } from './zoom';
   import { onPinch, type Pinch } from './pinch';
@@ -702,6 +702,13 @@
     const col = target.closest('.col');
     if (!col) return;
     const colBox = col.getBoundingClientRect();
+    // Decide once at pointer-down. Releasing Alt during the sweep must not
+    // turn a new event into a move/resize of the event underneath it.
+    if (e.altKey) {
+      e.preventDefault();
+      startSweep(day, renderedDays.findIndex((d) => d.start_ms === day.start_ms), e, colBox);
+      return;
+    }
     const box = target.getBoundingClientRect();
 
     drag = {
@@ -1045,6 +1052,7 @@
     fromFrac: number;
     /** The last pointer position, for the rect the form opens beside — the
      *  same "next to where the user pointed" rule `startCreate` follows. */
+    clientX: number;
     clientY: number;
     /** Past the threshold. Below it this is still a click. */
     sweeping: boolean;
@@ -1052,11 +1060,39 @@
     ask: import('./drag').SweepAsk | null;
   };
   let sweep = $state<Sweep | null>(null);
+  let altHeld = $state(false);
+  // The gesture is chosen at pointer-down; pressing Alt during a move must
+  // not advertise creation, and releasing it during a sweep must not end it.
+  const createMode = $derived(sweep !== null || (altHeld && drag === null));
+  const trackAlt = (e: KeyboardEvent | PointerEvent) => { altHeld = e.altKey; };
 
-  function startSweep(day: { start_ms: number; end_ms: number }, dayIndex: number, e: PointerEvent) {
+  let viewportWidth = $state(0);
+  let viewportHeight = $state(0);
+  let feedbackWidth = $state(0);
+  let feedbackHeight = $state(0);
+  const sweepFeedback = $derived.by(() => {
+    const ask = sweep?.ask;
+    if (!ask) return null;
+    if (ask.kind === 'allDay') {
+      const days = renderedDays.filter((d) => d.start_ms >= ask.firstDayMs && d.start_ms <= ask.lastDayMs).length;
+      return { duration: `${days} ${days === 1 ? 'day' : 'days'}`, range: 'All day' };
+    }
+    // Read the snapped span that will open in the form, including reverse
+    // drags and boundary clamping, rather than measuring the pointer again.
+    const minutes = Math.round((ask.endMs - ask.startMs) / 60_000);
+    const hours = Math.floor(minutes / 60);
+    const rest = minutes % 60;
+    const duration = hours ? `${hours}h${rest ? ` ${rest}m` : ''}` : `${minutes} min`;
+    const range = `${formatClock(ask.startMs, clockFormat())} – ${formatClock(ask.endMs, clockFormat())}`;
+    return { duration, range };
+  });
+
+  function startSweep(
+    day: { start_ms: number; end_ms: number }, dayIndex: number, e: PointerEvent,
+    box = (e.currentTarget as HTMLElement).getBoundingClientRect(),
+  ) {
     // Primary button only, for the same reason `startDrag` says so.
     if (e.button !== 0) return;
-    const box = (e.currentTarget as HTMLElement).getBoundingClientRect();
     sweep = {
       dayStartMs: day.start_ms,
       dayMs: day.end_ms - day.start_ms,
@@ -1067,6 +1103,7 @@
       originX: e.clientX,
       originY: e.clientY,
       fromFrac: box.height === 0 ? 0 : (e.clientY - box.top) / box.height,
+      clientX: e.clientX,
       clientY: e.clientY,
       sweeping: false,
       ask: null,
@@ -1075,6 +1112,8 @@
     window.addEventListener('pointermove', onSweepMove);
     window.addEventListener('pointerup', onSweepEnd);
     window.addEventListener('keydown', onSweepKey);
+    window.addEventListener('pointercancel', cancelSweep);
+    window.addEventListener('blur', cancelSweep);
   }
 
   function onSweepMove(e: PointerEvent) {
@@ -1086,6 +1125,7 @@
     // still creates at the half hour it landed in.
     if (!sweep.sweeping && !beganDrag(dx, dy)) return;
     sweep.sweeping = true;
+    sweep.clientX = e.clientX;
     sweep.clientY = e.clientY;
 
     // The far end is the near end **plus how far the hand travelled**, never a
@@ -1136,6 +1176,11 @@
     // Cancelled: no form is asked for, and the release that follows must not be
     // read as the end of a sweep.
     e.stopPropagation();
+    cancelSweep();
+  }
+
+  function cancelSweep() {
+    if (!sweep) return;
     draggedNotClicked = sweep.sweeping;
     endSweep();
   }
@@ -1155,6 +1200,8 @@
     window.removeEventListener('pointermove', onSweepMove);
     window.removeEventListener('pointerup', onSweepEnd);
     window.removeEventListener('keydown', onSweepKey);
+    window.removeEventListener('pointercancel', cancelSweep);
+    window.removeEventListener('blur', cancelSweep);
   }
 
   /**
@@ -1396,6 +1443,10 @@
   }
 </script>
 
+<svelte:window onkeydown={trackAlt} onkeyup={trackAlt} onpointermove={trackAlt}
+  onblur={() => { altHeld = false; }}
+  bind:innerWidth={viewportWidth} bind:innerHeight={viewportHeight} />
+
 <div class="grid" style="--cols:{renderedDays.length}; --visible:{visible}; --vis:{renderVis}; --pan:{panDays}; --gutter:{gutterWidth()}" onwheel={wheelPan}>
   <div class="gutter head">
     {#if secondZone()}
@@ -1510,7 +1561,7 @@
   onopen={openPopover}
 />
 
-<div class="grid body quiet-scroll" style="--cols:{renderedDays.length}; --visible:{visible}; --vis:{renderVis}; --pan:{panDays}; --gutter:{gutterWidth()}; --hour-px:{Math.round(hourPx)}px" bind:this={bodyEl} data-testid="week-body" onwheel={wheelPan}>
+<div class="grid body quiet-scroll" class:creating={createMode} style="--cols:{renderedDays.length}; --visible:{visible}; --vis:{renderVis}; --pan:{panDays}; --gutter:{gutterWidth()}; --hour-px:{Math.round(hourPx)}px" bind:this={bodyEl} data-testid="week-body" onwheel={wheelPan}>
   <div class="gutter">
     {#each HOURS as h}
       {#if secondZone()}
@@ -1574,9 +1625,8 @@
         <div class="rule" style="top:{hourFrac(day, h) * 100}%"></div>
       {/each}
 
-      <!-- After the rules so it reads above them, before the blocks so it never
-           covers a real event, and transparent to the pointer so the sweep it
-           is drawing cannot be interrupted by its own ghost. -->
+      <!-- Raised above saved events, including the one under the pointer.
+           Pointer-transparent so the preview cannot interrupt its own sweep. -->
       {#if ghost}
         {@const edge = sweepEdges(day)}
         <div class="sweep" class:cl={edge.cl} class:cr={edge.cr} style={ghost}></div>
@@ -1607,6 +1657,7 @@
         <EventBlock
           event={day.events[p.idx]}
           placed={p}
+          {createMode}
           onopen={openPopover}
           ongrab={(ev, e) => startDrag(ev, day, e)}
           preview={previewFor(day.events[p.idx])}
@@ -1627,6 +1678,17 @@
   {/each}
   </div></div>
 </div>
+
+{#if sweep && sweepFeedback}
+  <div class="sweep-feedback" role="status" aria-label="New event duration"
+    bind:clientWidth={feedbackWidth} bind:clientHeight={feedbackHeight}
+    style:left="{Math.max(8, Math.min(sweep.clientX + 16, viewportWidth - feedbackWidth - 8))}px"
+    style:top="{Math.max(8, sweep.clientY + 16 + feedbackHeight > viewportHeight - 8
+      ? sweep.clientY - feedbackHeight - 16 : sweep.clientY + 16)}px">
+    <strong>{sweepFeedback.duration}</strong>
+    <span>{sweepFeedback.range}</span>
+  </div>
+{/if}
 
 {#if selectedId !== null && selectedStartMs !== null && anchor && detail}
   <!-- `id`/`startMs` are captured *now*, at this render, not read back off
@@ -1662,6 +1724,7 @@
 {/if}
 
 <style>
+  .creating .newhere { cursor: crosshair; }
   /* `--gutter` from `secondzone.svelte`'s one exported width: 44px alone,
      wider when the second clock takes the outer lane. A var rather than two
      hardcodings because the head row here, the body row below and the
@@ -1858,7 +1921,14 @@
            border-radius: var(--event-card-radius, 6px);
            background: color-mix(in srgb, var(--ghost, var(--accent)) 14%, var(--bg));
            box-shadow: inset 2px 0 0 0 var(--ghost, var(--accent));
-           pointer-events: none; z-index: 4; }
+           pointer-events: none; z-index: 60; }
+  .sweep-feedback { position: fixed; z-index: 70; pointer-events: none;
+                    display: flex; flex-direction: column; gap: 3px;
+                    padding: 7px 10px; border-radius: 6px;
+                    border: 1px solid var(--accent); background: var(--surface);
+                    color: var(--text); box-shadow: 0 3px 12px rgba(0, 0, 0, .3);
+                    max-width: calc(100vw - 16px); font-size: 12px; }
+  .sweep-feedback strong { font-size: 13px; }
   /* A multi-day ribbon: square off the edges that continue, and drop the
      spine on every segment but the first, so N columns read as one bar and
      not as N separate events. A continuing edge sits at **0** — the column's

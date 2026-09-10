@@ -14,6 +14,7 @@
     preview = null,
     liveSpan = null,
     keyboardSelected = false,
+    createMode = false,
   }: {
     event: UiEvent;
     placed: Placed;
@@ -44,6 +45,8 @@
     /** Named by App's vim-style cursor. This is visual selection, not DOM
      * focus; opening it moves focus into the detail dialog. */
     keyboardSelected?: boolean;
+    /** Alt-hover or an active creation sweep: this block is background. */
+    createMode?: boolean;
   } = $props();
 
   // What the card *says*: the drag's tentative span while one is in flight,
@@ -129,6 +132,7 @@
   class:nobodycoming={event.all_guests_declined}
   class:dragging={preview !== null}
   class:keyboard={keyboardSelected}
+  class:create-mode={createMode}
   data-kbd-selected-event={keyboardSelected ? '' : undefined}
   data-event-id={event.id}
   data-event-start-ms={event.start_ms}
@@ -155,7 +159,7 @@
        still lands on the button and `edgeAt` still decides. Hidden while
        this block is the one being dragged, when the only honest cursor is
        the grid's own `grabbing`. -->
-  {#if grips && !preview}
+  {#if grips && !preview && !createMode}
     <span class="grip" style="top:0; height:{RESIZE_EDGE_PX}px" aria-hidden="true"></span>
     <span class="grip" style="bottom:0; height:{RESIZE_EDGE_PX}px" aria-hidden="true"></span>
   {/if}
@@ -174,7 +178,7 @@
   {#if showMeta && meta}<em>{meta}</em>{/if}
   <!-- aria-hidden: the button's own label already says all of this, so the
        tooltip is presentation for the pointer, not a second announcement. -->
-  {#if tip && !preview}
+  {#if tip && !preview && !createMode}
     <span class="tip" class:below={!tip.above} aria-hidden="true"
           style="left:{tip.x}px; top:{tip.y}px;">
       <b class="tt">{event.title}</b>
@@ -204,7 +208,7 @@
      than as hidden. The bar appears only on hover, so a block at rest is
      unchanged and the committed baselines — which never hover — still hold
      these to invisibility. */
-  .ev:hover { cursor: grab; }
+  .ev:hover:not(.create-mode) { cursor: grab; }
   .grip { position: absolute; left: 0; right: 0; cursor: ns-resize; }
   /* Centred in the band rather than filling it: the bar says "here", the
      band is what actually answers, and a filled 6px block would read as a
@@ -258,10 +262,13 @@
      higher-column neighbours. `.ev.dragging` below got this right from day
      one; this rule had been losing the same fight invisibly until a dense
      iCloud week made it obvious. */
-  .ev:hover { left: 3px !important; width: calc(100% - 6px) !important; z-index: 20 !important;
+  .ev:hover:not(.create-mode) { left: 3px !important; width: calc(100% - 6px) !important; z-index: 20 !important;
               box-shadow: inset 2px 0 0 0 var(--spine),
                           0 -1px 0 0 var(--bg), 0 1px 0 0 var(--bg),
                           0 4px 14px rgba(0, 0, 0, .5); }
+  /* Keep every saved event below the creation preview, regardless of its
+     overlap column or keyboard selection. Alt must also override edge grips. */
+  .ev.create-mode { cursor: crosshair; z-index: 1 !important; }
 
   /* 11.5/10.5, up from 10/9 (2026-08-14): at 10px the grid read as decoration
      on a 14" screen, and Google's own week view sits at ~12px. The density
