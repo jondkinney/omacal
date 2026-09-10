@@ -4,3 +4,4 @@ Real captures of OmaCal's Svelte application in Chromium, using the repository I
 - calendar-account-groups.png: pr/calendar-account-groups at ed48d7e, Google and CalDAV accounts sharing an address.
 - alt-drag.png: pr/alt-drag-create at a5b63ed, an Alt-drag creation preview and live duration over synthetic events.
 - visible-hours*.png: pr/visible-hours at a837540, Appearance controls and the cropped Week grid with synthetic events.
+- omarchy-agenda.png: actual Panel.qml at d81b132, running in Quickshell with the installed Omarchy Ui/Commons components in an isolated headless Sway display. Only the host bar and feed/clock are test fixtures; the widget is unmodified. Captured by grim.
