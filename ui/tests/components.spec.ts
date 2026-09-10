@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import {
+  EXPORT_OCCURRENCE_START,
   FIXED_NOW, FORM_FALLBACK_ID, FORM_NOW, FORM_OTHER_ACCOUNT_NAME, FORM_UNWRITABLE_ID,
   FORM_UNWRITABLE_NAMES,
   MON, MONTH_2026_NOW, POPOVER_DETAILS, POPOVER_REFRESHED_DETAIL,
@@ -5909,6 +5910,58 @@ test.describe('quiet scrolling', () => {
  * action second, and these pin that order: what will happen, what will not,
  * and what is being left behind, all before there is anything to confirm.
  */
+/** Issue #113: an event can be saved as an `.ics`. The chooser itself is the
+ *  platform's, so what is testable here is the call, the occurrence it names,
+ *  and what the card says afterwards — including for a cancel, where the
+ *  right answer is nothing at all. */
+test.describe('exporting an event', () => {
+  const pop = (page: import('@playwright/test').Page) =>
+    page.getByRole('dialog', { name: 'Standup' });
+
+  test('exports the occurrence that is open, not the series DTSTART', async ({ page }) => {
+    await page.goto(show('EventPopover', 'export-occurrence'));
+    await pop(page).getByRole('button', { name: 'Export', exact: true }).click();
+    await expect(pop(page).getByText(/^Saved /)).toBeVisible();
+
+    const [call] = await page.evaluate(() => window.__harness.calls
+      .filter((c) => c.cmd === 'export_event').map((c) => c.args as any));
+    expect(call.id).toBe(3);
+    // The block that was clicked, which for a series is never `detail.start_ms`
+    // — the same occurrence-identity trap the RSVP spec guards.
+    expect(call.startMs).toBe(EXPORT_OCCURRENCE_START);
+    expect(call.endMs - call.startMs).toBe(30 * 60_000);
+  });
+
+  test('the file it saved is named, not its whole path', async ({ page }) => {
+    await page.goto(show('EventPopover', 'export-occurrence'));
+    await page.evaluate(() => window.__harness.exportAnswers('/home/u/Documents/Board prep.ics'));
+    await pop(page).getByRole('button', { name: 'Export', exact: true }).click();
+    await expect(pop(page).getByText('Saved Board prep.ics')).toBeVisible();
+  });
+
+  test('a dismissed chooser says nothing', async ({ page }) => {
+    await page.goto(show('EventPopover', 'export-occurrence'));
+    await page.evaluate(() => window.__harness.exportAnswers(null));
+    await pop(page).getByRole('button', { name: 'Export', exact: true }).click();
+    // The call went out; the card stayed quiet. Both halves, because a button
+    // that does nothing and a button that refuses look the same from here.
+    await expect.poll(async () => (await page.evaluate(() => window.__harness.calls
+      .filter((c) => c.cmd === 'export_event'))).length).toBe(1);
+    await expect(pop(page).getByText(/^Saved /)).toHaveCount(0);
+  });
+
+  /** Writing a file changes nothing on anybody's calendar, so a read-only
+   *  event is exactly as exportable as one's own — and Edit and Delete must
+   *  still be absent beside it. */
+  test('an event that cannot be edited can still be exported', async ({ page }) => {
+    await page.goto(show('EventPopover', 'readonly'));
+    const card = page.getByRole('dialog', { name: 'Standup' });
+    await expect(card.getByRole('button', { name: 'Export', exact: true })).toBeVisible();
+    await expect(card.getByRole('button', { name: 'Edit', exact: true })).toHaveCount(0);
+    await expect(card.getByRole('button', { name: 'Delete', exact: true })).toHaveCount(0);
+  });
+});
+
 test.describe('the ICS import panel', () => {
   const panel = (page: import('@playwright/test').Page, file: string) =>
     page.getByRole('dialog', { name: `Import ${file}` });

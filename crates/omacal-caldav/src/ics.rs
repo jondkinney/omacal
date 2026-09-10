@@ -885,6 +885,17 @@ pub struct EventWrite {
     /// `(method, minutes)` — `popup` renders DISPLAY, `email` EMAIL.
     pub alarms: Vec<(String, i64)>,
     pub sequence: i64,
+    /// A video-call link, written as RFC 7986 `CONFERENCE`.
+    ///
+    /// `None` on every CalDAV write, and deliberately: this app does not
+    /// *create* conferences over CalDAV, and a property invented on a write
+    /// would be a claim the server never agreed to. It exists for the export
+    /// (#113), where dropping the join link would make the exported meeting
+    /// unjoinable — the one thing an attendee opens it for. Zoom and Teams
+    /// links usually ride in `location` and survive either way; Meet's does
+    /// not, which is what makes this the difference between a whole event
+    /// and most of one.
+    pub conference: Option<String>,
 }
 
 fn vevent_lines(ev: &EventWrite, now: Timestamp) -> Vec<String> {
@@ -906,6 +917,12 @@ fn vevent_lines(ev: &EventWrite, now: Timestamp) -> Vec<String> {
     }
     if let Some(d) = &ev.description {
         lines.push(format!("DESCRIPTION:{}", escape(d)));
+    }
+    if let Some(uri) = &ev.conference {
+        // RFC 7986 §5.11, the property every modern client reads for this —
+        // rather than a line appended to the description, which would put a
+        // link in prose and call it data.
+        lines.push(format!("CONFERENCE;VALUE=URI;FEATURE=VIDEO:{}", escape(uri)));
     }
     for r in &ev.recurrence {
         lines.push(r.clone());
@@ -1705,6 +1722,7 @@ mod tests {
             recurrence_id: None,
             alarms: vec![("popup".into(), 10)],
             sequence: 0,
+            conference: None,
         }
     }
 

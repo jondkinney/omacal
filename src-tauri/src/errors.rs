@@ -56,6 +56,13 @@ const SAFE_PREFIXES: &[&str] = &[
 /// `format!("{lit}: {detail}")` that wraps one of these in more context from
 /// silently starting to pass.
 const SAFE_EXACT: &[&str] = &[
+    // src-tauri/src/export.rs — the three the `.ics` export raises (#113).
+    // All fixed literals, none interpolated: a failed write's own path and
+    // `std::io::Error` go to `tracing` and never here, which is the whole
+    // reason `EXPORT_FAILED` is a constant rather than a `format!`.
+    crate::export::EXPORT_FAILED,
+    crate::export::EXPORT_DISMISSED,
+    crate::export::EXPORT_GONE,
     // src-tauri/src/events.rs — `CREATED_NOT_STORED`, raised only after
     // Google's insert succeeded. Fixed literal, no interpolation. This one
     // MUST reach the user verbatim: swallowed into the opaque fallback it
@@ -486,6 +493,14 @@ mod tests {
             crate::events::MOVE_ONE_OCCURRENCE,
             crate::events::MOVE_ACROSS_ACCOUNTS,
             crate::events::MOVED_NOT_REMOVED,
+            // Checked against the same rule: the `.ics` export's three (#113)
+            // are fixed literals raised by `map_err(|_| …to_string())`, with
+            // the failing path and the `std::io::Error` going to `tracing`
+            // instead. A user told only "something went wrong" about a file
+            // they asked to save has nothing to act on.
+            crate::export::EXPORT_FAILED,
+            crate::export::EXPORT_DISMISSED,
+            crate::export::EXPORT_GONE,
         ];
         for expected in EXPECTED {
             assert!(

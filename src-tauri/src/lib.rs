@@ -12,6 +12,7 @@ mod calendars;
 mod commands;
 mod errors;
 mod events;
+mod export;
 mod fixtures;
 /// Test-only: the golden-file mechanism the UI fixtures read. Gated so nothing
 /// that reads or writes `ui/tests/` is compiled into the shipped app.
@@ -1352,6 +1353,10 @@ pub fn run() {
         // bar widget) drives the app. See `tray::instance_action`.
         .plugin(single_instance_plugin())
         .plugin(tauri_plugin_opener::init())
+        // Only Rust calls it — the export's save dialog (#113) — so no
+        // capability is granted to the webview and the frontend cannot
+        // open a chooser of its own.
+        .plugin(tauri_plugin_dialog::init())
         // The self-updater behind the banner's "Update" button. Registration
         // is unconditional; whether the button exists at all is
         // `update::may_self_update`'s decision — AppImage only, never demo —
@@ -1660,6 +1665,7 @@ pub fn run() {
             _ => {}
         })
         .invoke_handler(tauri::generate_handler![
+            export::export_event,
             invites::pending_invites,
             invites::declined_guests,
             invites::dismiss_decline_notice,

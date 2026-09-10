@@ -117,9 +117,16 @@ export type Harness = {
    *  `failNextEventCall` alone cannot drive that: it rejects immediately,
    *  before a second click could ever land. */
   rejectEventCall(cmd: 'event_detail' | 'refresh_event' | 'respond_to_event', id: number, message: string): Promise<void>;
+  /** What the next `export_event` answers: a path, or `null` for a chooser
+   *  the user dismissed. Set before the button is pressed. */
+  exportAnswers(path: string | null): void;
   /** Every command the app has invoked, in order. */
   calls: { cmd: string; args: unknown }[];
 };
+
+/** What the `export_event` stub answers. A spec sets it through
+ *  `window.__harness.exportAnswers(...)` before pressing the button. */
+let exportAnswer: string | null = '/home/u/Documents/Board prep.ics';
 
 /** What `set_calendar_sync(id, false)` reports removing, absent a forced failure. */
 export const CALENDAR_SYNC_REMOVED = 143;
@@ -189,6 +196,9 @@ async function whenListening(event: string, polls = 300): Promise<void> {
 
 const harness: Harness = {
   calls: [],
+  exportAnswers(path) {
+    exportAnswer = path;
+  },
   async emit(event, payload) {
     if (event === 'preferences-requested') preferencesPending = true;
     if (event === 'quick-add-requested') quickAddPending = true;
@@ -781,6 +791,13 @@ export function installTauriStub(scenario: string): Harness {
       // is the call and its id, in `harness.calls`.
       case 'open_conference':
         return null;
+      // The export's file chooser is the platform's, so a spec can only ever
+      // assert the call and what the popover does with the answer. Both
+      // answers matter and both are reachable: a path, and the `null` a
+      // dismissed chooser returns — a title carrying `cancel` picks the
+      // second, so the "says nothing for a cancel" rule has a way to fail.
+      case 'export_event':
+        return exportAnswer;
       case 'get_status':
         return status;
       // The date a dated fresh launch parked on the backend. One scenario

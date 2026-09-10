@@ -30,6 +30,12 @@ export type UiEvent = {
  *  event, not choose a destination. It is also what routes the click around
  *  the AppImage environment that crashes a spawned browser (issue #1). */
 export const openConference = (id: number) => invoke<void>('open_conference', { id });
+
+/** Saves one occurrence as an `.ics` the user names (#113). Resolves to the
+ *  path written, or `null` when the chooser was dismissed — a cancel is an
+ *  answer, not a failure, and nothing should be said for it. */
+export const exportEvent = (id: number, startMs: number, endMs: number) =>
+  invoke<string | null>('export_event', { id, startMs, endMs });
 export type Placed = { idx: number; column: number; columns: number; top: number; height: number };
 export type Lane = {
   idx: number; lane: number; start_col: number; end_col: number;

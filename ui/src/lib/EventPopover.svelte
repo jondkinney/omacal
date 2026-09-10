@@ -3,7 +3,7 @@
   import { formatDate } from './datefmt';
   import { dateFormat } from './date.svelte';
   import { meetingUrl } from './location';
-  import { openConference } from './api';
+  import { exportEvent, openConference } from './api';
   import { clockFormat } from './clock.svelte';
   import { formatClock } from './timefmt';
   import { onMount, tick } from 'svelte';
@@ -261,6 +261,32 @@
    *  a single id caused there — a Set stays correct if that ever changes. */
   let busy = $state<Set<'accepted' | 'tentative' | 'declined'>>(new Set());
   let note = $state<{ text: string; kind: 'info' | 'error' } | null>(null);
+  let exporting = $state(false);
+
+  /** Saves this occurrence as a file the user names.
+   *
+   *  The *occurrence*, which is what the card is showing — `occurrenceStartMs`
+   *  and never `detail.start_ms`, the same rule the RSVP and the edit already
+   *  keep, and for the same reason: a series' detail carries the master's
+   *  DTSTART, not the block that was clicked. */
+  async function exportIcs() {
+    if (exporting) return;
+    exporting = true;
+    note = null;
+    try {
+      const path = await exportEvent(detail.id, occurrenceStartMs, occurrenceEndMs);
+      // A dismissed chooser is a decision, not a failure; saying "cancelled"
+      // back to someone who just cancelled is noise.
+      if (path) {
+        const name = path.split(/[\\/]/).filter(Boolean).pop() ?? path;
+        note = { text: `Saved ${name}`, kind: 'info' };
+      }
+    } catch (err) {
+      note = { text: String(err), kind: 'error' };
+    } finally {
+      exporting = false;
+    }
+  }
 
   const shown = $derived(chosen ?? detail.self_response);
 
@@ -595,13 +621,17 @@
        Delete confirmation — the server could only refuse, after the user had
        already decided to go through with it. Duplicate only needs a writable
        destination; its source calendar can be read-only. -->
-  {#if detail.can_edit || onduplicate}
-    <div class="own">
-      {#if detail.can_edit}<button onclick={onedit}>Edit</button>{/if}
-      {#if onduplicate}<button onclick={onduplicate}>Duplicate</button>{/if}
-      {#if detail.can_edit}<button onclick={ondelete}>Delete</button>{/if}
-    </div>
-  {/if}
+  <!-- Export is ungated (#113), unlike its neighbours: writing a file changes
+       nothing on anybody's calendar, so a subscribed holiday or a colleague's
+       read-only event is exactly as exportable as one's own. It is also why
+       the row now appears for an event that can be neither edited nor
+       duplicated — there is finally something in it for those. -->
+  <div class="own">
+    {#if detail.can_edit}<button onclick={onedit}>Edit</button>{/if}
+    {#if onduplicate}<button onclick={onduplicate}>Duplicate</button>{/if}
+    <button onclick={exportIcs} disabled={exporting}>{exporting ? 'Exporting…' : 'Export'}</button>
+    {#if detail.can_edit}<button onclick={ondelete}>Delete</button>{/if}
+  </div>
 
   {#if note}<p class="note" class:err={note.kind === 'error'}>{note.text}</p>{/if}
 </div>

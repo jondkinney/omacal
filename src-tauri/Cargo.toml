@@ -53,6 +53,7 @@ thiserror.workspace = true
 # The *file watcher* for live theme reload. Not `notify-rust`, which is the
 # D-Bus notification client below and is a different crate entirely.
 notify = "8.2.0"
+tauri-plugin-dialog = "2"
 
 # Omarchy's notification transport. D-Bus rather than the Tauri plugin because
 # only this one has action buttons, and Join/Snooze are half the feature.

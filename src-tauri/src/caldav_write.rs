@@ -267,6 +267,7 @@ pub(crate) async fn create(
         recurrence_id: None,
         alarms: alarms_for(&fields.reminders, None),
         sequence: 0,
+        conference: None,
     };
     let ics = omacal_caldav::new_event_ics(&ev, now_ts());
     let href = format!("{}/{uid}.ics", collection_url.trim_end_matches('/'));
@@ -311,6 +312,7 @@ pub(crate) async fn update(
                 recurrence_id: None,
                 alarms: alarms_for(&fields.reminders, Some(&master)),
                 sequence: master.sequence + 1,
+                conference: None,
             };
             let out = omacal_caldav::rewrite_master(&raw, &uid, &ev, now, moved)
                 .ok_or_else(|| anyhow::anyhow!("could not rewrite the event's resource"))?;
@@ -342,6 +344,7 @@ pub(crate) async fn update(
                 recurrence_id: None,
                 alarms: alarms_for(&fields.reminders, Some(&master)),
                 sequence: 0,
+                conference: None,
             };
             let ics = omacal_caldav::new_event_ics(&ev, now);
             let collection = href.rsplit_once('/').map(|(c, _)| c).unwrap_or("");
@@ -361,6 +364,7 @@ pub(crate) async fn update(
                 recurrence_id: Some(rid),
                 alarms: alarms_for(&fields.reminders, Some(&viewed)),
                 sequence: 0,
+                conference: None,
             };
             let out = omacal_caldav::upsert_exception(&raw, &ev, now)
                 .ok_or_else(|| anyhow::anyhow!("could not write the occurrence's exception"))?;

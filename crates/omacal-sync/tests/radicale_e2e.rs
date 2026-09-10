@@ -236,6 +236,7 @@ async fn the_whole_loop_against_a_real_server() {
         recurrence_id: None,
         alarms: Vec::new(),
         sequence: 1,
+        conference: None,
     };
     let renamed = omacal_caldav::rewrite_master(&raw, "e2e-series", &ev, now, false)
         .expect("series rewrites");

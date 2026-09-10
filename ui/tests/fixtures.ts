@@ -2025,6 +2025,10 @@ export const TASKS: Task[] = [
  *  with something to import and something refused, and one with nothing.
  *  Two guest entries, because the panel's whole job is saying that out
  *  loud before anything is written. */
+/** The clicked block in the `export-occurrence` fixture: the fourth day of a
+ *  daily series, deliberately not its DTSTART. */
+export const EXPORT_OCCURRENCE_START = MON + 3 * 24 * H + 9 * H;
+
 export const IMPORT_PLANS: Record<string, any[]> = {
   mixed: [
     { kind: 'import', summary: 'Lunch', start_ms: 1788910200000, all_day: false,
@@ -2758,6 +2762,23 @@ export const FIXTURES: Record<string, Record<string, any>> = {
         attendees: [attendee({ email: 'me@x.com', is_self: true })],
       }),
       anchor: ANCHOR, occurrenceStartMs: MON + 9 * H, occurrenceEndMs: MON + 9 * H + 30 * 60_000,
+      onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
+    },
+    /* A series whose detail start and clicked block deliberately disagree —
+     * the master's DTSTART against a later occurrence, which is the shape
+     * `POPOVER_DETAILS[42]` exists for one layer up. Every other fixture here
+     * has the two equal, so an export that reached for `detail.start_ms`
+     * would pass all of them. */
+    'export-occurrence': {
+      detail: detail({
+        id: 3, is_recurring: true,
+        repeat: 'daily', recurrence: 'RRULE:FREQ=DAILY',
+        start_ms: MON + 9 * H, end_ms: MON + 9 * H + 30 * 60_000,
+        attendees: [attendee({ email: 'me@x.com', is_self: true })],
+      }),
+      anchor: ANCHOR,
+      occurrenceStartMs: EXPORT_OCCURRENCE_START,
+      occurrenceEndMs: EXPORT_OCCURRENCE_START + 30 * 60_000,
       onclose: noop, onresponded: noop, onedit: noop, ondelete: noop,
     },
     /* Every text field the panel has, each carrying one 200-character token
