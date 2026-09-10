@@ -71,6 +71,7 @@
     onsave,
     oncancel,
     onvaluechange,
+    chooseCalendar = false,
   }: {
     /** The rect to sit beside: the clicked block, or the clicked grid cell. */
     anchor: Rect;
@@ -88,6 +89,8 @@
      *  moves as the times are typed (2026-08-20, by request). Optional and
      *  advisory: nothing here waits on it, and the save path never reads it. */
     onvaluechange?: (v: EventFormValue) => void;
+    /** A duplicate starts by choosing where the new event should live. */
+    chooseCalendar?: boolean;
   } = $props();
 
   // A working copy. Every field the user can change lives here; the facts they
@@ -324,7 +327,9 @@
 
   /** Whether the calendar dot's list is open — bindable into the picker so
    *  the Escape guard below can subordinate the form to it. */
-  let calOpen = $state(false);
+  // A fresh form owns this initial choice; closing the list must stay closed.
+  // svelte-ignore state_referenced_locally
+  let calOpen = $state(chooseCalendar);
   // One per date field, so `escapeCloses` above can peel a chooser without
   // taking the form with it. See `CalendarPicker`'s `open` for the pattern.
   let startDateOpen = $state(false);
@@ -363,7 +368,11 @@
     // The first field, not the panel: this is a form, and the first thing
     // anybody does with it is type a title. `role="dialog"` + `aria-modal`
     // still oblige focus to start *inside*, which this satisfies.
-    titleEl?.focus();
+    if (chooseCalendar) {
+      const option = panelEl?.querySelector<HTMLElement>('[role="option"][aria-selected="true"]')
+        ?? panelEl?.querySelector<HTMLElement>('[role="option"]');
+      (option ?? titleEl)?.focus();
+    } else titleEl?.focus();
     return () => ro.disconnect();
   });
 
