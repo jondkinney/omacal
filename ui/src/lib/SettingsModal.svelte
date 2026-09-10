@@ -17,7 +17,8 @@
   import { listAccounts, signOut, type Account } from './accounts';
   import {
     getSettings, listTimezones, minutesOf, msOfMinutes, setAppearancePreferences,
-    setDefaultCalendar,
+    setDefaultCalendar, setDefaultView, setDefaultViewFollowsLast, DEFAULT_VIEW_OPTIONS,
+    type DefaultViewChoice,
     setDefaultEventDuration, setStartOnLogin, START_ON_LOGIN_OPTIONS,
     setDisplayTimezone, setFallbackReminders, setNotificationsEnabled,
     setAppearance, APPEARANCE_OPTIONS,
@@ -257,6 +258,25 @@
       } else {
         settings = await setWeekStart(choice.id as WeekStartDay);
       }
+      onsettingschange?.(settings);
+    } catch (e) {
+      note = { text: String(e), kind: 'error' };
+    }
+  }
+
+  /** Stores which view OmaCal opens on next — `defaultCalendarId`'s shape,
+   *  not `saveTimeFormat`'s: the view currently on screen is whatever the
+   *  user navigated to, and this setting has no opinion about that.
+   *
+   *  One control, two backend writes — `saveWeekView`'s own shape: "Last
+   *  view" is `defaultViewFollowsLast` turned on, and every other row is a
+   *  fixed `defaultView` (which itself turns that flag back off, atomically,
+   *  on the backend). */
+  async function saveDefaultView(choice: DefaultViewChoice) {
+    try {
+      settings = choice === 'last'
+        ? await setDefaultViewFollowsLast(true)
+        : await setDefaultView(choice);
       onsettingschange?.(settings);
     } catch (e) {
       note = { text: String(e), kind: 'error' };
@@ -980,6 +1000,27 @@
           effect at once.
         </p>
       {/if}
+
+      <div class="row">
+        <label class="lab" for="default-view">Open OmaCal on</label>
+        <div class="inline">
+          <select
+            id="default-view"
+            disabled={!settings}
+            value={settings?.defaultViewFollowsLast ? 'last' : (settings?.defaultView ?? 'week')}
+            onchange={(e) =>
+              saveDefaultView((e.currentTarget as HTMLSelectElement).value as DefaultViewChoice)}
+          >
+            {#each DEFAULT_VIEW_OPTIONS as [id, label] (id)}
+              <option value={id}>{label}</option>
+            {/each}
+          </select>
+        </div>
+      </div>
+      <p class="hint">
+        Which of the five views OmaCal opens next time. Last view reopens
+        wherever you left off instead of a fixed one.
+      </p>
 
       <div class="row">
         <label class="lab" for="week-view">Week view</label>

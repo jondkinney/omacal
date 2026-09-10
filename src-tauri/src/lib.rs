@@ -1304,7 +1304,7 @@ fn single_instance_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
                         tracing::warn!(%e, "could not open the meeting link");
                     }
                 }
-                tray::TrayAction::Open => tray::show_main_window(app),
+                tray::TrayAction::Open => tray::open_plain(app),
             }
         },
     );
@@ -1709,6 +1709,9 @@ pub fn run() {
             settings::set_time_format,
             settings::set_date_format,
             settings::set_temperature_unit,
+            settings::set_default_view,
+            settings::set_default_view_follows_last,
+            settings::set_last_view,
             settings::set_week_start,
             settings::set_week_starts_today,
             settings::set_week_view_days,

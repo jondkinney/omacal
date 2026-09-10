@@ -60,6 +60,9 @@ pub(crate) fn appearance_baseline(omarchy: bool) -> u8 {
     }
 }
 const TIME_FORMAT_KEY: &str = "time_format";
+const DEFAULT_VIEW_KEY: &str = "default_view";
+const DEFAULT_VIEW_FOLLOWS_LAST_KEY: &str = "default_view_follows_last";
+const LAST_VIEW_KEY: &str = "last_view";
 const WEEK_START_KEY: &str = "week_start";
 const WEEK_STARTS_TODAY_KEY: &str = "week_starts_today";
 const WEEK_VIEW_DAYS_KEY: &str = "week_view_days";
@@ -120,6 +123,52 @@ impl TimeFormat {
             TimeFormat::H24 => "24h",
             TimeFormat::H12 => "12h",
         }
+    }
+}
+
+/// Which of the five view-switcher slots OmaCal opens on.
+///
+/// An enum for [`TimeFormat`]'s reason: the set is closed and mirrors the
+/// switcher's own five buttons exactly, so [`set_default_view`] needs no
+/// refusal path — a sixth value cannot be sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DefaultView {
+    #[serde(rename = "day")]
+    Day,
+    #[serde(rename = "week")]
+    Week,
+    #[serde(rename = "month")]
+    Month,
+    #[serde(rename = "year")]
+    Year,
+    #[serde(rename = "bigyear")]
+    BigYear,
+}
+
+impl DefaultView {
+    /// The stored spelling, which is also the wire spelling — the switcher's
+    /// own `View` union in `views.ts`.
+    fn as_str(self) -> &'static str {
+        match self {
+            DefaultView::Day => "day",
+            DefaultView::Week => "week",
+            DefaultView::Month => "month",
+            DefaultView::Year => "year",
+            DefaultView::BigYear => "bigyear",
+        }
+    }
+}
+
+/// [`AppSettings::default_view`] and [`AppSettings::last_view`]'s shared
+/// fallback: absent, garbage, or a spelling only a future version writes
+/// lands on Week rather than an error.
+fn parse_default_view(stored: Option<&str>) -> DefaultView {
+    match stored {
+        Some("day") => DefaultView::Day,
+        Some("month") => DefaultView::Month,
+        Some("year") => DefaultView::Year,
+        Some("bigyear") => DefaultView::BigYear,
+        _ => DefaultView::Week,
     }
 }
 
@@ -520,6 +569,22 @@ pub struct AppSettings {
     /// Which desktop this build is running on, so the settings copy can name
     /// it. Read-only: a fact about the host, never a stored preference.
     pub desktop: String,
+    /// Which of the five view-switcher slots OmaCal opens on, when
+    /// [`Self::default_view_follows_last`] is off. **Week by default** — the
+    /// view every existing install already opens to; this setting only
+    /// makes the choice visible and changeable rather than changing what a
+    /// fresh install does.
+    pub default_view: DefaultView,
+    /// Whether OmaCal ignores `default_view` and opens on
+    /// [`Self::last_view`] instead — `week_starts_today`'s shape for
+    /// `week_start`: a flag beside the fixed choice rather than a sixth
+    /// `DefaultView` variant, which would let `last_view` itself name "last".
+    pub default_view_follows_last: bool,
+    /// The view the switcher was most recently on, tracked on every switch
+    /// regardless of `default_view_follows_last`, so turning that mode on
+    /// opens on a real memory rather than a blank one. Week until anything
+    /// has been recorded.
+    pub last_view: DefaultView,
     /// The day a week begins on, honoured by the Week grid's own anchor, the
     /// month grid's leading blanks, the Year view's twelve small grids, and
     /// Big Year's 392-day ribbon. When `week_starts_today` is on, this still
@@ -724,6 +789,20 @@ pub(crate) async fn read_settings_with(pool: &SqlitePool, baseline: u8) -> AppSe
             .await
             .map(|v| if v == "12h" { TimeFormat::H12 } else { TimeFormat::H24 })
             .unwrap_or(TimeFormat::H24),
+        // Week is the view every existing install already opens on; absent,
+        // garbage, or a spelling only a future version writes all land there
+        // rather than on a switcher slot nobody chose.
+        default_view: parse_default_view(read(pool, DEFAULT_VIEW_KEY).await.as_deref()),
+        // Opt-in, `week_starts_today`'s reason and polarity: absent, garbage
+        // and a future spelling all keep the fixed `default_view` in force.
+        default_view_follows_last: read(pool, DEFAULT_VIEW_FOLLOWS_LAST_KEY)
+            .await
+            .map(|v| v == "1")
+            .unwrap_or(false),
+        // Same fallback as `default_view`, for the same reason: nothing has
+        // been recorded yet reads as the view every install already opens
+        // on, not as an error.
+        last_view: parse_default_view(read(pool, LAST_VIEW_KEY).await.as_deref()),
         // Same polarity rule as its two neighbours: only the two spellings
         // this version writes move the setting, and everything else — absent,
         // hand-edited, or written by a version that learned a fourth day —
@@ -1470,6 +1549,67 @@ pub async fn set_visible_hours(app: tauri::AppHandle, state: tauri::State<'_, Ap
     Ok(read_settings(&state.pool).await)
 }
 
+/// Stores a fixed view and leaves "Last view" mode — [`set_week_start`]'s
+/// shape, atomic for the same reason: a crash between two writes must never
+/// leave the mode on with a choice the user just picked to replace it.
+#[tauri::command]
+pub async fn set_default_view(
+    state: tauri::State<'_, AppState>,
+    view: DefaultView,
+) -> Result<AppSettings, String> {
+    set_default_view_impl(&state.pool, view)
+        .await
+        .map_err(|e| crate::errors::user_facing(&e))
+}
+
+async fn set_default_view_impl(pool: &SqlitePool, view: DefaultView) -> anyhow::Result<AppSettings> {
+    let mut tx = pool.begin().await?;
+    for (key, value) in [(DEFAULT_VIEW_KEY, view.as_str()), (DEFAULT_VIEW_FOLLOWS_LAST_KEY, "0")] {
+        sqlx::query(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(key)
+        .bind(value)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await?;
+    Ok(read_settings(pool).await)
+}
+
+/// Turns "Last view" mode on or off — [`set_week_starts_today`]'s shape:
+/// `default_view` is set aside, not discarded, and is what's used again once
+/// this is turned back off.
+#[tauri::command]
+pub async fn set_default_view_follows_last(
+    state: tauri::State<'_, AppState>,
+    on: bool,
+) -> Result<AppSettings, String> {
+    write(&state.pool, DEFAULT_VIEW_FOLLOWS_LAST_KEY, if on { "1" } else { "0" })
+        .await
+        .map_err(|e| crate::errors::user_facing(&e))?;
+    Ok(read_settings(&state.pool).await)
+}
+
+/// Stores the view the switcher was most recently on, called on every
+/// switch regardless of mode — see [`AppSettings::last_view`]. Nothing to
+/// refuse, [`set_default_view`]'s reason.
+#[tauri::command]
+pub async fn set_last_view(
+    state: tauri::State<'_, AppState>,
+    view: DefaultView,
+) -> Result<AppSettings, String> {
+    set_last_view_impl(&state.pool, view)
+        .await
+        .map_err(|e| crate::errors::user_facing(&e))
+}
+
+async fn set_last_view_impl(pool: &SqlitePool, view: DefaultView) -> anyhow::Result<AppSettings> {
+    write(pool, LAST_VIEW_KEY, view.as_str()).await?;
+    Ok(read_settings(pool).await)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1534,6 +1674,13 @@ mod tests {
             TimeFormat::H24,
             "the clock the app has always drawn, so no installed copy changes under its user"
         );
+        assert_eq!(
+            s.default_view,
+            DefaultView::Week,
+            "the view every existing install already opens on"
+        );
+        assert!(!s.default_view_follows_last, "fixed by default, not \"last\"");
+        assert_eq!(s.last_view, DefaultView::Week, "nothing recorded yet");
         assert_eq!(
             s.week_start,
             WeekStart::Monday,
@@ -1990,6 +2137,90 @@ mod tests {
         }
         write(&p, "date_format", "garbage").await.unwrap();
         assert_eq!(read_settings(&p).await.date_format, DateFormat::Locale);
+    }
+
+    /// All five round-trip, and an unrecognised row reads as Week — the same
+    /// polarity rule [`the_week_start_round_trips_and_falls_back_to_monday`]
+    /// takes, and the same view every install already opened on before this
+    /// setting existed.
+    #[tokio::test]
+    async fn the_default_view_round_trips_and_falls_back_to_week() {
+        let p = pool().await;
+        for view in [
+            DefaultView::Day, DefaultView::Month, DefaultView::Year,
+            DefaultView::BigYear, DefaultView::Week,
+        ] {
+            write(&p, DEFAULT_VIEW_KEY, view.as_str()).await.unwrap();
+            assert_eq!(read_settings(&p).await.default_view, view);
+        }
+        for stored in ["", "Week", "WEEK", "quarter", "🗓"] {
+            write(&p, DEFAULT_VIEW_KEY, stored).await.unwrap();
+            assert_eq!(
+                read_settings(&p).await.default_view,
+                DefaultView::Week,
+                "{stored:?} is not a spelling this version writes",
+            );
+        }
+    }
+
+    /// `last_view` takes the same five spellings and the same fallback as
+    /// `default_view` — proven separately because the two rows are read by
+    /// the same helper and a copy-paste could point one at the other's key
+    /// without either test noticing.
+    #[tokio::test]
+    async fn the_last_view_round_trips_and_falls_back_to_week() {
+        let p = pool().await;
+        for view in [DefaultView::Month, DefaultView::BigYear, DefaultView::Day] {
+            let s = set_last_view_impl(&p, view).await.unwrap();
+            assert_eq!(s.last_view, view);
+            assert_eq!(read_settings(&p).await.last_view, view);
+        }
+        for stored in ["", "Week", "garbage"] {
+            write(&p, LAST_VIEW_KEY, stored).await.unwrap();
+            assert_eq!(
+                read_settings(&p).await.last_view,
+                DefaultView::Week,
+                "{stored:?} is not a spelling this version writes",
+            );
+        }
+    }
+
+    /// [`choosing_a_fixed_week_start_leaves_rolling_mode_atomically`]'s exact
+    /// shape: picking a fixed default view while "Last view" mode is on
+    /// turns that mode off in the same write, and turning it back on
+    /// restores the `last_view` recorded independently of either.
+    #[tokio::test]
+    async fn choosing_a_fixed_default_view_leaves_last_view_mode_atomically() {
+        let p = pool().await;
+        write(&p, DEFAULT_VIEW_FOLLOWS_LAST_KEY, "1").await.unwrap();
+        set_last_view_impl(&p, DefaultView::Year).await.unwrap();
+
+        let s = set_default_view_impl(&p, DefaultView::Month).await.unwrap();
+        assert_eq!(s.default_view, DefaultView::Month);
+        assert!(!s.default_view_follows_last);
+        assert_eq!(read(&p, DEFAULT_VIEW_KEY).await.as_deref(), Some("month"));
+        assert_eq!(read(&p, DEFAULT_VIEW_FOLLOWS_LAST_KEY).await.as_deref(), Some("0"));
+
+        // Turning the mode back on does not disturb the fixed choice or the
+        // memory of what "last" meant.
+        write(&p, DEFAULT_VIEW_FOLLOWS_LAST_KEY, "1").await.unwrap();
+        let s = read_settings(&p).await;
+        assert!(s.default_view_follows_last);
+        assert_eq!(s.default_view, DefaultView::Month);
+        assert_eq!(s.last_view, DefaultView::Year);
+    }
+
+    /// Both directions, `the_time_format_round_trips_both_ways`'s reason.
+    #[tokio::test]
+    async fn default_view_follows_last_round_trips_both_ways() {
+        let p = pool().await;
+        assert!(!read_settings(&p).await.default_view_follows_last, "off until chosen");
+
+        write(&p, DEFAULT_VIEW_FOLLOWS_LAST_KEY, "1").await.unwrap();
+        assert!(read_settings(&p).await.default_view_follows_last);
+
+        write(&p, DEFAULT_VIEW_FOLLOWS_LAST_KEY, "0").await.unwrap();
+        assert!(!read_settings(&p).await.default_view_follows_last);
     }
 
     /// All three round-trip, and an unrecognised row reads as Monday — the

@@ -5,6 +5,26 @@ import type { TemperatureUnit } from './temperature';
 import type { TimeFormat } from './timefmt';
 import type { WeekStartDay } from './weekstart';
 import type { EventCornerStyle } from './appearance';
+import type { View } from './views';
+
+/** A `View`, plus `'last'` — "wherever the switcher was most recently,"
+ *  which is `defaultViewFollowsLast`, not a sixth `View` value: `View` also
+ *  names what `lastView` holds, and that can never be "last". */
+export type DefaultViewChoice = View | 'last';
+
+/** The five switcher slots, in the order the select offers them —
+ *  `ViewSwitcher`'s own `SLOTS` labels, so the settings row and the switcher
+ *  itself cannot describe the same view two different ways — plus "Last
+ *  view", the row this modal derives rather than stores directly; see
+ *  `SettingsModal`'s `saveDefaultView`. */
+export const DEFAULT_VIEW_OPTIONS: ReadonlyArray<[DefaultViewChoice, string]> = [
+  ['day', 'Day'],
+  ['week', 'Week'],
+  ['month', 'Month'],
+  ['year', 'Year'],
+  ['bigyear', 'Big Year'],
+  ['last', 'Last view'],
+];
 
 /** Total columns in the rolling Week view, including today. */
 export type WeekViewDays = 3 | 5 | 7;
@@ -114,6 +134,17 @@ export type AppSettings = {
   /** Which desktop this build runs on, so the copy can name it. A fact about
    *  the host, not a stored preference — there is no setter. */
   desktop: 'macos' | 'omarchy' | 'linux';
+  /** Which of the five view-switcher slots OmaCal opens on, when
+   *  `defaultViewFollowsLast` is off. `'week'` by default — the view every
+   *  existing install already opened to before this setting existed. */
+  defaultView: View;
+  /** Whether OmaCal ignores `defaultView` and opens on `lastView` instead —
+   *  `weekStartsToday`'s shape for `weekStart`. */
+  defaultViewFollowsLast: boolean;
+  /** The view the switcher was most recently on, tracked regardless of
+   *  `defaultViewFollowsLast` so turning that mode on opens on a real
+   *  memory. `'week'` until anything has been recorded. */
+  lastView: View;
   /** The day a week begins on. Read by the grids through the
    *  `weekstartstore.svelte.ts` rune, for the same reason `timeFormat` is. */
   weekStart: WeekStartDay;
@@ -243,6 +274,23 @@ export const setTemperatureUnit = (unit: TemperatureUnit) =>
  *  down — see the note on `set_time_format`. */
 export const setTimeFormat = (format: TimeFormat) =>
   invoke<AppSettings>('set_time_format', { format });
+
+/** Stores a fixed view for OmaCal to open on and leaves "Last view" mode —
+ *  `set_week_start`'s shape: the backend clears `defaultViewFollowsLast` in
+ *  the same write. Nothing is refused: the select offers exactly the five
+ *  variants `settings::DefaultView` has. */
+export const setDefaultView = (view: View) =>
+  invoke<AppSettings>('set_default_view', { view });
+
+/** Turns "Last view" mode on or off, preserving whichever `defaultView` was
+ *  in force before — `setWeekStartsToday`'s shape for `setWeekStart`. */
+export const setDefaultViewFollowsLast = (on: boolean) =>
+  invoke<AppSettings>('set_default_view_follows_last', { on });
+
+/** Stores the view the switcher was most recently on, called by `App`'s
+ *  `pick` on every switch regardless of mode. */
+export const setLastView = (view: View) =>
+  invoke<AppSettings>('set_last_view', { view });
 
 /** Stores the day a week begins on. Nothing is refused: the select offers
  *  exactly the three variants `settings::WeekStart` has. */
