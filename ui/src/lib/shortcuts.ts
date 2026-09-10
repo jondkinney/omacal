@@ -138,6 +138,7 @@ export const SHORTCUT_TEXT: Record<ShortcutId, string> = {
  */
 export const MOD_LABEL =
   typeof navigator !== 'undefined' && /Mac/.test(navigator.platform) ? '⌘' : 'Ctrl';
+const ALT_LABEL = MOD_LABEL === '⌘' ? 'Option' : 'Alt';
 
 export const CHORDS: { label: string; text: string; hint?: string }[] = [
   { label: `${MOD_LABEL} ,`, text: 'Open settings' },
@@ -149,6 +150,8 @@ export const CHORDS: { label: string; text: string; hint?: string }[] = [
     hint: 'Day and Week — a trackpad pinch or Ctrl+scroll over the grid does the same' },
   { label: `${MOD_LABEL} -`, text: 'Shorter hours' },
   { label: `${MOD_LABEL} 0`, text: 'Hours back to their usual height' },
+  { label: `${ALT_LABEL} drag`, text: 'Create over an existing event',
+    hint: 'Day and Week — hold the key before dragging to select a new time range' },
 ];
 
 /** A form chord rather than a bare key: it bubbles from any field to the form
