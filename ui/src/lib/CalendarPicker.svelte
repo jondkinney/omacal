@@ -1,6 +1,6 @@
 <!-- ui/src/lib/CalendarPicker.svelte -->
 <script lang="ts">
-  import type { Calendar } from './calendars';
+  import { byAccount, type Calendar } from './calendars';
 
   let {
     calendars,
@@ -24,18 +24,7 @@
 
   const chosen = $derived(calendars.find((c) => c.id === value) ?? null);
 
-  /** Account groups in first-seen order. A `Map` keeps insertion order, so
-   *  the list reads in the same order the accounts were connected — the same
-   *  order every other account-grouped surface uses. */
-  const groups = $derived.by(() => {
-    const m = new Map<string, Calendar[]>();
-    for (const c of calendars) {
-      const g = m.get(c.account_email);
-      if (g) g.push(c);
-      else m.set(c.account_email, [c]);
-    }
-    return [...m.entries()];
-  });
+  const groups = $derived(byAccount(calendars));
 
   /** The muted account headings earn their place only when there is more
    *  than one account to tell apart — the single-account rule the old
@@ -73,9 +62,9 @@
          scrim in this app has, and for the same reason. -->
     <button class="scrim" aria-label="Close calendar list" onclick={() => (open = false)}></button>
     <div class="list" role="listbox" aria-label="Calendar">
-      {#each groups as [email, cals] (email)}
-        {#if showHeadings}<span class="acct">{email}</span>{/if}
-        {#each cals as c (c.id)}
+      {#each groups as group (group.id)}
+        {#if showHeadings}<span class="acct" title={group.label}>{group.label}</span>{/if}
+        {#each group.calendars as c (c.id)}
           <button
             type="button"
             role="option"

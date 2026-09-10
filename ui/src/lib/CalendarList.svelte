@@ -162,9 +162,9 @@
   `two calendars with the same name in one account both render`.
 -->
 <div class="list" class:spacious>
-  {#each groups as [email, cals]}
-    <div class="acct">{email}</div>
-    {#each cals as c (c.id)}
+  {#each groups as group (group.id)}
+    <div class="acct">{group.label}</div>
+    {#each group.calendars as c (c.id)}
       <div class="row" class:off={!c.sync_enabled}>
         <label>
           <input

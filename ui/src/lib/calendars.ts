@@ -90,15 +90,20 @@ export const setCalendarSync = (id: number, on: boolean) =>
 export const setCalendarColor = (id: number, hex: string | null) =>
   invoke<void>('set_calendar_color', { id, hex });
 
-/** Calendars grouped by account, preserving the order the backend returned. */
-export function byAccount(cals: Calendar[]): Array<[string, Calendar[]]> {
-  const groups = new Map<string, Calendar[]>();
+/** Account identity is independent of its email: Google and CalDAV (or two
+ * CalDAV connections) may share an address. Keep first-seen account order. */
+export function byAccount(cals: Calendar[]): Array<{ id: number; label: string; calendars: Calendar[] }> {
+  const groups = new Map<number, { id: number; label: string; calendars: Calendar[] }>();
   for (const c of cals) {
-    const g = groups.get(c.account_email) ?? [];
-    g.push(c);
-    groups.set(c.account_email, g);
+    const g = groups.get(c.account_id);
+    if (g) g.calendars.push(c);
+    else {
+      const provider = c.provider === 'google' ? 'Google' : c.provider === 'caldav' ? 'CalDAV' : c.provider;
+      groups.set(c.account_id, { id: c.account_id,
+        label: `${provider} · ${c.account_email}`, calendars: [c] });
+    }
   }
-  return [...groups.entries()];
+  return [...groups.values()];
 }
 
 export const setCalendarLabel = (id: number, label: string | null): Promise<void> =>
