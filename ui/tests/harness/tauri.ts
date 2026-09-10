@@ -587,6 +587,8 @@ type StubSettings = {
   weekStart: WeekStartDay;
   weekStartsToday: boolean;
   weekViewDays: WeekViewDays;
+  visibleStartHour: number;
+  visibleEndHour: number;
   displayTimezone: string | null;
   secondTimezone: string | null;
   weatherEnabled: boolean;
@@ -639,6 +641,8 @@ const DEFAULT_SETTINGS: StubSettings = {
   weekStart: 'monday',
   weekStartsToday: false,
   weekViewDays: 7,
+  visibleStartHour: 0,
+  visibleEndHour: 24,
   displayTimezone: null,
   // Off, the backend's fresh-install default — and what keeps every
   // committed gutter golden describing a 44px ruler with one clock.
@@ -967,6 +971,9 @@ export function installTauriStub(scenario: string): Harness {
       case 'set_week_starts_today':
         settings = saveSettings({ ...settings, weekStartsToday: args.on as boolean });
         return { ...settings };
+      case 'set_visible_hours':
+        settings = saveSettings({ ...settings, visibleStartHour: args.start as number, visibleEndHour: args.end as number });
+        return settings;
       case 'set_week_view_days':
         settings = saveSettings({ ...settings, weekViewDays: args.days as WeekViewDays });
         return { ...settings };

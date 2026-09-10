@@ -1,5 +1,6 @@
 <!-- ui/src/App.svelte -->
 <script lang="ts">
+  import { setVisibleHoursState } from "./lib/visiblehours.svelte";
   import { formatDate } from './lib/datefmt';
   import { dateFormat } from './lib/date.svelte';
   import { setDateFormat } from './lib/date.svelte';
@@ -764,6 +765,7 @@
         defaultCalendarId = s.defaultCalendarId;
         defaultEventDurationMinutes = s.defaultEventDurationMinutes;
         setClockFormat(s.timeFormat);
+      setVisibleHoursState(s.visibleStartHour, s.visibleEndHour);
       setDateFormat(s.dateFormat);
         setSecondZone(s.secondTimezone);
         setTemperatureUnit(s.temperatureUnit);
@@ -1978,6 +1980,7 @@
       defaultCalendarId = s.defaultCalendarId;
       defaultEventDurationMinutes = s.defaultEventDurationMinutes;
       setClockFormat(s.timeFormat);
+      setVisibleHoursState(s.visibleStartHour, s.visibleEndHour);
       setDateFormat(s.dateFormat);
       setSecondZone(s.secondTimezone);
       setTemperatureUnit(s.temperatureUnit);

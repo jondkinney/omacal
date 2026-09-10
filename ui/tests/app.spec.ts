@@ -5314,3 +5314,37 @@ for (const cold of [true, false]) {
     expect(await page.evaluate(() => (window as any).__TAURI_INTERNALS__.invoke('take_preferences'))).toBe(false);
   });
 }
+
+test('visible hours persist, shorten Day and Week, and keep click creation at the right time', async ({ page }) => {
+  await page.clock.setFixedTime(APP_NOW);
+  await page.goto(app('writable'));
+  const body = page.getByTestId('week-body');
+  await expect(body).toBeVisible();
+  const before = await body.evaluate(el => el.scrollHeight);
+  await page.getByRole('button', { name: 'Menu', exact: true }).click();
+  await page.getByRole('button', { name: 'Settings…' }).click();
+  const modal = page.getByRole('dialog', { name: 'Settings' });
+  await modal.getByRole('tab', { name: 'Appearance' }).click();
+  await modal.getByLabel('Visible hours start time').selectOption('5');
+  await modal.getByLabel('Visible hours end time').selectOption('23');
+  await page.keyboard.press('Escape');
+  expect(Math.abs(await body.evaluate(el => el.scrollHeight) - (before - 6 * 70))).toBeLessThanOrEqual(8);
+  await body.evaluate(el => { el.scrollTop = 0; });
+  await page.evaluate(() => (window as any).__setSecondZone('Asia/Kolkata'));
+  const clip = (await body.locator('.ruler').boundingBox())!;
+  for (const label of [body.locator('.gutter span.z2').first(), body.locator('.gutter span:not(.z2)').first()]) {
+    const bounds = (await label.boundingBox())!;
+    expect(bounds.y).toBeGreaterThanOrEqual(clip.y);
+  }
+  const box = (await body.locator('.hour-crop').nth(1).boundingBox())!;
+  await page.mouse.click(box.x + 20, box.y + 40);
+  await expect(page.getByRole('dialog', { name: 'New event' }).getByLabel('Start', { exact: true })).toHaveValue('05:30');
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: 'Day', exact: true }).click();
+  expect(Math.abs(await body.evaluate(el => el.scrollHeight) - (before - 6 * 70))).toBeLessThanOrEqual(8);
+  await page.getByRole('button', { name: 'Menu', exact: true }).click();
+  await page.getByRole('button', { name: 'Settings…' }).click();
+  await modal.getByRole('tab', { name: 'Appearance' }).click();
+  await expect(modal.getByLabel('Visible hours start time')).toHaveValue('5');
+  await expect(modal.getByLabel('Visible hours end time')).toHaveValue('23');
+});
