@@ -26,6 +26,7 @@
     onedit,
     ondelete,
     oncopy,
+    onduplicate,
   }: {
     detail: EventDetail;
     anchor: Rect;
@@ -79,6 +80,9 @@
      *  in the shared component covers every view. Required, like `onedit`: a
      *  caller that omitted it would swallow the chord and copy nothing. */
     oncopy: () => void;
+    /** Opens an unsaved copy. Read-only sources are fine; null means there
+     * is no writable destination calendar available. */
+    onduplicate: (() => void) | null;
   } = $props();
 
   const segments = $derived(descriptionSegments(detail.description));
@@ -584,16 +588,18 @@
     </div>
   {/if}
 
-  <!-- Only when the backend says this account may write to the calendar the
+  <!-- Edit and Delete require the backend to say this account may write to the calendar the
        event is on (`can_edit`, from the same `access_role` column
        `create_impl`/`update_impl` check server-side). Offering either control
        on a subscribed holiday calendar would produce a Save — or worse, a
        Delete confirmation — the server could only refuse, after the user had
-       already decided to go through with it. -->
-  {#if detail.can_edit}
+       already decided to go through with it. Duplicate only needs a writable
+       destination; its source calendar can be read-only. -->
+  {#if detail.can_edit || onduplicate}
     <div class="own">
-      <button onclick={onedit}>Edit</button>
-      <button onclick={ondelete}>Delete</button>
+      {#if detail.can_edit}<button onclick={onedit}>Edit</button>{/if}
+      {#if onduplicate}<button onclick={onduplicate}>Duplicate</button>{/if}
+      {#if detail.can_edit}<button onclick={ondelete}>Delete</button>{/if}
     </div>
   {/if}
 

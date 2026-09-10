@@ -377,10 +377,9 @@ export const sameGuests = (a: Guest[], b: Guest[]): boolean => {
 /**
  * **How many people this save could mail.**
  *
- * Everyone on the resulting list, plus everyone removed from it, minus the
- * signed-in user. One rule, and deliberately with no `isEdit` branch in it: a
- * create is the case where `initial.guests` is empty and `selfEmail` is null,
- * which this arithmetic already handles.
+ * Everyone on the resulting list, plus (for an edit) everyone removed from
+ * it, minus the signed-in user. A pasted or duplicated draft can start with
+ * guests, but nobody has been invited until that draft is created.
  *
  * The **union** matters, not just the resulting list. A removal saved with
  * notify on sends that person a cancellation (guest-list spec §3), so they are
@@ -402,7 +401,10 @@ export const sameGuests = (a: Guest[], b: Guest[]): boolean => {
 export function mailableGuests(value: EventFormValue, initial: EventFormValue): number {
   const self = value.selfEmail;
   const mailable = new Set<string>();
-  for (const g of [...value.guests, ...initial.guests]) {
+  // Removing a guest from an unsaved duplicate cannot cancel an invitation:
+  // there is no server-side event yet. Only edits need to count removed guests.
+  const previous = value.isEdit ? initial.guests : [];
+  for (const g of [...value.guests, ...previous]) {
     if (self !== null && sameAddress(g.email, self)) continue;
     // Keyed by the *compared* form, so one person spelled two ways is one
     // entry — the same normalisation `sameAddress` applies, which is what
@@ -1029,6 +1031,19 @@ export function pastedValue(copied: EventFormValue, blank: EventFormValue): Even
     endDate: shiftedEndDate(copied.date, blank.date, copied.endDate),
     sourceStartMs: null,
     sourceEndMs: null,
+  };
+}
+
+/** A duplicate is a new draft of this occurrence, on its original dates.
+ * Reuse paste's guest and recurrence rules, but keep the exact instants (also
+ * through a repeated DST hour). A structured meeting belongs to the source
+ * event; carry its URL as a manual link rather than requesting a new room. */
+export function duplicatedValue(copied: EventFormValue, blank: EventFormValue): EventFormValue {
+  return {
+    ...pastedValue(copied, { ...blank, date: copied.date }),
+    sourceStartMs: copied.sourceStartMs,
+    sourceEndMs: copied.sourceEndMs,
+    videoCall: copied.videoCall ? { ...copied.videoCall, source: 'new' } : null,
   };
 }
 

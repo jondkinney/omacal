@@ -242,6 +242,7 @@ if (name === 'App') {
             (window as any).__lastDelete = { occurrence, rect };
           },
           // Ctrl+C in the popover. No rect — a copy points at nothing.
+          onduplicate: null,
           oncopy: (occurrence: unknown) => {
             (window as any).__lastCopy = { occurrence };
           },
@@ -374,6 +375,7 @@ if (name === 'App') {
           ondelete: () => {
             (window as any).__lastDelete = { deleted: true };
           },
+          onduplicate: null,
           oncopy: () => {
             (window as any).__lastCopy = { copied: true };
           },
