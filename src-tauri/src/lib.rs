@@ -545,28 +545,45 @@ async fn sign_in_impl(pool: &SqlitePool, demo: bool, cancelled: std::sync::Arc<s
         let url = omacal_google::auth::authorize_url(
             &cfg.client_id, &redirect_uri, &pkce.challenge, &csrf,
         );
-        // Through `browser`, not `open::that`: an AppImage's environment
-        // crashes the browser it spawns (issue #1). And loudly on failure —
-        // this exact spot failed silently on Arch for three releases, with
-        // nothing logged and the message withheld by `errors::user_facing`.
-        tracing::info!("sign-in: opening the consent page");
-        crate::browser::open_external(&url).map_err(|e| {
-            tracing::warn!(%e, "sign-in: could not open a browser");
-            anyhow::anyhow!(BROWSER_FAILED)
-        })?;
-
+        // Accepting starts BEFORE the consent page opens, not after it
+        // (issue #100). Google redirects the moment the user approves, and
+        // opening the browser first left a window in which the request could
+        // arrive with nothing yet reading the socket — the connection
+        // completed into the kernel's backlog and the tab waited on a reply
+        // nobody would write. The listener is bound by now either way, so
+        // this is ordering, not a new guarantee; what it removes is a race
+        // that only ever resolved by luck.
+        //
         // Deadline on the listener, not on this future: a `tokio::time::timeout`
         // here would return while the blocking thread stayed parked in
         // `accept()` for the life of the process.
         let listener_cancelled = cancelled.clone();
-        let redirect = tokio::task::spawn_blocking(move || {
+        let waiting = tokio::task::spawn_blocking(move || {
             omacal_google::auth::wait_for_redirect_cancellable(
                 listener,
                 omacal_google::auth::SIGN_IN_TIMEOUT,
                 &listener_cancelled,
             )
-        })
-        .await??;
+        });
+
+        // Through `browser`, not `open::that`: an AppImage's environment
+        // crashes the browser it spawns (issue #1). And loudly on failure —
+        // this exact spot failed silently on Arch for three releases, with
+        // nothing logged and the message withheld by `errors::user_facing`.
+        tracing::info!("sign-in: opening the consent page");
+        if let Err(e) = crate::browser::open_external(&url) {
+            tracing::warn!(%e, "sign-in: could not open a browser");
+            // Nothing will ever arrive on that socket, so the accept loop is
+            // told to stop rather than left parked for the full three-minute
+            // sign-in timeout. The flag is this attempt's own — `sign_in`
+            // makes a fresh one per call — so setting it cannot reach a
+            // later sign-in.
+            cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+            let _ = waiting.await;
+            anyhow::bail!(BROWSER_FAILED);
+        }
+
+        let redirect = waiting.await??;
 
         if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
             anyhow::bail!(omacal_google::auth::CANCELLED);

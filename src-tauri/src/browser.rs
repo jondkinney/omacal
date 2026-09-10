@@ -29,6 +29,7 @@
 
 use std::ffi::OsStr;
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 /// What the AppImage runtime and its GTK hook export for this process's own
 /// dynamic linking — the union of what linuxdeploy's `AppRun.wrapped` sets
@@ -128,13 +129,64 @@ fn zoom_join_uri(raw: &str) -> Option<String> {
     Some(deep.to_string())
 }
 
+/// How long a launcher is given to fail before it is believed.
+///
+/// **A launcher that has not exited has not failed.** Issue #100: where
+/// `xdg-open` runs the browser in the *foreground* — the ordinary case when
+/// the browser was not already running — the launcher lives as long as the
+/// browser session. Waiting for its exit meant waiting for the user to quit
+/// their browser, so `open_external` never returned, the OAuth accept loop
+/// below it never started, and sign-in hung with nothing on screen to say
+/// why. The same launch with the browser already up returned in 0s, which is
+/// why it looked like a browser problem and was reported against three of
+/// them.
+///
+/// The exit status is still worth having, so the wait is bounded rather than
+/// abandoned: issue #1's symptom was `xdg-open` exiting 4 *immediately*,
+/// having drawn nothing, and that is a real failure the user should be told
+/// about. Long enough to catch that, short enough that nobody feels a launch
+/// that worked.
+const LAUNCHER_VERDICT: Duration = Duration::from_millis(300);
+
+/// How often the launcher is checked while inside [`LAUNCHER_VERDICT`].
+const LAUNCHER_POLL: Duration = Duration::from_millis(10);
+
+/// Starts `cmd`, and waits only long enough to catch a launcher that fails on
+/// the spot.
+///
+/// A launcher still running when [`LAUNCHER_VERDICT`] is up has taken the URL
+/// and is left to it — reaped on a detached thread rather than waited on, so
+/// a browser session that outlives the sign-in does not leave a zombie behind
+/// for the life of the app.
+fn launch(cmd: &mut Command) -> std::io::Result<()> {
+    let mut child = cmd.spawn()?;
+    let started = Instant::now();
+    loop {
+        match child.try_wait()? {
+            Some(status) if status.success() => return Ok(()),
+            Some(status) => {
+                return Err(std::io::Error::other(format!(
+                    "launcher {:?} exited with {status}",
+                    cmd.get_program()
+                )))
+            }
+            None if started.elapsed() >= LAUNCHER_VERDICT => {
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
+                return Ok(());
+            }
+            None => std::thread::sleep(LAUNCHER_POLL),
+        }
+    }
+}
+
 /// Opens one URI with the default handler, the AppImage's environment stripped
 /// from the launcher when this process runs out of one.
 ///
 /// The same launcher list and first-success-wins loop as `open::that`, which
-/// this replaces at every call site; the one addition is [`sanitize`]. A
-/// launcher that exits non-zero is a failure worth reporting — issue #1's
-/// exact symptom was `xdg-open` exiting 4 with nothing on screen.
+/// this replaces at every call site; the additions are [`sanitize`] and
+/// [`launch`]'s bounded wait.
 fn open_one(url: &str) -> std::io::Result<()> {
     let appdir = std::env::var_os("APPDIR");
     let mut last_err = None;
@@ -143,14 +195,8 @@ fn open_one(url: &str) -> std::io::Result<()> {
             sanitize(&mut cmd, dir);
         }
         cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-        match cmd.status() {
-            Ok(s) if s.success() => return Ok(()),
-            Ok(s) => {
-                last_err = Some(std::io::Error::other(format!(
-                    "launcher {:?} exited with {s}",
-                    cmd.get_program()
-                )))
-            }
+        match launch(&mut cmd) {
+            Ok(()) => return Ok(()),
             Err(e) => last_err = Some(e),
         }
     }
@@ -205,6 +251,55 @@ pub(crate) fn open_external(url: &str) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Issue #100, as the reporter timed it: with the browser not already
+    /// running, `xdg-open` execs it in the foreground and does not come back
+    /// — his measurement was "exit 124, still blocked after 20s" against
+    /// "exit 0 in 0s" with the browser already up. A launcher standing in for
+    /// that must be judged and left alone, not waited on, or the accept loop
+    /// after it never starts.
+    ///
+    /// The assertion is on the clock rather than on a return value: the bug
+    /// was never a wrong answer, it was no answer at all.
+    #[cfg(unix)]
+    #[test]
+    fn a_launcher_that_keeps_running_is_taken_at_its_word() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "sleep 30"]);
+        cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+
+        let started = Instant::now();
+        let out = launch(&mut cmd);
+        let waited = started.elapsed();
+
+        assert!(out.is_ok(), "a launcher that has not exited has not failed: {out:?}");
+        assert!(
+            waited < Duration::from_secs(5),
+            "waited {waited:?} on a launcher that outlives the call — the sign-in hang is back",
+        );
+    }
+
+    /// The other half of the same trade, and the reason the wait is bounded
+    /// rather than dropped: issue #1 was `xdg-open` exiting 4 on the spot with
+    /// nothing drawn, and a user who is told "could not open a browser" can
+    /// act on it.
+    #[cfg(unix)]
+    #[test]
+    fn a_launcher_that_fails_on_the_spot_is_still_reported() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "exit 4"]);
+        cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        assert!(launch(&mut cmd).is_err(), "an immediate non-zero exit is a failure");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_launcher_that_succeeds_on_the_spot_is_a_success() {
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "exit 0"]);
+        cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        assert!(launch(&mut cmd).is_ok());
+    }
 
     #[test]
     fn zoom_meetings_use_the_registered_protocol() {
