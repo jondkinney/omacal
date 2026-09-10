@@ -122,6 +122,8 @@ export type AppSettings = {
   weekStartsToday: boolean;
   /** Number of columns in that rolling Week view, including today. */
   weekViewDays: WeekViewDays;
+  visibleStartHour: number;
+  visibleEndHour: number;
   /** Whether the system tray icon is shown. On by default — the tray is where
    *  Quit lives. Turning it off is for setups where something else carries
    *  those actions, like Omarchy 4's bar widget. */
@@ -322,3 +324,5 @@ export const minutesOf = (ms: number): number => Math.round(ms / 60_000);
 export const msOfMinutes = (min: number): number => Math.round(min * 60_000);
 
 export const setDateFormatPreference = (format: DateFormat) => invoke<AppSettings>('set_date_format', { format });
+
+export const setVisibleHours = (start: number, end: number) => invoke<AppSettings>("set_visible_hours", { start, end });

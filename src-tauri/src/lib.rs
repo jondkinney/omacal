@@ -1695,6 +1695,7 @@ pub fn run() {
             settings::set_week_start,
             settings::set_week_starts_today,
             settings::set_week_view_days,
+            settings::set_visible_hours,
             events::event_detail,
             events::respond_to_event,
             events::refresh_event,
