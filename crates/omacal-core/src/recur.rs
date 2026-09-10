@@ -1,5 +1,5 @@
 use crate::layout::Interval;
-use crate::zone::midnight_in_zone;
+use crate::zone::{date_in_zone, midnight_in_zone};
 use chrono::TimeZone;
 use rrule::{RRuleSet, Tz};
 use std::str::FromStr;
@@ -45,25 +45,34 @@ fn to_chrono(ms: i64) -> Result<chrono::DateTime<Tz>, RecurError> {
 /// Renders the DTSTART line in the series' own zone, which is what makes a
 /// "09:00 every Monday" meeting stay at 09:00 across a DST transition.
 ///
-/// All-day events are the exception: RFC 5545's `VALUE=DATE` form carries no
-/// TZID, so its calendar date must be read directly off `dtstart_ms` *in
-/// UTC* (the convention this crate stores all-day dates under) rather than
-/// converted through `zone` first. Converting through `zone` here silently
-/// shifts the date by ±1 day whenever `zone`'s offset carries UTC midnight
-/// across a day boundary (e.g. `America/Los_Angeles`, UTC-7/-8) — that was a
-/// real bug in an earlier version of this function. It also matters because
-/// `rrule` parses a TZID-less `VALUE=DATE` DTSTART against `Tz::LOCAL` (the
-/// *host machine's* system zone) internally; see `midnight_in_zone` for how
-/// the occurrences it produces are re-anchored to something host-independent
-/// on the way back out.
+/// An all-day series takes RFC 5545's `VALUE=DATE` form, which carries no
+/// TZID — but the date it carries is still read **in the series' own zone**,
+/// because that is where the instant came from: the store holds midnight in
+/// the *calendar's* zone for an all-day event, and both resolvers put it
+/// there (`omacal_sync::convert` for Google's bare `date`, `omacal_caldav`'s
+/// `resolve` for `DTSTART;VALUE=DATE`). [`crate::zone`] says the same thing,
+/// and reading it in any other zone is a day out on one side of midnight or
+/// the other.
+///
+/// **Reading it in UTC was issue #44.** Every zone ahead of UTC puts local
+/// midnight on the *previous* UTC day — Wednesday 12 August in Brisbane is
+/// 14:00 Tuesday 11 August UTC — so the whole series expanded from the wrong
+/// anchor and every occurrence landed a day early. Zones behind UTC were
+/// unaffected, which is why the report named positive offsets, and why this
+/// survived: the fixtures that covered it were built from midnight UTC, an
+/// instant the store never actually holds.
+///
+/// It is [`crate::zone::date_in_zone`] rather than a second derivation for
+/// the reason that module exists: this project has twice nearly shipped a
+/// second date formatter, and the copy that got written here is what was
+/// wrong. Re-anchoring on the way back out is `midnight_in_zone`'s job —
+/// `rrule` parses a TZID-less `VALUE=DATE` DTSTART against `Tz::LOCAL`, the
+/// *host machine's* zone, so the occurrences it hands back have to be pinned
+/// to something host-independent before they mean anything.
 fn dtstart_line(series: &Series, zone: chrono_tz::Tz) -> Result<String, RecurError> {
     if series.is_all_day {
-        let date = chrono::Utc
-            .timestamp_millis_opt(series.dtstart_ms)
-            .single()
-            .ok_or(RecurError::OutOfRange(series.dtstart_ms))?
-            .date_naive();
-        return Ok(format!("DTSTART;VALUE=DATE:{}", date.format("%Y%m%d")));
+        let date = date_in_zone(series.dtstart_ms, series.dtstart_tz);
+        return Ok(format!("DTSTART;VALUE=DATE:{}", date.replace('-', "")));
     }
 
     let local = chrono::Utc
@@ -154,10 +163,16 @@ mod tests {
     const HOUR: i64 = 3_600_000;
     const DAY: i64 = 24 * HOUR;
 
-    /// Midnight UTC of Monday 2026-08-03 — the convention this crate stores
-    /// an all-day event's calendar date under. Derived from the
-    /// independently-verified `MON_0900_SOFIA` rather than a fresh literal.
-    const ALL_DAY_AUG3: i64 = MON_0900_SOFIA - 6 * HOUR;
+    /// Monday 2026-08-03, all-day, as the **store** holds it: midnight in the
+    /// calendar's own zone, not midnight UTC. One constant per zone, because
+    /// that is the whole point — the same calendar date is a different
+    /// instant in each, and a fixture that used one instant for both was
+    /// asserting a convention no sync ever writes (issue #44). Both derived
+    /// from the independently-verified `MON_0900_SOFIA` rather than a fresh
+    /// literal: Sofia is EEST (+3) and Los Angeles PDT (-7) throughout early
+    /// August 2026, so neither has a DST edge here.
+    const ALL_DAY_AUG3_SOFIA: i64 = MON_0900_SOFIA - 9 * HOUR;
+    const ALL_DAY_AUG3_LA: i64 = MON_0900_SOFIA + HOUR;
 
     fn weekly(rules: &[&str]) -> Vec<String> {
         rules.iter().map(|s| s.to_string()).collect()
@@ -433,16 +448,16 @@ mod tests {
     #[test]
     fn an_all_day_series_resolves_to_local_midnight_in_a_zone_ahead_of_utc() {
         let s = Series {
-            dtstart_ms: ALL_DAY_AUG3, dtstart_tz: "Europe/Sofia",
+            dtstart_ms: ALL_DAY_AUG3_SOFIA, dtstart_tz: "Europe/Sofia",
             duration_ms: DAY, is_all_day: true,
             recurrence: &weekly(&["RRULE:FREQ=DAILY;COUNT=3"]),
         };
-        let out = expand(&s, ALL_DAY_AUG3 - DAY, ALL_DAY_AUG3 + 10 * DAY, 50).unwrap().intervals;
+        let out = expand(&s, ALL_DAY_AUG3_SOFIA - DAY, ALL_DAY_AUG3_SOFIA + 10 * DAY, 50).unwrap().intervals;
         assert_eq!(out.len(), 3);
         for (k, interval) in out.iter().enumerate() {
             let k = k as i64;
-            // Sofia is EEST (+3) throughout early August 2026: no DST edge here.
-            let expected_start = ALL_DAY_AUG3 + k * DAY - 3 * HOUR;
+            // Each occurrence is the same wall-clock midnight, a day further on.
+            let expected_start = ALL_DAY_AUG3_SOFIA + k * DAY;
             assert_eq!(interval.start_ms, expected_start, "occurrence {k}: not local midnight in Europe/Sofia");
             assert_eq!(interval.end_ms - interval.start_ms, DAY, "occurrence {k}: duration not preserved");
         }
@@ -451,19 +466,47 @@ mod tests {
     #[test]
     fn an_all_day_series_resolves_to_local_midnight_in_a_zone_behind_utc() {
         let s = Series {
-            dtstart_ms: ALL_DAY_AUG3, dtstart_tz: "America/Los_Angeles",
+            dtstart_ms: ALL_DAY_AUG3_LA, dtstart_tz: "America/Los_Angeles",
             duration_ms: DAY, is_all_day: true,
             recurrence: &weekly(&["RRULE:FREQ=DAILY;COUNT=3"]),
         };
-        let out = expand(&s, ALL_DAY_AUG3 - DAY, ALL_DAY_AUG3 + 10 * DAY, 50).unwrap().intervals;
+        let out = expand(&s, ALL_DAY_AUG3_LA - DAY, ALL_DAY_AUG3_LA + 10 * DAY, 50).unwrap().intervals;
         assert_eq!(out.len(), 3);
         for (k, interval) in out.iter().enumerate() {
             let k = k as i64;
-            // Los Angeles is PDT (-7) throughout early August 2026.
-            let expected_start = ALL_DAY_AUG3 + k * DAY + 7 * HOUR;
+            let expected_start = ALL_DAY_AUG3_LA + k * DAY;
             assert_eq!(interval.start_ms, expected_start, "occurrence {k}: not local midnight in America/Los_Angeles");
             assert_eq!(interval.end_ms - interval.start_ms, DAY, "occurrence {k}: duration not preserved");
         }
+    }
+
+    /// Issue #44, reproduced from the reporter's own data rather than a
+    /// simplification of it: a fortnightly all-day event in Brisbane
+    /// (UTC+10, no DST), `DTSTART;VALUE=DATE:20260812` with
+    /// `RRULE:FREQ=WEEKLY;INTERVAL=2`, whose September occurrence he expected
+    /// on Wednesday the 9th and OmaCal showed on Tuesday the 8th.
+    ///
+    /// The master is right and the expansion was wrong: midnight on 12 August
+    /// in Brisbane is 14:00 on 11 August UTC, so reading the anchor date in
+    /// UTC started the series on Tuesday and every fortnight after it landed
+    /// a Tuesday. Asserted on the *dates*, in the calendar's zone, because
+    /// that is the language the bug was reported in.
+    #[test]
+    fn a_fortnightly_all_day_series_keeps_its_weekday_in_a_zone_ahead_of_utc() {
+        // 2026-08-12 00:00 Australia/Brisbane, the instant the reporter's
+        // stored master actually holds.
+        const AUG12_BRISBANE: i64 = 1_786_456_800_000;
+        let s = Series {
+            dtstart_ms: AUG12_BRISBANE, dtstart_tz: "Australia/Brisbane",
+            duration_ms: DAY, is_all_day: true,
+            recurrence: &weekly(&["RRULE:FREQ=WEEKLY;INTERVAL=2"]),
+        };
+        let out = expand(&s, AUG12_BRISBANE - DAY, AUG12_BRISBANE + 30 * DAY, 50).unwrap().intervals;
+        let dates: Vec<String> = out
+            .iter()
+            .map(|i| crate::zone::date_in_zone(i.start_ms, "Australia/Brisbane"))
+            .collect();
+        assert_eq!(dates, ["2026-08-12", "2026-08-26", "2026-09-09"]);
     }
 
     /// Regression guard for the fix: keeping DTSTART as `VALUE=DATE` (rather
@@ -473,7 +516,7 @@ mod tests {
     #[test]
     fn exdate_removes_an_instance_from_an_all_day_series() {
         let s = Series {
-            dtstart_ms: ALL_DAY_AUG3, dtstart_tz: "Europe/Sofia",
+            dtstart_ms: ALL_DAY_AUG3_SOFIA, dtstart_tz: "Europe/Sofia",
             duration_ms: DAY, is_all_day: true,
             recurrence: &weekly(&[
                 "RRULE:FREQ=DAILY;COUNT=3",
@@ -481,9 +524,9 @@ mod tests {
                 "EXDATE;VALUE=DATE:20260804",
             ]),
         };
-        let out = expand(&s, ALL_DAY_AUG3 - DAY, ALL_DAY_AUG3 + 10 * DAY, 50).unwrap().intervals;
+        let out = expand(&s, ALL_DAY_AUG3_SOFIA - DAY, ALL_DAY_AUG3_SOFIA + 10 * DAY, 50).unwrap().intervals;
         assert_eq!(out.len(), 2, "the excluded instance should not be produced");
-        let excluded_start = ALL_DAY_AUG3 + DAY - 3 * HOUR; // would-be Aug 4 midnight Sofia
+        let excluded_start = ALL_DAY_AUG3_SOFIA + DAY; // Aug 4 midnight Sofia
         assert!(out.iter().all(|i| i.start_ms != excluded_start));
     }
 }
