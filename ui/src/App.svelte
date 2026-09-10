@@ -27,7 +27,7 @@
     type EventDetail, type Occurrence, type SendUpdates,
   } from './lib/eventdetail';
   import {
-    blankValue, blankValueAt, dateOf, pastedValue, previewGhost, timeOf, toEventInput,
+    blankValue, blankValueAt, dateOf, duplicatedValue, pastedValue, previewGhost, timeOf, toEventInput,
     type FormGhost,
     blankAllDayValue,
     valueFromDetail, type EventFormResult, type EventFormValue, type Scope,
@@ -1306,7 +1306,7 @@
    *  popover is already closed by then, and `occurrenceStartMs` is the one
    *  value an edit cannot be allowed to guess. */
   type FormRequest =
-    | { mode: 'create'; anchor: Rect; initial: EventFormValue }
+    | { mode: 'create'; anchor: Rect; initial: EventFormValue; chooseCalendar?: boolean }
     | { mode: 'edit'; anchor: Rect; initial: EventFormValue; id: number; occurrenceStartMs: number };
 
   let form = $state<FormRequest | null>(null);
@@ -1341,6 +1341,16 @@
     copiedEvent = valueFromDetail(
       occurrence.detail, occurrence.startMs, occurrence.endMs,
     );
+  }
+
+  function duplicateOccurrence(occurrence: Occurrence, anchor: Rect) {
+    const copied = valueFromDetail(occurrence.detail, occurrence.startMs, occurrence.endMs);
+    const calendarId = offerableCalendarId(copied.calendarId, calendars);
+    closeGridEvent();
+    form = {
+      mode: 'create', anchor, chooseCalendar: true,
+      initial: duplicatedValue(copied, blankValue(Date.now(), calendarId)),
+    };
   }
 
   // Where the mouse last was, for paste: Ctrl+V lands the copy on the day
@@ -2048,6 +2058,7 @@
                   oncreate={newEventAt} oncreateallday={newAllDayEventOver}
                   onedit={openEdit} ondelete={askDelete}
                   oncopy={copyOccurrence}
+                  onduplicate={createCalendarId === null ? null : duplicateOccurrence}
           onmove={moveOccurrence}
           ondraftmove={(span) => formEl?.applySpan(span)}
           onresponded={refreshAfterWrite} />
@@ -2121,6 +2132,7 @@
     onedit={() => openEdit(occurrence, rect)}
     ondelete={() => askDelete(occurrence, rect)}
     oncopy={() => copyOccurrence(occurrence)}
+    onduplicate={createCalendarId === null ? null : () => duplicateOccurrence(occurrence, rect)}
   />
 {/if}
 
@@ -2148,6 +2160,7 @@
     bind:this={formEl}
     anchor={form.anchor}
     initial={form.initial}
+    chooseCalendar={form.mode === 'create' && form.chooseCalendar === true}
     {calendars}
     onsave={saveForm}
     oncancel={() => (form = null)}

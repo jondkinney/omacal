@@ -28,7 +28,7 @@
   import { cursorNamesEvent, type KeyboardCursor } from './keyboardnav';
   import { dateOf } from './eventform';
 
-  let { week, weather = null, weatherStale = false, onweather = null, tasks = null, ontaskmove = null, ontasktoggle = null, formPreview = null, createColor = null, revealNowRequest = 0, keyboardCursor = null, onpan = null, hourPx = $bindable(HOUR_PX_DEFAULT), visibleStartMs = null, visibleDays = null, onerror = null, oncreate, oncreateallday, onedit, ondelete, oncopy, onmove, ondraftmove = null, onresponded }: {
+  let { week, weather = null, weatherStale = false, onweather = null, tasks = null, ontaskmove = null, ontasktoggle = null, formPreview = null, createColor = null, revealNowRequest = 0, keyboardCursor = null, onpan = null, hourPx = $bindable(HOUR_PX_DEFAULT), visibleStartMs = null, visibleDays = null, onerror = null, oncreate, oncreateallday, onedit, ondelete, oncopy, onduplicate, onmove, ondraftmove = null, onresponded }: {
     /** Padded since 2026-09-03: `visibleDays` from `visibleStartMs` are what
      *  is on screen, and the days either side are the track's to slide into
      *  under a finger (`weekwindow.ts`). Both null — a standalone mount, a
@@ -117,6 +117,7 @@
      *  what Ctrl+V pastes. Not through `relay` — a copy leaves the popover
      *  open, the way every selection survives being copied. */
     oncopy: (occurrence: Occurrence) => void;
+    onduplicate: ((occurrence: Occurrence, rect: Rect) => void) | null;
     /** A completed drag, handed up rather than written here: the grid decides
      *  *which occurrence* moved and *where to*, and `App` owns every write —
      *  the same split `oncreate`/`onedit`/`ondelete` already use. `WeekGrid`
@@ -1670,6 +1671,7 @@
     onedit={() => relay(onedit, occurrence, rect)}
     ondelete={() => relay(ondelete, occurrence, rect)}
     oncopy={() => oncopy(occurrence)}
+    onduplicate={onduplicate ? () => relay(onduplicate!, occurrence, rect) : null}
   />
 {/if}
 
