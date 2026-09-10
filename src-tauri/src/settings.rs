@@ -534,6 +534,8 @@ pub struct AppSettings {
     /// Total columns in the rolling Week view, including today. Only 3, 5 and
     /// 7 are written; an absent or hand-edited value falls back to 7.
     pub week_view_days: u8,
+    pub visible_start_hour: u8,
+    pub visible_end_hour: u8,
     /// The IANA zone every time in the app is read in, or `None` for the
     /// system's. Applied by exporting `TZ` before the webview starts — the
     /// one mechanism that keeps the browser, Rust, notifications and the
@@ -620,6 +622,7 @@ pub async fn read_settings(pool: &SqlitePool) -> AppSettings {
 /// [`read_settings`] with the appearance baseline supplied, so a test can
 /// tell the Omarchy story and the other one on whichever host runs it.
 pub(crate) async fn read_settings_with(pool: &SqlitePool, baseline: u8) -> AppSettings {
+    let (visible_start_hour, visible_end_hour) = visible_hours(pool).await;
     let absolute_transparency = read(pool, APPEARANCE_TRANSPARENCY_SEMANTICS_KEY)
         .await
         .as_deref()
@@ -739,6 +742,8 @@ pub(crate) async fn read_settings_with(pool: &SqlitePool, baseline: u8) -> AppSe
         // The select offers exactly these three. A row edited by hand must not
         // become an unbounded query or a zero-column grid, so all other values
         // return to the old seven-day shape.
+        visible_start_hour,
+        visible_end_hour,
         week_view_days: match read(pool, WEEK_VIEW_DAYS_KEY).await.as_deref() {
             Some("3") => 3,
             Some("5") => 5,
@@ -1449,12 +1454,41 @@ async fn set_week_view_days_impl(pool: &SqlitePool, days: u8) -> anyhow::Result<
     Ok(read_settings(pool).await)
 }
 
+async fn visible_hours(pool: &SqlitePool) -> (u8, u8) {
+    read(pool, "visible_hours").await.and_then(|value| {
+        let (start, end) = value.split_once(',')?;
+        let (start, end) = (start.parse::<u8>().ok()?, end.parse::<u8>().ok()?);
+        (start < end && end <= 24).then_some((start, end))
+    }).unwrap_or((0, 24))
+}
+
+#[tauri::command]
+pub async fn set_visible_hours(app: tauri::AppHandle, state: tauri::State<'_, AppState>, start: u8, end: u8) -> Result<AppSettings, String> {
+    if start >= end || end > 24 { return Err("Start time must be before end time.".into()); }
+    write(&state.pool, "visible_hours", &format!("{start},{end}")).await.map_err(|e| crate::errors::user_facing(&e))?;
+    refresh_menu_surfaces(&app, &state).await;
+    Ok(read_settings(&state.pool).await)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     async fn pool() -> SqlitePool {
         omacal_store::connect_memory().await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn visible_hours_default_and_reject_invalid_stored_ranges() {
+        let p = pool().await;
+        assert_eq!(visible_hours(&p).await, (0, 24));
+        write(&p, "visible_hours", "5,23").await.unwrap();
+        let settings = read_settings(&p).await;
+        assert_eq!((settings.visible_start_hour, settings.visible_end_hour), (5, 23));
+        for value in ["5,5", "23,5", "0,25", "-1,23", "oops"] {
+            write(&p, "visible_hours", value).await.unwrap();
+            assert_eq!(visible_hours(&p).await, (0, 24));
+        }
     }
 
     /// A fresh install has written none of these, and that is the ordinary

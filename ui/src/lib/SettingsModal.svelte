@@ -23,7 +23,7 @@
     setAppearance, APPEARANCE_OPTIONS,
     setQuitOnClose, setSecondTimezone, setSyncInterval, setTemperatureUnit, setTimeFormat,
     setShowDate, setTrayIcon, setWeatherEnabled, setWeekStart,
-    setWeekStartsToday, setWeekViewDays,
+    setWeekStartsToday, setWeekViewDays, setVisibleHours,
     type AppSettings, type Appearance, type StartOnLogin, type WeekViewDays,
     type WindowFrame, WINDOW_FRAME_OPTIONS, setWindowFrame,
   } from './settings';
@@ -31,6 +31,10 @@
   import type { TemperatureUnit } from './temperature';
   import type { WeekStartDay } from './weekstart';
 
+  async function changeVisibleHours(start: number, end: number) {
+    try { settings = await setVisibleHours(start, end); onsettingschange?.(settings); }
+    catch (e) { note = { text: String(e), kind: "error" }; }
+  }
   let {
     accounts,
     version = '',
@@ -1007,6 +1011,18 @@
       <!-- The canvas can only fade where the window can be seen through, and
            macOS's cannot (AppSettings.transparentWindow); a slider that moved
            nothing would read as broken, so there is no slider there. -->
+      <section class="appearance-section" aria-labelledby="visible-hours-heading">
+        <h2 id="visible-hours-heading">Visible hours</h2>
+        <div class="visible-hours-controls">
+          <label>Start time <select aria-label="Visible hours start time" value={settings?.visibleStartHour ?? 0} disabled={!settings} onchange={(e) => changeVisibleHours(Number(e.currentTarget.value), settings?.visibleEndHour ?? 24)}>
+            {#each Array.from({ length: 24 }, (_, h) => h) as h}<option value={h} disabled={h >= (settings?.visibleEndHour ?? 24)}>{formatClock(new Date(2020, 0, 1, h).getTime(), settings?.timeFormat ?? '24h')}</option>{/each}
+          </select></label>
+          <label>End time <select aria-label="Visible hours end time" value={settings?.visibleEndHour ?? 24} disabled={!settings} onchange={(e) => changeVisibleHours(settings?.visibleStartHour ?? 0, Number(e.currentTarget.value))}>
+            {#each Array.from({ length: 24 }, (_, h) => h + 1) as h}<option value={h} disabled={h <= (settings?.visibleStartHour ?? 0)}>{h === 24 ? 'Midnight (end of day)' : formatClock(new Date(2020, 0, 1, h).getTime(), settings?.timeFormat ?? '24h')}</option>{/each}
+          </select></label>
+        </div>
+        <p class="hint">Hours shown in Day and Week. Events outside this range remain in the agenda and search.</p>
+      </section>
       {#if settings?.transparentWindow ?? true}
       <section class="appearance-section" aria-labelledby="background-style-heading">
         <h2 id="background-style-heading">Calendar background</h2>
@@ -1414,6 +1430,8 @@
 </div>
 
 <style>
+  .visible-hours-controls { display: flex; flex-wrap: wrap; gap: 12px; }
+  .visible-hours-controls label { display: flex; flex-direction: column; gap: 8px; }
   .appearance-section { align-self: stretch; display: flex; flex-direction: column;
                         gap: 14px; padding: 8px 0 16px; margin-top: 16px; }
   .appearance-section + .appearance-section {

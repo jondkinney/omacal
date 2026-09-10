@@ -1,5 +1,6 @@
 <!-- ui/src/lib/WeekGrid.svelte -->
 <script lang="ts">
+  import { visibleHours } from "./visiblehours.svelte";
   import { clockFormat } from './clock.svelte';
   import { gutterWidth, secondZone } from './secondzone.svelte';
   import { temperatureUnit } from './tempunit.svelte';
@@ -152,7 +153,8 @@
 
   // Every hour, not every second one: a rule at 10:00 with nothing at 11:00
   // makes a meeting's edge unplaceable by eye.
-  const HOURS = Array.from({ length: 24 }, (_, i) => i);
+  const HOURS = $derived(Array.from({ length: visibleHours().end - visibleHours().start }, (_, i) => i + visibleHours().start));
+  const visibleHeight = $derived(Math.round(hourPx) * (visibleHours().end - visibleHours().start));
   const DOW = ['SUN', 'MON', 'TUE', 'WED', 'THU', 'FRI', 'SAT'];
   // Named from the day's own date, not its position in the week — the same
   // rule works for a 7-column week and a 1-column day.
@@ -170,6 +172,14 @@
     return (d.getTime() - day.start_ms) / (day.end_ms - day.start_ms);
   };
 
+  function crop(day: { start_ms: number; end_ms: number }) {
+    const start = hourFrac(day, visibleHours().start), end = hourFrac(day, visibleHours().end);
+    return end > start ? { start, span: end - start } : { start: 0, span: 1 };
+  }
+  function columnStyle(day: { start_ms: number; end_ms: number }) {
+    const range = crop(day), height = visibleHeight / range.span;
+    return `height:${height}px;min-height:0;top:${-range.start * height}px`;
+  }
   // The gutter labels are shared by all seven columns, so they use the first
   // ordinary-length day; a DST day's own rules still come from its own span.
   const gutterDay = $derived(
@@ -394,9 +404,11 @@
     if (revealRequested && !today) return;
     if (!revealRequested && hasScrolled) return;
 
-    const frac = today
+    const fullFrac = today
       ? (now - today.start_ms) / (today.end_ms - today.start_ms)
       : hourFrac(gutterDay, 8);
+    const range = crop(today ?? gutterDay);
+    const frac = (fullFrac - range.start) / range.span;
     hasScrolled = true;
     if (revealRequested) handledRevealNowRequest = revealNowRequest;
     // After layout: scrollHeight is meaningless until the columns have height.
@@ -1511,7 +1523,7 @@
 />
 
 <div class="grid body quiet-scroll" style="--cols:{renderedDays.length}; --visible:{visible}; --vis:{renderVis}; --pan:{panDays}; --gutter:{gutterWidth()}; --hour-px:{Math.round(hourPx)}px" bind:this={bodyEl} data-testid="week-body" onwheel={wheelPan}>
-  <div class="gutter">
+  <div class="hour-crop ruler" style:height={`${visibleHeight}px`}><div class="gutter" style={columnStyle(gutterDay)}>
     {#each HOURS as h}
       {#if secondZone()}
         <!-- The second clock's reading of this same rule — one instant, two
@@ -1522,13 +1534,13 @@
       {/if}
       <span style="top:{hourFrac(gutterDay, h) * 100}%">{gutterLabel(h, clockFormat())}</span>
     {/each}
-  </div>
+  </div></div>
 
   <div class="track"><div class="cols" class:sliding={panActive}>
   {#each renderedDays as day, dayIndex (day.start_ms)}
     {@const isToday = day.start_ms === todayStart}
     {@const ghost = sweepStyle(day)}
-    <div class="col" class:today={isToday}
+    <div class="hour-crop" style:height={`${visibleHeight}px`}><div class="col" style={columnStyle(day)} class:today={isToday}
          class:keyboard={keyboardCursor?.dayStartMs === day.start_ms}
          data-start-ms={day.start_ms}
          data-kbd-selected-day={keyboardCursor?.dayStartMs === day.start_ms ? '' : undefined}>
@@ -1623,7 +1635,7 @@
           style="top:{((nowMs - day.start_ms) / (day.end_ms - day.start_ms)) * 100}%"
         ></div>
       {/if}
-    </div>
+    </div></div>
   {/each}
   </div></div>
 </div>
@@ -1662,6 +1674,10 @@
 {/if}
 
 <style>
+  .hour-crop { overflow: clip; min-width: 0; }
+  /* Real headroom works in WebKit too; overflow-clip-margin alone does not.
+     The negative margin keeps hour labels aligned with the event grid. */
+  .ruler { padding-top: 8px; margin-top: -8px; }
   /* `--gutter` from `secondzone.svelte`'s one exported width: 44px alone,
      wider when the second clock takes the outer lane. A var rather than two
      hardcodings because the head row here, the body row below and the
