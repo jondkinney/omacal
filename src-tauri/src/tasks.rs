@@ -178,7 +178,7 @@ async fn update_impl(
     let due = due_for(due_ms, due_all_day, &cal_tz)?;
     let now = jiff::Timestamp::from_millisecond(crate::now_ms())?;
     let edit = omacal_caldav::TodoEdit { summary, due, description: notes };
-    let patched = omacal_caldav::patch_todo_fields(raw, &task.uid, &edit, now)
+    let patched = omacal_caldav::patch_todo_fields(raw, &task.uid, &edit, &cal_tz, now)
         .ok_or_else(|| anyhow::anyhow!("could not rewrite the task's resource"))?;
 
     let new_etag = client
@@ -318,14 +318,19 @@ async fn create_impl(
     // The window's quick-add says dates, not instants: "by Friday", not
     // "by 16:23:07". The CLI can say an hour, and then it means one.
     let due_time = due_ms.and_then(|ms| jiff::Timestamp::from_millisecond(ms).ok()).map(|ts| {
+        let tz = jiff::tz::TimeZone::get(&cal_tz).unwrap_or(jiff::tz::TimeZone::UTC);
+        let z = ts.to_zoned(tz);
         if all_day {
-            let tz = jiff::tz::TimeZone::get(&cal_tz).unwrap_or(jiff::tz::TimeZone::UTC);
-            omacal_caldav::IcsTime::Date(ts.to_zoned(tz).date())
+            omacal_caldav::IcsTime::Date(z.date())
         } else {
-            omacal_caldav::IcsTime::Utc(ts)
+            // In the calendar's zone, not as a bare UTC instant (issue
+            // #102): `cal_tz` was already being handed to `new_todo_ics`
+            // and ignored there, which is the shape of a wire that was
+            // meant to be connected and never was.
+            omacal_caldav::IcsTime::Zoned { dt: z.datetime(), tzid: cal_tz.clone() }
         }
     });
-    let ics = omacal_caldav::new_todo_ics(&uid, summary, due_time.as_ref().map(|t| (t, cal_tz.as_str())), now);
+    let ics = omacal_caldav::new_todo_ics(&uid, summary, due_time.as_ref(), now);
 
     let href = format!("{}/{uid}.ics", collection_url.trim_end_matches('/'));
     let new_etag = client.put(&href, &ics, None).await.map_err(anyhow::Error::from)?;

@@ -599,12 +599,58 @@ pub enum TodoDue {
 }
 
 impl TodoDue {
-    fn line(&self) -> String {
+    /// The `DUE` line, with a timed due rendered as a wall time in the
+    /// calendar's own zone.
+    ///
+    /// **Not a bare UTC stamp** (issue #102). Every other client writes a
+    /// task's due time the way it was authored — this crate's own event
+    /// writer says so where [`WriteTime`] is defined, "authored events keep
+    /// their author's zone, like every client" — and the task writer was the
+    /// one place rendering an instant straight to `Z`. A zone that jiff
+    /// cannot resolve falls back to UTC's spelling rather than dropping the
+    /// property: a due an hour off beats a due that vanished, the same trade
+    /// [`resolve`] makes on the way in.
+    fn line(&self, cal_tz: &str) -> String {
         match self {
             TodoDue::Date(d) => {
                 format!("DUE;VALUE=DATE:{:04}{:02}{:02}", d.year(), d.month(), d.day())
             }
-            TodoDue::At(t) => format!("DUE:{}", fmt_utc(*t)),
+            TodoDue::At(t) => match jiff::tz::TimeZone::get(cal_tz) {
+                Ok(tz) => {
+                    let z = t.to_zoned(tz);
+                    format!(
+                        "DUE;TZID={cal_tz}:{:04}{:02}{:02}T{:02}{:02}{:02}",
+                        z.year(), z.month(), z.day(), z.hour(), z.minute(), z.second()
+                    )
+                }
+                Err(_) => format!("DUE:{}", fmt_utc(*t)),
+            },
+        }
+    }
+
+    /// Whether `DTSTART` may stay beside this due.
+    ///
+    /// RFC 5545 §3.6.2 asks two things of the pair: the same value type, and
+    /// a `DTSTART` strictly earlier than the `DUE`. A resource that breaks
+    /// either is one a strict server is entitled to reject or rewrite, and
+    /// rewriting is the shape of issue #102 — the time went out and did not
+    /// come back.
+    ///
+    /// OmaCal has no notion of a task *start*, so there is no truthful value
+    /// to put there when the pair no longer agrees; the property is dropped
+    /// instead of being invented. Kept whenever it is still valid, because
+    /// discarding another client's data is the cost of last resort.
+    fn admits_start(&self, start: &IcsTime, cal_tz: &str) -> bool {
+        match (self, start) {
+            (TodoDue::Date(due), IcsTime::Date(from)) => from < due,
+            // A bare date beside a timestamp, either way round.
+            (TodoDue::Date(_), _) | (_, IcsTime::Date(_)) => false,
+            // Both are DATE-TIME; the ordering is the remaining question, and
+            // `resolve` is what already turns each spelling of one into an
+            // instant.
+            (TodoDue::At(due), other) => resolve(other, cal_tz)
+                .and_then(|(ms, _, _)| Timestamp::from_millisecond(ms).ok())
+                .is_some_and(|from| from < *due),
         }
     }
 }
@@ -614,7 +660,13 @@ impl TodoDue {
 /// SEQUENCE goes up and LAST-MODIFIED/DTSTAMP are restamped, which is what
 /// tells every other client that this version supersedes the one they hold.
 /// A task with no SEQUENCE is treated as 0, per the RFC.
-pub fn patch_todo_fields(raw: &str, uid: &str, edit: &TodoEdit, now: Timestamp) -> Option<String> {
+///
+/// `cal_tz` is the calendar's zone: it is the zone a timed due goes out in,
+/// and the one an existing `DTSTART` is read back in to decide whether it may
+/// stay. See [`TodoDue::line`] and [`TodoDue::admits_start`] — a task list
+/// created from Apple Reminders carries a `DTSTART`, and leaving a bare-date
+/// one beside a newly timed `DUE` is the invalid pair issue #102 describes.
+pub fn patch_todo_fields(raw: &str, uid: &str, edit: &TodoEdit, cal_tz: &str, now: Timestamp) -> Option<String> {
     patch_todo(raw, uid, |inner| {
         let sequence = inner
             .iter()
@@ -622,6 +674,20 @@ pub fn patch_todo_fields(raw: &str, uid: &str, edit: &TodoEdit, now: Timestamp) 
             .and_then(|l| l.split_once(':'))
             .and_then(|(_, v)| v.trim().parse::<i64>().ok())
             .unwrap_or(0);
+        // A `DTSTART` the resource already carries survives only while it
+        // still agrees with the new `DUE`; the RFC wants the same value type
+        // and an earlier instant, and neither is ours to fake.
+        let drop_start = edit.due.is_some_and(|due| {
+            inner
+                .iter()
+                .filter(|l| {
+                    let u = l.to_ascii_uppercase();
+                    u.starts_with("DTSTART:") || u.starts_with("DTSTART;")
+                })
+                .filter_map(|l| parse_line(l))
+                .any(|p| parse_time(&p).is_none_or(|t| !due.admits_start(&t, cal_tz)))
+        });
+
         let mut kept: Vec<String> = inner
             .iter()
             .filter(|l| {
@@ -639,13 +705,14 @@ pub fn patch_todo_fields(raw: &str, uid: &str, edit: &TodoEdit, now: Timestamp) 
                     || u.starts_with("DESCRIPTION;")
                     || u.starts_with("SEQUENCE:")
                     || u.starts_with("LAST-MODIFIED:")
-                    || u.starts_with("DTSTAMP:"))
+                    || u.starts_with("DTSTAMP:")
+                    || (drop_start && (u.starts_with("DTSTART:") || u.starts_with("DTSTART;"))))
             })
             .cloned()
             .collect();
         kept.push(format!("SUMMARY:{}", escape(edit.summary)));
         if let Some(due) = edit.due {
-            kept.push(due.line());
+            kept.push(due.line(cal_tz));
         }
         if let Some(text) = edit.description {
             kept.push(format!("DESCRIPTION:{}", escape(text)));
@@ -737,7 +804,11 @@ pub fn patch_todo_status(raw: &str, uid: &str, completed: bool, now: Timestamp) 
 }
 
 /// A brand-new single-VTODO resource.
-pub fn new_todo_ics(uid: &str, summary: &str, due: Option<(&IcsTime, &str)>, now: Timestamp) -> String {
+///
+/// No `DTSTART`: OmaCal has no notion of when a task *starts*, and the RFC
+/// only constrains the property when it is there. See [`TodoDue::line`] for
+/// why the due itself carries a zone rather than a `Z`.
+pub fn new_todo_ics(uid: &str, summary: &str, due: Option<&IcsTime>, now: Timestamp) -> String {
     let mut lines = vec![
         "BEGIN:VCALENDAR".to_string(),
         "VERSION:2.0".to_string(),
@@ -748,7 +819,7 @@ pub fn new_todo_ics(uid: &str, summary: &str, due: Option<(&IcsTime, &str)>, now
         format!("SUMMARY:{}", escape(summary)),
         "STATUS:NEEDS-ACTION".to_string(),
     ];
-    if let Some((due, _cal_tz)) = due {
+    if let Some(due) = due {
         match due {
             IcsTime::Date(d) => lines.push(format!(
                 "DUE;VALUE=DATE:{:04}{:02}{:02}",
@@ -1422,11 +1493,11 @@ mod tests {
             due: Some(TodoDue::At("2026-09-11T12:30:00Z".parse().unwrap())),
             description: Some("new note"),
         };
-        let out = patch_todo_fields(raw, "t-9", &edit, now).unwrap();
+        let out = patch_todo_fields(raw, "t-9", &edit, "Europe/Sofia", now).unwrap();
 
         assert!(out.contains("SUMMARY:New title"), "{out}");
         assert!(!out.contains("Old title"));
-        assert!(out.contains("DUE:20260911T123000Z"), "{out}");
+        assert!(out.contains("DUE;TZID=Europe/Sofia:20260911T153000"), "{out}");
         assert!(!out.contains("VALUE=DATE"), "the old date-only DUE is gone");
         assert!(out.contains("DESCRIPTION:new note"));
         // SEQUENCE is what tells other clients this supersedes their copy.
@@ -1449,7 +1520,7 @@ mod tests {
         let out = patch_todo_fields(
             raw, "t-1",
             &TodoEdit { summary: "Thing", due: None, description: None },
-            now,
+            "Europe/Sofia", now,
         ).unwrap();
         assert!(!out.contains("DUE"), "{out}");
         assert!(!out.contains("DESCRIPTION"), "{out}");
@@ -1469,9 +1540,89 @@ mod tests {
                 due: Some(TodoDue::Date(jiff::civil::date(2026, 9, 10))),
                 description: None,
             },
-            now,
+            "Europe/Sofia", now,
         ).unwrap();
         assert!(out.contains("DUE;VALUE=DATE:20260910"), "{out}");
+    }
+
+    /// Issue #102, and the shape the reporter is on: a list added to Apple
+    /// Reminders through CalDAV, whose tasks Reminders wrote with a
+    /// `DTSTART`. Giving such a task a time left `DTSTART;VALUE=DATE` beside
+    /// a `DUE` that is now a DATE-TIME — RFC 5545 §3.6.2 asks for the same
+    /// value type on both, and a server is entitled to reject or rewrite the
+    /// pair, which is a time that goes out and does not come back.
+    ///
+    /// There is no honest value to convert the start to, so it goes.
+    #[test]
+    fn a_timed_due_takes_a_bare_date_dtstart_with_it() {
+        let raw = "BEGIN:VCALENDAR\r\nBEGIN:VTODO\r\nUID:t-2\r\nSUMMARY:Buy stamps\r\n\
+            DTSTART;VALUE=DATE:20260910\r\nDUE;VALUE=DATE:20260911\r\n\
+            X-APPLE-SORT-ORDER:12\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
+        let now: Timestamp = "2026-09-07T09:00:00Z".parse().unwrap();
+        let edit = TodoEdit {
+            summary: "Buy stamps",
+            due: Some(TodoDue::At("2026-09-11T12:30:00Z".parse().unwrap())),
+            description: None,
+        };
+        let out = patch_todo_fields(raw, "t-2", &edit, "Europe/Sofia", now).unwrap();
+
+        assert!(!out.contains("DTSTART"), "a bare-date start cannot stand beside a timed due: {out}");
+        assert!(out.contains("DUE;TZID=Europe/Sofia:20260911T153000"), "{out}");
+        assert!(out.contains("X-APPLE-SORT-ORDER:12"), "everything else we do not model survives");
+    }
+
+    /// The other half of the same rule: a start that still agrees with the
+    /// due stays. Discarding another client's data is the cost of last
+    /// resort, not the first move.
+    #[test]
+    fn a_dtstart_that_still_agrees_with_the_due_is_kept() {
+        let raw = "BEGIN:VCALENDAR\r\nBEGIN:VTODO\r\nUID:t-3\r\nSUMMARY:Trip\r\n\
+            DTSTART;VALUE=DATE:20260910\r\nDUE;VALUE=DATE:20260911\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
+        let now: Timestamp = "2026-09-07T09:00:00Z".parse().unwrap();
+        let edit = TodoEdit {
+            summary: "Trip",
+            due: Some(TodoDue::Date(jiff::civil::date(2026, 9, 12))),
+            description: None,
+        };
+        let out = patch_todo_fields(raw, "t-3", &edit, "Europe/Sofia", now).unwrap();
+        assert!(out.contains("DTSTART;VALUE=DATE:20260910"), "{out}");
+        assert!(out.contains("DUE;VALUE=DATE:20260912"), "{out}");
+    }
+
+    /// A start that is the right value type but no longer earlier than the
+    /// due is just as invalid, and goes for the same reason.
+    #[test]
+    fn a_dtstart_later_than_the_due_goes_too() {
+        let raw = "BEGIN:VCALENDAR\r\nBEGIN:VTODO\r\nUID:t-4\r\nSUMMARY:Thing\r\n\
+            DTSTART;TZID=Europe/Sofia:20260911T180000\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
+        let now: Timestamp = "2026-09-07T09:00:00Z".parse().unwrap();
+        let edit = TodoEdit {
+            summary: "Thing",
+            // 15:30 Sofia, before the 18:00 start.
+            due: Some(TodoDue::At("2026-09-11T12:30:00Z".parse().unwrap())),
+            description: None,
+        };
+        let out = patch_todo_fields(raw, "t-4", &edit, "Europe/Sofia", now).unwrap();
+        assert!(!out.contains("DTSTART"), "{out}");
+    }
+
+    /// The due a user set is the due that comes back, whichever spelling it
+    /// went out in — the round trip is what the edit is for.
+    #[test]
+    fn a_timed_due_round_trips_through_the_calendars_zone() {
+        let raw = "BEGIN:VCALENDAR\r\nBEGIN:VTODO\r\nUID:t-5\r\nSUMMARY:Call\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
+        let now: Timestamp = "2026-09-07T09:00:00Z".parse().unwrap();
+        let due: Timestamp = "2026-09-11T12:30:00Z".parse().unwrap();
+        let out = patch_todo_fields(
+            raw, "t-5",
+            &TodoEdit { summary: "Call", due: Some(TodoDue::At(due)), description: None },
+            "Australia/Brisbane", now,
+        ).unwrap();
+
+        let back = &todos_in(&parse(&out).unwrap())[0];
+        let (ms, _, all_day) = resolve(back.due.as_ref().unwrap(), "Australia/Brisbane").unwrap();
+        assert_eq!(ms, due.as_millisecond(), "the instant survived the zone it was written in");
+        assert!(!all_day, "a timed due must not read back as a date");
     }
 
     /// Only the matching task is touched, and a UID that is not in the
@@ -1482,11 +1633,11 @@ mod tests {
             BEGIN:VTODO\r\nUID:b\r\nSUMMARY:Second\r\nEND:VTODO\r\nEND:VCALENDAR\r\n";
         let now: Timestamp = "2026-09-07T09:00:00Z".parse().unwrap();
         let edit = TodoEdit { summary: "Renamed", due: None, description: None };
-        let out = patch_todo_fields(raw, "b", &edit, now).unwrap();
+        let out = patch_todo_fields(raw, "b", &edit, "Europe/Sofia", now).unwrap();
         assert!(out.contains("SUMMARY:First"), "{out}");
         assert!(out.contains("SUMMARY:Renamed"));
         assert!(!out.contains("SUMMARY:Second"));
-        assert_eq!(patch_todo_fields(raw, "nobody", &edit, now), None);
+        assert_eq!(patch_todo_fields(raw, "nobody", &edit, "Europe/Sofia", now), None);
     }
 
     #[test]
@@ -1667,7 +1818,7 @@ mod tests {
     fn a_new_todo_serializes_and_reparses() {
         let now = Timestamp::from_millisecond(1_786_352_400_000).unwrap();
         let due = IcsTime::Date(Date::new(2026, 8, 20).unwrap());
-        let ics = new_todo_ics("new-1", "Fix; the, thing", Some((&due, "Europe/Sofia")), now);
+        let ics = new_todo_ics("new-1", "Fix; the, thing", Some(&due), now);
         let t = &todos_in(&parse(&ics).unwrap())[0];
         assert_eq!(t.uid, "new-1");
         assert_eq!(t.summary.as_deref(), Some("Fix; the, thing"), "escaping round-trips");
