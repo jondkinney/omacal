@@ -2,6 +2,10 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { escapeCloses } from './dismiss.svelte';
+  import { clockFormat } from './clock.svelte';
+  import { dateFormat } from './date.svelte';
+  import { formatClock } from './timefmt';
+  import { formatDate } from './datefmt';
   import { writableCalendars, type Calendar } from './calendars';
   import {
     fileName, planIcsImport, planSummary, runIcsImport,
@@ -67,8 +71,24 @@
     }
   }
 
-  const importing = $derived((plan ?? []).filter((p) => p.kind === 'import').length);
+  const arriving = $derived((plan ?? []).filter((p) => p.kind === 'import'));
+  const importing = $derived(arriving.length);
   const skipped = $derived((plan ?? []).filter((p) => p.kind === 'skip'));
+
+  const DAY_FORMAT: Intl.DateTimeFormatOptions =
+    { weekday: 'short', month: 'short', day: 'numeric' };
+
+  /** When one planned event lands, in the app's own date and clock formats
+   *  (#112) — the same pair `EventPopover` uses, not the locale's, because a
+   *  preview reading `1:30 PM` beside a grid reading `13:30` would be the app
+   *  disagreeing with itself.
+   *
+   *  An all-day event says its day and stops there: it has no time to show,
+   *  and printing midnight would invent one. */
+  function whenOf(p: { start_ms: number; all_day: boolean }): string {
+    const day = formatDate(new Date(p.start_ms).getTime(), dateFormat(), DAY_FORMAT);
+    return p.all_day ? day : `${day} · ${formatClock(p.start_ms, clockFormat())}`;
+  }
 </script>
 
 <div class="scrim" role="presentation" onclick={() => { if (!busy) onclose(); }}></div>
@@ -108,8 +128,24 @@
       <p class="note">Reading…</p>
     {:else if plan}
       <p class="summary">{planSummary(plan)}</p>
-      <!-- Named, not counted: a user who is told afterwards which of their
-           events did not arrive has been surprised rather than informed. -->
+      <!-- Named, not counted — and now on both sides of the line (#112).
+           The skipped list was already here on that principle; a count alone
+           for what *will* arrive asked the user to trust a number about a
+           file they did not write. An import writes many events at once, so
+           the one thing worse than not importing is importing something
+           other than what the file said, and a name and a date is what makes
+           that checkable before the button rather than after it. -->
+      {#if arriving.length > 0}
+        <ul class="arriving">
+          {#each arriving as p (p.summary + p.start_ms)}
+            <li>
+              <span class="what">{p.summary}</span>
+              <span class="when">{whenOf(p)}</span>
+              {#if p.repeat}<span class="rep">{p.repeat}</span>{/if}
+            </li>
+          {/each}
+        </ul>
+      {/if}
       {#if skipped.length > 0}
         <ul class="skipped">
           {#each skipped as s (s.summary + s.reason)}
@@ -142,10 +178,14 @@
   .summary { margin: 12px 0 6px; font-weight: 500; }
   .note { margin: 8px 0; color: var(--muted); }
   .note.err { color: var(--error); }
-  .skipped { list-style: none; margin: 6px 0 0; padding: 0; max-height: 30vh; overflow-y: auto;
-             scrollbar-width: none; }
-  .skipped::-webkit-scrollbar { display: none; }
-  .skipped li { display: flex; gap: 8px; padding: 3px 0; border-top: 1px solid var(--hairline); }
+  .skipped, .arriving { list-style: none; margin: 6px 0 0; padding: 0; max-height: 30vh;
+                        overflow-y: auto; scrollbar-width: none; }
+  .skipped::-webkit-scrollbar, .arriving::-webkit-scrollbar { display: none; }
+  .skipped li, .arriving li { display: flex; gap: 8px; padding: 3px 0;
+                              border-top: 1px solid var(--hairline); }
+  .when { flex: 0 0 auto; color: var(--muted); font-size: 11px; }
+  .rep { flex: 0 0 auto; color: var(--muted); font-size: 11px; opacity: .8; }
+  .arriving .what { flex: 1 1 auto; }
   .what { flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .why { flex: 1 1 auto; color: var(--muted); font-size: 11px; }
   .fine { margin: 10px 0 0; color: var(--muted); font-size: 11px; }

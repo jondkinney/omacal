@@ -1182,7 +1182,8 @@ export function installTauriStub(scenario: string): Harness {
       case 'plan_ics_import': {
         const path = args.path as string;
         if (path.includes('bad')) throw new Error('that file is not an iCalendar file');
-        return IMPORT_PLANS[path.includes('nothing') ? 'nothing' : 'mixed'];
+        const plan = ['nothing', 'allday'].find((k) => path.includes(k)) ?? 'mixed';
+        return IMPORT_PLANS[plan];
       }
       case 'run_ics_import':
         return { imported: 2, skipped: IMPORT_PLANS.mixed.filter((p) => p.kind === 'skip'), failed: [] };

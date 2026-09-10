@@ -5939,6 +5939,42 @@ test.describe('the ICS import panel', () => {
     await expect(p.getByRole('button', { name: /^Import/ })).toBeDisabled();
   });
 
+  /** Issue #112: the panel counted what would arrive and named only what
+   *  would not. A count alone asks the user to trust a number about a file
+   *  they did not write, which is the wrong way round for a write that
+   *  creates many events at once. */
+  test('every event that will be imported is named, with when it lands', async ({ page }) => {
+    await page.goto(show('ImportPanel', 'mixed'));
+    const p = panel(page, 'work.ics');
+    const rows = p.locator('.arriving li');
+    await expect(rows).toHaveCount(2);
+    await expect(rows.nth(0)).toContainText('Lunch');
+    await expect(rows.nth(1)).toContainText('Standup');
+    // The cadence too: a series and a one-off are different promises, and the
+    // plan already knew which was which.
+    await expect(rows.nth(1)).toContainText('weekdays');
+    await expect(rows.nth(0)).not.toContainText('weekdays');
+    // The skipped list is still there, on the other side of the same rule.
+    await expect(p.locator('.skipped li')).toHaveCount(1);
+  });
+
+  test('an all-day event says its day and invents no time', async ({ page }) => {
+    await page.goto(show('ImportPanel', 'allday'));
+    const p = panel(page, 'allday.ics');
+    const rows = p.locator('.arriving li');
+    await expect(rows).toHaveCount(2);
+    // `·` separates the day from the clock, and an all-day row has no clock
+    // to separate — asserting on the separator rather than on a rendered
+    // hour keeps this independent of the clock-format preference.
+    await expect(rows.filter({ hasText: 'Berlin trip' })).not.toContainText('·');
+    await expect(rows.filter({ hasText: 'Lunch' })).toContainText('·');
+  });
+
+  test('a file with nothing to import lists nothing', async ({ page }) => {
+    await page.goto(show('ImportPanel', 'nothing'));
+    await expect(panel(page, 'nothing.ics').locator('.arriving li')).toHaveCount(0);
+  });
+
   test('importing reports what landed', async ({ page }) => {
     await page.goto(show('ImportPanel', 'mixed'));
     const p = panel(page, 'work.ics');

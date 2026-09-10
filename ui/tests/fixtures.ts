@@ -2035,6 +2035,16 @@ export const IMPORT_PLANS: Record<string, any[]> = {
       reason: 'repeats in a way this version cannot store; import it from the app that wrote it' },
   ],
   nothing: [],
+  /** An all-day event beside a timed one: the preview must say the day and
+   *  stop there for the first, because midnight is not a time the file gave
+   *  it. Its own plan rather than an addition to `mixed`, whose counts three
+   *  specs already assert. */
+  allday: [
+    { kind: 'import', summary: 'Berlin trip', start_ms: 1788825600000, all_day: true,
+      repeat: null, dropped_guests: 0 },
+    { kind: 'import', summary: 'Lunch', start_ms: 1788910200000, all_day: false,
+      repeat: null, dropped_guests: 0 },
+  ],
 };
 
 export const IMPORT_PANEL_FIXTURES = {
@@ -2044,6 +2054,10 @@ export const IMPORT_PANEL_FIXTURES = {
   },
   nothing: {
     path: '/home/u/Downloads/nothing.ics', calendars: APP_WRITE_CALENDARS,
+    onclose: () => {}, onimported: () => {},
+  },
+  allday: {
+    path: '/home/u/Downloads/allday.ics', calendars: APP_WRITE_CALENDARS,
     onclose: () => {}, onimported: () => {},
   },
   unreadable: {
