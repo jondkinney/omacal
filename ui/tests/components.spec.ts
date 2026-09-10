@@ -1776,7 +1776,7 @@ test.describe('Header', () => {
     await page.goto(show('Header', 'connected'));
     const modal = await openSettings(page, 'Calendars');
 
-    await expect(modal.locator('.acct')).toHaveText(['me@x.com']);
+    await expect(modal.locator('.acct')).toHaveText(['Google · me@x.com']);
     await expect(modal.getByRole('tabpanel').locator('.row')).toHaveCount(3);
     await expect(modal.locator('.name')).toHaveText(['Personal', 'Team', 'Holidays in Bulgaria']);
   });
@@ -2076,7 +2076,7 @@ test.describe('CalendarPopover', () => {
     await page.goto(show('same-summary-one-account'));
     await page.getByRole('button', { name: /Calendars/ }).click();
 
-    await expect(page.locator('.acct')).toHaveText(['me@x.com']);
+    await expect(page.locator('.acct')).toHaveText(['Google · me@x.com']);
     await expect(page.locator('.name')).toHaveText(['UK Holidays', 'UK Holidays']);
   });
 

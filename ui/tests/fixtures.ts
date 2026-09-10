@@ -443,6 +443,16 @@ const cal = (o: Partial<Calendar> & { id: number; account_email: string; summary
   ...o,
 });
 
+/** Same address and repeated names across Google and two distinct CalDAV
+ * connections. Interleaved input must still form three account groups. */
+const SAME_EMAIL_CALENDARS = [
+  cal({ id: 101, account_id: 10, account_email: 'shared@example.com', summary: 'Personal' }),
+  cal({ id: 201, account_id: 20, account_email: 'shared@example.com', summary: 'Personal', provider: 'caldav', color_hex: '#20b080' }),
+  cal({ id: 102, account_id: 10, account_email: 'shared@example.com', summary: 'Work' }),
+  cal({ id: 301, account_id: 30, account_email: 'shared@example.com', summary: 'Personal', provider: 'caldav', color_hex: '#e2a03f' }),
+];
+
+
 /** A fixture instant as the `yyyy-mm-dd` its calendar keeps it on.
  *
  *  Every all-day fixture here sits at **UTC** midnight, so the calendar these
@@ -2259,6 +2269,10 @@ export const FIXTURES: Record<string, Record<string, any>> = {
     },
   },
   Header: {
+    'shared-email-accounts': {
+      ...header({ accounts: ['shared@example.com'], last_sync_ms: FIVE_MIN_AGO, demo: false, overlay_titlebar: false }),
+      calendars: SAME_EMAIL_CALENDARS,
+    },
     disconnected: header({ accounts: [], last_sync_ms: null, demo: false, overlay_titlebar: false }),
     // **With calendars**, unlike every other fixture in this block, which
     // predate the picker living behind the hamburger and left the list empty.
@@ -2494,6 +2508,7 @@ export const FIXTURES: Record<string, Record<string, any>> = {
     },
   },
   CalendarPopover: {
+    'shared-email-accounts': { calendars: SAME_EMAIL_CALENDARS, onchange: noop },
     /**
      * **Two calendars with the same name in one account** — the shape that
      * actually trips `each_key_duplicate`, which is not quite the one the
@@ -2950,6 +2965,9 @@ export const FIXTURES: Record<string, Record<string, any>> = {
   // callback props rather than Tauri commands, so they are captured on the
   // window exactly as `MonthGrid`'s `onopen` is (see harness/mount.svelte.ts).
   EventForm: {
+    'shared-email-accounts': {
+      anchor: ANCHOR, initial: blankValue(FORM_NOW, 101), calendars: SAME_EMAIL_CALENDARS,
+    },
     // Built from `Date.now()` on purpose. The "next half hour" default belongs
     // to `blankValue`, and a fixture that pinned the instant itself could not
     // tell a form that applies the default from one that was handed the answer.
