@@ -266,6 +266,12 @@ if (name === 'App') {
           onopen: (event: unknown, rect: unknown) => {
             (window as any).__lastOpen = { event, rect };
           },
+          // Captured apart from `onopen` on purpose: the whole of #109 is that
+          // a right-click takes the *other* one, and a shared capture could
+          // not tell which fired.
+          onedit: (event: unknown, rect: unknown) => {
+            (window as any).__lastEdit = { event, rect };
+          },
           ondaypick: (startMs: unknown) => {
             (window as any).__lastDayPick = startMs;
           },

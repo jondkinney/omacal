@@ -1,6 +1,6 @@
 <script lang="ts">
   import { clockFormat } from './clock.svelte';
-  import { RESIZE_EDGE_PX } from './drag';
+  import { RESIZE_EDGE_PX, beganDrag } from './drag';
   import { formatClock } from './timefmt';
   import type { UiEvent, Placed } from './api';
   import type { Rect } from './position';
@@ -10,6 +10,7 @@
     event,
     placed,
     onopen,
+    onedit,
     ongrab,
     preview = null,
     liveSpan = null,
@@ -19,6 +20,10 @@
     event: UiEvent;
     placed: Placed;
     onopen: (event: UiEvent, rect: Rect) => void;
+    /** Right-click: straight into the editor, skipping the details card
+     *  (#109). Optional, so a surface that has no editor simply omits it and
+     *  the block keeps the browser menu suppressed and nothing else. */
+    onedit?: (event: UiEvent, rect: Rect) => void;
     /** The pointer went down on this block. The grid decides whether that
      *  becomes a drag, and whether it is a move or a resize — see `drag.ts`'s
      *  threshold and `edgeAt`. This reports the press rather than interpreting
@@ -76,11 +81,23 @@
   // (`placed`, percentages of a scrolling column): the popover positions
   // itself against the viewport, and this is the one place that rect is
   // available without the parent re-deriving it from geometry it doesn't own.
+  function rectOf(e: Event): Rect {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    return { top: r.top, left: r.left, width: r.width, height: r.height };
+  }
+
   function open(e: MouseEvent) {
     hideTip();
-    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    onopen(event, { top: r.top, left: r.left, width: r.width, height: r.height });
+    onopen(event, rectOf(e));
   }
+
+  /** Where a right press started, or `null` when none is in flight.
+   *
+   *  The same threshold discipline the grid's own right-click already uses
+   *  for "new event here": a create cannot ride `contextmenu`, which fires at
+   *  the *press*, before the gesture has a shape — and neither can an edit.
+   *  The press is remembered, and the release decides. */
+  let rightPress: { x: number; y: number } | null = null;
 
   /** The hover tooltip's anchor, or `null` while nothing hovers.
    *
@@ -149,9 +166,24 @@
   "
   aria-label="{event.title}, {hhmm(shownStartMs)} to {hhmm(shownEndMs)}{meta ? `, ${meta}` : ''}{event.all_guests_declined ? ', everyone declined' : ''}"
   onclick={open}
+  onpointerup={(e) => {
+    if (e.button !== 2 || !rightPress) return;
+    const still = !beganDrag(e.clientX - rightPress.x, e.clientY - rightPress.y);
+    rightPress = null;
+    if (still && onedit) { hideTip(); onedit(event, rectOf(e)); }
+  }}
+  oncontextmenu={(e) => e.preventDefault()}
   onmouseenter={showTip}
   onmouseleave={hideTip}
-  onpointerdown={(e) => { hideTip(); ongrab?.(event, e); }}
+  onpointerdown={(e) => {
+    hideTip();
+    // A right press must never become a drag — `ongrab` is the left button's,
+    // and `startDrag` would read a right press as a move or a resize. This
+    // only remembers where it started; the release below decides.
+    if (e.button === 2) { rightPress = { x: e.clientX, y: e.clientY }; return; }
+    rightPress = null;
+    ongrab?.(event, e);
+  }}
   bind:clientHeight={heightPx}
 >
   <!-- The resize cursor's home, and nothing else's: no background, no

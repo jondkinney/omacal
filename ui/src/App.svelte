@@ -1291,6 +1291,11 @@
     await openOccurrence(event.id, event.start_ms, event.end_ms, rect);
   }
 
+  /** The same, for a right-click (#109): open the editor, not the card. */
+  async function editGridEvent(event: UiEvent, rect: Rect) {
+    await openOccurrence(event.id, event.start_ms, event.end_ms, rect, true);
+  }
+
   /**
    * Opens the event popover on one occurrence.
    *
@@ -1300,7 +1305,7 @@
    * `openGridEvent` is this with a `UiEvent` unpacked; search calls it with a
    * hit's three numbers.
    */
-  async function openOccurrence(id: number, startMs: number, endMs: number, rect: Rect) {
+  async function openOccurrence(id: number, startMs: number, endMs: number, rect: Rect, thenEdit = false) {
     gridSelId = id;
     gridSelStart = startMs;
     gridSelEnd = endMs;
@@ -1312,7 +1317,19 @@
     const mine = () => gridSelId === id && gridSelStart === startMs;
     try {
       const d = await getEventDetail(id);
-      if (mine()) gridDetail = d;
+      if (!mine()) return;
+      // Right-click's whole point: the card never appears (#109). Through
+      // this function rather than around it — the guard above, and the
+      // "say so on failure" rule below, are why openOccurrence exists as
+      // the single way to an event's detail. `can_edit` gates it as it
+      // gates the card's own Edit button; without that a right-click on a
+      // subscribed holiday calendar would open a form only a refusal could
+      // close. Falling through to the card beats answering nothing.
+      if (thenEdit && d.can_edit) {
+        openEdit({ detail: d, startMs, endMs }, rect);
+        return;
+      }
+      gridDetail = d;
     } catch (e) {
       // Same rule as `WeekGrid.openPopover`: close, but never in silence.
       // A click that opens nothing and says nothing reads as a dead
@@ -2083,6 +2100,7 @@
                      onopen={openGridEvent} />
         {:else}
           <MonthGrid {month} keyboardCursor={visibleKeyboardCursor} onopen={openGridEvent}
+                     onedit={editGridEvent}
                      ondaypick={handleDayPick} oncreate={newEventOnDay} />
         {/if}
       {/if}

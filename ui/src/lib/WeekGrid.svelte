@@ -929,7 +929,18 @@
     window.removeEventListener('keydown', onDragKey);
   }
 
-  async function openPopover(event: UiEvent, rect: Rect) {
+  /**
+   * Opens the details card on one occurrence — or, with `thenEdit`, goes
+   * straight past it into the editor (#109).
+   *
+   * **One detail path, not two.** A right-click could have fetched the event
+   * itself and skipped this function entirely, and that is exactly the second
+   * set of guards this comment exists to refuse: `draggedNotClicked`, the
+   * superseded-while-loading check and the "say so on failure" rule are all
+   * here, and a shortcut around them would have to keep its own copy in step.
+   * The editor is reached at the end, after those have had their say.
+   */
+  async function openPopover(event: UiEvent, rect: Rect, thenEdit = false) {
     // The `click` that follows a drag's `pointerup` is not a click on this
     // block; swallow it. See `draggedNotClicked` for why the flag is cleared
     // on press rather than here.
@@ -959,6 +970,23 @@
       return;
     }
     if (!isSelected(event)) return; // superseded while loading
+
+    // Right-click's whole point: the card never appears. Taken before
+    // `detail` is assigned so it cannot paint for a frame on the way past.
+    //
+    // **`can_edit` gates this exactly as it gates the card's own Edit
+    // button**, and for the reason written there: an editor opened on a
+    // subscribed holiday calendar can only produce a Save the server
+    // refuses, after the user has decided to go through with it. A
+    // right-click that cannot edit falls through to the card rather than
+    // doing nothing — a control that answers nothing reads as broken.
+    if (thenEdit && d.can_edit) {
+      const occurrence = { detail: d, startMs: event.start_ms, endMs: event.end_ms };
+      closePopover();
+      onedit(occurrence, rect);
+      return;
+    }
+
     detail = d;
 
     // Fires only once the popover has painted the local detail — a
@@ -1672,6 +1700,7 @@
           placed={p}
           {createMode}
           onopen={openPopover}
+          onedit={(ev, r) => openPopover(ev, r, true)}
           ongrab={(ev, e) => startDrag(ev, day, e)}
           preview={previewFor(day.events[p.idx])}
           liveSpan={liveSpanFor(day.events[p.idx])}

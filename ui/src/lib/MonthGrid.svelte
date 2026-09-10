@@ -7,12 +7,15 @@
   import { cursorNamesEvent, type KeyboardCursor } from './keyboardnav';
   import { MONTH_GRID_TIMED_LIMIT } from './filmstrip';
 
-  let { month, keyboardCursor = null, onopen, ondaypick, oncreate }: {
+  let { month, keyboardCursor = null, onopen, onedit = null, ondaypick, oncreate }: {
     month: MonthPayload;
     keyboardCursor?: KeyboardCursor | null;
     /** Same contract as `WeekGrid`'s: an anchor rect plus the clicked event,
      *  handed straight to `EventPopover` via `placePopover`. */
     onopen: (event: UiEvent, rect: Rect) => void;
+    /** Right-click: straight into the editor, past the details card (#109).
+     *  Same shape as `onopen`, and the caller decides what "edit" means. */
+    onedit?: ((event: UiEvent, rect: Rect) => void) | null;
     /** Asks the parent to switch to Day view for this day's `start_ms`. */
     ondaypick: (startMs: number) => void;
     /** A click on empty space in a day cell. A month cell has no time in it,
@@ -68,8 +71,34 @@
   // propagation question.
   function openEvent(event: UiEvent, e: MouseEvent) {
     e.stopPropagation();
+    onopen(event, rectOf(e));
+  }
+
+  function rectOf(e: Event): Rect {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    onopen(event, { top: r.top, left: r.left, width: r.width, height: r.height });
+    return { top: r.top, left: r.left, width: r.width, height: r.height };
+  }
+
+  /** Where a right press started, or `null` when none is in flight.
+   *
+   *  A chip cannot be dragged in Month, so there is no gesture to disambiguate
+   *  from — but the press is still what is remembered and the release is what
+   *  acts, because `contextmenu` fires at the press and a menu suppressed
+   *  there would fire on a press that ends somewhere else entirely. */
+  let rightPress: UiEvent | null = null;
+
+  function rightDown(event: UiEvent, e: PointerEvent) {
+    if (e.button !== 2) { rightPress = null; return; }
+    e.stopPropagation();
+    rightPress = event;
+  }
+
+  function rightUp(event: UiEvent, e: PointerEvent) {
+    const armed = rightPress;
+    rightPress = null;
+    if (e.button !== 2 || armed !== event || !onedit) return;
+    e.stopPropagation();
+    onedit(event, rectOf(e));
   }
 
   function pickDay(startMs: number) {
@@ -113,6 +142,9 @@
               --cal:{ev.color};
             "
             onclick={(e) => openEvent(ev, e)}
+            onpointerdown={(e) => rightDown(ev, e)}
+            onpointerup={(e) => rightUp(ev, e)}
+            oncontextmenu={(e) => e.preventDefault()}
           >{lane.cont_left ? '‹ ' : ''}{ev.title}</button>
         {/each}
         {#if row.bar_overflow.length}
@@ -156,6 +188,9 @@
                   && cursorNamesEvent(keyboardCursor, cell.start_ms, ev) ? '' : undefined}
                 style="--cal:{ev.color}"
                 onclick={(e) => openEvent(ev, e)}
+                onpointerdown={(e) => rightDown(ev, e)}
+                onpointerup={(e) => rightUp(ev, e)}
+                oncontextmenu={(e) => e.preventDefault()}
               ><i class="dot" style="background:{ev.color}"></i>{ev.title}</button>
             {/each}
             {#if cell.timed.length > MONTH_GRID_TIMED_LIMIT}
