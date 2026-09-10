@@ -400,6 +400,8 @@ pub struct AppSettings {
     /// widget can still opt out on its own side. Off by default: the mark
     /// is what says which app it is at a glance.
     pub show_date: bool,
+    pub menubar_label: bool,
+    pub menubar_join_minutes: u32,
     /// Pixels per hour in Day and Week (2026-09-03): what a pinch,
     /// Ctrl+scroll or Ctrl+=/- left the grid at. Here for `list_mode`'s
     /// reason — a zoom that lasted one session would be redone every
@@ -654,6 +656,9 @@ pub(crate) async fn read_settings_with(pool: &SqlitePool, baseline: u8) -> AppSe
         // The mark unless the row says otherwise, for `list_mode`'s reason:
         // a hand-edited value must land on what the app has always drawn.
         show_date: read(pool, SHOW_DATE_KEY).await.map(|v| v == "1").unwrap_or(false),
+        menubar_label: read(pool, "menubar_label").await.as_deref() != Some("0"),
+        menubar_join_minutes: read(pool, "menubar_join_minutes").await
+            .and_then(|v| v.parse().ok()).filter(|v| *v <= 60).unwrap_or(5),
         // **Clamped, not discarded.** A number outside the range is still an
         // answer to "how tall do you like your hours" — when the floor rose
         // from 30 to 48, discarding sent everyone who had zoomed out past it
@@ -1039,6 +1044,7 @@ pub async fn set_tray_icon(
         .await
         .map_err(|e| crate::errors::user_facing(&e))?;
     crate::tray::set_visible(&app, on);
+    refresh_menu_surfaces(&app, &state).await;
     Ok(read_settings(&state.pool).await)
 }
 
@@ -1307,7 +1313,7 @@ pub async fn set_show_date(
     write(&state.pool, SHOW_DATE_KEY, if on { "1" } else { "0" })
         .await
         .map_err(|e| crate::errors::user_facing(&e))?;
-    crate::tray::refresh(&app);
+    refresh_menu_surfaces(&app, &state).await;
     Ok(read_settings(&state.pool).await)
 }
 
@@ -1331,6 +1337,31 @@ pub(crate) async fn refresh_menu_surfaces(app: &tauri::AppHandle, state: &AppSta
     }
 }
 
+/// Shared preferences for the Omarchy widget and macOS menu bar popup.
+#[tauri::command]
+pub async fn set_menubar_preferences(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    label: bool,
+    join_minutes: u32,
+) -> Result<AppSettings, String> {
+    store_menubar_preferences(&state.pool, label, join_minutes).await?;
+    refresh_menu_surfaces(&app, &state).await;
+    Ok(read_settings(&state.pool).await)
+}
+
+async fn store_menubar_preferences(pool: &SqlitePool, label: bool, join_minutes: u32) -> Result<(), String> {
+    if join_minutes > 60 { return Err("Choose a Join window from 0 to 60 minutes.".into()); }
+    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+    for (key, value) in [
+        ("menubar_label", if label { "1".into() } else { "0".into() }),
+        ("menubar_join_minutes", join_minutes.to_string()),
+    ] {
+        sqlx::query("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+            .bind(key).bind(value).execute(&mut *tx).await.map_err(|e| e.to_string())?;
+    }
+    tx.commit().await.map_err(|e| e.to_string())
+}
 
 /// Stores the hour height, clamped rather than refused: the value comes off
 /// a gesture, and the honest answer to "a little past the end" is the end,
@@ -1350,8 +1381,7 @@ pub async fn set_hour_height(
 #[tauri::command]
 pub async fn set_date_format(app: tauri::AppHandle, state: tauri::State<'_, AppState>, format: DateFormat) -> Result<AppSettings, String> {
     write(&state.pool, "date_format", format.as_str()).await.map_err(|e| crate::errors::user_facing(&e))?;
-    crate::upcoming::refresh(&state.pool, state.demo).await;
-    crate::tray::refresh(&app);
+    refresh_menu_surfaces(&app, &state).await;
     Ok(read_settings(&state.pool).await)
 }
 
@@ -1360,12 +1390,14 @@ pub async fn set_date_format(app: tauri::AppHandle, state: tauri::State<'_, AppS
 /// [`TimeFormat`] has no third variant for a caller to send.
 #[tauri::command]
 pub async fn set_time_format(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     format: TimeFormat,
 ) -> Result<AppSettings, String> {
     write(&state.pool, TIME_FORMAT_KEY, format.as_str())
         .await
         .map_err(|e| crate::errors::user_facing(&e))?;
+    refresh_menu_surfaces(&app, &state).await;
     Ok(read_settings(&state.pool).await)
 }
 
@@ -1433,12 +1465,15 @@ pub async fn set_week_starts_today(
 /// the backend to allocate an arbitrary number of day columns.
 #[tauri::command]
 pub async fn set_week_view_days(
+    app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
     days: u8,
 ) -> Result<AppSettings, String> {
-    set_week_view_days_impl(&state.pool, days)
+    let result = set_week_view_days_impl(&state.pool, days)
         .await
-        .map_err(|e| crate::errors::user_facing(&e))
+        .map_err(|e| crate::errors::user_facing(&e))?;
+    refresh_menu_surfaces(&app, &state).await;
+    Ok(result)
 }
 
 async fn set_week_view_days_impl(pool: &SqlitePool, days: u8) -> anyhow::Result<AppSettings> {
@@ -1455,6 +1490,22 @@ mod tests {
 
     async fn pool() -> SqlitePool {
         omacal_store::connect_memory().await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn menubar_preferences_persist_and_refuse_invalid_windows_atomically() {
+        let p = pool().await;
+        let initial = read_settings(&p).await;
+        assert!(initial.menubar_label);
+        assert_eq!(initial.menubar_join_minutes, 5);
+        store_menubar_preferences(&p, false, 0).await.unwrap();
+        let stored = read_settings(&p).await;
+        assert!(!stored.menubar_label);
+        assert_eq!(stored.menubar_join_minutes, 0);
+        assert!(store_menubar_preferences(&p, true, 61).await.is_err());
+        assert!(!read_settings(&p).await.menubar_label);
+        store_menubar_preferences(&p, true, 60).await.unwrap();
+        assert_eq!(read_settings(&p).await.menubar_join_minutes, 60);
     }
 
     /// A fresh install has written none of these, and that is the ordinary

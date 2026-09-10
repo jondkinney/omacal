@@ -3,9 +3,12 @@ import QtQuick.Controls
 import QtQuick.Layouts
 import Quickshell
 import Quickshell.Io
+import Quickshell.Wayland
 import qs.Commons
 import qs.Ui
 import "Model.js" as Model
+import "Timeline.mjs" as Timeline
+import "MeetingPresence.mjs" as MeetingPresence
 
 // OmaCal's bar widget: a calendar glyph in the bar, and a popup listing what
 // is happening now and what is coming up, in the same visual grammar as the
@@ -31,6 +34,9 @@ Panel {
     function hide(): void { root.close() }
     function toggle(): void { root.toggle() }
     function openApp(): void { root.openApp() }
+    function preferences(): void { root.openApp("--preferences") }
+    function quickAdd(): void { root.openApp("--quick-add") }
+    function refresh(): void { feedFile.reload() }
     function syncNow(): string { root.syncNow(); return "ok" }
     function quitApp(): string { root.quitApp(); return "ok" }
   }
@@ -54,6 +60,44 @@ Panel {
 
   property var feed: null
   readonly property var events: feed ? feed.events : null
+  readonly property var day: feed && feed.panel ? feed.panel : null
+  readonly property var callEvent: Timeline.joinable(events || [], nowMs, day ? day.join_minutes : 5)
+  property var meetingWindows: []
+  property var meetingPresence: []
+  property int nextMeetingWindowKey: 0
+  property var joinIntent: null
+  readonly property bool meetingWindowOpen: MeetingPresence.isPresent(meetingPresence, callEvent, nowMs)
+  function observeMeetingWindows() {
+    if (!feed) return
+    var windows = ToplevelManager.toplevels.values
+    if (windows.length > 256) { meetingPresence = []; meetingWindows = []; return }
+    var current = [], snapshots = []
+    for (var i = 0; i < windows.length; i++) {
+      var window = windows[i]
+      var known = meetingWindows.find(function(row) { return row.window === window })
+      var key = known ? known.key : String(++nextMeetingWindowKey)
+      current.push({ window: window, key: key })
+      snapshots.push({ key: key, appId: window.appId, title: window.title })
+    }
+    meetingPresence = MeetingPresence.observe(meetingPresence, snapshots, events || [], nowMs,
+      day ? day.join_minutes : 5, joinIntent)
+    meetingWindows = current
+    if (joinIntent && nowMs - joinIntent.at > 90000) joinIntent = null
+  }
+  readonly property var barEvent: callEvent || runningEvent || nextEvent
+  readonly property bool showLabel: !barVertical && (!day || day.label) && !!barEvent
+  readonly property string barLabel: {
+    if (!barEvent) return ""
+    var ongoing = barEvent.start_ms <= nowMs
+    var minutes = Math.max(1, Math.ceil(((ongoing ? barEvent.end_ms : barEvent.start_ms) - nowMs) / 60000))
+    var duration = Timeline.countdownDuration(minutes)
+    var title = Model.title(barEvent)
+    if (title.length > 18) title = title.slice(0, 17) + "…"
+    return title + " @ " + displayClock(barEvent.start_ms) + "  " + (ongoing ? duration + " left" : "in " + duration)
+  }
+  function displayClock(ms) { return day && day.clocks[String(ms)] ? day.clocks[String(ms)] : Model.clock(ms) }
+  function displayTime(ev) { return ev.all_day ? "ALL DAY" : displayClock(ev.start_ms) + " – " + displayClock(ev.end_ms) }
+
 
   // Whether the OmaCal process itself is alive. The popup keeps showing the
   // last feed either way (a stale agenda beats a blank one), but the hero
@@ -61,7 +105,7 @@ Panel {
   // — a Quit that silently no-ops reads as broken, and was reported as such.
   property bool appRunning: true
   readonly property var taskRows: Model.taskRows(feed, nowMs)
-  readonly property var panelSections: Model.sections(events, nowMs, root.setting("maxEvents", 12))
+  readonly property var panelSections: Model.agendaSections(feed, nowMs, root.setting("maxEvents", 12))
   readonly property var runningEvent: Model.current(events, nowMs)
   readonly property var nextEvent: Model.nextAhead(events, nowMs)
   readonly property bool empty: panelSections.length === 0
@@ -78,7 +122,7 @@ Panel {
     && todayFeed.show === true
     && root.setting("showDate", true) === true
     && !barVertical
-  readonly property string dateText: todayFeed && todayFeed.day > 0 ? String(todayFeed.day) : ""
+  readonly property string dateText: todayFeed ? (todayFeed.label !== undefined ? todayFeed.label : todayFeed.day > 0 ? String(todayFeed.day) : "") : ""
 
   // The bar glyph turns urgent-coloured when a meeting is less than ten
   // minutes out — the glanceable version of "wrap this conversation up".
@@ -101,10 +145,9 @@ Panel {
   // when it ends is exactly the glance the bar is for.
   function heroMeta() {
     if (!appRunning) return "OmaCal is not running"
-    if (runningEvent)
-      return Model.title(runningEvent) + " · " + Model.endsText(runningEvent, nowMs)
-    if (nextEvent)
-      return Model.title(nextEvent) + " · " + Model.leadText(nextEvent.start_ms, nowMs)
+    if (barEvent)
+      return Model.title(barEvent) + " · " + (barEvent.start_ms <= nowMs
+        ? Model.endsText(barEvent, nowMs) : Model.leadText(barEvent.start_ms, nowMs))
     if (!feed) return "Waiting for OmaCal"
     return "Nothing scheduled"
   }
@@ -123,7 +166,7 @@ Panel {
     return ""
   }
 
-  // `ymd` optional: with it, the app lands on that day (a row's own date);
+  // `ymd` is a generated date or the fixed --quick-add action;
   // without, this is the plain "bring up the calendar" it always was.
   function openApp(ymd) {
     if (root.appRunning) {
@@ -186,7 +229,8 @@ Panel {
   // up the app — the two things a calendar row in a status bar is for.
   function activateRow(ev) {
     if (!ev) return
-    if (ev.conference) {
+    if (Timeline.joinable([ev], nowMs, day ? day.join_minutes : 5)) {
+      joinIntent = { eventKey: MeetingPresence.eventKey(ev), at: Date.now() }
       Qt.openUrlExternally(ev.conference)
       root.close()
     } else {
@@ -196,20 +240,14 @@ Panel {
     }
   }
 
-  // `j`: join the call most worth joining — the running meeting first,
-  // failing that the nearest upcoming one that has a link at all. The same
+  // `j`: join the call most worth joining — the next meeting inside its lead window,
+  // otherwise the ongoing call. The same
   // URL a row's own camera button would open; this is just the keyboard
   // reaching it without arrowing down.
   function joinCall() {
-    let pick = null
-    for (let i = 0; i < flatRows.length; i++) {
-      const r = flatRows[i]
-      if (!r.event || !r.event.conference) continue
-      if (r.inOngoing) { pick = r.event; break }
-      if (!pick) pick = r.event
-    }
-    if (pick) {
-      Qt.openUrlExternally(pick.conference)
+    if (callEvent) {
+      joinIntent = { eventKey: MeetingPresence.eventKey(callEvent), at: Date.now() }
+      Qt.openUrlExternally(callEvent.conference)
       root.close()
     }
   }
@@ -220,7 +258,10 @@ Panel {
     rowCursor = Math.max(0, Math.min(flatRows.length - 1, rowCursor + dy))
   }
 
-  implicitWidth: button.implicitWidth
+  readonly property bool showTray: !feed || feed.tray_icon !== false
+  visible: showTray
+  onShowTrayChanged: if (!showTray) root.close()
+  implicitWidth: showTray ? button.implicitWidth + (barJoin.visible ? barJoin.implicitWidth : 0) + (barTitle.visible ? barTitle.implicitWidth : 0) : 0
   implicitHeight: button.implicitHeight
 
   onOpenedChanged: if (opened) {
@@ -245,26 +286,52 @@ Panel {
     onTriggered: if (!appCheck.running) appCheck.running = true
   }
 
-  FileView {
+  Process {
     id: feedFile
-    path: root.feedPath
-    watchChanges: true
-    printErrors: false
-    onLoaded: root.feed = Model.parseFeed(text())
-    onFileChanged: reload()
-    onLoadFailed: root.feed = null
+    command: ["/usr/bin/python3", decodeURIComponent(Qt.resolvedUrl("read-feed.py").toString().replace(/^file:\/\//, "")), root.feedPath]
+    running: true
+    property bool reloadPending: false
+    function reload() { if (running) reloadPending = true; else running = true }
+    stdout: StdioCollector {
+      onStreamFinished: {
+        var parsed = text.length <= 1048576 ? Model.parseFeed(text) : null
+        if (parsed) {
+          parsed.events = Timeline.uniqueAllDay(parsed.events)
+          if (parsed.panel) {
+            parsed.panel.events = Timeline.uniqueAllDay(parsed.panel.events)
+            if (Array.isArray(parsed.panel.agenda_days))
+              parsed.panel.agenda_days.forEach(function(day) { day.events = Timeline.uniqueAllDay(day.events) })
+          }
+        }
+        root.feed = parsed
+      }
+    }
+    onExited: function(code) {
+      if (code !== 0) root.feed = null
+      if (reloadPending) { reloadPending = false; Qt.callLater(reload) }
+    }
   }
 
   Timer {
-    interval: root.opened ? 15000 : 60000
+    interval: 15000
     running: true
     repeat: true
-    onTriggered: root.nowMs = Date.now()
+    onTriggered: feedFile.reload()
+  }
+
+  Timer {
+    interval: root.opened || !!root.callEvent ? 1000 : 60000
+    running: true
+    repeat: true
+    onTriggered: { root.nowMs = Date.now(); root.observeMeetingWindows() }
   }
 
   BarIconButton {
     id: button
-    anchors.fill: parent
+    anchors.left: parent.left
+    anchors.top: parent.top
+    anchors.bottom: parent.bottom
+    width: implicitWidth
     bar: root.bar
     active: root.imminent
     dimmed: !root.appRunning || root.events === null || root.events.length === 0
@@ -276,20 +343,20 @@ Panel {
     slotSize: Style.bar.iconSlot
       + (root.showDate ? dateMetrics.width + Style.space(4) : 0)
     // The app's own mark, not a generic glyph: with the tray icon off this
-    // is omacal's one presence in the bar. Monochrome like its neighbours;
-    // urgent-tinted when a meeting is imminent, as the glyph was — and the
-    // date, when shown, is tinted with it: one voice, not two.
+    // is omacal's one presence in the bar. Preserve its orange brand dot.
     iconComponent: Component {
       Item {
         Row {
           anchors.centerIn: parent
-          spacing: root.showDate ? Style.space(4) : 0
+          spacing: root.showDate || root.showLabel ? Style.space(4) : 0
           OmacalMark {
             anchors.verticalCenter: parent.verticalCenter
             iconSize: Style.space(12)
+            dotColor: "#F97316"
             color: root.imminent ? root.urgent : button.foreground
           }
           Text {
+            textFormat: Text.PlainText
             anchors.verticalCenter: parent.verticalCenter
             visible: root.showDate
             text: root.dateText
@@ -298,12 +365,122 @@ Panel {
             font.pixelSize: Style.font.body
             font.weight: Font.DemiBold
           }
+
         }
       }
     }
     onPressed: function(buttonCode) {
-      if (buttonCode === Qt.MiddleButton) root.openApp()
-      else root.toggle()
+      if (buttonCode === Qt.LeftButton) root.toggle()
+      else if (buttonCode === Qt.RightButton) root.openApp("--quick-add")
+      else if (buttonCode === Qt.MiddleButton) root.openApp()
+    }
+  }
+
+  TextMetrics { id: labelMetrics; text: root.barLabel; font.family: root.fontFamily; font.pixelSize: Style.font.body }
+  BarIconButton {
+    id: barJoin
+    anchors.left: button.right
+    anchors.top: parent.top
+    anchors.bottom: parent.bottom
+    bar: root.bar
+    visible: !!root.callEvent && !root.barVertical
+    readonly property bool live: root.meetingWindowOpen
+    iconComponent: Component {
+      Item {
+        Text {
+          anchors.centerIn: parent
+          visible: !barJoin.live
+          text: ""
+          textFormat: Text.PlainText
+          font.family: barJoin.fontFamily
+          font.pixelSize: barJoin.fontSize
+          color: barJoin.foreground
+        }
+        Item {
+          anchors.centerIn: parent
+          width: Style.space(16)
+          height: Style.space(12)
+          visible: barJoin.live
+          readonly property color liveColor: "#ff7b86"
+          Rectangle {
+            id: cameraBody
+            x: 0
+            anchors.verticalCenter: parent.verticalCenter
+            width: Style.space(11)
+            height: Style.space(9)
+            radius: Style.space(2)
+            color: "transparent"
+            border.width: Style.space(1)
+            border.color: parent.liveColor
+            Rectangle {
+              anchors.centerIn: parent
+              width: Style.space(3)
+              height: width
+              radius: width / 2
+              color: cameraBody.border.color
+              SequentialAnimation on opacity {
+                running: barJoin.live && barJoin.visible
+                loops: Animation.Infinite
+                NumberAnimation { from: 0.4; to: 1; duration: 850; easing.type: Easing.InOutSine }
+                NumberAnimation { from: 1; to: 0.4; duration: 850; easing.type: Easing.InOutSine }
+              }
+            }
+          }
+          Canvas {
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            width: Style.space(5)
+            height: Style.space(8)
+            onPaint: {
+              var ctx = getContext("2d")
+              ctx.clearRect(0, 0, width, height)
+              ctx.strokeStyle = "#ff7b86"
+              ctx.lineWidth = Style.space(1)
+              ctx.beginPath()
+              ctx.moveTo(0.5, height * 0.3)
+              ctx.lineTo(width - 0.5, 0.5)
+              ctx.lineTo(width - 0.5, height - 0.5)
+              ctx.lineTo(0.5, height * 0.7)
+              ctx.closePath()
+              ctx.stroke()
+            }
+          }
+        }
+      }
+    }
+    tooltipText: root.callEvent ? (barJoin.live ? "Meeting window open · " : "Join ") + Model.title(root.callEvent) : ""
+    onPressed: root.joinCall()
+  }
+
+  BarIconButton {
+    id: barTitle
+    anchors.left: barJoin.visible ? barJoin.right : button.right
+    anchors.top: parent.top
+    anchors.bottom: parent.bottom
+    bar: root.bar
+    visible: root.showLabel
+    active: root.imminent
+    dimmed: !root.appRunning
+    slotSize: labelMetrics.advanceWidth + Style.space(8)
+    tooltipText: root.heroMeta()
+    iconComponent: Component {
+      Item {
+      Text {
+        anchors.centerIn: parent
+        textFormat: Text.PlainText
+        width: labelMetrics.advanceWidth
+        text: root.barLabel
+        elide: Text.ElideRight
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.body
+        color: root.imminent ? root.urgent : barTitle.foreground
+      }
+      }
+    }
+    onPressed: function(buttonCode) {
+      if (buttonCode === Qt.LeftButton) root.toggle()
+      else if (buttonCode === Qt.RightButton) root.openApp("--quick-add")
+      else if (buttonCode === Qt.MiddleButton) root.openApp()
     }
   }
 
@@ -325,7 +502,7 @@ Panel {
     open: root.opened
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(380))
-    contentHeight: panel.fittedContentHeight(column.implicitHeight, Style.space(560))
+    contentHeight: panel.fittedContentHeight(header.implicitHeight + column.implicitHeight + footer.implicitHeight + Style.space(24), panel.screenH > 0 ? panel.screenH * 0.8 : Style.space(560))
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -334,7 +511,9 @@ Panel {
         if (!root.cursorActive) { root.cursorActive = true; return }
         root.moveCursor(dy)
       }
-      onActivateRequested: if (root.cursorActive) root.activateRow(root.flatRows[root.rowCursor])
+      onActivateRequested: {
+        if (root.cursorActive) root.activateRow(root.flatRows[root.rowCursor])
+      }
       onCloseRequested: root.close()
       onTabRequested: function(direction) { root.switchPanel(direction) }
       onTextKey: function(t) {
@@ -345,9 +524,110 @@ Panel {
         else if (t === "j" || t === "J") root.joinCall()
       }
 
+      Column {
+        id: header
+        anchors.top: parent.top
+        width: parent.width
+        spacing: Style.space(12)
+          PanelHero {
+            width: parent.width
+            title: "OmaCal"
+            meta: root.popupHeroMeta()
+            foreground: root.foreground
+            fontFamily: root.fontFamily
+            iconComponent: Component {
+              OmacalMark {
+                iconSize: Style.font.display
+                color: root.foreground
+                // Preserve the brand accent.
+                dotColor: "#F97316"
+              }
+            }
+            trailingControl: Component {
+              Row {
+                spacing: Style.space(8)
+                PanelActionButton {
+                  iconText: "+"
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  tooltipText: "Add event with natural language"
+                  onClicked: root.openApp("--quick-add")
+                }
+                PanelActionButton {
+                  iconText: ""
+                  foreground: root.foreground
+                  fontFamily: root.fontFamily
+                  tooltipText: "OmaCal preferences"
+                  onClicked: root.openApp("--preferences")
+                }
+              PanelActionButton {
+                iconText: ""
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onClicked: root.openApp()
+
+                tooltipText: "Open OmaCal"
+              }
+              }
+            }
+          }
+
+          Text {
+            textFormat: Text.PlainText
+            visible: !!root.day
+            width: parent.width
+            text: root.day ? (root.day.date_label || root.day.date) + " · " + Timeline.currentClock(root.nowMs, root.day.time_format, root.day.utc_offset_seconds === undefined ? -new Date(root.nowMs).getTimezoneOffset() * 60 : root.day.utc_offset_seconds) : ""
+            color: root.foreground
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.body
+          }
+
+      }
+
+      Column {
+            id: footer
+            anchors.bottom: parent.bottom
+            width: parent.width
+            spacing: Style.space(6)
+
+            PanelSeparator {
+              foreground: root.foreground
+            }
+
+            Row {
+              anchors.right: parent.right
+              spacing: Style.space(6)
+
+              PanelActionButton {
+                id: syncButton
+                iconText: ""
+                enabled: root.appRunning
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onClicked: root.syncNow()
+
+                tooltipText: "Sync now"
+              }
+
+              PanelActionButton {
+                id: quitButton
+                iconText: root.appRunning ? "\uf011" : "\uf04b"
+                foreground: root.foreground
+                fontFamily: root.fontFamily
+                onClicked: root.appRunning ? root.quitApp() : root.openApp()
+
+                tooltipText: root.appRunning ? "Quit OmaCal" : "Start OmaCal"
+              }
+            }
+          }
+
       Flickable {
         id: panelFlick
-        anchors.fill: parent
+        anchors.top: header.bottom
+        anchors.bottom: footer.top
+        anchors.topMargin: Style.space(12)
+        anchors.bottomMargin: Style.space(12)
+        width: parent.width
         contentWidth: width
         contentHeight: column.implicitHeight
         clip: true
@@ -361,39 +641,10 @@ Panel {
           width: panelFlick.width
           spacing: Style.space(12)
 
-          PanelHero {
-            width: parent.width
-            title: "OmaCal"
-            meta: root.popupHeroMeta()
-            foreground: root.foreground
-            fontFamily: root.fontFamily
-            iconComponent: Component {
-              OmacalMark {
-                iconSize: Style.font.display
-                color: root.foreground
-                // The hero can afford the brand's own orange; the bar cannot.
-                dotColor: "#F97316"
-              }
-            }
-            trailingControl: Component {
-              PanelActionButton {
-                iconText: ""
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                onClicked: root.openApp()
-
-                PanelToolTip {
-                  visible: parent.containsMouse
-                  text: "Open OmaCal"
-                  fontFamily: root.fontFamily
-                }
-              }
-            }
-          }
-
           // Feed missing entirely: OmaCal has never run (or never on this
           // version). Say what to do, not just that there is nothing.
           Text {
+            textFormat: Text.PlainText
             visible: root.feed === null
             width: parent.width
             text: "No calendar data yet.\nStart OmaCal to populate this panel."
@@ -405,6 +656,7 @@ Panel {
           }
 
           Text {
+            textFormat: Text.PlainText
             visible: root.feed !== null && root.empty && root.taskRows.length === 0
             width: parent.width
             text: "Nothing scheduled in the next two weeks."
@@ -412,6 +664,16 @@ Panel {
             font.family: root.fontFamily
             font.pixelSize: Style.font.body
             horizontalAlignment: Text.AlignHCenter
+          }
+
+          Text {
+            visible: root.day && root.day.truncated === true
+            width: parent.width
+            text: "Showing the first 200 events. Open OmaCal for the complete calendar."
+            color: root.dim
+            font.family: root.fontFamily
+            font.pixelSize: Style.font.caption
+            wrapMode: Text.WordWrap
           }
 
           Repeater {
@@ -433,27 +695,57 @@ Panel {
                 return base
               }
 
-              PanelSeparator {
-                visible: sectionColumn.index > 0
-                foreground: root.foreground
-              }
-
               PanelSectionHeader {
+                visible: sectionColumn.modelData.title !== "ONGOING"
                 text: sectionColumn.modelData.title
-                foreground: sectionColumn.modelData.title === "ONGOING" ? root.urgent : root.foreground
+                foreground: root.foreground
                 fontFamily: root.fontFamily
               }
 
-              Repeater {
-                model: sectionColumn.modelData.rows
+              RowLayout {
+                visible: sectionColumn.modelData.title === "ONGOING"
+                width: parent.width
+                spacing: Style.space(10)
 
-                EventRow {
-                  required property var modelData
-                  required property int index
-                  width: sectionColumn.width
-                  event: modelData
-                  flatIndex: sectionColumn.rowBase + index
-                  sectionTitle: sectionColumn.modelData.title
+                Text {
+                  text: "NOW"
+                  color: root.foreground
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                  font.bold: true
+                }
+                Item {
+                  Layout.fillWidth: true
+                  implicitHeight: Style.space(3)
+                  Accessible.role: root.runningEvent ? Accessible.ProgressBar : Accessible.StaticText
+                  Accessible.name: root.runningEvent ? "Elapsed time: " + Model.title(root.runningEvent) : "Current time"
+                  Accessible.description: root.runningEvent ? Math.round(Timeline.progress(root.runningEvent, root.nowMs) * 100) + "% elapsed" : "No event in progress"
+                  Rectangle { anchors.fill: parent; radius: height / 2; color: root.foreground; opacity: 0.15 }
+                  Rectangle {
+                    width: root.runningEvent ? parent.width * Timeline.progress(root.runningEvent, root.nowMs) : 0
+                    height: parent.height
+                    radius: height / 2
+                    color: root.urgent
+                  }
+                }
+              }
+
+              Column {
+                width: parent.width
+                spacing: 0
+
+                Repeater {
+                  model: sectionColumn.modelData.rows
+
+                  EventRow {
+                    required property var modelData
+                    required property int index
+                    width: sectionColumn.width
+                    event: modelData
+                    flatIndex: sectionColumn.rowBase + index
+                    lastInSection: index === sectionColumn.modelData.rows.length - 1
+                    sectionTitle: sectionColumn.modelData.title
+                  }
                 }
               }
             }
@@ -514,6 +806,7 @@ Panel {
                   }
 
                   Text {
+            textFormat: Text.PlainText
                     Layout.fillWidth: true
                     text: taskRow.modelData.title
                     color: root.foreground
@@ -523,6 +816,7 @@ Panel {
                   }
 
                   Text {
+            textFormat: Text.PlainText
                     text: taskRow.modelData.label
                     color: taskRow.modelData.overdue ? root.urgent : root.dim
                     font.family: root.fontFamily
@@ -534,50 +828,6 @@ Panel {
             }
           }
 
-          // The tray menu's remaining vocabulary, so the tray icon is
-          // dispensable: sync (s) and quit (q). Open lives on the hero.
-          Column {
-            width: parent.width
-            spacing: Style.space(6)
-
-            PanelSeparator {
-              foreground: root.foreground
-            }
-
-            Row {
-              anchors.right: parent.right
-              spacing: Style.space(6)
-
-              PanelActionButton {
-                id: syncButton
-                iconText: ""
-                enabled: root.appRunning
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                onClicked: root.syncNow()
-
-                PanelToolTip {
-                  visible: syncButton.containsMouse
-                  text: "Sync now"
-                  fontFamily: root.fontFamily
-                }
-              }
-
-              PanelActionButton {
-                id: quitButton
-                iconText: root.appRunning ? "\uf011" : "\uf04b"
-                foreground: root.foreground
-                fontFamily: root.fontFamily
-                onClicked: root.appRunning ? root.quitApp() : root.openApp()
-
-                PanelToolTip {
-                  visible: quitButton.containsMouse
-                  text: root.appRunning ? "Quit OmaCal" : "Start OmaCal"
-                  fontFamily: root.fontFamily
-                }
-              }
-            }
-          }
         }
       }
     }
@@ -588,13 +838,25 @@ Panel {
     property var event: null
     property int flatIndex: 0
     property string sectionTitle: ""
+    property bool lastInSection: true
     readonly property bool inOngoing: sectionTitle === "ONGOING"
+    opacity: event && !event.all_day && event.end_ms <= root.nowMs ? 0.5 : 1.0
     readonly property bool inAllDay: sectionTitle === "ALL DAY"
 
     hasCursor: root.cursorActive && root.rowCursor === flatIndex
     foreground: root.foreground
 
     implicitHeight: rowContent.implicitHeight + Style.spacing.rowPaddingX
+
+    Rectangle {
+      anchors.left: parent.left
+      anchors.bottom: parent.bottom
+      width: row.lastInSection ? 0 : parent.width
+      height: 1
+      color: "#808080"
+      // Past text is dimmed by the row, but separators stay equally subtle.
+      opacity: 0.2 / row.opacity
+    }
 
     MouseArea {
       anchors.fill: parent
@@ -628,6 +890,7 @@ Panel {
         spacing: Style.space(1)
 
         Text {
+          textFormat: Text.PlainText
           Layout.fillWidth: true
           text: Model.title(row.event)
           color: root.foreground
@@ -637,6 +900,7 @@ Panel {
         }
 
         Text {
+          textFormat: Text.PlainText
           Layout.fillWidth: true
           visible: text !== ""
           text: {
@@ -645,7 +909,7 @@ Panel {
             if (row.inOngoing) lead = Model.endsText(row.event, root.nowMs)
             // A single-day event under ALL DAY needs no caption — the
             // section header already says everything its dates could.
-            else if (row.inAllDay && Model.isMultiDay(row.event)) lead = Model.untilText(row.event)
+            else if (row.inAllDay && Model.isMultiDay(row.event)) lead = Model.untilText(row.event, root.day ? root.day.date_format : null)
             if (lead === "") return meta
             return meta === "" ? lead : lead + "  ·  " + meta
           }
@@ -657,11 +921,12 @@ Panel {
       }
 
       Text {
+          textFormat: Text.PlainText
         // In the ALL DAY section the time column would only repeat the
         // header, so the whole column goes.
         visible: !row.inAllDay
-        text: row.inAllDay ? "" : Model.timeText(row.event)
-        color: row.inOngoing ? root.urgent : root.foreground
+        text: row.inAllDay ? "" : root.displayTime(row.event)
+        color: root.foreground
         opacity: row.inOngoing ? 1.0 : 0.75
         font.family: root.fontFamily
         font.pixelSize: Style.font.bodySmall
@@ -669,20 +934,15 @@ Panel {
       }
 
       PanelActionButton {
-        visible: row.event !== null && !!row.event.conference
+        visible: !!Timeline.joinable(row.event ? [row.event] : [], root.nowMs, root.day ? root.day.join_minutes : 5)
         iconText: ""
-        // The running meeting's Join wears the urgent colour — it is the one
-        // button in the popup you are probably here to press.
-        foreground: row.inOngoing ? root.urgent : root.foreground
+        // Actionable text/icons use the readable foreground; red marks time.
+        foreground: root.foreground
         fontFamily: root.fontFamily
         Layout.alignment: Qt.AlignVCenter
         onClicked: root.activateRow(row.event)
 
-        PanelToolTip {
-          visible: parent.containsMouse
-          text: "Join the call"
-          fontFamily: root.fontFamily
-        }
+        tooltipText: "Join the call"
       }
     }
   }

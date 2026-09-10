@@ -14,8 +14,9 @@ const source = readFileSync(
 );
 // eslint-disable-next-line @typescript-eslint/no-implied-eval
 const Model = new Function(
-  `${source}; return { parseFeed, sections, isMultiDay, untilText, timeText };`,
+  `${source}; return { agendaSections, parseFeed, sections, isMultiDay, untilText, timeText };`,
 )() as {
+  agendaSections: (feed: { events: Ev[]; panel: { events: Ev[]; agenda_days?: { date_label: string; events: Ev[] }[] } }, now: number, cap: number) => { title: string; rows: Ev[] }[];
   parseFeed: (text: string) => unknown;
   sections: (
     events: Ev[] | null,
@@ -93,7 +94,7 @@ test.describe('the popup sections', () => {
       NOW,
       12,
     );
-    expect(titles(out)).toEqual(['ONGOING', 'ALL DAY', 'UPCOMING']);
+    expect(titles(out)).toEqual(['ALL DAY', 'ONGOING', 'UPCOMING']);
   });
 
   test('an all-day event does not count as today still having something', () => {
@@ -127,3 +128,18 @@ test.describe('the popup sections', () => {
     expect(out[0].rows.map((r) => r.title)).toEqual(['A']);
   });
 });
+
+test('all-day stays above earlier, ongoing and upcoming agenda rows', () => {
+  const events = [allDay('Holiday', 0, 1), timed('Finished', NOW - 2 * HOUR, NOW - HOUR),
+    timed('Current', NOW - HOUR, NOW + HOUR), timed('Next', NOW + 2 * HOUR, NOW + 3 * HOUR)];
+  expect(titles(Model.agendaSections({ events: events.filter(e => e.end_ms > NOW), panel: { events } }, NOW, 12)))
+    .toEqual(['ALL DAY', 'EARLIER TODAY', 'ONGOING', 'UPCOMING']);
+});
+
+ test('agenda includes every configured day and does not use the old twelve-event cap', () => {
+  const days = Array.from({length: 5}, (_, d) => ({ date_label: `Day ${d + 1}`,
+    events: Array.from({length: 8}, (_, i) => timed(`Event ${d}-${i}`, NOW + (d * 24 + i + 1) * HOUR, NOW + (d * 24 + i + 2) * HOUR)) }));
+  const out = Model.agendaSections({events: [], panel: {events: days[0].events, agenda_days: days}}, NOW, 12);
+  expect(out.map(s => s.title)).toEqual(['UPCOMING', 'TOMORROW', 'Day 3', 'Day 4', 'Day 5']);
+  expect(out.flatMap(s => s.rows)).toHaveLength(40);
+ });

@@ -134,6 +134,8 @@ const RESPOND_STUB_DETAIL = {
   attendees: [],
 };
 
+let quickAddPending = false;
+let preferencesPending = false;
 const listeners = new Map<string, Set<(e: unknown) => void>>();
 const callbacks = new Map<number, (e: unknown) => void>();
 const hold = new Set<number>();
@@ -187,6 +189,8 @@ async function whenListening(event: string, polls = 300): Promise<void> {
 const harness: Harness = {
   calls: [],
   async emit(event, payload) {
+    if (event === 'preferences-requested') preferencesPending = true;
+    if (event === 'quick-add-requested') quickAddPending = true;
     await whenListening(event);
     for (const fn of listeners.get(event) ?? []) fn({ event, id: 0, payload });
   },
@@ -566,6 +570,8 @@ type StubSettings = {
   minSyncIntervalMs: number;
   listMode: boolean;
   showDate: boolean;
+  menubarLabel?: boolean;
+  menubarJoinMinutes?: number;
   hourHeight: number;
   fallbackReminderMinutes: number[];
   defaultCalendarId: number | null;
@@ -711,6 +717,8 @@ const SEARCHABLE = [
 ];
 
 export function installTauriStub(scenario: string): Harness {
+  quickAddPending = scenario === 'launched-with-quick-add';
+  preferencesPending = scenario === 'launched-with-preferences';
   // Reassigned by `sign_in` for the `sign-in-adds-account` scenario: a real
   // `sign_in` leaves the account durably connected, so the next `get_status`
   // must reflect it too, not just `get_calendars`.
@@ -762,6 +770,14 @@ export function installTauriStub(scenario: string): Harness {
         return status;
       // The date a dated fresh launch parked on the backend. One scenario
       // carries one; everything else launched bare.
+      case 'take_preferences': {
+        const requested = preferencesPending; preferencesPending = false; return requested;
+      }
+      case 'take_quick_add': {
+        const requested = quickAddPending;
+        quickAddPending = false;
+        return requested;
+      }
       case 'take_open_date': {
         if (scenario === 'launched-with-date' && !openDateTaken) {
           openDateTaken = true;
@@ -931,6 +947,10 @@ export function installTauriStub(scenario: string): Harness {
       case 'set_list_mode':
         settings = saveSettings({ ...settings, listMode: args.on as boolean });
         return { ...settings };
+      case 'set_menubar_preferences':
+        settings = saveSettings({ ...settings,
+          menubarLabel: args.label as boolean, menubarJoinMinutes: args.joinMinutes as number });
+        return settings;
       case 'set_show_date':
         settings = saveSettings({ ...settings, showDate: args.on as boolean });
         return { ...settings };

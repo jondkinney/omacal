@@ -44,6 +44,7 @@ const VERSION: u32 = 1;
 #[derive(Debug, Serialize, PartialEq)]
 pub struct Feed {
     pub version: u32,
+    pub tray_icon: bool,
     /// When this snapshot was computed — the reader's staleness check.
     pub generated_ms: i64,
     pub events: Vec<FeedEvent>,
@@ -62,10 +63,39 @@ pub struct Feed {
     /// keeps working (2026-09-04).
     #[serde(default)]
     pub today: Option<FeedToday>,
+    pub panel: Option<FeedPanel>,
+}
+
+/// A complete display-zone day, separate from the forward-looking feed so
+/// older readers never announce a completed meeting as the next one.
+#[derive(Debug, Serialize, PartialEq)]
+pub struct FeedPanel {
+    pub agenda_days: Vec<FeedAgendaDay>,
+    pub truncated: bool,
+    pub day_start_ms: i64,
+    pub day_end_ms: i64,
+    pub date: String,
+    pub date_label: String,
+    pub utc_offset_seconds: i32,
+    pub date_format: crate::settings::DateFormat,
+    pub clocks: HashMap<i64, String>,
+    pub hours: Vec<i64>,
+    pub timezone: String,
+    pub time_format: crate::settings::TimeFormat,
+    pub label: bool,
+    pub join_minutes: u32,
+    pub events: Vec<FeedEvent>,
+}
+
+#[derive(Debug, Serialize, PartialEq)]
+pub struct FeedAgendaDay {
+    pub date_label: String,
+    pub events: Vec<FeedEvent>,
 }
 
 #[derive(Debug, Serialize, PartialEq)]
 pub struct FeedToday {
+    pub label: String,
     /// `1..=31` in the display zone at generation time.
     pub day: u32,
     /// The user's `show_date` setting. The reader draws the day only when
@@ -233,7 +263,10 @@ pub(crate) fn assemble(
     calendar_names: &HashMap<i64, String>,
     now_ms: i64,
 ) -> Feed {
-    let to_ms = now_ms.saturating_add(HORIZON_MS);
+    assemble_window(stored, calendar_names, now_ms, now_ms.saturating_add(HORIZON_MS), CAP)
+}
+
+fn assemble_window(stored: &[StoredEvent], calendar_names: &HashMap<i64, String>, now_ms: i64, to_ms: i64, cap: usize) -> Feed {
     let suppressed = crate::commands::suppressed_slots(stored);
 
     let mut events = Vec::new();
@@ -278,11 +311,11 @@ pub(crate) fn assemble(
     events.sort_by(|a, b| {
         (a.start_ms, a.end_ms, &a.title).cmp(&(b.start_ms, b.end_ms, &b.title))
     });
-    events.truncate(CAP);
+    events.truncate(cap);
 
     // `assemble` stays pure over its events — the tasks and today's date are
     // both filled in by `current`, which has the pool the settings live in.
-    Feed { version: VERSION, generated_ms: now_ms, events, tasks: Vec::new(), today: None }
+    Feed { tray_icon: true, version: VERSION, generated_ms: now_ms, events, tasks: Vec::new(), today: None, panel: None }
 }
 
 /// How far ahead a due date still counts as "worth a glance in the bar".
@@ -377,9 +410,49 @@ pub(crate) async fn current(pool: &SqlitePool, now_ms: i64) -> anyhow::Result<Fe
     // without a single CalDAV account contributes an empty list for free.
     let task_rows = omacal_store::tasks_for_ui(pool, now_ms).await?;
     feed.tasks = assemble_tasks(&task_rows, now_ms);
+    let settings = crate::settings::read_settings(pool).await;
+    let tz = jiff::tz::TimeZone::system();
+    let today = jiff::Timestamp::from_millisecond(now_ms)?.to_zoned(tz.clone()).date();
+    let start = today.to_zoned(tz.clone())?.timestamp().as_millisecond();
+    let end = today.tomorrow()?.to_zoned(tz.clone())?.timestamp().as_millisecond();
+    let day_stored = omacal_store::events_in_window(pool, start, end).await?;
+    // The agenda needs completed events too, and a larger bound than the
+    // glance-sized upcoming slice. Report truncation instead of hiding it.
+    let mut day = assemble_window(&day_stored, &names, start, end, 201);
+    let truncated = day.events.len() > 200;
+    day.events.truncate(200);
+    let mut agenda_days = Vec::new();
+    let mut agenda_date = today;
+    let mut remaining = 200usize;
+    let mut agenda_truncated = false;
+    for _ in 0..settings.week_view_days {
+        let from = agenda_date.to_zoned(tz.clone())?.timestamp().as_millisecond();
+        let next = agenda_date.tomorrow()?;
+        let to = next.to_zoned(tz.clone())?.timestamp().as_millisecond();
+        let stored = omacal_store::events_in_window(pool, from, to).await?;
+        let mut slice = assemble_window(&stored, &names, from, to, remaining + 1);
+        agenda_truncated |= slice.events.len() > remaining;
+        slice.events.truncate(remaining);
+        remaining -= slice.events.len();
+        agenda_days.push(FeedAgendaDay { date_label: settings.date_format.display(agenda_date), events: slice.events });
+        agenda_date = next;
+    }
+    let hours: Vec<_> = (start..end).step_by(3_600_000).collect();
+    let clocks = day.events.iter().chain(feed.events.iter()).chain(agenda_days.iter().flat_map(|d| d.events.iter()))
+        .flat_map(|e| [e.start_ms, e.end_ms]).chain(hours.iter().copied())
+        .map(|ms| (ms, crate::tray::clock(ms, &tz, settings.time_format))).collect();
+    feed.panel = Some(FeedPanel {
+        agenda_days, truncated: truncated || agenda_truncated, day_start_ms: start, day_end_ms: end, date: today.to_string(), clocks, hours, timezone: tz.iana_name().unwrap_or("UTC").into(),
+        date_label: settings.date_format.display(today), utc_offset_seconds: jiff::Timestamp::from_millisecond(now_ms)?.to_zoned(tz.clone()).offset().seconds(), date_format: settings.date_format,
+        time_format: settings.time_format,
+        label: settings.menubar_label, join_minutes: settings.menubar_join_minutes,
+        events: day.events,
+    });
+    feed.tray_icon = settings.tray_icon;
     feed.today = Some(FeedToday {
+        label: today.day().to_string(),
         day: crate::today_of_month(now_ms, &jiff::tz::TimeZone::system()),
-        show: crate::settings::read_settings(pool).await.show_date,
+        show: settings.show_date,
     });
     Ok(feed)
 }
@@ -413,6 +486,17 @@ mod tests {
     const DAY: i64 = 24 * HOUR;
     /// 2026-08-10T09:00:00Z, borrowed from the scheduler's tests.
     const T0900Z: i64 = 1_786_352_400_000;
+
+    #[test]
+    fn a_day_snapshot_keeps_completed_events_without_leaking_the_next_day() {
+        let start = T0900Z - 9 * HOUR;
+        let stored = vec![event("morning", start + HOUR, start + 2 * HOUR),
+            event("tomorrow", start + DAY + HOUR, start + DAY + 2 * HOUR)];
+        let day = assemble_window(&stored, &names(), start, start + DAY, 200);
+        assert_eq!(day.events.len(), 1);
+        assert_eq!(day.events[0].start_ms, start + HOUR);
+        assert_eq!(assemble(&stored, &names(), T0900Z).events[0].start_ms, start + DAY + HOUR);
+    }
 
     fn event(google_id: &str, start: i64, end: i64) -> StoredEvent {
         StoredEvent {
@@ -753,6 +837,33 @@ mod today_field_tests {
     /// and carries the day rather than leaving the reader to compute one: the
     /// zone is the app's setting, and a widget reading the desktop's clock
     /// would disagree with the grid beside it for hours at a time.
+    #[tokio::test]
+    async fn agenda_horizon_follows_week_view_days() {
+        let pool = omacal_store::connect_memory().await.unwrap();
+        for count in [3, 5, 7] {
+            sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES ('week_view_days', ?1)")
+                .bind(count.to_string()).execute(&pool).await.unwrap();
+            let panel = current(&pool, 1_786_352_400_000).await.unwrap().panel.unwrap();
+            assert_eq!(panel.agenda_days.len(), count);
+            assert!(panel.agenda_days.windows(2).all(|d| d[0].date_label != d[1].date_label));
+        }
+    }
+
+    #[tokio::test]
+    async fn the_feed_publishes_live_menu_preferences() {
+        let pool = omacal_store::connect_memory().await.unwrap();
+        let now = 1_788_564_600_000;
+        assert!(current(&pool, now).await.unwrap().tray_icon);
+        for (key, value) in [("tray_icon", "0"), ("show_date", "1"), ("menubar_label", "0")] {
+            crate::settings::write(&pool, key, value).await.unwrap();
+        }
+        let feed = current(&pool, now).await.unwrap();
+        assert!(!feed.tray_icon);
+        assert!(feed.today.unwrap().show);
+        let panel = feed.panel.unwrap();
+        assert!(!panel.label);
+    }
+
     #[tokio::test]
     async fn the_feed_publishes_today_and_the_switch() {
         let pool = omacal_store::connect_memory().await.unwrap();
