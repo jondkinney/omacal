@@ -37,3 +37,8 @@ export function countdownDuration(minutes) {
   const hours = Math.floor(minutes / 60), remainder = minutes % 60;
   return `${hours}h${remainder ? ` ${remainder}m` : ''}`;
 }
+
+export const DEFAULT_MEETING_FORMAT = '{title} @ {time}  {countdown}';
+export function meetingLabel(template, values) {
+  return (template || DEFAULT_MEETING_FORMAT).replace(/\{([^{}]+)\}/g, (token, key) => (values[key] ?? token).slice(0, 256)).slice(0, 256);
+}

@@ -83,6 +83,7 @@ pub struct FeedPanel {
     pub timezone: String,
     pub time_format: crate::settings::TimeFormat,
     pub label: bool,
+    pub label_format: String,
     pub join_minutes: u32,
     pub events: Vec<FeedEvent>,
 }
@@ -445,12 +446,13 @@ pub(crate) async fn current(pool: &SqlitePool, now_ms: i64) -> anyhow::Result<Fe
         agenda_days, truncated: truncated || agenda_truncated, day_start_ms: start, day_end_ms: end, date: today.to_string(), clocks, hours, timezone: tz.iana_name().unwrap_or("UTC").into(),
         date_label: settings.date_format.display(today), utc_offset_seconds: jiff::Timestamp::from_millisecond(now_ms)?.to_zoned(tz.clone()).offset().seconds(), date_format: settings.date_format,
         time_format: settings.time_format,
+        label_format: settings.menubar_label_format.clone(),
         label: settings.menubar_label, join_minutes: settings.menubar_join_minutes,
         events: day.events,
     });
     feed.tray_icon = settings.tray_icon;
     feed.today = Some(FeedToday {
-        label: today.day().to_string(),
+        label: crate::settings::menu_date(&settings, today),
         day: crate::today_of_month(now_ms, &jiff::tz::TimeZone::system()),
         show: settings.show_date,
     });

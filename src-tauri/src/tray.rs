@@ -371,7 +371,12 @@ pub(crate) fn menu_title(
     };
     let countdown = if running(ev, now_ms) { format!("{duration} left") } else { format!("in {duration}") };
     let start = format!("{}{}", day_prefix(ev.start_ms, now_ms, tz), clock(ev.start_ms, tz, fmt));
-    Some(format!("{title} @ {start}  {countdown}"))
+    let end = clock(ev.end_ms, tz, fmt);
+    let values = [("title", title.as_str()), ("time", start.as_str()), ("end_time", end.as_str()),
+        ("countdown", countdown.as_str()), ("calendar", ev.calendar.as_deref().unwrap_or(""))];
+    let template = feed.panel.as_ref().map(|p| p.label_format.as_str()).unwrap_or(crate::settings::DEFAULT_MENU_LABEL);
+    Some(crate::settings::format_menu_label(template, &values)
+        .unwrap_or_else(|_| crate::settings::format_menu_label(crate::settings::DEFAULT_MENU_LABEL, &values).unwrap()))
 }
 
 /// What a row *is*, so [`apply`] can dress it without deciding anything.
@@ -1023,6 +1028,7 @@ mod tests {
         assert!(crate::menubar::joinable(&f, T0 + 3_600_000).is_none());
         f.panel = Some(crate::upcoming::FeedPanel {
             agenda_days: Vec::new(),
+            label_format: crate::settings::DEFAULT_MENU_LABEL.into(),
             truncated: false, day_start_ms: T0, day_end_ms: T0 + 86_400_000, date: "2026-08-29".into(),
             date_label: String::new(), utc_offset_seconds: 0, date_format: crate::settings::DateFormat::Locale,
             clocks: Default::default(), hours: Vec::new(), timezone: "UTC".into(),

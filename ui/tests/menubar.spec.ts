@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { countdownDuration, progress, joinable, uniqueAllDay, type Event } from '../../packaging/omarchy-plugin/Timeline.mjs';
+import { meetingLabel, countdownDuration, progress, joinable, uniqueAllDay, type Event } from '../../packaging/omarchy-plugin/Timeline.mjs';
 const at = (hour: number) => Date.UTC(2026, 8, 7, hour);
 const event = (title: string, start: number, end: number, extra = {}): Event => ({
   title, start_ms: at(start), end_ms: at(end), all_day: false, ...extra,
@@ -124,4 +124,8 @@ test('open agenda applies a changed clock format without waiting for polling', a
   await expect(page.locator('header p')).toHaveText('07/09/2026 · 13:21');
   await page.evaluate(() => (window as any).__changeMenuFormat());
   await expect(page.locator('header p')).toHaveText('07/09/2026 · 1:21 PM');
+});
+
+test('meeting label templates reorder tokens without expanding title text', () => {
+  expect(meetingLabel('{countdown} · {title} ({calendar})', { countdown: 'in 5m', title: 'Design {time}', calendar: 'Work', time: '13:30' })).toBe('in 5m · Design {time} (Work)');
 });

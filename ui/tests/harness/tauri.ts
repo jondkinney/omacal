@@ -598,6 +598,9 @@ type StubSettings = {
   defaultView: View;
   defaultViewFollowsLast: boolean;
   lastView: View;
+  menubarDateFormat: import('../../src/lib/settings').AppSettings['menubarDateFormat'];
+  menubarDateCustom: string;
+  menubarLabelFormat: string;
   weekStart: WeekStartDay;
   weekStartsToday: boolean;
   weekViewDays: WeekViewDays;
@@ -658,6 +661,9 @@ const DEFAULT_SETTINGS: StubSettings = {
   defaultViewFollowsLast: false,
   // Nothing recorded yet reads as the same view the fixed default does.
   lastView: 'week',
+  menubarDateFormat: 'general',
+  menubarDateCustom: '%-d',
+  menubarLabelFormat: '{title} @ {time}  {countdown}',
   // The week omacal has always drawn, so every golden holds.
   weekStart: 'monday',
   weekStartsToday: false,
@@ -1016,6 +1022,13 @@ export function installTauriStub(scenario: string): Harness {
       case 'set_week_view_days':
         settings = saveSettings({ ...settings, weekViewDays: args.days as WeekViewDays });
         return { ...settings };
+      case 'set_menubar_label_format':
+        settings = saveSettings({ ...settings, menubarLabelFormat: args.template as string });
+        return settings;
+      case 'open_date_format_guide': return null;
+      case 'set_menubar_date_format':
+        settings = saveSettings({ ...settings, menubarDateFormat: args.format as typeof settings.menubarDateFormat, menubarDateCustom: args.custom as string });
+        return settings;
       case 'set_date_format':
         settings = saveSettings({ ...settings, dateFormat: args.format as import('../../src/lib/datefmt').DateFormat });
         return settings;

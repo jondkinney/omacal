@@ -93,7 +93,10 @@ Panel {
     var duration = Timeline.countdownDuration(minutes)
     var title = Model.title(barEvent)
     if (title.length > 18) title = title.slice(0, 17) + "…"
-    return title + " @ " + displayClock(barEvent.start_ms) + "  " + (ongoing ? duration + " left" : "in " + duration)
+    return Timeline.meetingLabel(day ? day.label_format : "", {
+      title: title, time: displayClock(barEvent.start_ms), end_time: displayClock(barEvent.end_ms),
+      countdown: ongoing ? duration + " left" : "in " + duration, calendar: barEvent.calendar || ""
+    })
   }
   function displayClock(ms) { return day && day.clocks[String(ms)] ? day.clocks[String(ms)] : Model.clock(ms) }
   function displayTime(ev) { return ev.all_day ? "ALL DAY" : displayClock(ev.start_ms) + " – " + displayClock(ev.end_ms) }
