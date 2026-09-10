@@ -12,7 +12,7 @@
     getWeek, getDay, getRange, getMonth, getYear, getBigYear, weekStart,
     type WeekPayload, type MonthPayload, type YearPayload, type BigYearPayload, type UiEvent,
   } from './lib/api';
-  import { cancelSignIn, getStatus, installUpdate, openLatestRelease, restartApp, signIn, syncNow, takeOpenDate, type AppStatus } from './lib/status';
+  import { cancelSignIn, getStatus, installUpdate, openLatestRelease, restartApp, signIn, syncNow, takeOpenDate, takeQuickAdd, takePreferences, type AppStatus } from './lib/status';
   import { dateKey, freshness, getWeather, weatherByDate, type DayWeather, type WeatherReport } from './lib/weather';
   import WeatherPopover from './lib/WeatherPopover.svelte';
   import ImportPanel from './lib/ImportPanel.svelte';
@@ -1228,9 +1228,36 @@
    * move underneath a line left open across midnight. */
   let quickAdd = $state<{ nowMs: number; anchorDayMs: number } | null>(null);
 
-  function openQuickAdd() {
-    quickAdd = { nowMs: Date.now(), anchorDayMs: createDayMs() };
+  function openQuickAdd(fromBar = false) {
+    if (quickAdd) return;
+    const nowMs = Date.now();
+    quickAdd = { nowMs, anchorDayMs: fromBar === true ? dayStart(nowMs) : createDayMs() };
   }
+
+  $effect(() => {
+    let active = true;
+    async function receive() {
+      try {
+        if (await takeQuickAdd() && active) openQuickAdd(true);
+      } catch (e) { if (active) error = String(e); }
+    }
+    // Listen first, then drain the parked launch request. Requests arriving
+    // during startup are consumed by exactly one of these two entrances.
+    const un = listen('quick-add-requested', () => { void receive(); });
+    void un.then(receive).catch((e) => { if (active) error = String(e); });
+    return () => { active = false; void un.then(f => f()); };
+  });
+
+  $effect(() => {
+    let active = true;
+    async function receive() {
+      try { if (await takePreferences() && active) settingsOpen = true; }
+      catch (e) { if (active) error = String(e); }
+    }
+    const un = listen('preferences-requested', () => { void receive(); });
+    void un.then(receive).catch(e => { if (active) error = String(e); });
+    return () => { active = false; void un.then(f => f()); };
+  });
 
   /**
    * A result was chosen (spec §6): move the calendar to that date **in the

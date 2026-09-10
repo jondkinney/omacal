@@ -39,6 +39,9 @@ const PLUGIN_ID: &str = "omacal.upcoming";
 const FILES: &[(&str, &str)] = &[
     ("manifest.json", include_str!("../../packaging/omarchy-plugin/manifest.json")),
     ("Panel.qml", include_str!("../../packaging/omarchy-plugin/Panel.qml")),
+    ("read-feed.py", include_str!("../../packaging/omarchy-plugin/read-feed.py")),
+    ("MeetingPresence.mjs", include_str!("../../packaging/omarchy-plugin/MeetingPresence.mjs")),
+    ("Timeline.mjs", include_str!("../../packaging/omarchy-plugin/Timeline.mjs")),
     ("Model.js", include_str!("../../packaging/omarchy-plugin/Model.js")),
     ("OmacalMark.qml", include_str!("../../packaging/omarchy-plugin/OmacalMark.qml")),
     ("README.md", include_str!("../../packaging/omarchy-plugin/README.md")),

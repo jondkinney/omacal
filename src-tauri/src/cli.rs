@@ -1259,7 +1259,7 @@ mod tests {
     /// usage instead of syncing.
     #[test]
     fn everything_the_gui_owns_falls_through() {
-        for s in ["", "--sync-now", "--quit", "2026-09-01"] {
+        for s in ["", "--sync-now", "--quit", "--quick-add", "2026-09-01"] {
             assert_eq!(parse(&argv(s)), None, "{s:?} was claimed by the CLI");
         }
     }

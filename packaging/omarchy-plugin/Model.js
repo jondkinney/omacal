@@ -38,8 +38,20 @@ function clock(ms) {
 var DAY_NAMES = ["SUNDAY", "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY"]
 var MONTH_NAMES = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"]
 
+function formattedDate(ms, format) {
+  var d = new Date(ms)
+  var y = d.getFullYear(), m = String(d.getMonth() + 1).padStart(2, "0"), day = String(d.getDate()).padStart(2, "0")
+  if (format === "iso") return y + "-" + m + "-" + day
+  if (format === "mdy") return m + "/" + day + "/" + y
+  if (format === "dmy") return day + "/" + m + "/" + y
+  var month = MONTH_NAMES[d.getMonth()]
+  if (format === "long-mdy") return month + " " + d.getDate() + ", " + y
+  return d.getDate() + " " + month + " " + y
+}
+
 // Section title for a day further out than tomorrow: "FRIDAY 22 AUG".
-function dayTitle(ms) {
+function dayTitle(ms, format) {
+  if (format && format !== "locale") return formattedDate(ms, format)
   var d = new Date(ms)
   return DAY_NAMES[d.getDay()] + " " + d.getDate() + " " + MONTH_NAMES[d.getMonth()]
 }
@@ -108,7 +120,7 @@ function endsText(ev, nowMs) {
 // syncs this is what keeps the list truthful. Rows beyond `cap` are cut from
 // the tail: losing the afternoon matters less than losing the meeting you
 // are in.
-function sections(events, nowMs, cap) {
+function sections(events, nowMs, cap, format) {
   if (!events) return []
   var today = dayStart(nowMs, 0)
   var ongoing = []
@@ -154,13 +166,13 @@ function sections(events, nowMs, cap) {
     out.push({ title: title, rows: kept })
   }
 
-  if (ongoing.length) push("ONGOING", ongoing)
   if (allDay.length) push("ALL DAY", allDay)
+  if (ongoing.length) push("ONGOING", ongoing)
   if (chosen === 0) push("UPCOMING", byOffset[0])
   else if (chosen === 1) push("TOMORROW", byOffset[1])
   // Title from the chosen day itself, not from an event's start instant —
   // an all-day start is a foreign-zone midnight and can misname the day.
-  else if (chosen > 1) push(dayTitle(dayStart(nowMs, chosen) + 43200000), byOffset[chosen])
+  else if (chosen > 1) push(dayTitle(dayStart(nowMs, chosen) + 43200000, format), byOffset[chosen])
   return out
 }
 
@@ -176,7 +188,8 @@ function isMultiDay(ev) {
 // the last covered day, which reads as the right local date for any
 // calendar-vs-machine zone skew under half a day (a 1 ms step does not —
 // verified against a Sofia calendar read from an IST machine).
-function untilText(ev) {
+function untilText(ev, format) {
+  if (format && format !== "locale") return "until " + formattedDate(ev.end_ms - 43200000, format)
   var d = new Date(ev.end_ms - 43200000)
   return "until " + d.getDate() + " " + MONTH_NAMES[d.getMonth()]
 }
@@ -218,13 +231,13 @@ function taskRows(feed, nowMs) {
       color: t.color || null,
       list: t.list || "",
       overdue: deadline <= nowMs,
-      label: taskLabel(t, nowMs)
+      label: taskLabel(t, nowMs, feed.panel ? feed.panel.date_format : null)
     })
   }
   return out
 }
 
-function taskLabel(t, nowMs) {
+function taskLabel(t, nowMs, format) {
   var deadline = t.all_day ? t.due_ms + 86400000 : t.due_ms
   if (deadline <= nowMs) return "OVERDUE"
   var today = dayStart(nowMs, 0)
@@ -232,5 +245,27 @@ function taskLabel(t, nowMs) {
   var offset = Math.floor((dayStart(anchor, 0) - today) / 86400000)
   if (offset <= 0) return t.all_day ? "today" : clock(t.due_ms)
   if (offset === 1) return "tomorrow"
-  return dayTitle(anchor)
+  return dayTitle(anchor, format)
+}
+
+// A full day retains completed rows, while future-only readers keep the
+// original sections contract. Past rows have their own quiet section.
+function agendaSections(feed, nowMs, cap) {
+  if (!feed || !feed.panel) return sections(feed ? feed.events : null, nowMs, cap)
+  if (Array.isArray(feed.panel.agenda_days)) {
+    var out = []
+    var days = feed.panel.agenda_days
+    var today = days.length ? days[0].events : []
+    function push(title, rows) { if (rows.length) out.push({title: title, rows: rows}) }
+    push("ALL DAY", today.filter(function(e) { return e.all_day }))
+    push("EARLIER TODAY", today.filter(function(e) { return !e.all_day && e.end_ms <= nowMs }))
+    push("ONGOING", today.filter(function(e) { return !e.all_day && e.start_ms <= nowMs && e.end_ms > nowMs }))
+    push("UPCOMING", today.filter(function(e) { return !e.all_day && e.start_ms > nowMs }))
+    for (var d = 1; d < days.length; d++) push(d === 1 ? "TOMORROW" : days[d].date_label, days[d].events)
+    return out
+  }
+  var past = feed.panel.events.filter(function(e) { return !e.all_day && e.end_ms <= nowMs })
+  var remaining = sections(feed.events, nowMs, cap, feed.panel.date_format)
+  if (past.length) remaining.splice(remaining.length && remaining[0].title === "ALL DAY" ? 1 : 0, 0, { title: "EARLIER TODAY", rows: past.slice(-cap) })
+  return remaining
 }

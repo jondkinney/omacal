@@ -5117,6 +5117,28 @@ test.describe("App: showing today's date", () => {
     await page.clock.setFixedTime(APP_NOW);
   });
 
+  test('menu bar label and Join timing are saved and remembered', async ({ page }) => {
+    await page.goto(app('writable'));
+    await page.getByRole('button', { name: 'Menu' }).click();
+    await page.getByRole('button', { name: 'Settings…' }).click();
+    const modal = page.getByRole('dialog', { name: 'Settings' });
+    await modal.getByRole('tab', { name: 'Menu bar' }).click();
+    await modal.getByLabel('Show Join before a meeting').selectOption('15');
+    await modal.getByLabel('Show meeting title and countdown').uncheck();
+    const calls = await page.evaluate(() => window.__harness.calls
+      .filter(c => c.cmd === 'set_menubar_preferences').map(c => c.args));
+    expect(calls).toEqual([
+      { label: true, joinMinutes: 15 },
+      { label: false, joinMinutes: 15 },
+    ]);
+    await page.keyboard.press('Escape');
+    await page.getByRole('button', { name: 'Menu' }).click();
+    await page.getByRole('button', { name: 'Settings…' }).click();
+    await modal.getByRole('tab', { name: 'Menu bar' }).click();
+    await expect(modal.getByLabel('Show Join before a meeting')).toHaveValue('15');
+    await expect(modal.getByLabel('Show meeting title and countdown')).not.toBeChecked();
+  });
+
   test("today's date can be asked for, and is remembered", async ({ page }) => {
     // Asked for 2026-09-04. One switch dresses two surfaces: the tray icon
     // *becomes* the date, because a tray host draws icons and nothing else,
@@ -5481,3 +5503,46 @@ test('visible hours persist, shorten Day and Week, and keep click creation at th
   await expect(modal.getByLabel('Visible hours start time')).toHaveValue('5');
   await expect(modal.getByLabel('Visible hours end time')).toHaveValue('23');
 });
+
+  test('a menu bar quick-add request opens the NLP form without submitting', async ({ page }) => {
+    await page.goto(app('writable'));
+    await page.evaluate(() => window.__harness.emit('quick-add-requested', null));
+    const quick = page.getByRole('dialog', { name: 'Quick add event' });
+    await expect(quick).toBeVisible();
+    const input = quick.getByRole('textbox', { name: 'Describe the event' });
+    await expect(input).toBeFocused();
+    await input.fill('30 min at 2pm Design sync');
+    await expect(quick.getByText('Design sync', { exact: true })).toBeVisible();
+    await page.evaluate(() => window.__harness.emit('quick-add-requested', null));
+    await expect(input).toHaveValue('30 min at 2pm Design sync');
+    const writes = await page.evaluate(() => window.__harness.calls.filter(c => c.cmd === 'create_event'));
+    expect(writes).toHaveLength(0);
+    await page.keyboard.press('Escape');
+    await expect(quick).not.toBeVisible();
+  });
+
+  test('a fresh quick-add launch delivers its parked request once', async ({ page }) => {
+    await page.goto(app('launched-with-quick-add'));
+    const quick = page.getByRole('dialog', { name: 'Quick add event' });
+    await expect(quick).toBeVisible();
+    await expect(quick.getByRole('textbox', { name: 'Describe the event' })).toBeFocused();
+    await page.keyboard.press('Escape');
+    await expect(quick).not.toBeVisible();
+    expect(await page.evaluate(() => (window as any).__TAURI_INTERNALS__.invoke('take_quick_add', {}))).toBe(false);
+  });
+
+
+for (const cold of [true, false]) {
+  test(`preferences request opens Settings on ${cold ? 'cold launch' : 'running app'}`, async ({ page }) => {
+    await page.goto(app(cold ? 'launched-with-preferences' : 'default'));
+    if (!cold) {
+      await expect(page.getByRole('button', { name: 'Menu', exact: true })).toBeVisible();
+      await page.evaluate(() => window.__harness.emit('preferences-requested', null));
+    }
+    await expect(page.getByRole('dialog', { name: 'Settings' })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog', { name: 'Settings' })).toHaveCount(0);
+    expect(await page.evaluate(() => (window as any).__TAURI_INTERNALS__.invoke('take_preferences'))).toBe(false);
+  });
+}
+

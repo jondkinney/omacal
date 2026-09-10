@@ -163,6 +163,8 @@ export type AppSettings = {
    *  which *becomes* the date because a tray host draws icons and nothing
    *  else, and the Omarchy bar widget, which reads it from the feed. */
   showDate: boolean;
+  menubarLabel?: boolean;
+  menubarJoinMinutes?: number;
   /** Which palette the app wears. `'auto'` by default — omacal has no theme
    *  of its own and wears Omarchy's, which is exactly why the other two rows
    *  exist: off Omarchy there was no theme to wear and dark was the only
@@ -374,3 +376,5 @@ export const msOfMinutes = (min: number): number => Math.round(min * 60_000);
 export const setDateFormatPreference = (format: DateFormat) => invoke<AppSettings>('set_date_format', { format });
 
 export const setVisibleHours = (start: number, end: number) => invoke<AppSettings>("set_visible_hours", { start, end });
+export const setMenubarPreferences = (label: boolean, joinMinutes: number) =>
+  invoke<AppSettings>('set_menubar_preferences', { label, joinMinutes });

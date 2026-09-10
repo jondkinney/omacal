@@ -39,6 +39,7 @@ mod tasks;
 mod theme;
 mod theme_watch;
 mod tray;
+mod menubar;
 mod tray_date;
 mod tz_watch;
 #[cfg(target_os = "linux")]
@@ -868,7 +869,6 @@ where
         };
 
         let client = omacal_google::CalendarClient::new(api_base, &access_token);
-
         // Names can change without reconnecting an account. Update only known
         // calendars: this must not import or re-enable calendars during sync.
         if let Err(e) = refresh_calendar_names(pool, *account_id, &client).await {
@@ -1305,6 +1305,8 @@ fn single_instance_plugin() -> tauri::plugin::TauriPlugin<tauri::Wry> {
                     }
                 }
                 tray::TrayAction::Open => tray::open_plain(app),
+                tray::TrayAction::QuickAdd => tray::quick_add(app),
+                tray::TrayAction::Preferences => tray::preferences(app),
             }
         },
     );
@@ -1333,6 +1335,12 @@ pub fn run() {
     #[allow(unused_mut)]
     let mut builder = tauri::Builder::default()
         .manage(SignInAttempt::default())
+        .manage(tray::PreferencesRequest(std::sync::atomic::AtomicBool::new(
+            tray::instance_action(&std::env::args().collect::<Vec<_>>()) == tray::TrayAction::Preferences,
+        )))
+        .manage(tray::QuickAddRequest(std::sync::atomic::AtomicBool::new(
+            tray::instance_action(&std::env::args().collect::<Vec<_>>()) == tray::TrayAction::QuickAdd,
+        )))
         // First, before every other plugin, per its own docs — a second
         // process must be turned away before anything else initialises.
         // Closing the window only hides omacal (see `tray`), so "start it
@@ -1613,6 +1621,13 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| match event {
+            tauri::WindowEvent::Focused(false) if window.label() == "menubar" => {
+                let _ = window.hide();
+            }
+            tauri::WindowEvent::CloseRequested { api, .. } if window.label() == "menubar" => {
+                api.prevent_close();
+                let _ = window.hide();
+            }
             tauri::WindowEvent::Focused(true) => {
                 sync_loop::request_now(window.app_handle());
                 // The update notice rides the same "the user is back" signal,
@@ -1661,6 +1676,8 @@ pub fn run() {
             get_big_year,
             get_status,
             take_open_date,
+            tray::take_quick_add,
+            tray::take_preferences,
             sign_in,
             cancel_sign_in,
             sync_now,
@@ -1702,6 +1719,9 @@ pub fn run() {
             settings::set_list_mode,
             settings::set_hour_height,
             settings::set_show_date,
+            settings::set_menubar_preferences,
+            menubar::menubar_feed,
+            menubar::menubar_action,
             settings::set_fallback_reminders,
             settings::set_default_calendar,
             settings::set_default_event_duration,

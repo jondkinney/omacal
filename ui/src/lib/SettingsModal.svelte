@@ -23,7 +23,7 @@
     setDisplayTimezone, setFallbackReminders, setNotificationsEnabled,
     setAppearance, APPEARANCE_OPTIONS,
     setQuitOnClose, setSecondTimezone, setSyncInterval, setTemperatureUnit, setTimeFormat,
-    setShowDate, setTrayIcon, setWeatherEnabled, setWeekStart,
+    setMenubarPreferences, setShowDate, setTrayIcon, setWeatherEnabled, setWeekStart,
     setWeekStartsToday, setWeekViewDays, setVisibleHours,
     type AppSettings, type Appearance, type StartOnLogin, type WeekViewDays,
     type WindowFrame, WINDOW_FRAME_OPTIONS, setWindowFrame,
@@ -103,6 +103,14 @@
       })
       .catch((e) => (note = { text: String(e), kind: 'error' }));
   });
+
+  async function saveMenubar(label = settings?.menubarLabel ?? true, joinMinutes = settings?.menubarJoinMinutes ?? 5) {
+    try {
+      settings = await setMenubarPreferences(label, joinMinutes);
+      onsettingschange?.(settings);
+      note = { text: 'Saved.', kind: 'info' };
+    } catch (e) { note = { text: String(e), kind: 'error' }; }
+  }
 
   const floorMinutes = $derived(settings ? minutesOf(settings.minSyncIntervalMs) : 1);
 
@@ -1243,6 +1251,21 @@
         {#if settings?.desktop === 'omarchy'}The Omarchy bar widget also shows the date beside its mark.{/if}
         The number follows the clock without a restart.
       </p>
+      <section class="appearance-section" aria-labelledby="menubar-heading">
+        <h2 id="menubar-heading">Menu bar calendar</h2>
+        <label class="check"><input type="checkbox" disabled={!settings}
+          checked={settings?.menubarLabel ?? true}
+          onchange={(e) => saveMenubar(e.currentTarget.checked)} />
+          Show meeting title and countdown</label>
+        <label class="lab" for="menubar-join">Show Join before a meeting</label>
+        <select id="menubar-join" disabled={!settings} value={settings?.menubarJoinMinutes ?? 5}
+          onchange={(e) => saveMenubar(undefined, Number(e.currentTarget.value))}>
+          {#each [0, 1, 5, 10, 15, 30, 60] as minutes}
+            <option value={minutes}>{minutes === 0 ? 'At start time' : `${minutes} minutes before`}</option>
+          {/each}
+        </select>
+        <p class="hint">Join stays available while the meeting is running. These preferences apply to the {settings?.desktop === 'macos' ? 'macOS menu bar' : settings?.desktop === 'omarchy' ? 'Omarchy widget' : 'menu bar'}.</p>
+      </section>
     {:else if pane === 'Calendars'}
       <!-- **The same rows the header's popover shows, from the same
            component.** Extracted rather than reimplemented, which is what

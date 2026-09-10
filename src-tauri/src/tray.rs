@@ -21,6 +21,8 @@ pub(crate) const MENU: [(&str, &str); 3] =
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TrayAction {
     Open,
+    QuickAdd,
+    Preferences,
     /// Open a meeting's conference link — the one thing a menu bar does
     /// better than a window, and the reason the macOS section exists
     /// (spec 2026-08-29 §2). Carries the URL the feed already resolved.
@@ -55,6 +57,10 @@ pub(crate) fn instance_action(argv: &[String]) -> TrayAction {
         TrayAction::Quit
     } else if argv.iter().any(|a| a == "--sync-now") {
         TrayAction::SyncNow
+    } else if argv.iter().any(|a| a == "--preferences") {
+        TrayAction::Preferences
+    } else if argv.iter().any(|a| a == "--quick-add") {
+        TrayAction::QuickAdd
     } else if let Some(ymd) = argv.iter().skip(1).find_map(|a| parse_date(a)) {
         TrayAction::OpenAt(ymd)
     } else if let Some(path) = argv.iter().skip(1).find_map(|a| calendar_file(a)) {
@@ -306,7 +312,7 @@ fn zoned(ms: i64, tz: &jiff::tz::TimeZone) -> jiff::Zoned {
 /// trustworthy. The process's zone already honours the display-timezone
 /// setting — `apply_display_tz_early` exports `TZ` before anything renders —
 /// so the system zone *is* the user's chosen zone.
-fn clock(ms: i64, tz: &jiff::tz::TimeZone, fmt: crate::settings::TimeFormat) -> String {
+pub(crate) fn clock(ms: i64, tz: &jiff::tz::TimeZone, fmt: crate::settings::TimeFormat) -> String {
     let z = zoned(ms, tz);
     match fmt {
         crate::settings::TimeFormat::H24 => format!("{:02}:{:02}", z.hour(), z.minute()),
@@ -334,8 +340,8 @@ fn day_prefix(ms: i64, now_ms: i64, tz: &jiff::tz::TimeZone) -> String {
 
 /// The macOS menu bar's text, or `None` for the icon alone.
 ///
-/// The event running now wins over the next one — knowing you are *in*
-/// something beats knowing what follows it. All-day entries never claim the
+/// The next joinable call takes over at its configured lead time. Otherwise
+/// the current event stays in view. All-day entries never claim the
 /// title: a day-long "Trip" would sit in the menu bar all day saying nothing
 /// about the next hour, and the width it costs is the width every other
 /// menu extra loses. Nothing upcoming yields `None` rather than an empty
@@ -351,16 +357,21 @@ pub(crate) fn menu_title(
     tz: &jiff::tz::TimeZone,
     fmt: crate::settings::TimeFormat,
 ) -> Option<String> {
+    if feed.panel.as_ref().is_some_and(|p| !p.label) { return None; }
     let timed = || feed.events.iter().filter(|e| !e.all_day);
     let now = timed().find(|e| running(e, now_ms));
     let next = || timed().find(|e| e.start_ms > now_ms);
-    let ev = now.or_else(next)?;
+    let ev = crate::menubar::joinable(feed, now_ms).or(now).or_else(next)?;
     let title = ellipsize(ev.title.as_deref().unwrap_or(UNTITLED), TITLE_CAP);
-    Some(if now.is_some() {
-        format!("▸ {title}")
-    } else {
-        format!("{}{}  {title}", day_prefix(ev.start_ms, now_ms, tz), clock(ev.start_ms, tz, fmt))
-    })
+    let minutes = ((if running(ev, now_ms) { ev.end_ms } else { ev.start_ms } - now_ms) + 59_999) / 60_000;
+    let duration = match (minutes / 60, minutes % 60) {
+        (0, _) => format!("{minutes}m"),
+        (hours, 0) => format!("{hours}h"),
+        (hours, remainder) => format!("{hours}h {remainder}m"),
+    };
+    let countdown = if running(ev, now_ms) { format!("{duration} left") } else { format!("in {duration}") };
+    let start = format!("{}{}", day_prefix(ev.start_ms, now_ms, tz), clock(ev.start_ms, tz, fmt));
+    Some(format!("{title} @ {start}  {countdown}"))
 }
 
 /// What a row *is*, so [`apply`] can dress it without deciding anything.
@@ -444,7 +455,12 @@ pub(crate) fn rows(
     for ev in feed.events.iter().filter(|e| !e.all_day).take(EVENT_ROWS) {
         let key = day_key(ev.start_ms, tz);
         if key != day {
-            out.push(Row::heading(heading_for(ev.start_ms, now_ms, tz)));
+            let heading = heading_for(ev.start_ms, now_ms, tz);
+            let heading = match feed.panel.as_ref() {
+                Some(panel) if panel.date_format != crate::settings::DateFormat::Locale && heading != "Today" && heading != "Tomorrow" => panel.date_format.display(zoned(ev.start_ms, tz).date()),
+                _ => heading,
+            };
+            out.push(Row::heading(heading));
             day = key.clone();
         }
         let title = ellipsize(ev.title.as_deref().unwrap_or(UNTITLED), ROW_CAP);
@@ -459,8 +475,7 @@ pub(crate) fn rows(
     // One Join, for the meeting at hand — the running one, else the next.
     // Not one per row: a dropdown of Join buttons is a way to join the
     // wrong call, and the feed's later rows are hours away.
-    let timed = || feed.events.iter().filter(|e| !e.all_day);
-    let at_hand = timed().find(|e| running(e, now_ms)).or_else(|| timed().find(|e| e.start_ms > now_ms));
+    let at_hand = crate::menubar::joinable(feed, now_ms);
     if let Some(url) = at_hand.and_then(|e| e.conference.as_deref()) {
         if url.starts_with("https://") || url.starts_with("http://") {
             out.push(Row {
@@ -550,6 +565,10 @@ fn swatch(hex: &str) -> Option<tauri::image::Image<'static>> {
 /// `tray_icon` setting. A no-op when the tray never built (macOS refusals,
 /// headless oddities): the setting still persists and applies next launch.
 pub(crate) fn set_visible(app: &AppHandle, on: bool) {
+    if !on {
+        if let Some(join) = app.tray_by_id("omacal-join") { let _ = join.set_visible(false); }
+        if let Some(popup) = app.get_webview_window("menubar") { let _ = popup.hide(); }
+    }
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         if let Err(e) = tray.set_visible(on) {
             tracing::warn!(%e, on, "could not change tray icon visibility");
@@ -578,12 +597,30 @@ pub(crate) fn build(app: &AppHandle) -> tauri::Result<()> {
     // Built with an id so `set_visible` below can find it again: the tray
     // icon is now a *setting*, because on Omarchy 4 the bar widget carries
     // the same three actions and a second omacal icon is one too many.
-    TrayIconBuilder::with_id(TRAY_ID)
-        .menu(&menu)
-        .show_menu_on_left_click(true)
+    let mut builder = TrayIconBuilder::with_id(TRAY_ID)
+        .show_menu_on_left_click(!cfg!(target_os = "macos"))
+        .on_tray_icon_event(|tray, event| {
+            if cfg!(target_os = "macos") {
+                if let tauri::tray::TrayIconEvent::Click {
+                    button, button_state: tauri::tray::MouseButtonState::Up, rect, ..
+                } = event {
+                    match button {
+                        tauri::tray::MouseButton::Left => {
+                            if let Err(e) = crate::menubar::toggle(tray.app_handle(), rect) {
+                                tracing::warn!(%e, "could not open menu bar popup");
+                            }
+                        },
+                        tauri::tray::MouseButton::Right => quick_add(tray.app_handle()),
+                        tauri::tray::MouseButton::Middle => show_main_window(tray.app_handle()),
+                    }
+                }
+            }
+        })
         .icon(tauri::include_image!("icons/tray.png"))
         .on_menu_event(|app, event| match action_for(event.id.as_ref()) {
             Some(TrayAction::Open) => open_plain(app),
+            Some(TrayAction::QuickAdd) => quick_add(app),
+            Some(TrayAction::Preferences) => preferences(app),
             // Unreachable from a menu — `action_for` never returns it, the
             // menu has no dated entry — but honoured rather than ignored,
             // because a match arm that discards an action is how a future
@@ -600,8 +637,31 @@ pub(crate) fn build(app: &AppHandle) -> tauri::Result<()> {
             // An id the menu did not put there. Nothing to do, and nothing
             // worth crashing the app over.
             None => tracing::warn!(id = %event.id.as_ref(), "unknown tray menu id"),
-        })
-        .build(app)?;
+        });
+    // A native macOS menu consumes right-click before the handler can open
+    // Quick Add. Linux's separate tray still needs its host-provided menu.
+    if !cfg!(target_os = "macos") { builder = builder.menu(&menu); }
+    builder.build(app)?;
+
+    if cfg!(target_os = "macos") {
+        let join = TrayIconBuilder::with_id("omacal-join")
+            .title("Join").tooltip("Join meeting").show_menu_on_left_click(false)
+            .on_tray_icon_event(|tray, event| {
+                if let tauri::tray::TrayIconEvent::Click {
+                    button: tauri::tray::MouseButton::Left,
+                    button_state: tauri::tray::MouseButtonState::Up, ..
+                } = event {
+                    let app = tray.app_handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        let state = app.state::<crate::AppState>();
+                        if let Err(e) = crate::menubar::menubar_action(app.clone(), state, "join".into()).await {
+                            tracing::warn!(%e, "could not join the meeting");
+                        }
+                    });
+                }
+            }).build(app)?;
+        join.set_visible(false)?;
+    }
 
     Ok(())
 }
@@ -669,7 +729,9 @@ fn apply(app: &AppHandle, feed: &crate::upcoming::Feed, now_ms: i64,
     for i in &fixed {
         refs.push(i);
     }
-    tray.set_menu(Some(Menu::with_items(app, &refs)?))?;
+    if !cfg!(target_os = "macos") {
+        tray.set_menu(Some(Menu::with_items(app, &refs)?))?;
+    }
 
     // `cfg!` and not `#[cfg]`, deliberately. `set_title` is not
     // platform-gated in Tauri, so writing the decision as a runtime branch
@@ -682,6 +744,12 @@ fn apply(app: &AppHandle, feed: &crate::upcoming::Feed, now_ms: i64,
     // more, and Tauri's own note says the title needs the icon shown anyway.
     let title =
         if cfg!(target_os = "macos") { menu_title(feed, now_ms, &tz, fmt) } else { None };
+    let title = if cfg!(target_os = "macos") {
+        match feed.today.as_ref().filter(|today| today.show) {
+            Some(today) => Some(match title { Some(event) => format!("{}  {event}", today.label), None => today.label.clone() }),
+            None => title,
+        }
+    } else { title };
     tray.set_title(title)?;
 
     // The date *is* the icon where it is wanted (2026-09-04): a tray host
@@ -690,7 +758,7 @@ fn apply(app: &AppHandle, feed: &crate::upcoming::Feed, now_ms: i64,
     // turns, because the minute tick is already here and a comparison
     // against the icon currently shown is not something the tray can be
     // asked for.
-    tray.set_icon(Some(if date_icon {
+    tray.set_icon(Some(if date_icon && !cfg!(target_os = "macos") {
         crate::tray_date::icon_for(crate::today_of_month(now_ms, &tz))
     } else {
         crate::tray_date::mark()
@@ -725,6 +793,11 @@ pub(crate) fn refresh(app: &AppHandle) {
             }
         };
         let settings = crate::settings::read_settings(&pool).await;
+        if let Some(join) = app.tray_by_id("omacal-join") {
+            let call = crate::menubar::joinable(&feed, now);
+            let _ = join.set_visible(settings.tray_icon && call.is_some());
+            let _ = join.set_tooltip(call.map(|e| format!("Join {}", e.title.as_deref().unwrap_or(UNTITLED))));
+        }
         if let Err(e) = apply(&app, &feed, now, settings.time_format, settings.show_date) {
             tracing::warn!(%e, "could not update the tray menu");
         }
@@ -756,6 +829,42 @@ pub(crate) fn show_main_window(app: &AppHandle) {
         let _ = w.unminimize();
         let _ = w.set_focus();
     }
+}
+
+/// Requests survive the gap before the frontend installs its listener.
+/// Consuming the flag, rather than trusting an event payload, prevents the
+/// startup read and a simultaneous notification from opening the form twice.
+pub(crate) struct QuickAddRequest(pub std::sync::atomic::AtomicBool);
+
+impl QuickAddRequest {
+    fn take(&self) -> bool { self.0.swap(false, std::sync::atomic::Ordering::SeqCst) }
+}
+
+#[tauri::command]
+pub(crate) fn take_quick_add(state: tauri::State<'_, QuickAddRequest>) -> bool { state.take() }
+
+pub(crate) fn quick_add(app: &AppHandle) {
+    use tauri::Emitter;
+    app.state::<QuickAddRequest>().0.store(true, std::sync::atomic::Ordering::SeqCst);
+    if let Some(popup) = app.get_webview_window("menubar") { let _ = popup.hide(); }
+    show_main_window(app);
+    let _ = app.emit_to("main", "quick-add-requested", ());
+}
+
+/// Park the request until the main webview is ready, including a cold launch.
+pub(crate) struct PreferencesRequest(pub std::sync::atomic::AtomicBool);
+
+#[tauri::command]
+pub(crate) fn take_preferences(state: tauri::State<'_, PreferencesRequest>) -> bool {
+    state.0.swap(false, std::sync::atomic::Ordering::SeqCst)
+}
+
+pub(crate) fn preferences(app: &AppHandle) {
+    use tauri::Emitter;
+    app.state::<PreferencesRequest>().0.store(true, std::sync::atomic::Ordering::SeqCst);
+    if let Some(popup) = app.get_webview_window("menubar") { let _ = popup.hide(); }
+    show_main_window(app);
+    let _ = app.emit_to("main", "preferences-requested", ());
 }
 
 /// What a dated invocation emits once the window is up, carrying the ISO
@@ -878,7 +987,7 @@ mod tests {
     }
 
     fn feed(events: Vec<FeedEvent>) -> Feed {
-        Feed { version: 1, generated_ms: T0, events, tasks: Vec::new(), today: None }
+        Feed { tray_icon: true, version: 1, generated_ms: T0, events, tasks: Vec::new(), today: None, panel: None }
     }
 
     /// The wearer's zone. Fixed rather than `TimeZone::system()` so these
@@ -904,6 +1013,53 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn join_window_excludes_future_and_finished_calls() {
+        let mut call = ev("Call", T0, T0 + 3_600_000);
+        call.conference = Some("https://meet.google.com/abc".into());
+        let mut f = feed(vec![call]);
+        assert!(crate::menubar::joinable(&f, T0 - 300_001).is_none());
+        assert!(crate::menubar::joinable(&f, T0 - 300_000).is_some());
+        assert!(crate::menubar::joinable(&f, T0 + 3_600_000).is_none());
+        f.panel = Some(crate::upcoming::FeedPanel {
+            agenda_days: Vec::new(),
+            truncated: false, day_start_ms: T0, day_end_ms: T0 + 86_400_000, date: "2026-08-29".into(),
+            date_label: String::new(), utc_offset_seconds: 0, date_format: crate::settings::DateFormat::Locale,
+            clocks: Default::default(), hours: Vec::new(), timezone: "UTC".into(),
+            time_format: TimeFormat::H24, label: false, join_minutes: 0, events: Vec::new(),
+        });
+        assert!(crate::menubar::joinable(&f, T0 - 1).is_none());
+        assert!(crate::menubar::joinable(&f, T0).is_some());
+        assert!(menu_title(&f, T0, &sofia(), TimeFormat::H24).is_none());
+        f.panel.as_mut().unwrap().join_minutes = 60;
+        assert!(crate::menubar::joinable(&f, T0 - 3_600_000).is_some());
+    }
+
+    #[test]
+    fn back_to_back_join_and_title_switch_at_the_lead_window() {
+        let mut current = ev("Current", T0 - 3_600_000, T0 + 3_600_000);
+        current.conference = Some("https://meet.google.com/current".into());
+        let mut next = ev("Next", T0, T0 + 3_600_000);
+        next.conference = Some("https://meet.google.com/next".into());
+        let f = feed(vec![current, next]);
+        assert_eq!(crate::menubar::joinable(&f, T0 - 300_001).unwrap().title.as_deref(), Some("Current"));
+        for now in [T0 - 300_000, T0 - 60_000, T0] {
+            assert_eq!(crate::menubar::joinable(&f, now).unwrap().title.as_deref(), Some("Next"));
+            let label = menu_title(&f, now, &sofia(), TimeFormat::H24).unwrap();
+            assert!(label.starts_with("Next @"), "{label}");
+            assert!(label.ends_with(if now == T0 { "1h left" } else if now == T0 - 60_000 { "in 1m" } else { "in 5m" }), "{label}");
+        }
+    }
+
+    #[test]
+    fn a_quick_add_request_is_consumed_once() {
+        let request = QuickAddRequest(std::sync::atomic::AtomicBool::new(true));
+        assert!(request.take());
+        assert!(!request.take());
+        request.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        assert!(request.take());
+    }
+
     /// The running meeting outranks the next one: being *in* something is
     /// the more useful fact, and the marker is what tells the two apart.
     #[test]
@@ -912,7 +1068,17 @@ mod tests {
             ev("Standup", T0 - 600_000, T0 + 600_000),
             ev("Review", T0 + 3_600_000, T0 + 7_200_000),
         ]);
-        assert_eq!(menu_title(&f, T0, &sofia(), TimeFormat::H24).as_deref(), Some("▸ Standup"));
+        assert_eq!(menu_title(&f, T0, &sofia(), TimeFormat::H24).as_deref(), Some("Standup @ 11:50  10m left"));
+    }
+
+    #[test]
+    fn countdowns_use_hours_at_sixty_minutes_for_upcoming_and_running_events() {
+        for (minutes, duration) in [(59, "59m"), (60, "1h"), (64, "1h 4m"), (120, "2h"), (642, "10h 42m")] {
+            let next = feed(vec![ev("Next", T0 + minutes * 60_000, T0 + (minutes + 30) * 60_000)]);
+            assert!(menu_title(&next, T0, &sofia(), TimeFormat::H24).unwrap().ends_with(&format!("in {duration}")));
+            let active = feed(vec![ev("Active", T0 - 60_000, T0 + minutes * 60_000)]);
+            assert!(menu_title(&active, T0, &sofia(), TimeFormat::H24).unwrap().ends_with(&format!("{duration} left")));
+        }
     }
 
     /// With nothing running, the next one — and it carries the start time,
@@ -920,7 +1086,7 @@ mod tests {
     #[test]
     fn the_title_falls_to_the_next_meeting_with_its_clock() {
         let f = feed(vec![ev("Review", T0 + 3_600_000, T0 + 7_200_000)]);
-        assert_eq!(menu_title(&f, T0, &sofia(), TimeFormat::H24).as_deref(), Some("13:00  Review"));
+        assert_eq!(menu_title(&f, T0, &sofia(), TimeFormat::H24).as_deref(), Some("Review @ 13:00  in 1h"));
     }
 
     /// An event that ended exactly now has ended — the half-open rule every
@@ -955,8 +1121,8 @@ mod tests {
         let long = "Консулски услуги в посолството на Република България";
         let f = feed(vec![ev(long, T0 + 60_000, T0 + 600_000)]);
         let title = menu_title(&f, T0, &sofia(), TimeFormat::H24).expect("a next meeting");
-        assert!(title.ends_with('…'), "{title}");
-        assert!(title.chars().count() <= TITLE_CAP + 8, "{title}");
+        assert!(title.contains('…'), "{title}");
+        assert!(title.chars().count() <= TITLE_CAP + 24, "{title}");
     }
 
     /// The row's id has to survive the trip out to AppKit and back through
@@ -1092,7 +1258,7 @@ mod tests {
     #[test]
     fn the_twelve_hour_setting_is_honoured() {
         let f = feed(vec![ev("Review", T0 + 3_600_000, T0 + 7_200_000)]);
-        assert_eq!(menu_title(&f, T0, &sofia(), TimeFormat::H12).as_deref(), Some("1:00pm  Review"));
+        assert_eq!(menu_title(&f, T0, &sofia(), TimeFormat::H12).as_deref(), Some("Review @ 1:00pm  in 1h"));
     }
 
     /// Open, Sync now, Quit — in that order, and Quit present at all.
@@ -1158,6 +1324,10 @@ mod tests {
     /// as Open.
     #[test]
     fn a_second_invocations_argv_maps_to_an_action() {
+        assert_eq!(instance_action(&argv(&["omacal", "--preferences"])), TrayAction::Preferences);
+        assert_eq!(instance_action(&argv(&["omacal", "--preferences", "--quit"])), TrayAction::Quit);
+        assert_eq!(instance_action(&argv(&["omacal", "--quick-add"])), TrayAction::QuickAdd);
+        assert_eq!(instance_action(&argv(&["omacal", "--quick-add", "--quit"])), TrayAction::Quit);
         assert_eq!(instance_action(&argv(&["omacal", "--quit"])), TrayAction::Quit);
         assert_eq!(instance_action(&argv(&["omacal", "--sync-now"])), TrayAction::SyncNow);
         assert_eq!(instance_action(&argv(&["omacal"])), TrayAction::Open);
