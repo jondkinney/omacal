@@ -634,6 +634,7 @@ type StubSettings = {
   taskNotificationsEnabled: boolean;
   minSyncIntervalMs: number;
   listMode: boolean;
+  combineIdenticalEvents: boolean;
   showDate: boolean;
   menubarDayView?: boolean;
   menubarLabel?: boolean;
@@ -715,6 +716,7 @@ const DEFAULT_SETTINGS: StubSettings = {
   eventCornerStyle: 'rounded',
   transparentWindow: true,
   listMode: false,
+  combineIdenticalEvents: false,
   // The mark, which is what the tray has always worn.
   showDate: false,
   // The grid's own 70, so every column golden holds.
@@ -1080,6 +1082,9 @@ export function installTauriStub(scenario: string): Harness {
       case 'set_notifications_enabled':
         settings = saveSettings({ ...settings, notificationsEnabled: args.on as boolean });
         return { ...settings };
+      case 'set_combine_identical_events':
+        settings = saveSettings({ ...settings, combineIdenticalEvents: args.on as boolean });
+        return settings;
       case 'set_list_mode':
         settings = saveSettings({ ...settings, listMode: args.on as boolean });
         return { ...settings };
