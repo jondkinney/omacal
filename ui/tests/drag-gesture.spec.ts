@@ -42,6 +42,11 @@ const boxOf = async (page: Page) => {
   return b;
 };
 
+/** The width of the day column the block sits in — one column's worth of
+ *  horizontal travel, which is what "dragged to another day" means. */
+const colWidth = async (page: Page) =>
+  block(page).evaluate((el) => el.closest<HTMLElement>('.col')!.getBoundingClientRect().width);
+
 /** Presses the pointer on the block's centre and moves it by `dy` px. */
 const grabAndMove = async (page: Page, dy: number, steps = 4) => {
   const b = await boxOf(page);
@@ -145,6 +150,50 @@ test.describe('the drag threshold', () => {
     expect(during.height, 'a move is not a resize').toBeCloseTo(before.height, 0);
 
     await page.keyboard.press('Escape');
+  });
+
+  /**
+   * Issue #116, and the hole this file had: every spec above moves the block
+   * **down**, and the one direction nobody dragged is the one that broke.
+   *
+   * A block is drawn inside its own day's `.hour-crop`, which v3.2.0 gave
+   * `overflow: clip` so that hours outside the visible range are cut. The
+   * move preview is a `translateX`, so one column over put the block wholly
+   * outside that box and the user watched their event vanish mid-gesture —
+   * measured at the time as a left edge of 235 against a container ending at
+   * 232. The drop still landed correctly, which is exactly why the write
+   * tests all passed.
+   *
+   * **Asserted by hit-testing, not by `toBeVisible`.** That matters enough to
+   * say: `toBeVisible` asks for a non-empty box and a `visibility` that is not
+   * `hidden`, and a block clipped away by an ancestor still has both — it
+   * passed against the bug. `elementFromPoint` answers what was actually
+   * painted, which is the only question the user was asking. Against the
+   * clip it returns the empty-grid button underneath.
+   */
+  test('a block dragged to another day is still painted', async ({ page }) => {
+    await open(page);
+    const before = await boxOf(page);
+    const width = await colWidth(page);
+
+    const cx = before.x + before.width / 2;
+    const cy = before.y + before.height / 2;
+    await page.mouse.move(cx, cy);
+    await page.mouse.down();
+    await page.mouse.move(cx + width, cy, { steps: 8 });
+
+    const painted = await block(page).evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return !!hit && (hit === el || el.contains(hit));
+    });
+    expect(painted, 'the event must not vanish when dragged to another day').toBe(true);
+
+    const during = await boxOf(page);
+    expect(during.x, 'and it followed the pointer into the next day').toBeGreaterThan(before.x);
+
+    await page.keyboard.press('Escape');
+    await page.mouse.up();
   });
 });
 

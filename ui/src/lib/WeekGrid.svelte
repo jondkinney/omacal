@@ -1767,7 +1767,18 @@
 {/if}
 
 <style>
-  .hour-crop { overflow: clip; min-width: 0; }
+  /* Clipped **vertically only** (#116). The crop exists to cut the hours
+     outside the visible range, which is a vertical question — but `overflow:
+     clip` cut sideways too, and a move preview is a `translateX`: one column
+     over put the whole block outside its own day's box and the user watched
+     their event vanish mid-drag. The drop still landed correctly, so every
+     write test passed and only the painting was wrong.
+
+     `visible` survives beside `clip` rather than computing to `auto` — the
+     one pairing the spec allows — so this keeps the vertical cut and adds no
+     scroll container. The track below still clips the week horizontally,
+     which is what stops a dragged block escaping into the ruler. */
+  .hour-crop { overflow-x: visible; overflow-y: clip; min-width: 0; }
   /* Real headroom works in WebKit too; overflow-clip-margin alone does not.
      The negative margin keeps hour labels aligned with the event grid. */
   .ruler { padding-top: 8px; margin-top: -8px; }
