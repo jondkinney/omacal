@@ -87,7 +87,28 @@
   let menuDateCustom = $state('%-d');
   let menuDateNote = $state('');
   let meetingFormat = $state(DEFAULT_MEETING_FORMAT);
-  let meetingFormatNote = $state('');
+  /** The menu-bar pane's own three notes, each beside the control it is
+   *  about — the `rownote` rule below, which this section did not follow
+   *  when it arrived. The shared `note` at the foot of the modal was
+   *  reporting these saves, and the foot of a scrolling modal is exactly
+   *  where "Saved." goes unseen.
+   *
+   *  They say *Applying…* first and *Saved* after, rather than only the
+   *  second: `set_menubar_preferences` rewrites the feed and then pokes the
+   *  Omarchy widget over IPC, waiting up to two seconds for it. That pause
+   *  is real work, and a control that looks inert for two seconds and then
+   *  changes the bar by itself reads as a control that needed an Apply
+   *  nobody could find. */
+  let labelNote = $state<{ text: string; kind: 'info' | 'error' } | null>(null);
+  let formatNote = $state<{ text: string; kind: 'info' | 'error' } | null>(null);
+  let joinNote = $state<{ text: string; kind: 'info' | 'error' } | null>(null);
+  let menubarBusy = $state(false);
+  /** Whether the format box holds something the bar has not been told about.
+   *  What makes Save mean "there is something to save" rather than being a
+   *  button that is always there and usually does nothing. */
+  const formatDirty = $derived(
+    !!settings && meetingFormat !== (settings.menubarLabelFormat ?? DEFAULT_MEETING_FORMAT),
+  );
   let note = $state<{ text: string; kind: 'info' | 'error' } | null>(null);
   /** The interval row's own feedback, rendered beside the field it is about.
    *  Not the shared `note` below: that one sits at the bottom of a modal
@@ -112,12 +133,15 @@
   });
 
   async function saveMeetingFormat(template = meetingFormat) {
+    menubarBusy = true;
+    formatNote = { text: 'Applying…', kind: 'info' };
     try {
       settings = await setMenubarLabelFormat(template);
       meetingFormat = settings.menubarLabelFormat;
-      meetingFormatNote = '';
+      formatNote = { text: 'Saved', kind: 'info' };
       onsettingschange?.(settings);
-    } catch (e) { meetingFormatNote = String(e); }
+    } catch (e) { formatNote = { text: String(e), kind: 'error' }; }
+    finally { menubarBusy = false; }
   }
 
   async function saveMenuDate(format: AppSettings['menubarDateFormat'], custom = settings?.menubarDateCustom ?? '%-d') {
@@ -129,12 +153,23 @@
     } catch (e) { menuDateNote = String(e); }
   }
 
-  async function saveMenubar(label = settings?.menubarLabel ?? true, joinMinutes = settings?.menubarJoinMinutes ?? 5) {
+  /** `where` names the control that asked, so the answer lands beside it. */
+  async function saveMenubar(
+    label = settings?.menubarLabel ?? true,
+    joinMinutes = settings?.menubarJoinMinutes ?? 5,
+    where: 'label' | 'join' = 'label',
+  ) {
+    const say = (n: { text: string; kind: 'info' | 'error' } | null) => {
+      if (where === 'label') labelNote = n; else joinNote = n;
+    };
+    menubarBusy = true;
+    say({ text: 'Applying…', kind: 'info' });
     try {
       settings = await setMenubarPreferences(label, joinMinutes);
       onsettingschange?.(settings);
-      note = { text: 'Saved.', kind: 'info' };
-    } catch (e) { note = { text: String(e), kind: 'error' }; }
+      say({ text: 'Saved', kind: 'info' });
+    } catch (e) { say({ text: String(e), kind: 'error' }); }
+    finally { menubarBusy = false; }
   }
 
   const floorMinutes = $derived(settings ? minutesOf(settings.minSyncIntervalMs) : 1);
@@ -1297,29 +1332,55 @@
       {/if}
       <section class="appearance-section" aria-labelledby="menubar-heading">
         <h2 id="menubar-heading">Menu bar calendar</h2>
-        <label class="check"><input type="checkbox" disabled={!settings}
-          checked={settings?.menubarLabel ?? true}
-          onchange={(e) => saveMenubar(e.currentTarget.checked)} />
-          Show meeting title and countdown</label>
-        <label class="lab" for="meeting-format">Meeting label format</label>
-        <input id="meeting-format" class="format-template" type="text" maxlength="256" bind:value={meetingFormat} />
         <div class="inline">
-          <button type="button" disabled={!settings} onclick={() => saveMeetingFormat()}>Save format</button>
-          <button type="button" disabled={!settings} onclick={() => saveMeetingFormat(DEFAULT_MEETING_FORMAT)}>Reset format</button>
+          <label class="check"><input type="checkbox" disabled={!settings || menubarBusy}
+            checked={settings?.menubarLabel ?? true}
+            onchange={(e) => saveMenubar(e.currentTarget.checked, undefined, 'label')} />
+            Show meeting title and countdown</label>
+          {#if labelNote}
+            <span class="rownote" class:err={labelNote.kind === 'error'}
+                  data-testid="menubar-label-note">{labelNote.text}</span>
+          {/if}
+        </div>
+        <label class="lab" for="meeting-format">Meeting label format</label>
+        <input id="meeting-format" class="format-template" type="text" maxlength="256"
+               bind:value={meetingFormat} disabled={!settings || menubarBusy} />
+        <div class="inline">
+          <!-- Disabled when there is nothing to save, which is the button
+               saying so. Reset likewise: at the default it would write the
+               value already stored. -->
+          <button type="button" disabled={!settings || menubarBusy || !formatDirty}
+                  onclick={() => saveMeetingFormat()}>Save format</button>
+          <button type="button" disabled={!settings || menubarBusy
+                    || (meetingFormat === DEFAULT_MEETING_FORMAT
+                        && settings?.menubarLabelFormat === DEFAULT_MEETING_FORMAT)}
+                  onclick={() => saveMeetingFormat(DEFAULT_MEETING_FORMAT)}>Reset format</button>
+          {#if formatDirty}
+            <span class="rownote unsaved" data-testid="menubar-format-dirty">Unsaved</span>
+          {:else if formatNote}
+            <span class="rownote" class:err={formatNote.kind === 'error'}
+                  data-testid="menubar-format-note">{formatNote.text}</span>
+          {/if}
         </div>
         <p class="hint">Reorder or omit placeholders: {'{title}'}, {'{time}'}, {'{end_time}'}, {'{countdown}'}, {'{calendar}'}. Add your own separators.</p>
         <p class="hint" aria-label="Meeting label preview">Preview: {meetingLabel(meetingFormat, {
           title: 'Design sync', time: formatClock(SAMPLE_MS, settings?.timeFormat ?? '24h'),
           end_time: formatClock(SAMPLE_MS + 30 * 60000, settings?.timeFormat ?? '24h'), countdown: 'in 5m', calendar: 'Work'
         })}</p>
-        {#if meetingFormatNote}<p class="note err" role="alert">{meetingFormatNote}</p>{/if}
+        {#if formatNote?.kind === 'error'}<p class="note err" role="alert">{formatNote.text}</p>{/if}
         <label class="lab" for="menubar-join">Show Join before a meeting</label>
-        <select id="menubar-join" disabled={!settings} value={settings?.menubarJoinMinutes ?? 5}
-          onchange={(e) => saveMenubar(undefined, Number(e.currentTarget.value))}>
-          {#each [0, 1, 5, 10, 15, 30, 60] as minutes}
-            <option value={minutes}>{minutes === 0 ? 'At start time' : `${minutes} minutes before`}</option>
-          {/each}
-        </select>
+        <div class="inline">
+          <select id="menubar-join" disabled={!settings || menubarBusy} value={settings?.menubarJoinMinutes ?? 5}
+            onchange={(e) => saveMenubar(undefined, Number(e.currentTarget.value), 'join')}>
+            {#each [0, 1, 5, 10, 15, 30, 60] as minutes}
+              <option value={minutes}>{minutes === 0 ? 'At start time' : `${minutes} minutes before`}</option>
+            {/each}
+          </select>
+          {#if joinNote}
+            <span class="rownote" class:err={joinNote.kind === 'error'}
+                  data-testid="menubar-join-note">{joinNote.text}</span>
+          {/if}
+        </div>
         <p class="hint">Join stays available while the meeting is running. These preferences apply to the {settings?.desktop === 'macos' ? 'macOS menu bar' : settings?.desktop === 'omarchy' ? 'Omarchy widget' : 'menu bar'}.</p>
       </section>
     {:else if pane === 'Calendars'}
@@ -1698,6 +1759,10 @@
      accent for success, so "Saved." reads as a state change and not as one
      more piece of muted hint text. */
   .rownote { font-size: 11.5px; color: var(--accent); white-space: nowrap; }
+  /* Not the accent: "Unsaved" is a state to notice, not an outcome to
+     celebrate, and it sits beside a Save button that is lit for the same
+     reason. */
+  .rownote.unsaved { color: var(--muted); font-style: italic; }
   .rownote.err { color: var(--error); white-space: normal; }
 
   .note { font-size: 11.5px; color: var(--muted); line-height: 1.4; margin: 0;

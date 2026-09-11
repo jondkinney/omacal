@@ -4,6 +4,7 @@
 // stubbed IPC layer (tests/harness/tauri.ts).
 
 import { test, expect, type Page } from '@playwright/test';
+import { DEFAULT_MEETING_FORMAT } from '../../packaging/omarchy-plugin/Timeline.mjs';
 import {
   CHORDS, EDIT_CHORDS, EVENT_SHORTCUT_LIST, SHORTCUT_LIST, SHORTCUT_TEXT,
 } from '../src/lib/shortcuts';
@@ -5137,6 +5138,99 @@ test.describe("App: showing today's date", () => {
     await modal.getByRole('tab', { name: 'Menu bar' }).click();
     await expect(modal.getByLabel('Show Join before a meeting')).toHaveValue('15');
     await expect(modal.getByLabel('Show meeting title and countdown')).not.toBeChecked();
+  });
+
+  /**
+   * Reported 2026-09-11: the two controls here gave no sign that anything had
+   * happened. The saves were real and the answer was going to the shared note
+   * at the **foot of a scrolling modal** — the same defect the interval row
+   * was fixed for on 2026-08-17, in a pane written after that fix and without
+   * it. So: beside the control, every time.
+   */
+  test('the menu bar pane answers beside the control that was changed', async ({ page }) => {
+    await page.goto(app('writable'));
+    await page.getByRole('button', { name: 'Menu' }).click();
+    await page.getByRole('button', { name: 'Settings…' }).click();
+    const modal = page.getByRole('dialog', { name: 'Settings' });
+    await modal.getByRole('tab', { name: 'Menu bar' }).click();
+
+    await modal.getByLabel('Show meeting title and countdown').uncheck();
+    await expect(modal.getByTestId('menubar-label-note')).toHaveText('Saved');
+    // Beside it, not at the foot: the shared note is what went unseen.
+    await expect(modal.getByTestId('settings-note')).toHaveCount(0);
+
+    await modal.getByLabel('Show Join before a meeting').selectOption('15');
+    await expect(modal.getByTestId('menubar-join-note')).toHaveText('Saved');
+  });
+
+  /**
+   * The pause is real work — the backend rewrites the feed and then pokes the
+   * Omarchy widget over IPC, waiting up to two seconds — and a control that
+   * looks inert for two seconds and then changes the bar by itself reads as
+   * one that needed an Apply nobody could find.
+   */
+  test('a menu bar change says it is applying while it is', async ({ page }) => {
+    await page.goto(app('writable'));
+    await page.getByRole('button', { name: 'Menu' }).click();
+    await page.getByRole('button', { name: 'Settings…' }).click();
+    const modal = page.getByRole('dialog', { name: 'Settings' });
+    await modal.getByRole('tab', { name: 'Menu bar' }).click();
+
+    await page.evaluate(() => window.__harness.holdNextMenubarCall('set_menubar_preferences'));
+    await modal.getByLabel('Show meeting title and countdown').uncheck();
+
+    await expect(modal.getByTestId('menubar-label-note')).toHaveText('Applying…');
+    // And the controls are held while it is in flight, so a second change
+    // cannot race the first.
+    await expect(modal.getByLabel('Show Join before a meeting')).toBeDisabled();
+
+    await page.evaluate(() => window.__harness.releaseMenubarCall('set_menubar_preferences'));
+    await expect(modal.getByTestId('menubar-label-note')).toHaveText('Saved');
+    await expect(modal.getByLabel('Show Join before a meeting')).toBeEnabled();
+  });
+
+  /**
+   * The format box is the one control here that does not save on change, so
+   * it is the one that has to say whether there is anything to save. Save
+   * being lit *is* that statement.
+   */
+  test('Save format is lit only when the box holds something unsaved', async ({ page }) => {
+    await page.goto(app('writable'));
+    await page.getByRole('button', { name: 'Menu' }).click();
+    await page.getByRole('button', { name: 'Settings…' }).click();
+    const modal = page.getByRole('dialog', { name: 'Settings' });
+    await modal.getByRole('tab', { name: 'Menu bar' }).click();
+
+    const save = modal.getByRole('button', { name: 'Save format' });
+    const field = modal.getByLabel('Meeting label format');
+    await expect(save, 'nothing has been typed yet').toBeDisabled();
+    await expect(modal.getByTestId('menubar-format-dirty')).toHaveCount(0);
+
+    await field.fill('{title} · {countdown}');
+    await expect(save).toBeEnabled();
+    await expect(modal.getByTestId('menubar-format-dirty')).toHaveText('Unsaved');
+
+    await save.click();
+    await expect(modal.getByTestId('menubar-format-note')).toHaveText('Saved');
+    await expect(save, 'and there is nothing left to save').toBeDisabled();
+    await expect(modal.getByTestId('menubar-format-dirty')).toHaveCount(0);
+  });
+
+  test('Reset format is dead while the format already is the default', async ({ page }) => {
+    await page.goto(app('writable'));
+    await page.getByRole('button', { name: 'Menu' }).click();
+    await page.getByRole('button', { name: 'Settings…' }).click();
+    const modal = page.getByRole('dialog', { name: 'Settings' });
+    await modal.getByRole('tab', { name: 'Menu bar' }).click();
+
+    const reset = modal.getByRole('button', { name: 'Reset format' });
+    await expect(reset).toBeDisabled();
+
+    await modal.getByLabel('Meeting label format').fill('{title}');
+    await expect(reset).toBeEnabled();
+    await reset.click();
+    await expect(modal.getByLabel('Meeting label format')).toHaveValue(DEFAULT_MEETING_FORMAT);
+    await expect(reset).toBeDisabled();
   });
 
   test("today's date can be asked for, and is remembered", async ({ page }) => {

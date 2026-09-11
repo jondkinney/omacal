@@ -95,6 +95,16 @@ export type Harness = {
    *  listening, and the startup read of the stored preference describes the
    *  world *before* that keystroke. Holding the read and pressing the key while
    *  it is parked is the only way to produce that ordering deliberately. */
+  /** Park the next menu-bar write instead of answering it.
+   *
+   *  What the *Applying…* state needs: `set_menubar_preferences` rewrites the
+   *  feed and then pokes the Omarchy widget over IPC, waiting up to two
+   *  seconds for it, and the pane now says so while that happens. A stub that
+   *  answers instantly cannot produce the pause the message exists for.
+   *  Mirrors `holdNextCalendarCall`; it is not a second mechanism. */
+  holdNextMenubarCall(cmd: 'set_menubar_preferences' | 'set_menubar_label_format'): void;
+  /** Answer the parked menu-bar write and let its `.then` chain run. */
+  releaseMenubarCall(cmd: 'set_menubar_preferences' | 'set_menubar_label_format'): Promise<void>;
   holdNextSettings(): void;
   /** Releases the parked `get_settings` call, answering with the settings as
    *  the stub now holds them. */
@@ -165,6 +175,8 @@ let holdSearchOnce = false;
  *  parks beside it, because the harness object that releases them is. */
 let holdSettingsOnce = false;
 let parkedSettings: (() => void) | null = null;
+let holdMenubarOnce: string | null = null;
+const parkedMenubar = new Map<string, () => void>();
 let holdCalendarOnce: string | null = null;
 const parkedCalendar = new Map<string, CalendarDeferred>();
 
@@ -251,6 +263,17 @@ const harness: Harness = {
     // same reason `release` above waits.
     await new Promise((r) => setTimeout(r, 50));
   },
+  holdNextMenubarCall(cmd) {
+    holdMenubarOnce = cmd;
+  },
+  async releaseMenubarCall(cmd) {
+    parkedMenubar.get(cmd)?.();
+    parkedMenubar.delete(cmd);
+    // `release`'s reasoning: let the resolution's own `.then` — the note
+    // flipping from Applying… to Saved, `menubarBusy` clearing — actually
+    // run before the spec asserts on it.
+    await new Promise((r) => setTimeout(r, 50));
+  },
   holdNextSettings() {
     holdSettingsOnce = true;
   },
@@ -333,6 +356,17 @@ function calendarResult<T>(cmd: string, ok: T): Promise<T> {
     });
   }
   return Promise.resolve(ok);
+}
+
+/** The value, or a promise parked until `releaseMenubarCall` — the write has
+ *  already been applied to the stub's settings either way, exactly as the
+ *  backend applies it before poking the widget. */
+function heldMenubar<T>(cmd: string, value: T): T | Promise<T> {
+  if (holdMenubarOnce !== cmd) return value;
+  holdMenubarOnce = null;
+  return new Promise<T>((resolve) => {
+    parkedMenubar.set(cmd, () => resolve(value));
+  });
 }
 
 /**
@@ -988,7 +1022,7 @@ export function installTauriStub(scenario: string): Harness {
       case 'set_menubar_preferences':
         settings = saveSettings({ ...settings,
           menubarLabel: args.label as boolean, menubarJoinMinutes: args.joinMinutes as number });
-        return settings;
+        return heldMenubar(cmd, settings);
       case 'set_show_date':
         settings = saveSettings({ ...settings, showDate: args.on as boolean });
         return { ...settings };
@@ -1024,7 +1058,7 @@ export function installTauriStub(scenario: string): Harness {
         return { ...settings };
       case 'set_menubar_label_format':
         settings = saveSettings({ ...settings, menubarLabelFormat: args.template as string });
-        return settings;
+        return heldMenubar(cmd, settings);
       case 'open_date_format_guide': return null;
       case 'set_menubar_date_format':
         settings = saveSettings({ ...settings, menubarDateFormat: args.format as typeof settings.menubarDateFormat, menubarDateCustom: args.custom as string });
