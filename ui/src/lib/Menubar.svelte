@@ -57,7 +57,21 @@
 
 <svelte:window onkeydown={(e) => { if (e.key === 'Escape') void action('close'); if (e.key === 'j' && call) void action('join'); }} />
 <div class="popup">
-  <header><div><strong>OmaCal</strong><p>{heading} · {clock(now)}</p></div><button aria-label="Add event" title="Add event with natural language" onclick={() => action('quick-add')}>+</button><button aria-label="Open preferences" title="OmaCal preferences" onclick={() => action('preferences')}>⚙</button><button aria-label="Close agenda" onclick={() => action('close')}>×</button></header>
+  <!-- The three actions are grouped, and that grouping is the whole point:
+       `justify-content: space-between` shares the free space between *every*
+       pair of children, so four children spread the buttons across the full
+       width of the popup instead of gathering them at the right — reported
+       on macOS, where the popup is wide enough to make it obvious. Two
+       children, and the title keeps the left while the actions keep the
+       right. -->
+  <header>
+    <div><strong>OmaCal</strong><p>{heading} · {clock(now)}</p></div>
+    <div class="acts">
+      <button class="icon" aria-label="Add event" title="Add event with natural language" onclick={() => action('quick-add')}>+</button>
+      <button class="icon" aria-label="Open preferences" title="OmaCal preferences" onclick={() => action('preferences')}>⚙</button>
+      <button class="icon" aria-label="Close agenda" onclick={() => action('close')}>×</button>
+    </div>
+  </header>
   {#if call}<button class="join" title={call.title ?? 'Meeting'} onclick={() => action('join')}>Join · {call.title ?? '(no title)'}</button>{/if}
   {#if error}<p role="alert">{error}</p>{/if}
   {#if panel?.truncated}<p>Showing the first 200 events. Open OmaCal for the complete day.</p>{/if}
@@ -95,6 +109,16 @@
   .popup { height: 100vh; padding: 16px; display: flex; flex-direction: column; gap: 12px; border: 1px solid var(--muted, #555); }
   header, footer { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
   header { justify-content: space-between; } header strong { font-size: 17px; } p { margin: 4px 0 0; color: var(--muted, #999); }
+  .acts { display: flex; align-items: center; gap: 4px; flex-shrink: 0; }
+  /* A square target of a known size, so the three glyphs line up with each
+     other and are big enough to hit. `+`, `⚙` and `×` have very different
+     optical weights at the same font-size — the box is what makes them read
+     as one row of controls rather than three unrelated marks, and `line-height:
+     1` stops the taller glyph pushing the header's height around. */
+  .icon { width: 30px; height: 30px; padding: 0; display: inline-flex;
+          align-items: center; justify-content: center; font-size: 16px;
+          line-height: 1; color: var(--muted, #999); }
+  .icon:hover { color: var(--text, #e5e7eb); }
   button { font: inherit; color: inherit; background: transparent; border: 1px solid transparent; border-radius: 5px; cursor: pointer; padding: 6px 10px; }
   button:hover { background: var(--surface, #303540); } button:focus-visible { outline: 2px solid var(--accent, #87b7ff); outline-offset: -2px; }
   .join { background: var(--accent, #87b7ff); color: var(--on-accent, #10151c); flex-shrink: 0; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
