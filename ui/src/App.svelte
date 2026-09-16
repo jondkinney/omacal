@@ -1,5 +1,6 @@
 <!-- ui/src/App.svelte -->
 <script lang="ts">
+  import { responsesIdle } from './lib/responses.svelte';
   import { setVisibleHoursState } from "./lib/visiblehours.svelte";
   import { formatDate } from './lib/datefmt';
   import { dateFormat } from './lib/date.svelte';
@@ -1662,8 +1663,34 @@
     pendingDelete = { occurrence, anchor: rect };
   }
 
+  let responseRefreshRunning = false;
+  let responseRefreshRequested = false;
+  async function refreshAfterResponse() {
+    responseRefreshRequested = true;
+    if (responseRefreshRunning) return;
+    responseRefreshRunning = true;
+    try {
+      while (responseRefreshRequested) {
+        await responsesIdle();
+        responseRefreshRequested = false;
+        await reload();
+        await refreshInvites();
+        // Batch replies into one reconciliation and never set the app's
+        // busy flag. The queue's status already says what is being saved.
+        await syncNow();
+        await refreshStatus();
+        await reload();
+      }
+    } catch (e) {
+      error = `The response was saved, but OmaCal could not refresh: ${e}`;
+    } finally {
+      responseRefreshRunning = false;
+    }
+  }
+
   /**
-   * Where every successful write ends.
+   * Reconcile successful edits, creates and deletes. RSVPs use the batched
+   * background path above.
    *
    * A *sync*, not just a re-read, and that is the whole point of the function.
    * Two of the write paths deliberately leave the local store alone: a `'this'`
@@ -1681,10 +1708,7 @@
    */
   async function refreshAfterWrite() {
     await reload();
-    // The invitation badge is a function of self_response, and an RSVP from
-    // the popover is a write that changes it — without this, answering an
-    // invitation on its block left the tray claiming it for up to a sync
-    // interval (noticed live, 2026-08-17, minutes after the tray shipped).
+    // Edits and deletes can also change which invitations need attention.
     await refreshInvites();
     busy = true;
     try {
@@ -2120,7 +2144,7 @@
     {invites}
     {declines}
     {changes}
-    oninvitesanswered={() => { void refreshInvites(); void reload(); }}
+    oninvitesanswered={refreshAfterResponse}
     onpick={pick}
     bind:open={pickerOpen}
   />
@@ -2198,7 +2222,7 @@
                   onduplicate={createCalendarId === null ? null : duplicateOccurrence}
           onmove={moveOccurrence}
           ondraftmove={(span) => formEl?.applySpan(span)}
-          onresponded={refreshAfterWrite} />
+          onresponded={refreshAfterResponse} />
       {/if}
     {/if}
     </div>
@@ -2265,7 +2289,7 @@
     occurrenceStartMs={startMs}
     occurrenceEndMs={occurrence.endMs}
     onclose={closeGridEvent}
-    onresponded={refreshAfterWrite}
+    onresponded={refreshAfterResponse}
     onedit={() => openEdit(occurrence, rect)}
     ondelete={() => askDelete(occurrence, rect)}
     oncopy={() => copyOccurrence(occurrence)}

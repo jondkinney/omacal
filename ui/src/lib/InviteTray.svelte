@@ -3,6 +3,7 @@
   import { formatDate } from './datefmt';
   import { dateFormat } from './date.svelte';
   import { respondToEvent } from './eventdetail';
+  import { pendingResponse } from './responses.svelte';
   import { clockFormat } from './clock.svelte';
   import { formatClock } from './timefmt';
   import { escapeCloses } from './dismiss.svelte';
@@ -13,9 +14,8 @@
   } from './invites';
 
   let { invites, declines = [], changes = [], onanswered }: {
-    /** `App`'s list — this component never mutates it. An answered row
-     *  disappears because `onanswered` makes `App` refetch, not because
-     *  anything here spliced. */
+    /** `App`'s list, with queued/saved answers hidden until the refetch
+     *  confirms them. Failed answers return without changing this prop. */
     invites: PendingInvite[];
     /** Guests who declined the user's own meetings, unacknowledged — the
      *  organizer's side of the same tray (2026-08-18, by request: in the
@@ -33,9 +33,16 @@
   /** Whether the panel hangs from the badge's left edge instead of its
    *  right — decided from real geometry at each open; see the onclick. */
   let alignLeft = $state(false);
-  /** Rows with an RSVP in flight — theirs lock, their neighbours stay live.
+  /** In-flight row actions lock only their own controls.
    *  Reassigned, never mutated: a `$state` array notifies on assignment. */
   let busyIds = $state<number[]>([]);
+  let answeredIds = $state<number[]>([]);
+  const shownInvites = $derived(invites.filter(inv =>
+    !pendingResponse(inv.id, inv.start_ms) && !answeredIds.includes(inv.id)));
+  $effect(() => {
+    const remaining = answeredIds.filter(id => invites.some(inv => inv.id === id));
+    if (remaining.length !== answeredIds.length) answeredIds = remaining;
+  });
   /** A failed answer, kept on its row — the tray stays open, the row stays,
    *  and the sentence is the backend's own user-facing one. */
   let errors = $state<Record<number, string>>({});
@@ -104,6 +111,12 @@
   const shownCancelled = $derived(
     changes.filter((c) => c.kind === 'cancelled' && !ackedChanges.includes(changeKey(c))));
 
+  // Emptying the tray closes it. A later failed reply restores the badge,
+  // not a scrim over whatever the user has moved on to.
+  $effect(() => {
+    if (shownInvites.length + shownDeclines.length + shownMoved.length + shownCancelled.length === 0) open = false;
+  });
+
   async function acknowledgeChange(c: ChangeNotice) {
     ackedChanges = [...ackedChanges, changeKey(c)];
     try {
@@ -142,7 +155,8 @@
       // answers the series, exactly as the emailed Yes would. The anchor is
       // the master's own start — with scope `all` no instance is ever
       // resolved, so `detail.start_ms`'s trap has no purchase here.
-      await respondToEvent(inv.id, response, 'all', inv.start_ms);
+      await respondToEvent(inv.id, response, 'all', inv.start_ms, inv.title ?? '(no title)');
+      answeredIds = [...answeredIds, inv.id];
       onanswered();
     } catch (e) {
       errors = { ...errors, [inv.id]: String(e) };
@@ -162,15 +176,16 @@
   async function answerChange(c: ChangeNotice, response: 'accepted' | 'tentative' | 'declined') {
     if (c.event_id === null || c.respond_start_ms === null) return;
     const id = c.event_id;
+    ackedChanges = [...ackedChanges, changeKey(c)];
     busyIds = [...busyIds, id];
     const { [id]: _gone, ...rest } = errors;
     errors = rest;
     try {
-      await respondToEvent(id, response, c.respond_scope, c.respond_start_ms);
-      ackedChanges = [...ackedChanges, changeKey(c)];
+      await respondToEvent(id, response, c.respond_scope, c.respond_start_ms, c.title ?? '(no title)');
       await dismissChangeNotice(c);
       onanswered();
     } catch (e) {
+      ackedChanges = ackedChanges.filter(key => key !== changeKey(c));
       errors = { ...errors, [id]: String(e) };
     } finally {
       busyIds = busyIds.filter((b) => b !== id);
@@ -180,7 +195,7 @@
   escapeCloses(() => open, () => (open = false));
 </script>
 
-{#if invites.length + shownDeclines.length + shownMoved.length + shownCancelled.length > 0}
+{#if shownInvites.length + shownDeclines.length + shownMoved.length + shownCancelled.length > 0}
   <div class="wrap">
     <!-- The badge: present exactly while something awaits attention, so its
          absence means inbox-zero rather than "feature off". A count, not a
@@ -190,8 +205,8 @@
     <button
       class="badge"
       aria-label={[
-        invites.length > 0
-          ? `${invites.length} pending ${invites.length === 1 ? 'invitation' : 'invitations'}` : '',
+        shownInvites.length > 0
+          ? `${shownInvites.length} pending ${shownInvites.length === 1 ? 'invitation' : 'invitations'}` : '',
         shownDeclines.length > 0
           ? `${shownDeclines.length} ${shownDeclines.length === 1 ? 'decline' : 'declines'}` : '',
         shownMoved.length > 0 ? `${shownMoved.length} rescheduled` : '',
@@ -215,12 +230,12 @@
           el.focus();
         }
       }}
-    >✉ {invites.length + shownDeclines.length + shownMoved.length + shownCancelled.length}</button>
+    >✉ {shownInvites.length + shownDeclines.length + shownMoved.length + shownCancelled.length}</button>
 
     {#if open}
       <button class="scrim" aria-label="Close invitations" onclick={() => (open = false)}></button>
       <div class="panel" class:alignleft={alignLeft} role="group" aria-label="Pending invitations">
-        {#each invites as inv (inv.id)}
+        {#each shownInvites as inv (inv.id)}
           <div class="row" data-testid="invite-row">
             <span class="tick" style:background={inv.color ?? 'var(--muted)'}></span>
             <div class="text">
@@ -252,7 +267,7 @@
           <!-- The section row earns its keep beyond labelling: it carries
                Dismiss all, offered once there is an "all" to speak of — a
                single decline's × is already under the finger. -->
-          <div class="sect" class:joined={invites.length > 0}>
+          <div class="sect" class:joined={shownInvites.length > 0}>
             <span>Declined your meeting</span>
             {#if shownDeclines.length > 1}
               <button class="ackall" onclick={acknowledgeAll}>Dismiss all</button>
@@ -277,7 +292,7 @@
         {/each}
 
         {#if shownMoved.length > 0}
-          <div class="sect" class:joined={invites.length + shownDeclines.length > 0}>
+          <div class="sect" class:joined={shownInvites.length + shownDeclines.length > 0}>
             <span>Rescheduled</span>
             {#if shownMoved.length > 1}
               <button class="ackall" onclick={() => acknowledgeAllChanges('moved')}>Dismiss all</button>
@@ -322,7 +337,7 @@
 
         {#if shownCancelled.length > 0}
           <div class="sect"
-               class:joined={invites.length + shownDeclines.length + shownMoved.length > 0}>
+               class:joined={shownInvites.length + shownDeclines.length + shownMoved.length > 0}>
             <span>Cancelled</span>
             {#if shownCancelled.length > 1}
               <button class="ackall" onclick={() => acknowledgeAllChanges('cancelled')}>Dismiss all</button>

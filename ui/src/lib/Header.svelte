@@ -6,6 +6,7 @@
   import { listable } from './filmstrip';
   import CalendarPopover from './CalendarPopover.svelte';
   import InviteTray from './InviteTray.svelte';
+  import { pendingResponseCount, responseFailures, dismissResponseFailure } from './responses.svelte';
   import SettingsModal from './SettingsModal.svelte';
   import ViewSwitcher, { type View } from './ViewSwitcher.svelte';
   import type { ChangeNotice, DeclineNotice, PendingInvite } from './invites';
@@ -451,6 +452,16 @@
 {#if error}
   <p class="err">{error}</p>
 {/if}
+{#if pendingResponseCount() > 0}
+  <p class="response-status" role="status">Saving {pendingResponseCount()}
+    {pendingResponseCount() === 1 ? 'response' : 'responses'}…</p>
+{/if}
+{#each responseFailures() as failure (failure.id)}
+  <p class="err" role="alert">{failure.message}
+    <button type="button" aria-label="Dismiss response error"
+            onclick={() => dismissResponseFailure(failure.id)}>×</button>
+  </p>
+{/each}
 
 <!-- The reconnect prompt, and the reason it is not the `error` banner above:
      `error` is transient — cleared by the next navigation, overwritten by the
@@ -618,6 +629,7 @@
     color: var(--text); font-size: 12.5px; margin: 0 0 12px; }
   .sign-in-status button { font: inherit; color: var(--text); background: var(--surface);
     border: 1px solid var(--hairline); border-radius: 6px; padding: 5px 12px; cursor: pointer; }
+  .response-status { color: var(--muted); font-size: 11px; margin: 0 0 6px; }
   .err { color: var(--error); font-size: 12.5px; line-height: 1.45; margin: 0 0 12px;
          padding: 7px 10px; border-radius: 6px;
          background: color-mix(in srgb, var(--error) 9%, transparent);

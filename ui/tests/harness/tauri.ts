@@ -112,6 +112,8 @@ export type Harness = {
   /** Answer the parked menu-bar write and let its `.then` chain run. */
   releaseMenubarCall(cmd: 'set_menubar_preferences' | 'set_menubar_label_format' | 'set_menubar_sections'): Promise<void>;
   holdNextSettings(): void;
+  holdNextSync(): void;
+  releaseSync(): Promise<void>;
   /** Releases the parked `get_settings` call, answering with the settings as
    *  the stub now holds them. */
   releaseSettings(): Promise<void>;
@@ -180,6 +182,8 @@ let holdSearchOnce = false;
 /** A held `get_settings`, and the flag that arms one. Module level, like the
  *  parks beside it, because the harness object that releases them is. */
 let holdSettingsOnce = false;
+let holdSyncOnce = false;
+let parkedSync: (() => void) | null = null;
 let parkedSettings: (() => void) | null = null;
 let holdMenubarOnce: string | null = null;
 const parkedMenubar = new Map<string, () => void>();
@@ -295,6 +299,12 @@ const harness: Harness = {
   },
   holdNextSettings() {
     holdSettingsOnce = true;
+  },
+  holdNextSync() { holdSyncOnce = true; },
+  async releaseSync() {
+    parkedSync?.();
+    parkedSync = null;
+    await new Promise(r => setTimeout(r, 50));
   },
   async releaseSettings() {
     parkedSettings?.();
@@ -1179,6 +1189,10 @@ export function installTauriStub(scenario: string): Harness {
       case 'set_calendar_sync':
         return calendarResult(cmd, CALENDAR_SYNC_REMOVED);
       case 'sync_now':
+        if (holdSyncOnce) {
+          holdSyncOnce = false;
+          return new Promise<void>(resolve => { parkedSync = resolve; });
+        }
         return 0;
       // The header's invitation tray. Empty by default so every App spec that
       // predates it keeps describing a header without a badge; Header specs

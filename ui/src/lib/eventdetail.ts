@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { queueResponse } from './responses.svelte';
 
 export type Attendee = {
   email: string;
@@ -253,10 +254,11 @@ export const refreshEvent = (id: number) => invoke<EventDetail>('refresh_event',
  */
 export const respondToEvent = (
   id: number,
-  response: string,
+  response: 'accepted' | 'tentative' | 'declined',
   scope: 'this' | 'all',
   occurrenceStartMs: number,
-) => invoke<EventDetail>('respond_to_event', { id, response, scope, occurrenceStartMs });
+  title?: string,
+) => queueResponse({ id, response, scope, occurrenceStartMs }, title);
 
 /**
  * `sendUpdates` is Google's own vocabulary — `'all'` or `'none'` — and is
