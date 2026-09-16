@@ -996,6 +996,20 @@ test.describe('App', () => {
   };
 
   const block = (page: Page, title: string) => page.locator('.ev').filter({ hasText: title });
+
+  test('RSVP refresh runs in the background without making the app busy', async ({ page }) => {
+    await writable(page);
+    await page.evaluate(() => window.__harness.holdNextSync());
+    await block(page, 'Standup').click();
+    await page.getByRole('button', { name: 'Yes', exact: true }).click();
+    await page.getByRole('button', { name: 'All of them', exact: true }).click();
+    await expect.poll(() => page.evaluate(() => window.__harness.calls
+      .filter(c => c.cmd === 'sync_now').length)).toBe(1);
+    await page.keyboard.press('Escape');
+    await page.getByRole('button', { name: 'Menu' }).click();
+    await expect(page.getByRole('button', { name: 'Sync now', exact: true })).toBeEnabled();
+    await page.evaluate(() => window.__harness.releaseSync());
+  });
   /** An `AllDayBand` chip. A different element and a different component from
    *  `block` above — `commands::assemble_week` puts every `is_all_day` event in
    *  the band and never in a day column, so this is the *only* way to reach an

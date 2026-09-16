@@ -13,6 +13,7 @@
   import { occurrenceDate, ruleInWords } from './eventform';
   import { isMachineAddress } from './organizer';
   import { respondToEvent, type Attendee, type EventDetail } from './eventdetail';
+  import { pendingResponse, responsePending } from './responses.svelte';
   import { focusInitialChoice, handleChoiceKey } from './choicefocus';
   import { EVENT_SHORTCUT_LIST, type EventShortcutId, shortcutKeyFor } from './shortcuts';
 
@@ -290,7 +291,9 @@
     }
   }
 
-  const shown = $derived(chosen ?? detail.self_response);
+  const queuedResponse = $derived(pendingResponse(detail.id, occurrenceStartMs));
+  const shown = $derived(queuedResponse ?? chosen ?? detail.self_response);
+  const savingResponse = $derived(responsePending(detail.id) || busy.size > 0);
 
   // For every non-recurring event, and for `scope: 'all'`, the backend
   // *does* write back and returns an `EventDetail` whose `attendees` carry
@@ -301,7 +304,8 @@
   // already say otherwise. `chosen` still drives the buttons regardless —
   // this only ever affects the guest list.
   let freshAttendees = $state<Attendee[] | null>(null);
-  const shownAttendees = $derived(freshAttendees ?? detail.attendees);
+  const shownAttendees = $derived((freshAttendees ?? detail.attendees).map(a =>
+    a.is_self && (queuedResponse ?? chosen) ? { ...a, response_status: shown! } : a));
 
   // `?` means MAYBE — the letter Google and Outlook both use for it, and the
   // reading everyone brought to it anyway (2026-08-10, by request; it
@@ -346,7 +350,7 @@
     busy = new Set([response]);
     note = null;
     try {
-      const fresh = await respondToEvent(id, response, scope, occurrenceStartMs);
+      const fresh = await respondToEvent(id, response, scope, occurrenceStartMs, detail.title ?? '(no title)');
       if (JSON.stringify(fresh.attendees) !== attendeesBaseline) {
         freshAttendees = fresh.attendees;
       }
@@ -365,8 +369,10 @@
       // An ask-row button (see `pending`) unmounts the moment the answer is
       // sent; focus then falls back to the panel so a keyboard user is not
       // stranded on <body>.
-      if (btn.isConnected) btn.focus();
-      else panelEl?.focus();
+      if (document.activeElement === document.body) {
+        if (btn.isConnected) btn.focus();
+        else if (panelEl?.isConnected) panelEl.focus();
+      }
     }
   }
 
@@ -613,13 +619,13 @@
       </div>
     {/if}
     <div class="rsvp">
-      <button data-event-response="accepted" class:chosen={shown === 'accepted'} disabled={busy.size > 0 || pending !== null} onclick={(e) => ask('accepted', e)}
+      <button data-event-response="accepted" class:chosen={shown === 'accepted'} disabled={savingResponse || pending !== null} onclick={(e) => ask('accepted', e)}
         >Yes</button
       >
-      <button data-event-response="tentative" class:chosen={shown === 'tentative'} disabled={busy.size > 0 || pending !== null} onclick={(e) => ask('tentative', e)}
+      <button data-event-response="tentative" class:chosen={shown === 'tentative'} disabled={savingResponse || pending !== null} onclick={(e) => ask('tentative', e)}
         >Maybe</button
       >
-      <button data-event-response="declined" class:chosen={shown === 'declined'} disabled={busy.size > 0 || pending !== null} onclick={(e) => ask('declined', e)}
+      <button data-event-response="declined" class:chosen={shown === 'declined'} disabled={savingResponse || pending !== null} onclick={(e) => ask('declined', e)}
         >No</button
       >
     </div>
