@@ -1,0 +1,1 @@
+Actual Quickshell capture of PR #108 after review fixes, using the installed Omarchy shell components on a separate headless Sway display. The feed contains only synthetic calendar events and a task. The popup is scrolled to the two adjacent 15-minute meetings; no UI was drawn or generated for this screenshot.
