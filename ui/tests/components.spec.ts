@@ -5513,6 +5513,11 @@ test.describe('DeleteConfirm', () => {
 });
 
 test.describe('Header invitation tray', () => {
+  /** The tray exists because a notification toast can be missed (it was,
+   *  live, 2026-08-17) — so the header itself must carry the debt: a badge
+   *  while invitations await an answer, a list with the answer buttons
+   *  behind it, and nothing at all at inbox-zero. */
+
   test('rapid replies hide immediately, save in order, and continue after a failure', async ({ page }) => {
     await page.goto(show('Header', 'queued-invites'));
     await page.evaluate(() => {
@@ -5548,11 +5553,6 @@ test.describe('Header invitation tray', () => {
     await expect(page.getByRole('alert')).toHaveCount(0);
     await expect(page.getByTestId('invite-row')).toHaveCount(0);
   });
-
-  /** The tray exists because a notification toast can be missed (it was,
-   *  live, 2026-08-17) — so the header itself must carry the debt: a badge
-   *  while invitations await an answer, a list with the answer buttons
-   *  behind it, and nothing at all at inbox-zero. */
 
   test('inbox-zero renders no badge at all', async ({ page }) => {
     await page.goto(show('Header', 'connected'));

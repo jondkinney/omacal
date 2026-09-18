@@ -13,7 +13,7 @@
   import { occurrenceDate, ruleInWords } from './eventform';
   import { isMachineAddress } from './organizer';
   import { respondToEvent, type Attendee, type EventDetail } from './eventdetail';
-  import { pendingResponse, responsePending } from './responses.svelte';
+  import { pendingResponse, responsePending, responseFailures, dismissResponseFailure, showResponseFailuresHere } from './responses.svelte';
   import { focusInitialChoice, handleChoiceKey } from './choicefocus';
   import { EVENT_SHORTCUT_LIST, type EventShortcutId, shortcutKeyFor } from './shortcuts';
 
@@ -305,7 +305,10 @@
   // this only ever affects the guest list.
   let freshAttendees = $state<Attendee[] | null>(null);
   const shownAttendees = $derived((freshAttendees ?? detail.attendees).map(a =>
-    a.is_self && (queuedResponse ?? chosen) ? { ...a, response_status: shown! } : a));
+    a.is_self && queuedResponse && responsePending(detail.id, occurrenceStartMs)
+      ? { ...a, response_status: queuedResponse } : a));
+  const responseError = $derived(responseFailures().find(f => f.id === detail.id));
+  $effect(() => showResponseFailuresHere([detail.id]));
 
   // `?` means MAYBE — the letter Google and Outlook both use for it, and the
   // reading everyone brought to it anyway (2026-08-10, by request; it
@@ -355,9 +358,9 @@
         freshAttendees = fresh.attendees;
       }
       onresponded(response);
-    } catch (err) {
+    } catch {
       chosen = previous;
-      note = { text: String(err), kind: 'error' };
+      // The queue owns the error so dismissing it on either surface sticks.
     } finally {
       busy = new Set();
       // Disabling a focused button mid-submit (just above) drops focus to
@@ -650,6 +653,9 @@
     {#if detail.can_edit}<button onclick={ondelete}>Delete</button>{/if}
   </div>
 
+  {#if responseError}<p class="note err" role="alert">{responseError.message}
+    <button aria-label="Dismiss response error" onclick={() => dismissResponseFailure(detail.id)}>×</button>
+  </p>{/if}
   {#if note}<p class="note" class:err={note.kind === 'error'}>{note.text}</p>{/if}
 </div>
 

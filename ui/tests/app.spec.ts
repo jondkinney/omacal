@@ -997,7 +997,7 @@ test.describe('App', () => {
 
   const block = (page: Page, title: string) => page.locator('.ev').filter({ hasText: title });
 
-  test('RSVP refresh runs in the background without making the app busy', async ({ page }) => {
+  test('RSVP refresh reports syncing without making calendar controls busy', async ({ page }) => {
     await writable(page);
     await page.evaluate(() => window.__harness.holdNextSync());
     await block(page, 'Standup').click();
@@ -1007,7 +1007,9 @@ test.describe('App', () => {
       .filter(c => c.cmd === 'sync_now').length)).toBe(1);
     await page.keyboard.press('Escape');
     await page.getByRole('button', { name: 'Menu' }).click();
-    await expect(page.getByRole('button', { name: 'Sync now', exact: true })).toBeEnabled();
+    await expect(page.getByRole('img', { name: 'Syncing now' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Sync now', exact: true })).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Today', exact: true })).toBeEnabled();
     await page.evaluate(() => window.__harness.releaseSync());
   });
   /** An `AllDayBand` chip. A different element and a different component from
