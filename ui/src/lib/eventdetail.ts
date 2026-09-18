@@ -240,6 +240,10 @@ export type WhenInput =
 export const refreshEvent = (id: number) => invoke<EventDetail>('refresh_event', { id });
 
 /**
+ * Queue replies made in this window in order, sharing identical pending
+ * requests so a double click cannot mail guests twice. `title` names the
+ * event in a failure notice if its popover has already closed.
+ *
  * `occurrenceStartMs` is the `start_ms` of the block that was actually
  * clicked — the `UiEvent` from the grid, never `detail.start_ms`.
  *

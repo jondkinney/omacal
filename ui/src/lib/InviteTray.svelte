@@ -3,7 +3,7 @@
   import { formatDate } from './datefmt';
   import { dateFormat } from './date.svelte';
   import { respondToEvent } from './eventdetail';
-  import { pendingResponse } from './responses.svelte';
+  import { pendingResponse, responseFailures, dismissResponseFailure, showResponseFailuresHere } from './responses.svelte';
   import { clockFormat } from './clock.svelte';
   import { formatClock } from './timefmt';
   import { escapeCloses } from './dismiss.svelte';
@@ -13,7 +13,7 @@
     type ChangeNotice, type DeclineNotice, type PendingInvite,
   } from './invites';
 
-  let { invites, declines = [], changes = [], onanswered }: {
+  let { invites, declines = [], changes = [], onanswered, ondismissed = () => {} }: {
     /** `App`'s list, with queued/saved answers hidden until the refetch
      *  confirms them. Failed answers return without changing this prop. */
     invites: PendingInvite[];
@@ -24,9 +24,10 @@
     /** Meetings the user attends that moved or were cancelled under them —
      *  the attendee's side, same request, same lifecycle. */
     changes?: ChangeNotice[];
-    /** One invitation was answered (or a decline acknowledged) and the write
-     *  landed. `App` refetches the lists and reloads the grid. */
+    /** A queued RSVP reached the provider. App schedules a background sync. */
     onanswered: () => void;
+    /** A notice was dismissed locally. App only refetches lists and the grid. */
+    ondismissed?: () => void;
   } = $props();
 
   let open = $state(false);
@@ -43,9 +44,17 @@
     const remaining = answeredIds.filter(id => invites.some(inv => inv.id === id));
     if (remaining.length !== answeredIds.length) answeredIds = remaining;
   });
-  /** A failed answer, kept on its row — the tray stays open, the row stays,
-   *  and the sentence is the backend's own user-facing one. */
+  // Only local acknowledgment failures live here; RSVP failures have one
+  // shared record, also readable after this tray closes.
   let errors = $state<Record<number, string>>({});
+
+  const errorFor = (id: number) => responseFailures().find(f => f.id === id)?.message ?? errors[id];
+  $effect(() => {
+    if (open) return showResponseFailuresHere([
+      ...shownInvites.map(inv => inv.id),
+      ...shownMoved.flatMap(c => c.event_id === null ? [] : [c.event_id]),
+    ]);
+  });
 
   const hhmm = (ms: number) => formatClock(ms, clockFormat());
 
@@ -83,7 +92,7 @@
     acked = [...acked, ackKey(d)];
     try {
       await dismissDeclineNotice(d);
-      onanswered();
+      ondismissed();
     } catch {
       // The write failed; the row comes back rather than lying about it.
       acked = acked.filter((k) => k !== ackKey(d));
@@ -97,7 +106,7 @@
     acked = [...acked, ...shownDeclines.map(ackKey)];
     try {
       await dismissAllDeclineNotices();
-      onanswered();
+      ondismissed();
     } catch {
       acked = before;
     }
@@ -121,7 +130,7 @@
     ackedChanges = [...ackedChanges, changeKey(c)];
     try {
       await dismissChangeNotice(c);
-      onanswered();
+      ondismissed();
     } catch {
       ackedChanges = ackedChanges.filter((k) => k !== changeKey(c));
     }
@@ -133,7 +142,7 @@
     ackedChanges = [...ackedChanges, ...batch.map(changeKey)];
     try {
       await dismissAllChangeNotices(kind);
-      onanswered();
+      ondismissed();
     } catch {
       ackedChanges = before;
     }
@@ -158,8 +167,8 @@
       await respondToEvent(inv.id, response, 'all', inv.start_ms, inv.title ?? '(no title)');
       answeredIds = [...answeredIds, inv.id];
       onanswered();
-    } catch (e) {
-      errors = { ...errors, [inv.id]: String(e) };
+    } catch {
+      // The queue restores the row and owns the error, even after closing.
     } finally {
       busyIds = busyIds.filter((id) => id !== inv.id);
     }
@@ -186,7 +195,7 @@
       onanswered();
     } catch (e) {
       ackedChanges = ackedChanges.filter(key => key !== changeKey(c));
-      errors = { ...errors, [id]: String(e) };
+      if (!responseFailures().some(f => f.id === id)) errors = { ...errors, [id]: String(e) };
     } finally {
       busyIds = busyIds.filter((b) => b !== id);
     }
@@ -244,8 +253,8 @@
               {#if inv.organizer_email}
                 <span class="meta">from {inv.organizer_email}</span>
               {/if}
-              {#if errors[inv.id]}
-                <span class="rowerr">{errors[inv.id]}</span>
+              {#if errorFor(inv.id)}
+                <span class="rowerr" role="alert">{errorFor(inv.id)} <button aria-label="Dismiss response error" onclick={() => dismissResponseFailure(inv.id)}>×</button></span>
               {/if}
             </div>
             {#if inv.can_respond}
@@ -311,8 +320,8 @@
                   {slot(c.new_start_date, c.new_start_ms, c.is_all_day)}{#if !c.is_all_day && c.new_end_ms !== null}&nbsp;– {hhmm(c.new_end_ms)}{/if}
                 {/if}
               </span>
-              {#if c.event_id !== null && errors[c.event_id]}
-                <span class="rowerr">{errors[c.event_id]}</span>
+              {#if c.event_id !== null && errorFor(c.event_id)}
+                <span class="rowerr" role="alert">{errorFor(c.event_id)} <button aria-label="Dismiss response error" onclick={() => { dismissResponseFailure(c.event_id!); const {[c.event_id!]: _gone, ...rest} = errors; errors = rest; }}>×</button></span>
               {/if}
             </div>
             {#if c.can_respond && c.event_id !== null}

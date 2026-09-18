@@ -2483,12 +2483,7 @@ export const FIXTURES: Record<string, Record<string, any>> = {
       ...header({ accounts: [], last_sync_ms: null, demo: true, overlay_titlebar: false }),
       error: 'Sync failed.' as string | null,
     },
-    /** Two unanswered invitations: one answerable Google invite (buttons)
-     *  and one CalDAV all-day span (no buttons — no RSVP write exists).
-     *  Timed instants deliberately inside the fixture week so the "when"
-     *  line's premise is checkable; the all-day days come as calendar-zone
-     *  strings, exactly as `pending_invites` sends them, so no spec here
-     *  can accidentally pass through instant-derived dates. */
+    /** Three answerable invitations to hold and drain in order. */
     'queued-invites': {
       ...header({ accounts: ['me@x.com'], last_sync_ms: FIVE_MIN_AGO, demo: false, overlay_titlebar: false }),
       invites: [901, 902, 903].map((id, i) => ({
@@ -2498,6 +2493,12 @@ export const FIXTURES: Record<string, Record<string, any>> = {
         organizer_email: 'ana@example.com', color: '#5b8def', can_respond: true,
       })),
     },
+    /** Two unanswered invitations: one answerable Google invite (buttons)
+     *  and one CalDAV all-day span (no buttons — no RSVP write exists).
+     *  Timed instants deliberately inside the fixture week so the "when"
+     *  line's premise is checkable; the all-day days come as calendar-zone
+     *  strings, exactly as `pending_invites` sends them, so no spec here
+     *  can accidentally pass through instant-derived dates. */
     'with-invites': {
       ...header({
         accounts: ['me@x.com'], last_sync_ms: FIVE_MIN_AGO, demo: false, overlay_titlebar: false,
