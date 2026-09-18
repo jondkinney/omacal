@@ -6058,6 +6058,9 @@ test.describe('tasks on the grid', () => {
   test('dragging a task at an hour moves its due time', async ({ page }) => {
     await openWeek(page, 'timed-task');
     const title = page.getByTestId('week-body').locator('.tpin .tt', { hasText: 'Call the bank' });
+    // Wait for the task to be actionable before measuring: the initial
+    // grid scroll can still move it after the meeting first becomes visible.
+    await title.hover();
     const from = (await title.boundingBox())!;
     const x = from.x + from.width / 2;
     const y = from.y + from.height / 2;
