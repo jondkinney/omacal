@@ -363,9 +363,8 @@
       title={light.label}
     ></span>
 
-    <!-- A stable slot prevents saving/failure feedback from shifting an
-         open popover's anchor. Errors float below the header rather than
-         stacking above the calendar. A row or popover owns its own error. -->
+    <!-- Feedback floats below the header, taking no space while idle and
+         never moving the calendar or an open popover's anchor. -->
     <div class="response-feedback">
       {#if pendingResponseCount() > 0}
         <span class="response-status" role="status">Saving {pendingResponseCount()}
@@ -373,10 +372,10 @@
       {/if}
       {#if unshownResponseFailures().length}
         <div class="response-errors">
-          {#each unshownResponseFailures() as failure (failure.id)}
+          {#each unshownResponseFailures() as failure (failure.key)}
             <p role="alert">{failure.message}
               <button type="button" aria-label="Dismiss response error"
-                      onclick={() => dismissResponseFailure(failure.id)}>×</button>
+                      onclick={() => dismissResponseFailure(failure.key)}>×</button>
             </p>
           {/each}
         </div>
@@ -646,9 +645,11 @@
     color: var(--text); font-size: 12.5px; margin: 0 0 12px; }
   .sign-in-status button { font: inherit; color: var(--text); background: var(--surface);
     border: 1px solid var(--hairline); border-radius: 6px; padding: 5px 12px; cursor: pointer; }
-  .response-feedback { width: 132px; min-height: 20px; display: flex; align-items: center; }
-  .response-status { color: var(--muted); font-size: 11px; white-space: nowrap; }
-  .response-errors { position: absolute; right: 0; top: 100%; z-index: 110;
+  .response-feedback { position: absolute; right: 0; top: 100%; z-index: 110;
+    display: flex; flex-direction: column; align-items: flex-end; gap: 6px; pointer-events: none; }
+  .response-status { color: var(--muted); font-size: 11px; white-space: nowrap;
+    padding: 4px 8px; background: var(--surface); border: 1px solid var(--hairline); border-radius: 6px; }
+  .response-errors { pointer-events: auto;
     width: min(360px, 85vw); max-height: 50vh; overflow-y: auto; padding: 8px; border: 1px solid var(--hairline);
     border-radius: 6px; background: var(--surface); box-shadow: 0 4px 16px #0004; }
   .response-errors p { overflow-wrap: anywhere; margin: 0; padding: 4px; color: var(--error); font-size: 12px; }

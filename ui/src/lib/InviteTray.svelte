@@ -3,7 +3,7 @@
   import { formatDate } from './datefmt';
   import { dateFormat } from './date.svelte';
   import { respondToEvent } from './eventdetail';
-  import { pendingResponse, responseFailures, dismissResponseFailure, showResponseFailuresHere } from './responses.svelte';
+  import { pendingResponse, responseFailure, dismissResponseFailure, showResponseFailuresHere } from './responses.svelte';
   import { clockFormat } from './clock.svelte';
   import { formatClock } from './timefmt';
   import { escapeCloses } from './dismiss.svelte';
@@ -48,11 +48,17 @@
   // shared record, also readable after this tray closes.
   let errors = $state<Record<number, string>>({});
 
-  const errorFor = (id: number) => responseFailures().find(f => f.id === id)?.message ?? errors[id];
+  const errorFor = (id: number, startMs?: number) => responseFailure(id, startMs)?.message ?? errors[id];
+  const changeStart = (c: ChangeNotice) => c.respond_scope === 'this' ? c.respond_start_ms ?? undefined : undefined;
+  function dismissError(id: number, startMs?: number) {
+    const failure = responseFailure(id, startMs);
+    if (failure) dismissResponseFailure(failure.key);
+    const {[id]: _gone, ...rest} = errors; errors = rest;
+  }
   $effect(() => {
     if (open) return showResponseFailuresHere([
-      ...shownInvites.map(inv => inv.id),
-      ...shownMoved.flatMap(c => c.event_id === null ? [] : [c.event_id]),
+      ...shownInvites.flatMap(inv => { const f = responseFailure(inv.id); return f ? [f.key] : []; }),
+      ...shownMoved.flatMap(c => { const f = c.event_id === null ? undefined : responseFailure(c.event_id, changeStart(c)); return f ? [f.key] : []; }),
     ]);
   });
 
@@ -195,7 +201,7 @@
       onanswered();
     } catch (e) {
       ackedChanges = ackedChanges.filter(key => key !== changeKey(c));
-      if (!responseFailures().some(f => f.id === id)) errors = { ...errors, [id]: String(e) };
+      if (!responseFailure(id, changeStart(c))) errors = { ...errors, [id]: String(e) };
     } finally {
       busyIds = busyIds.filter((b) => b !== id);
     }
@@ -254,7 +260,7 @@
                 <span class="meta">from {inv.organizer_email}</span>
               {/if}
               {#if errorFor(inv.id)}
-                <span class="rowerr" role="alert">{errorFor(inv.id)} <button aria-label="Dismiss response error" onclick={() => dismissResponseFailure(inv.id)}>×</button></span>
+                <span class="rowerr" role="alert">{errorFor(inv.id)} <button aria-label="Dismiss response error" onclick={() => dismissError(inv.id)}>×</button></span>
               {/if}
             </div>
             {#if inv.can_respond}
@@ -320,8 +326,8 @@
                   {slot(c.new_start_date, c.new_start_ms, c.is_all_day)}{#if !c.is_all_day && c.new_end_ms !== null}&nbsp;– {hhmm(c.new_end_ms)}{/if}
                 {/if}
               </span>
-              {#if c.event_id !== null && errorFor(c.event_id)}
-                <span class="rowerr" role="alert">{errorFor(c.event_id)} <button aria-label="Dismiss response error" onclick={() => { dismissResponseFailure(c.event_id!); const {[c.event_id!]: _gone, ...rest} = errors; errors = rest; }}>×</button></span>
+              {#if c.event_id !== null && errorFor(c.event_id, changeStart(c))}
+                <span class="rowerr" role="alert">{errorFor(c.event_id, changeStart(c))} <button aria-label="Dismiss response error" onclick={() => dismissError(c.event_id!, changeStart(c))}>×</button></span>
               {/if}
             </div>
             {#if c.can_respond && c.event_id !== null}

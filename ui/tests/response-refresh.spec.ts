@@ -166,19 +166,17 @@ test('a failed post-sync reload retains the answer until a later payload succeed
   await expect(block(page, 'Standup')).toHaveClass([/declined/, /declined/]);
 });
 
-test('a sync only retires answers saved before it started', async ({page}) => {
+test('a payload started before a reply was saved cannot retire that reply', async ({page}) => {
   await open(page);
+  await page.evaluate(start => { window.__harness.hold(start); void window.__harness.emit('sync-finished', null); }, APP_MON);
+  await expect.poll(() => page.evaluate(() => window.__harness.held())).toBe(1);
   await page.evaluate(() => window.__harness.holdNextSync());
   await answer(page, 'Standup');
   await expect.poll(() => calls(page, 'sync_now')).toBe(1);
-  await answer(page, 'Board prep');
-  await expect.poll(() => calls(page, 'respond_to_event')).toBe(2);
-  await page.evaluate(() => window.__harness.holdNextSync());
+  await page.evaluate(start => window.__harness.release(start), APP_MON);
+  await expect(block(page, 'Standup')).toHaveClass([/accepted/, /accepted/]);
   await page.evaluate(() => window.__harness.releaseSync());
-  await expect.poll(() => calls(page, 'sync_now')).toBe(2);
-  await expect(block(page, 'Board prep')).toHaveClass(/accepted/);
-  await page.evaluate(() => window.__harness.releaseSync());
-  await expect(block(page, 'Board prep')).toHaveClass(/needsAction/);
+  await expect(block(page, 'Standup')).toHaveClass([/needsAction/, /needsAction/]);
 });
 
 test('tray error dismissal clears the shared notice and a narrow header keeps it on screen', async ({page}) => {
@@ -199,4 +197,99 @@ test('tray error dismissal clears the shared notice and a narrow header keeps it
   await expect(page.getByText(/Network unavailable/)).toHaveCount(0);
   await page.getByRole('button', {name: 'Close invitations'}).click();
   await expect(page.getByRole('alert')).toHaveCount(0);
+});
+
+for (const scenario of ['sign-in-adds-account', 'needs-reauth']) test(`${scenario} syncs the newly connected calendars`, async ({page}) => {
+  await page.goto(`/tests/harness/index.html?c=App&f=${scenario}`);
+  const before = await calls(page, 'get_week');
+  await page.getByRole('button', {name: scenario === 'needs-reauth' ? 'Reconnect' : 'Connect Google Calendar', exact: true}).click();
+  await expect.poll(() => calls(page, 'sign_in')).toBe(1);
+  await expect.poll(() => calls(page, 'sync_now')).toBe(1);
+  await expect.poll(() => calls(page, 'get_week')).toBeGreaterThan(before);
+});
+
+for (const action of ['sign-in', 'create'] as const) for (const outcome of ['success', 'failure'] as const)
+  test(`${action} waits for an older sync's ${outcome} then starts its own`, async ({page}) => {
+    await open(page);
+    await page.evaluate(() => window.__harness.holdNextSync());
+    await answer(page, 'Standup');
+    await expect.poll(() => calls(page, 'sync_now')).toBe(1);
+    await page.keyboard.press('Escape');
+    if (action === 'sign-in') {
+      await page.getByRole('button', {name: 'Menu', exact: true}).click();
+      await page.getByRole('button', {name: 'Add Google account', exact: true}).click();
+      await expect.poll(() => calls(page, 'sign_in')).toBe(1);
+      await expect(page.locator('.panel')).toBeVisible();
+    } else {
+      await page.keyboard.press('n');
+      const form = page.getByRole('dialog', {name: 'New event'});
+      await form.getByLabel('Title', {exact: true}).fill('Lunch');
+      await form.getByRole('button', {name: 'Create', exact: true}).click();
+      await expect.poll(() => calls(page, 'create_event')).toBe(1);
+      await expect(form).toHaveCount(0);
+    }
+    // Both paths have reached their post-write work, but the old sync is
+    // still parked. They must neither overlap it nor consider it sufficient.
+    await expect.poll(() => calls(page, 'pending_invites')).toBeGreaterThan(1);
+    expect(await calls(page, 'sync_now')).toBe(1);
+    await page.evaluate(() => window.__harness.holdNextSync());
+    await page.evaluate(outcome => outcome === 'failure'
+      ? window.__harness.rejectSync('Old sync failed.') : window.__harness.releaseSync(), outcome);
+    await expect.poll(() => calls(page, 'sync_now')).toBe(2);
+    await page.evaluate(() => window.__harness.releaseSync());
+    await expect(page.getByRole('img', {name: /Syncing now/})).toHaveCount(0);
+  });
+
+test('a failed sync cannot pin a saved reply over later server changes or suppress a new reply', async ({page}) => {
+  await open(page);
+  await page.evaluate(() => window.__harness.holdNextSync());
+  await answer(page, 'Standup');
+  await expect.poll(() => calls(page, 'sync_now')).toBe(1);
+  await page.evaluate(() => window.__harness.rejectSync('Another calendar failed.'));
+  await expect(block(page, 'Standup')).toHaveClass([/accepted/, /accepted/]);
+  const w = week();
+  for (const d of w.days) for (const e of d.events) e.response = 'declined';
+  await page.evaluate(async w => {
+    window.__harness.setResponseData({week: w, invites: []});
+    await window.__harness.emit('sync-finished', null);
+  }, w);
+  await expect(block(page, 'Standup')).toHaveClass([/declined/, /declined/]);
+  await block(page, 'Standup').first().click();
+  await page.getByRole('button', {name: 'Yes', exact: true}).click();
+  await page.getByRole('button', {name: 'All of them'}).click();
+  await expect.poll(() => calls(page, 'respond_to_event')).toBe(2);
+});
+
+test('separate occurrences keep their own failures when another occurrence succeeds or is dismissed', async ({page}) => {
+  await open(page);
+  for (const start of [1, 2]) {
+    await page.evaluate(async ({id, start}) => {
+      window.__harness.failNextEventCall('respond_to_event', id, `Occurrence ${start} failed.`);
+      await (window as any).__responses.queueResponse({id, response: 'accepted', scope: 'this', occurrenceStartMs: start}, 'Standup').catch(() => {});
+    }, {id: series, start});
+  }
+  await page.evaluate(async id => {
+    await (window as any).__responses.queueResponse({id, response: 'accepted', scope: 'this', occurrenceStartMs: 3}, 'Standup');
+  }, series);
+  await expect(page.locator('header [role="alert"]')).toHaveCount(2);
+  // A popover for yet another occurrence must not steal these failures.
+  await block(page, 'Standup').first().click();
+  await expect(page.locator('header [role="alert"]')).toHaveCount(2);
+  await expect(page.locator('.pop [role="alert"]')).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await page.locator('header [role="alert"]').filter({hasText: 'Occurrence 1 failed.'}).getByRole('button', {name: 'Dismiss response error'}).click();
+  await expect(page.locator('header [role="alert"]')).toHaveCount(1);
+  await expect(page.locator('header [role="alert"]')).toContainText('Occurrence 2 failed.');
+  await page.evaluate(async id => {
+    await (window as any).__responses.queueResponse({id, response: 'accepted', scope: 'this', occurrenceStartMs: 2}, 'Standup');
+  }, series);
+  await expect(page.locator('header [role="alert"]')).toHaveCount(0);
+});
+
+for (const width of [750, 800, 880]) test(`idle RSVP feedback leaves the header on one row at ${width}px`, async ({page}) => {
+  await page.setViewportSize({width, height: 800});
+  await page.goto('/tests/harness/index.html?c=Header&f=connected');
+  const title = (await page.locator('header h1').boundingBox())!;
+  const menu = (await page.getByRole('button', {name: 'Menu', exact: true}).boundingBox())!;
+  expect(Math.abs(title.y + title.height / 2 - menu.y - menu.height / 2)).toBeLessThan(3);
 });

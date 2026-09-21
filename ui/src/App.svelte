@@ -187,19 +187,17 @@
   let busy = $state(false);
   let syncing = $state(false);
   let syncInFlight: Promise<unknown> | null = null;
-  // A payload may supersede another reload, or arrive after a failed one.
-  // Only retire replies covered by a sync completed before that fetch began.
-  let responsesSyncedThrough = 0;
-  // Manual sync and RSVP reconciliation share a request. Calendar controls
-  // stay usable while a reply's background sync is in flight.
-  function syncCalendar() {
-    if (syncInFlight) return syncInFlight;
+  // A read-only request can join an existing sync. A completed write needs
+  // a pass that starts after it, even when the older pass fails. Concurrent
+  // writers waiting for that pass share it rather than starting sync_all twice.
+  async function syncCalendar(afterWrite = false): Promise<unknown> {
+    if (syncInFlight) {
+      if (!afterWrite) return syncInFlight;
+      await syncInFlight.catch(() => {});
+      return syncCalendar();
+    }
     syncing = true;
-    const checkpoint = responseCheckpoint();
-    syncInFlight = syncNow().then(result => {
-      responsesSyncedThrough = Math.max(responsesSyncedThrough, checkpoint);
-      return result;
-    }).finally(() => { syncing = false; syncInFlight = null; });
+    syncInFlight = syncNow().finally(() => { syncing = false; syncInFlight = null; });
     return syncInFlight;
   }
   let signingIn = $state(false);
@@ -993,7 +991,8 @@
 
   async function loadWeek(kind: 'day' | 'week' | 'range', target: number, pad: number, days?: WeekViewDays) {
     const req = ++weekReq;
-    const responseVersion = responsesSyncedThrough;
+    // Snapshot once: queue changes must not drive the view's fetch effect.
+    const responseVersion = untrack(responseCheckpoint);
     try {
       const w = kind === 'day'
         ? await getDay(target, pad)
@@ -1012,7 +1011,7 @@
 
   async function loadMonth(year: number, monthNum: number) {
     const req = ++monthReq;
-    const responseVersion = responsesSyncedThrough;
+    const responseVersion = untrack(responseCheckpoint);
     try {
       const m = await getMonth(year, monthNum);
       if (req !== monthReq) return;
@@ -1027,7 +1026,7 @@
 
   async function loadYear(y: number) {
     const req = ++yearReq;
-    const responseVersion = responsesSyncedThrough;
+    const responseVersion = untrack(responseCheckpoint);
     try {
       const p = await getYear(y);
       if (req !== yearReq) return;
@@ -1042,7 +1041,7 @@
 
   async function loadBigYear(y: number) {
     const req = ++bigYearReq;
-    const responseVersion = responsesSyncedThrough;
+    const responseVersion = untrack(responseCheckpoint);
     try {
       const p = await getBigYear(y);
       if (req !== bigYearReq) return;
@@ -1167,7 +1166,9 @@
       // syncing. Every account imports switched on by default, holidays and
       // room calendars included; this is where the user first gets a say.
       pickerOpen = true;
-      await handleSync();
+      await syncCalendar(true);
+      await refreshStatus();
+      await reload();
     }
     catch (e) { if (String(e) !== 'Sign-in cancelled.') error = String(e); }
     finally { signingIn = false; busy = false; }
@@ -1717,12 +1718,8 @@
         await responsesIdle();
         responseRefreshRequested = false;
         try {
-          // A sync already in flight may predate these writes. Wait for it,
-          // then start the sync that can actually reconcile this batch.
-          if (syncInFlight) await syncInFlight.catch(() => {});
-          await reload();
           await refreshInvites();
-          await syncCalendar();
+          await syncCalendar(true);
           await refreshStatus();
           await reload();
           await refreshInvites();
@@ -1761,7 +1758,7 @@
     await refreshInvites();
     busy = true;
     try {
-      await syncNow();
+      await syncCalendar(true);
       await refreshStatus();
       await reload();
     } catch (e) {
