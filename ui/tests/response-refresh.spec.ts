@@ -286,9 +286,19 @@ test('separate occurrences keep their own failures when another occurrence succe
   await expect(page.locator('header [role="alert"]')).toHaveCount(0);
 });
 
-for (const width of [750, 800, 880]) test(`idle RSVP feedback leaves the header on one row at ${width}px`, async ({page}) => {
-  await page.setViewportSize({width, height: 800});
+test('idle RSVP feedback leaves no gap beside the light and fits a narrow header', async ({page}) => {
+  await page.setViewportSize({width: 1280, height: 800});
   await page.goto('/tests/harness/index.html?c=Header&f=connected');
+  const light = (await page.locator('.light').boundingBox())!;
+  const quick = (await page.getByRole('button', {name: 'Quick add event', exact: true}).boundingBox())!;
+  expect(quick.x - light.x - light.width).toBeLessThan(16);
+  // System fonts differ on CI. Fit the actual controls with a small gutter,
+  // rather than assuming the same pixel width for their labels everywhere.
+  const header = (await page.locator('header').boundingBox())!;
+  const left = (await page.locator('header .left').boundingBox())!;
+  const right = (await page.locator('header .right').boundingBox())!;
+  const width = Math.ceil(1280 - header.width + left.width + right.width + 20);
+  await page.setViewportSize({width, height: 800});
   const title = (await page.locator('header h1').boundingBox())!;
   const menu = (await page.getByRole('button', {name: 'Menu', exact: true}).boundingBox())!;
   expect(Math.abs(title.y + title.height / 2 - menu.y - menu.height / 2)).toBeLessThan(3);
